@@ -1,50 +1,32 @@
 import { randomUUID } from "node:crypto";
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ConflictError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { projectService } from "@/services/project.service";
 import { videoService } from "@/services/video.service";
+import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts).
-// Every fixture this file creates is tagged with a run-unique token so that
-// a concurrent test run — or the operator's own dev app — never has rows it
-// owns touched, and this file never touches rows it doesn't own.
+// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// that also holds the operator's real data. Every test in this file gets its
+// own private, throwaway User (see src/test/fixtures.ts) instead of the
+// operator's real account, so this file's fixtures can never collide with —
+// or be mistaken for — the operator's real projects/videos.
 const RUN = randomUUID().slice(0, 8);
 const PROJECT_NAME = `test-${RUN}`;
 
 let userId: string;
 let projectId: string | undefined;
 
-/** Deletes only the project (and its videos) this file created for the current test. */
-async function cleanupCurrentProject() {
-  if (!projectId) return;
-  await prisma.video.deleteMany({ where: { projectId } });
-  await prisma.project.deleteMany({ where: { id: projectId } });
-}
-
-/** Safety net for a crashed test that never reached its own cleanup. */
-async function cleanupAnyStrayRuns() {
-  const strays = await prisma.project.findMany({
-    where: { name: PROJECT_NAME },
-    select: { id: true },
-  });
-  const strayIds = strays.map((p) => p.id);
-  if (strayIds.length === 0) return;
-  await prisma.video.deleteMany({ where: { projectId: { in: strayIds } } });
-  await prisma.project.deleteMany({ where: { id: { in: strayIds } } });
-}
-
 beforeEach(async () => {
-  await cleanupCurrentProject();
-  const user = await prisma.user.findFirstOrThrow();
-  userId = user.id;
+  userId = await createTestUser("video");
   projectId = (await projectService.create(userId, { name: PROJECT_NAME })).id;
 });
 
-afterEach(cleanupCurrentProject);
-afterAll(cleanupAnyStrayRuns);
+// Deleting the user cascades away every fixture (project, video, and its
+// pipeline children) the test created.
+afterEach(() => deleteTestUser(userId));
 
 /**
  * Builds a DRAFT video with a non-empty active ScriptVersion — the minimum

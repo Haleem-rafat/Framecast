@@ -9,23 +9,31 @@ import { providerCredentialService } from "@/services/provider-credential.servic
 import type { TextGenerationProvider } from "@/services/providers/types";
 import { ScriptService } from "@/services/script.service";
 import { videoService } from "@/services/video.service";
+import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts).
-// Every fixture this file creates is tagged with a run-unique token so that a
-// concurrent test run — or the operator's own dev app — never has rows it owns
-// touched, and this file never touches rows it doesn't own.
+// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// that also holds the operator's real data. Every test in this file gets its
+// own private, throwaway User (see src/test/fixtures.ts) instead of the
+// operator's real account, so this file's fixtures can never collide with —
+// or be mistaken for — the operator's real projects/videos/usage.
 //
-// ProviderUsage has no column of its own to carry an identifying token: the
+// ProviderUsage rows are still keyed off a run-unique token even though the
+// user is private: the model.generate() code path writes them outside the
+// video/project tree (no userId column of its own — see
+// src/test/fixtures.ts's note on ProviderUsage.credentialId), so
+// deleteTestUser()'s cascade alone would not catch them without going
+// through the credential relation this file never populates. The
 // success-path row's `model` comes straight from the provider result, so the
 // fake provider returns a model string embedding RUN, and cleanup/assertions
-// key off that. The failure-path row (recorded by the service's catch block
-// with no model, per the brief) carries no such marker, so it is scoped by the
-// narrow time window this file itself opened instead — the best available
-// approximation given the schema.
+// key off that. The one failure-path row recorded when the provider throws
+// before returning (per the brief) carries no such marker — `model` is
+// null — so it can't be told apart from a *concurrent* `pnpm test` process's
+// identically-shaped row by any query. That test captures and deletes its
+// own row by id inline instead of relying on a query-based sweep, so a
+// concurrent run's row is never at risk of being deleted out from under it.
 const RUN = randomUUID().slice(0, 8);
 const PROJECT_NAME = `test-script-${RUN}`;
 const FAKE_MODEL = `test-model-${RUN}`;
-const RUN_STARTED_AT = new Date();
 
 // This file runs several generate() calls per test (and the concurrency test
 // runs twenty), each several sequential round trips against a live, shared
@@ -53,57 +61,21 @@ let projectId: string | undefined;
 let videoId: string;
 let service: ScriptService;
 
-/** Deletes only the project/video/usage rows this file created for the current test. */
-async function cleanupCurrentRun() {
-  await prisma.providerUsage.deleteMany({
-    where: {
-      OR: [
-        { model: FAKE_MODEL },
-        {
-          operation: "script.generate",
-          succeeded: false,
-          createdAt: { gte: RUN_STARTED_AT },
-        },
-      ],
-    },
-  });
-
-  if (projectId) {
-    await prisma.video.deleteMany({ where: { projectId } });
-    await prisma.project.deleteMany({ where: { id: projectId } });
-    projectId = undefined;
-  }
-}
-
-/** Safety net for a crashed test that never reached its own cleanup. */
-async function cleanupAnyStrayRuns() {
-  const strays = await prisma.project.findMany({
-    where: { name: PROJECT_NAME },
-    select: { id: true },
-  });
-  const strayIds = strays.map((p) => p.id);
-  if (strayIds.length > 0) {
-    await prisma.video.deleteMany({ where: { projectId: { in: strayIds } } });
-    await prisma.project.deleteMany({ where: { id: { in: strayIds } } });
-  }
-  await prisma.providerUsage.deleteMany({
-    where: {
-      OR: [
-        { model: FAKE_MODEL },
-        {
-          operation: "script.generate",
-          succeeded: false,
-          createdAt: { gte: RUN_STARTED_AT },
-        },
-      ],
-    },
-  });
+/**
+ * Deletes only the ProviderUsage rows this file created for the current
+ * test, identified by this run's FAKE_MODEL marker. Project/video fixtures
+ * need no equivalent function: they hang off the private test user created
+ * in beforeEach, so deleteTestUser() cascades them away. The one test whose
+ * row carries no such marker cleans up its own row by id — see the file
+ * header comment.
+ */
+async function cleanupProviderUsage() {
+  await prisma.providerUsage.deleteMany({ where: { model: FAKE_MODEL } });
 }
 
 beforeEach(async () => {
-  await cleanupCurrentRun();
-  const user = await prisma.user.findFirstOrThrow();
-  userId = user.id;
+  await cleanupProviderUsage();
+  userId = await createTestUser("script");
   projectId = (await projectService.create(userId, { name: PROJECT_NAME })).id;
   videoId = (
     await videoService.create(userId, {
@@ -112,24 +84,40 @@ beforeEach(async () => {
       topic: "inflation",
     })
   ).id;
+
+  // generate() renders the operator's default SCRIPT prompt template.
+  // The seeded operator account has one; this private test user does not,
+  // so the fixture provides its own — otherwise every generate() call below
+  // fails with NotFoundError before ever reaching the (mocked) provider.
+  await prisma.promptTemplate.create({
+    data: {
+      userId,
+      name: "Default script",
+      category: "SCRIPT",
+      content: "Write a script about {{topic}}.",
+      isDefault: true,
+      variables: {
+        create: [{ key: "topic", label: "Topic", required: true }],
+      },
+    },
+  });
+
   service = new ScriptService(makeFakeProvider());
 
-  // generate() unconditionally resolves a real ANTHROPIC credential for the
-  // shared operator before ever reaching the (injected, mocked) provider.
-  // That row is genuinely shared and externally mutable — decryptSecret()
-  // throws InternalError on a rotated/tampered ciphertext, which another
-  // agent's concurrent work against the same live database has observed to
-  // trigger intermittently here. providerCredentialService's own correctness
-  // is covered by provider-credential.service.test.ts, so it's stubbed out
-  // rather than left as an unrelated, flaky dependency of these tests.
+  // generate() unconditionally resolves an ANTHROPIC credential for the
+  // caller before ever reaching the (injected, mocked) provider. This
+  // private test user never stores one, so resolveKey() would legitimately
+  // return null on its own — it's still stubbed here so a slow real lookup
+  // isn't on the critical path of every test in this file.
   vi.spyOn(providerCredentialService, "resolveKey").mockResolvedValue(null);
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await cleanupCurrentRun();
+  await cleanupProviderUsage();
+  await deleteTestUser(userId);
 });
-afterAll(cleanupAnyStrayRuns);
+afterAll(cleanupProviderUsage);
 
 describe("scriptService.generate", () => {
   it("stores version 1 and makes it active", async () => {
@@ -167,32 +155,68 @@ describe("scriptService.generate", () => {
       }),
     });
 
-    const before = new Date();
+    // No column on ProviderUsage carries a run-unique marker for this
+    // zero-cost failure shape (see the file header comment), and a
+    // concurrent `pnpm test` process can be running this exact test — or the
+    // "records the provider's real cost..." test below, which also produces
+    // a `succeeded: false` row — at the same instant, so a time-window query
+    // alone can pick up the wrong row (both scenarios observed while
+    // hardening this file for concurrent runs). Snapshotting every existing
+    // row of this shape beforehand and diffing against what exists
+    // afterward identifies "this" row exactly: two rows can never share an
+    // id, so the one id that's new is unambiguously the one this call
+    // created, regardless of what else is racing the same shared table.
+    const shape = {
+      operation: "script.generate" as const,
+      succeeded: false,
+      inputTokens: 0,
+      outputTokens: 0,
+      createdAt: { gte: new Date() },
+    };
+    const before = new Set(
+      (await prisma.providerUsage.findMany({ where: shape, select: { id: true } })).map(
+        (row) => row.id,
+      ),
+    );
+
     let caught: unknown;
     try {
       await failing.generate(userId, videoId, {});
     } catch (error) {
       caught = error;
     }
-    const after = new Date();
 
     // Nothing was billed — the provider never returned — so the original
     // error must propagate unchanged (not converted to a ConflictError, not
     // wrapped) and zero is the truthful cost.
     expect(caught).toBe(upstreamError);
 
-    const usage = await prisma.providerUsage.findFirstOrThrow({
-      where: {
-        operation: "script.generate",
-        succeeded: false,
-        createdAt: { gte: before, lte: after },
-      },
-      orderBy: { createdAt: "desc" },
+    const after = await prisma.providerUsage.findMany({
+      where: shape,
+      select: { id: true },
     });
-    expect(usage.succeeded).toBe(false);
-    expect(Number(usage.costUsd)).toBe(0);
-    expect(usage.inputTokens).toBe(0);
-    expect(usage.outputTokens).toBe(0);
+    const newId = after.map((row) => row.id).find((id) => !before.has(id));
+    if (!newId) {
+      throw new Error(
+        "Expected a new zero-cost failed ProviderUsage row from this call, found none.",
+      );
+    }
+    const usage = await prisma.providerUsage.findUniqueOrThrow({
+      where: { id: newId },
+    });
+
+    try {
+      expect(usage.succeeded).toBe(false);
+      expect(Number(usage.costUsd)).toBe(0);
+      expect(usage.inputTokens).toBe(0);
+      expect(usage.outputTokens).toBe(0);
+    } finally {
+      // Deleting by this specific id (rather than the shared cleanup's
+      // model-scoped sweep, which can't see this row at all) means this test
+      // can only ever remove the one row it just identified, never a wider
+      // window of some other test's or process's rows.
+      await prisma.providerUsage.deleteMany({ where: { id: usage.id } });
+    }
   });
 
   it("records the provider's real cost when a later transaction step fails after billing", async () => {
@@ -222,10 +246,17 @@ describe("scriptService.generate", () => {
 
       expect(caught).toBe(forcedError);
 
+      // Unlike the throws-before-returning case above, the provider here
+      // actually resolved, so the row this test's own catch block wrote
+      // carries this run's FAKE_MODEL marker — filtering on it (rather than
+      // just the time window) is what keeps this assertion from reading a
+      // concurrent run's identically-shaped row racing the same narrow
+      // window against this shared, otherwise-unscoped table.
       const usage = await prisma.providerUsage.findFirstOrThrow({
         where: {
           operation: "script.generate",
           succeeded: false,
+          model: FAKE_MODEL,
           createdAt: { gte: before, lte: after },
         },
         orderBy: { createdAt: "desc" },

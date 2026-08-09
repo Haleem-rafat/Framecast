@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { channelService } from "@/services/channel.service";
+import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts).
-// Every fixture this file creates is tagged with a run-unique token so that
-// a concurrent test run — or the operator's own dev app — never has rows it
-// owns touched, and this file never touches rows it doesn't own.
+// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// that also holds the operator's real data. Every test in this file gets its
+// own private, throwaway User (see src/test/fixtures.ts) instead of the
+// operator's real account, so a connect() here can never collide with — and
+// overwrite — a real Channel row, which is unique on [userId,
+// youtubeChannelId]. Because the user is private to this one test, this
+// file's own rows are the only rows it can ever see.
 const RUN = randomUUID().slice(0, 8);
 const YOUTUBE_CHANNEL_ID = `UC_${RUN}`;
 
@@ -21,22 +25,12 @@ const TOKENS = {
   scopes: ["https://www.googleapis.com/auth/youtube.upload"],
 };
 
-async function cleanup() {
-  await prisma.channel.deleteMany({
-    where: { youtubeChannelId: YOUTUBE_CHANNEL_ID },
-  });
-}
-
 beforeEach(async () => {
-  await cleanup();
-  userId = (await prisma.user.findFirstOrThrow()).id;
+  userId = await createTestUser("channel");
 });
 
-// Belt and suspenders: afterEach keeps each test isolated from the next,
-// afterAll guarantees nothing from this file survives even if a test throws
-// before its own assertions run.
-afterEach(cleanup);
-afterAll(cleanup);
+// Deleting the user cascades away every fixture the test created.
+afterEach(() => deleteTestUser(userId));
 
 describe("channelService", () => {
   it("stores tokens encrypted, never in plaintext", async () => {
@@ -94,13 +88,10 @@ describe("channelService", () => {
       accessToken: "ya29.second-token",
     });
 
-    // Scope the assertion to rows this run created rather than assuming the
-    // table (or even this user's channel list) contains nothing else —
-    // a concurrent run may legitimately have its own channels for the same
-    // shared test user.
-    const mine = (await channelService.list(userId)).filter(
-      (c) => c.youtubeChannelId === YOUTUBE_CHANNEL_ID,
-    );
+    // This user is private to this test, so its channel list is exactly
+    // what this test created — reconnecting must have replaced the row
+    // rather than duplicated it.
+    const mine = await channelService.list(userId);
     expect(mine).toHaveLength(1);
     expect(mine[0].title).toBe("Money Mechanics (renamed)");
   });
@@ -117,9 +108,7 @@ describe("channelService", () => {
 
     await channelService.disconnect(userId, channel.id);
 
-    const mine = (await channelService.list(userId)).filter(
-      (c) => c.youtubeChannelId === YOUTUBE_CHANNEL_ID,
-    );
+    const mine = await channelService.list(userId);
     expect(mine).toHaveLength(0);
   });
 });

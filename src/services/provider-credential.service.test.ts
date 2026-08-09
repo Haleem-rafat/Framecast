@@ -1,36 +1,30 @@
 import { randomUUID } from "node:crypto";
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { providerCredentialService } from "@/services/provider-credential.service";
+import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts).
-// A run-unique label lets every fixture this file creates be scoped to this
-// run's own rows, so a concurrent test run — or the operator's own dev app —
-// never has rows it owns touched, and this file never touches rows it doesn't
-// own. The vault has one row per [userId, provider], so the token rides in
-// `label` rather than in an identifying column of its own.
+// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// that also holds the operator's real data. Every test in this file gets its
+// own private, throwaway User (see src/test/fixtures.ts) instead of the
+// operator's real account, so an upsert here can never collide with — and
+// overwrite — the operator's real ProviderCredential row, which is unique on
+// [userId, provider]. Because the user is private to this one test, this
+// file's own rows are the only rows it can ever see: no run token or label
+// scoping is needed to tell them apart from a concurrent run's fixtures or
+// the operator's real data.
 const RUN = randomUUID().slice(0, 8);
 
 let userId: string;
 
-async function cleanup() {
-  await prisma.providerCredential.deleteMany({
-    where: { userId, label: { contains: RUN } },
-  });
-}
-
 beforeEach(async () => {
-  userId = (await prisma.user.findFirstOrThrow()).id;
-  await cleanup();
+  userId = await createTestUser("provider-credential");
 });
 
-// Belt and suspenders: afterEach keeps each test isolated from the next,
-// afterAll guarantees nothing from this file survives even if a test throws
-// before its own assertions run.
-afterEach(cleanup);
-afterAll(cleanup);
+// Deleting the user cascades away every fixture the test created.
+afterEach(() => deleteTestUser(userId));
 
 describe("providerCredentialService", () => {
   it("stores a key encrypted and returns only the last four characters", async () => {
@@ -56,9 +50,7 @@ describe("providerCredentialService", () => {
       label: RUN,
     });
 
-    const all = (await providerCredentialService.list(userId)).filter(
-      (c) => c.label === RUN,
-    );
+    const all = await providerCredentialService.list(userId);
     expect(all).toHaveLength(1);
     expect(JSON.stringify(all)).not.toContain("encryptedKey");
   });
@@ -76,10 +68,9 @@ describe("providerCredentialService", () => {
   });
 
   it("returns null from resolveKey when nothing is stored", async () => {
-    // No fixture in this run stores an OPENAI key for this user, but a
-    // concurrent run's fixture legitimately might — so assert against a
-    // provider this file never writes to under a value distinguishable by
-    // absence of the run token, rather than assuming global emptiness.
+    // This user is private to this test and nothing has stored an OPENAI key
+    // for it, so this is a genuine absence check, not an assumption about a
+    // shared table's global emptiness.
     expect(await providerCredentialService.resolveKey(userId, "OPENAI")).toBeNull();
   });
 
@@ -95,9 +86,7 @@ describe("providerCredentialService", () => {
       label: RUN,
     });
 
-    const mine = (await providerCredentialService.list(userId)).filter(
-      (c) => c.label === RUN,
-    );
+    const mine = await providerCredentialService.list(userId);
     expect(mine).toHaveLength(1);
     expect(await providerCredentialService.resolveKey(userId, "ELEVENLABS")).toBe(
       "sk-second11111",
