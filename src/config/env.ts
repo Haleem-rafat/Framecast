@@ -23,6 +23,8 @@ const serverEnvSchema = z.object({
   PREVIEW_MODE: booleanFlag,
 
   DATABASE_URL: z.string().url(),
+  /** Unpooled connection. Migrations run DDL, which pgBouncer cannot proxy safely. */
+  DIRECT_URL: z.string().url(),
 
   BETTER_AUTH_SECRET: z
     .string()
@@ -48,7 +50,19 @@ const serverEnvSchema = z.object({
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
 function loadServerEnv(): ServerEnv {
-  const parsed = serverEnvSchema.safeParse(process.env);
+  // Supabase's Vercel integration injects POSTGRES_* names. Local docker-compose
+  // sets DATABASE_URL directly, so an explicit value always wins.
+  const source = {
+    ...process.env,
+    DATABASE_URL: process.env.DATABASE_URL ?? process.env.POSTGRES_PRISMA_URL,
+    DIRECT_URL:
+      process.env.DIRECT_URL ??
+      process.env.POSTGRES_URL_NON_POOLING ??
+      process.env.DATABASE_URL ??
+      process.env.POSTGRES_PRISMA_URL,
+  };
+
+  const parsed = serverEnvSchema.safeParse(source);
 
   if (!parsed.success) {
     const issues = parsed.error.issues
