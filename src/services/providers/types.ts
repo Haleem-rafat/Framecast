@@ -37,3 +37,18 @@ export interface SpeechSynthesisResult {
 export interface SpeechProvider {
   synthesize(input: SpeechSynthesisInput): Promise<SpeechSynthesisResult>;
 }
+
+export type StockFootageSource = "PEXELS" | "PIXABAY";
+
+export interface StockClip {
+  source: StockFootageSource;
+  externalId: string;
+  url: string;
+  width: number;
+  height: number;
+  durationSeconds: number;
+}
+
+export interface StockFootageProvider {
+  search(query: string, count: number): Promise<StockClip[]>;
+}

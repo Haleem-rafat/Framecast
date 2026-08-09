@@ -383,12 +383,22 @@ model Asset {
   provider    AiProviderType?
   model       String?
   prompt      String?
+  /// The source provider's id for this asset (e.g. a Pexels/Pixabay video
+  /// id). Lets a stage skip re-downloading something it already fetched.
+  externalId  String?
   createdAt   DateTime        @default(now())
   deletedAt   DateTime?
 
   sceneId String? @db.Uuid
   scene   Scene?  @relation(fields: [sceneId], references: [id], onDelete: Cascade)
 
+  // No direct videoId column: every object (and therefore every Asset that
+  // references one) lives under `videos/{videoId}/...` in storage, and
+  // render.service.ts (Task 6) already established `storagePath` prefix
+  // matching as the one convention for scoping an Asset to its video —
+  // see its videoId-scoped queries. A second, parallel videoId column here
+  // would let some writers populate it and others not, and a query that
+  // filtered on it would then silently miss real rows.
   @@index([sceneId, kind])
   @@map("asset")
 }
@@ -572,6 +582,10 @@ enum AiProviderType {
   REPLICATE
   PIKA
   LUMA
+  /// Stock footage. Platform-level keys (see env.ts), never a per-operator
+  /// ProviderCredential row — used only to tag Asset.provider.
+  PEXELS
+  PIXABAY
 }
 
 model ProviderCredential {

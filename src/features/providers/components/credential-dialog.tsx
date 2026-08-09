@@ -20,15 +20,19 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { upsertCredentialAction } from "@/actions/provider.action";
-import type { AiProviderType } from "@/generated/prisma/enums";
 import { PROVIDER_LABELS } from "@/features/providers/provider-labels";
 import {
+  aiProviderTypes,
   upsertCredentialSchema,
   type UpsertCredentialInput,
 } from "@/schemas/provider.schema";
 
 interface CredentialDialogProps {
-  provider: AiProviderType;
+  // Deliberately narrower than the full `AiProviderType` enum: this dialog
+  // manages vault credentials, and Pexels/Pixabay (env-managed, see
+  // env.ts) never reach it — provider-table.tsx only ever passes elements
+  // of `aiProviderTypes`, the same set `upsertCredentialSchema` accepts.
+  provider: (typeof aiProviderTypes)[number];
   /** Present only when replacing an already-configured key; prefills the label. */
   existingLabel?: string | null;
 }
