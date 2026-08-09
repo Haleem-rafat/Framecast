@@ -1,5 +1,7 @@
 import { config } from "dotenv";
 
+import { formatBytes, formatElapsed } from "@/utils/format";
+
 // .env.local holds the Supabase values written by `vercel env pull`; it must load
 // first so it overrides the local docker-compose defaults in .env. Mirrors
 // prisma.config.ts exactly.
@@ -13,14 +15,19 @@ config({ path: ".env" });
 // statements, after ES module imports are resolved — would happen too late
 // and every env var would read as unset.
 
-function formatElapsed(ms: number): string {
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) {
-    return `${totalSeconds.toFixed(1)}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+/** Every sub-step a stage reports gets its own indented, timed line — this is
+ * what replaces "two minutes of silence, then failed" with a live trail of
+ * what the pipeline is actually doing. Passed into the services as their
+ * `onProgress` callback; they format their own messages (with their own
+ * elapsed times, via the same `formatElapsed` this file uses) and know
+ * nothing about `console.log` beyond this function — see footage.service.ts's
+ * `FootageProgress` for why. `@/utils/format` has no env dependency (unlike
+ * `@/config/env` and nearly everything downstream of it), so — unlike every
+ * service import below — it's safe as a static import at the top of this
+ * file.
+ */
+function printProgress(message: string): void {
+  console.log(`    ${message}`);
 }
 
 async function runStage(name: string, fn: () => Promise<string>): Promise<void> {
@@ -110,9 +117,12 @@ async function main(): Promise<void> {
       );
     }
 
-    const result = await voiceOverService.generate(user.id, videoId, {
-      force: forceNarration,
-    });
+    const result = await voiceOverService.generate(
+      user.id,
+      videoId,
+      { force: forceNarration },
+      printProgress,
+    );
 
     return `synthesised ${result.durationSeconds}s of narration (${result.characterCount} characters)`;
   });
@@ -126,14 +136,17 @@ async function main(): Promise<void> {
       },
     });
 
-    const result = await footageService.collect(user.id, videoId);
+    const result = await footageService.collect(user.id, videoId, printProgress);
     const downloaded = result.clipCount - before;
 
     if (downloaded <= 0) {
       return `already had ${result.clipCount} clips — nothing new downloaded`;
     }
 
-    return `collected ${downloaded} new clip(s), ${result.clipCount} total (${JSON.stringify(result.bySource)})`;
+    return (
+      `collected ${downloaded} new clip(s), ${result.clipCount} total, ` +
+      `${formatBytes(result.bytesDownloaded)} downloaded (${JSON.stringify(result.bySource)})`
+    );
   });
 
   await runStage("Render", async () => {
@@ -164,7 +177,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const result = await renderService.render(user.id, videoId);
+    const result = await renderService.render(user.id, videoId, printProgress);
     return `rendered ${result.durationSeconds}s to ${result.outputPath}`;
   });
 

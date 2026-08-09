@@ -28,7 +28,19 @@ export function storagePath(
   return `videos/${videoId}/${kind}/${filename}`;
 }
 
-/** Idempotent. Safe to call on every render. */
+/** Supabase's default per-object cap on this plan — set explicitly at bucket
+ * creation (below) so an oversized upload fails at a documented boundary
+ * instead of whatever the plan default happens to be. Discovered live: a
+ * 70.9MB clip failed upload with "the object exceeded the maximum allowed
+ * size" before this was ever set anywhere in this codebase. Stock footage is
+ * now filtered well under this (see stock-footage.provider.ts's
+ * MAX_CLIP_SIZE_BYTES) — this is the backstop, not the primary defense. */
+const BUCKET_FILE_SIZE_LIMIT_BYTES = 50 * 1024 * 1024;
+
+/** Idempotent. Safe to call on every render. Only applies `fileSizeLimit` at
+ * creation time — an already-existing bucket is left alone rather than
+ * updated on every call, since a limit change here should be a deliberate,
+ * reviewed edit to this constant, not a side effect of the next render. */
 export async function ensureBucket(): Promise<void> {
   const { data } = await client.storage.getBucket(env.SUPABASE_STORAGE_BUCKET);
 
@@ -39,7 +51,7 @@ export async function ensureBucket(): Promise<void> {
   // Private: rendered videos and narration are the operator's unpublished work.
   const { error } = await client.storage.createBucket(
     env.SUPABASE_STORAGE_BUCKET,
-    { public: false },
+    { public: false, fileSizeLimit: BUCKET_FILE_SIZE_LIMIT_BYTES },
   );
 
   if (error) {

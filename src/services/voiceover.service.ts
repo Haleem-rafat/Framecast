@@ -10,6 +10,7 @@ import type {
   SpeechProvider,
   SpeechSynthesisResult,
 } from "@/services/providers/types";
+import { formatDuration, formatElapsed } from "@/utils/format";
 
 export interface GenerateVoiceOverOptions {
   force?: boolean;
@@ -19,6 +20,16 @@ export interface GenerateVoiceOverResult {
   durationSeconds: number;
   characterCount: number;
 }
+
+/**
+ * Reports a human-readable line as narration synthesis progresses. See
+ * `FootageProgress` in footage.service.ts for why this is a callback rather
+ * than a direct `console.log` — the same service runs inside the web app,
+ * where stdout is the wrong medium.
+ */
+export type VoiceOverProgress = (message: string) => void;
+
+const noopProgress: VoiceOverProgress = () => {};
 
 /**
  * ElevenLabs' with-timestamps endpoint doesn't return a human name for the
@@ -36,6 +47,7 @@ export class VoiceOverService {
     userId: string,
     videoId: string,
     opts: GenerateVoiceOverOptions = {},
+    onProgress: VoiceOverProgress = noopProgress,
   ): Promise<GenerateVoiceOverResult> {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
@@ -94,6 +106,9 @@ export class VoiceOverService {
     // the provider already succeeded and a later step (upload, transaction)
     // is what failed — mirrors script.service.ts's generate().
     let result: SpeechSynthesisResult | undefined;
+    const startedAt = Date.now();
+
+    onProgress(`sending ${content.length.toLocaleString()} characters to ElevenLabs …`);
 
     try {
       const synthesized = await this.provider.synthesize({
@@ -110,6 +125,11 @@ export class VoiceOverService {
       // VoiceOver.durationSeconds is an Int column; the alignment's raw end
       // time is fractional.
       const durationSeconds = Math.round(lastEnd);
+
+      onProgress(
+        `synthesised ${formatDuration(durationSeconds)} of audio from ` +
+          `${synthesized.characterCount.toLocaleString()} characters (${formatElapsed(Date.now() - startedAt)})`,
+      );
 
       // Uploaded before the transaction opens: a storage call inside a DB
       // transaction would hold the connection open for the length of the

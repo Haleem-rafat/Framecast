@@ -12,10 +12,48 @@ import type {
   StockFootageProvider,
   StockFootageSource,
 } from "@/services/providers/types";
+import { formatBytes, formatElapsed } from "@/utils/format";
 
 export interface CollectFootageResult {
   clipCount: number;
   bySource: Record<string, number>;
+  /** Bytes downloaded and stored by *this* call — zero on an idempotent
+   * re-run that found nothing new to fetch. */
+  bytesDownloaded: number;
+}
+
+/**
+ * Reports a human-readable line as each sub-step of a collection run
+ * finishes. Never called with anything the caller needs to parse — this is
+ * for a human watching output, not a machine. Defaults to a no-op so
+ * `footageService` stays silent when called from the web app, where writing
+ * to stdout would be the wrong medium entirely; the CLI (`scripts/render.ts`)
+ * is what turns these into printed lines.
+ */
+export type FootageProgress = (message: string) => void;
+
+const noopProgress: FootageProgress = () => {};
+
+/** Times a search call and reports its result count without changing its
+ * fulfil/reject behaviour — the caller still sees the original promise
+ * settle exactly as it would have, so wrapping this around `provider.search`
+ * inside `Promise.allSettled` is transparent. */
+function reportSearch(
+  label: string,
+  search: Promise<StockClip[]>,
+  onProgress: FootageProgress,
+): Promise<StockClip[]> {
+  const startedAt = Date.now();
+  return search.then(
+    (clips) => {
+      onProgress(`searching ${label} … ${clips.length} results (${formatElapsed(Date.now() - startedAt)})`);
+      return clips;
+    },
+    (error: unknown) => {
+      onProgress(`searching ${label} … failed (${formatElapsed(Date.now() - startedAt)})`);
+      throw error;
+    },
+  );
 }
 
 export interface FootageProviders {
@@ -89,7 +127,11 @@ export class FootageService {
     private readonly downloadClip: ClipDownloader = fetchClip,
   ) {}
 
-  async collect(userId: string, videoId: string): Promise<CollectFootageResult> {
+  async collect(
+    userId: string,
+    videoId: string,
+    onProgress: FootageProgress = noopProgress,
+  ): Promise<CollectFootageResult> {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
       select: {
@@ -146,7 +188,7 @@ export class FootageService {
     // Idempotent: a prior run already reached the target, so re-running
     // collects nothing new rather than re-downloading anything.
     if (total >= clipCount) {
-      return { clipCount: total, bySource };
+      return { clipCount: total, bySource, bytesDownloaded: 0 };
     }
 
     const query = (video.topic ?? video.title).trim().slice(0, QUERY_MAX_LENGTH);
@@ -165,8 +207,8 @@ export class FootageService {
     // every source fails does this rethrow — there's nothing left to collect
     // from.
     const [pexelsResult, pixabayResult] = await Promise.allSettled([
-      this.providers.PEXELS.search(query, clipCount),
-      this.providers.PIXABAY.search(query, clipCount),
+      reportSearch(`Pexels "${query}"`, this.providers.PEXELS.search(query, clipCount), onProgress),
+      reportSearch("Pixabay", this.providers.PIXABAY.search(query, clipCount), onProgress),
     ]);
 
     if (pexelsResult.status === "rejected" && pixabayResult.status === "rejected") {
@@ -180,6 +222,7 @@ export class FootageService {
 
     let sourceIndex = 0;
     let picked = 0;
+    let bytesDownloaded = 0;
 
     while (picked < need) {
       if (pools.PEXELS.length === 0 && pools.PIXABAY.length === 0) {
@@ -195,6 +238,7 @@ export class FootageService {
         continue;
       }
 
+      const stepStartedAt = Date.now();
       const buffer = await this.downloadClip(clip);
       const filename = `${clip.source.toLowerCase()}-${clip.externalId}.${extensionFromUrl(clip.url)}`;
       const path = storagePath(videoId, "clips", filename);
@@ -215,9 +259,16 @@ export class FootageService {
       bySource[clip.source] = (bySource[clip.source] ?? 0) + 1;
       total++;
       picked++;
+      bytesDownloaded += buffer.byteLength;
+
+      onProgress(
+        `[${picked}/${need}] ${filename.replace(/\.[^.]+$/, "")}  ` +
+          `${clip.width}x${clip.height}  ${Math.round(clip.durationSeconds)}s  ` +
+          `${formatBytes(buffer.byteLength)} … stored (${formatElapsed(Date.now() - stepStartedAt)})`,
+      );
     }
 
-    return { clipCount: total, bySource };
+    return { clipCount: total, bySource, bytesDownloaded };
   }
 }
 

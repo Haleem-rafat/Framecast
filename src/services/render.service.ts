@@ -12,6 +12,7 @@ import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import { buildRenderArgs } from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
 import { getObject, putObject, storagePath } from "@/lib/storage";
+import { formatElapsed } from "@/utils/format";
 
 /** Injectable so tests never spawn a real `ffmpeg` process. */
 export type ProcessSpawner = (
@@ -23,6 +24,16 @@ export interface RenderResult {
   outputPath: string;
   durationSeconds: number;
 }
+
+/**
+ * Reports a human-readable line as the render advances. See
+ * `FootageProgress` in footage.service.ts for why this is a callback rather
+ * than a direct `console.log` — this service also runs inside the web app,
+ * where stdout is the wrong medium.
+ */
+export type RenderProgress = (message: string) => void;
+
+const noopProgress: RenderProgress = () => {};
 
 /** Matches the default `buildRenderArgs` uses when `clipSeconds` is omitted,
  * but named explicitly here so the coverage guard below computes against the
@@ -91,7 +102,11 @@ class ProgressParser {
 export class RenderService {
   constructor(private readonly spawnProcess: ProcessSpawner = defaultSpawner) {}
 
-  async render(userId: string, videoId: string): Promise<RenderResult> {
+  async render(
+    userId: string,
+    videoId: string,
+    onProgress: RenderProgress = noopProgress,
+  ): Promise<RenderResult> {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
       select: {
@@ -185,6 +200,8 @@ export class RenderService {
         data: { status: "RUNNING", startedAt: new Date(), attempts: { increment: 1 } },
       });
 
+      const setupStartedAt = Date.now();
+
       const audioPath = path.join(tempDir, `narration${path.extname(audioStoragePath) || ".mp3"}`);
       await writeFile(audioPath, await getObject(audioStoragePath));
 
@@ -203,6 +220,10 @@ export class RenderService {
       const srtPath = path.join(tempDir, "captions.srt");
       await writeFile(srtPath, buildSrt(alignment));
 
+      onProgress(
+        `fetched narration + ${clipAssets.length} clip(s) + captions from storage (${formatElapsed(Date.now() - setupStartedAt)})`,
+      );
+
       const clipPaths = ensureCoverage(downloadedClipPaths, durationSeconds);
       const outputPath = path.join(tempDir, "video.mp4");
 
@@ -215,7 +236,7 @@ export class RenderService {
         clipSeconds: CLIP_SECONDS,
       });
 
-      await this.runFfmpeg(args, job.id, durationSeconds);
+      await this.runFfmpeg(args, job.id, durationSeconds, onProgress);
 
       const outputBuffer = await readFile(outputPath);
       const outputStoragePath = storagePath(videoId, "output", "video.mp4");
@@ -296,11 +317,13 @@ export class RenderService {
     args: string[],
     jobId: string,
     durationSeconds: number,
+    onProgress: RenderProgress,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const child = this.spawnProcess("ffmpeg", args);
       const progressParser = new ProgressParser();
       const pendingWrites: Promise<unknown>[] = [];
+      const renderStartedAt = Date.now();
       let lastProgressWriteAt = 0;
 
       let stderrBuffer = "";
@@ -336,6 +359,12 @@ export class RenderService {
           100,
           Math.max(0, Math.round((latestMs / 1_000_000 / durationSeconds) * 100)),
         );
+
+        // Same throttle window as the DB write below, so the console isn't
+        // updated any more often than the progress it's reporting actually
+        // is — this is what replaces "two minutes of silence" with a live
+        // percentage as ffmpeg advances.
+        onProgress(`encoding … ${percent}% (${formatElapsed(now - renderStartedAt)})`);
 
         pendingWrites.push(
           prisma.renderJob

@@ -8,6 +8,7 @@ import { PipelineService } from "@/services/pipeline.service";
 import { projectService } from "@/services/project.service";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { formatDuration } from "@/utils/format";
 
 // Tests run against a real, shared Supabase database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test gets its own private,
@@ -69,7 +70,8 @@ function addSubtitleAsset() {
   });
 }
 
-function addClipAssets(pexels: number, pixabay: number) {
+function addClipAssets(pexels: number, pixabay: number, sizeBytesEach?: number) {
+  const sizeBytes = sizeBytesEach != null ? BigInt(sizeBytesEach) : undefined;
   const creates = [
     ...Array.from({ length: pexels }, (_, i) =>
       prisma.asset.create({
@@ -77,6 +79,7 @@ function addClipAssets(pexels: number, pixabay: number) {
           kind: "VIDEO",
           storagePath: `videos/${videoId}/clips/pexels-${i}.mp4`,
           provider: "PEXELS",
+          sizeBytes,
         },
       }),
     ),
@@ -86,11 +89,28 @@ function addClipAssets(pexels: number, pixabay: number) {
           kind: "VIDEO",
           storagePath: `videos/${videoId}/clips/pixabay-${i}.mp4`,
           provider: "PIXABAY",
+          sizeBytes,
         },
       }),
     ),
   ];
   return Promise.all(creates);
+}
+
+/** Mirrors what script.service.ts leaves behind for an approved script: a
+ * `Script` row whose `activeVersionId` points at a `ScriptVersion` carrying
+ * the actual narration text — the source pipeline.service.ts reads the
+ * narration stage's character count from. */
+async function addApprovedScript(content: string) {
+  const script = await prisma.script.create({ data: { videoId } });
+  const version = await prisma.scriptVersion.create({
+    data: { scriptId: script.id, version: 1, content },
+  });
+  await prisma.script.update({
+    where: { id: script.id },
+    data: { activeVersionId: version.id },
+  });
+  return version;
 }
 
 async function addRenderJob(opts: {
@@ -227,6 +247,44 @@ describe("pipelineService.getState — stage derivation", () => {
     expect(footageStage?.detail).toContain("9 clips");
   });
 
+  it("includes total clip size in the footage detail once Assets carry sizeBytes", async () => {
+    await addVoiceOver();
+    await addSubtitleAsset();
+    await addClipAssets(2, 1, 10 * 1024 * 1024); // 3 clips x 10MB
+    await setVideoStatus("GENERATING");
+
+    const state = await service.getState(userId, videoId);
+
+    const footageStage = state.stages.find((s) => s.key === "footage");
+    expect(footageStage?.detail).toContain("3 clips");
+    expect(footageStage?.detail).toContain("30.0MB");
+  });
+
+  it("omits the size segment when clips carry no sizeBytes (pre-existing rows)", async () => {
+    await addVoiceOver();
+    await addSubtitleAsset();
+    await addClipAssets(1, 1); // no sizeBytesEach passed -> null column
+    await setVideoStatus("GENERATING");
+
+    const state = await service.getState(userId, videoId);
+
+    const footageStage = state.stages.find((s) => s.key === "footage");
+    expect(footageStage?.detail).toContain("2 clips");
+    expect(footageStage?.detail).not.toContain("MB");
+  });
+
+  it("includes the approved script's character count in the narration detail", async () => {
+    await addApprovedScript("x".repeat(1234));
+    await addVoiceOver(45);
+    await setVideoStatus("GENERATING");
+
+    const state = await service.getState(userId, videoId);
+
+    const narrationStage = state.stages.find((s) => s.key === "narration");
+    expect(narrationStage?.detail).toContain("0:45 narration");
+    expect(narrationStage?.detail).toContain("1,234 characters");
+  });
+
   it("does not see another video's assets (storage-path prefix is exact)", async () => {
     const otherVideo = await videoService.create(userId, {
       projectId: (await prisma.video.findUniqueOrThrow({ where: { id: videoId } })).projectId,
@@ -260,6 +318,13 @@ describe("pipelineService.getState — stage derivation", () => {
     expect(state.progress).toBe(63);
     expect(state.elapsedSeconds).toBeGreaterThanOrEqual(29);
     expect(state.elapsedSeconds).toBeLessThan(40);
+
+    // The render stage's own detail carries the same percentage and elapsed
+    // time as the top-level fields, not a re-derived or differently-rounded
+    // value.
+    const renderStage = state.stages.find((s) => s.key === "render");
+    expect(renderStage?.detail).toContain("63%");
+    expect(renderStage?.detail).toContain(`${formatDuration(state.elapsedSeconds!)} elapsed`);
   });
 
   it("marks upload done once a Publication exists, alongside a SUCCEEDED render", async () => {

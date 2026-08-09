@@ -3,7 +3,7 @@ import "server-only";
 import { NotFoundError } from "@/lib/errors";
 import type { LogLevel, RenderStatus, VideoStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
-import { formatDuration } from "@/utils/format";
+import { formatBytes, formatDuration } from "@/utils/format";
 
 export type PipelineStageKey =
   | "narration"
@@ -90,20 +90,31 @@ function titleCase(value: string): string {
   return value.length ? `${value[0]}${value.slice(1).toLowerCase()}` : value;
 }
 
-function footageDetail(clips: { provider: string | null }[]): string | undefined {
+function footageDetail(
+  clips: { provider: string | null; sizeBytes: bigint | null }[],
+): string | undefined {
   if (clips.length === 0) return undefined;
 
   const bySource = new Map<string, number>();
+  let totalBytes = BigInt(0);
   for (const clip of clips) {
-    if (!clip.provider) continue;
-    bySource.set(clip.provider, (bySource.get(clip.provider) ?? 0) + 1);
+    if (clip.provider) {
+      bySource.set(clip.provider, (bySource.get(clip.provider) ?? 0) + 1);
+    }
+    if (clip.sizeBytes) {
+      totalBytes += clip.sizeBytes;
+    }
   }
 
   const sources = [...bySource.entries()]
     .map(([source, count]) => `${titleCase(source)} ${count}`)
     .join(", ");
+  // Zero when every clip predates sizeBytes being recorded, or (harmlessly)
+  // when they're all genuinely empty — either way there's nothing worth
+  // showing, so the size segment is simply omitted rather than reading "0B".
+  const size = totalBytes > BigInt(0) ? ` · ${formatBytes(Number(totalBytes))}` : "";
 
-  return sources ? `${clips.length} clips · ${sources}` : `${clips.length} clips`;
+  return sources ? `${clips.length} clips · ${sources}${size}` : `${clips.length} clips${size}`;
 }
 
 /**
@@ -118,6 +129,11 @@ export class PipelineService {
       select: {
         id: true,
         status: true,
+        // Narration's detail reports "characters sent" alongside its
+        // duration — the same character count voiceover.service.ts actually
+        // sent to ElevenLabs, already stored here rather than duplicated
+        // onto VoiceOver as a new column.
+        script: { select: { activeVersion: { select: { content: true } } } },
         voiceOver: { select: { audioUrl: true, durationSeconds: true } },
         publication: { select: { id: true } },
         renderJobs: {
@@ -154,7 +170,7 @@ export class PipelineService {
         storagePath: { startsWith: `videos/${videoId}/` },
         kind: { in: ["VIDEO", "SUBTITLE"] },
       },
-      select: { kind: true, provider: true },
+      select: { kind: true, provider: true, sizeBytes: true },
     });
 
     const clips = assets.filter((asset) => asset.kind === "VIDEO");
@@ -168,12 +184,30 @@ export class PipelineService {
     // of their own the way RenderJob does.
     const isActive = !isTerminal && video.status !== "DRAFT";
 
+    // Computed here (rather than where it's returned, below) so the render
+    // stage's own `detail` can report elapsed time alongside percentage,
+    // matching the CLI's "encoding … 42% (12.3s)" — the top-level
+    // `elapsedSeconds` field is the same number, not a second computation.
+    const elapsedSeconds = renderJob?.startedAt
+      ? Math.max(
+          0,
+          Math.round(
+            ((renderJob.finishedAt ?? new Date()).getTime() -
+              renderJob.startedAt.getTime()) /
+              1000,
+          ),
+        )
+      : null;
+
+    const characterCount = video.script?.activeVersion?.content?.length;
+
     const stageResults: Record<PipelineStageKey, Pick<PipelineStage, "status" | "detail">> = {
       narration: {
         status: video.voiceOver?.audioUrl ? "done" : "pending",
         detail:
           video.voiceOver?.durationSeconds != null
-            ? `${formatDuration(video.voiceOver.durationSeconds)} narration`
+            ? `${formatDuration(video.voiceOver.durationSeconds)} narration` +
+              (characterCount ? ` · ${characterCount.toLocaleString()} characters` : "")
             : undefined,
       },
       footage: {
@@ -188,7 +222,10 @@ export class PipelineService {
         return {
           status,
           detail:
-            renderJob && status === "running" ? `${renderJob.progress}%` : undefined,
+            renderJob && status === "running"
+              ? `${renderJob.progress}%` +
+                (elapsedSeconds != null ? ` · ${formatDuration(elapsedSeconds)} elapsed` : "")
+              : undefined,
         };
       })(),
       upload: {
@@ -226,17 +263,6 @@ export class PipelineService {
         stages[failedIndex] = { ...stages[failedIndex], status: "failed" };
       }
     }
-
-    const elapsedSeconds = renderJob?.startedAt
-      ? Math.max(
-          0,
-          Math.round(
-            ((renderJob.finishedAt ?? new Date()).getTime() -
-              renderJob.startedAt.getTime()) /
-              1000,
-          ),
-        )
-      : null;
 
     return {
       videoId: video.id,
