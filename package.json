@@ -16,6 +16,7 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed": "prisma db seed",
+    "render": "tsx --conditions=react-server scripts/render.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
