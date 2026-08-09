@@ -606,7 +606,7 @@ function redirectUri(): string {
 
 export function buildAuthUrl(state: string): string {
   if (!env.GOOGLE_CLIENT_ID) {
-    throw new ProviderError("GEMINI", "Google OAuth is not configured.", false);
+    throw new ProviderError("YOUTUBE", "Google OAuth is not configured.", false);
   }
 
   const params = new URLSearchParams({
