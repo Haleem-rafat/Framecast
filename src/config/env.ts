@@ -64,6 +64,12 @@ const serverEnvSchema = z.object({
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
 function loadServerEnv(): ServerEnv {
+  // Every preview deployment gets its own hostname, so the auth and app URLs
+  // cannot be fixed values there. VERCEL_URL is injected per deployment.
+  const deploymentUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : undefined;
+
   // Supabase's Vercel integration injects POSTGRES_* names. Local docker-compose
   // sets DATABASE_URL directly, so an explicit value always wins.
   const source = {
@@ -74,6 +80,8 @@ function loadServerEnv(): ServerEnv {
       process.env.POSTGRES_URL_NON_POOLING ??
       process.env.DATABASE_URL ??
       process.env.POSTGRES_PRISMA_URL,
+    BETTER_AUTH_URL: process.env.BETTER_AUTH_URL ?? deploymentUrl,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? deploymentUrl,
   };
 
   const parsed = serverEnvSchema.safeParse(source);
