@@ -1,12 +1,30 @@
 import "server-only";
 
+import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import { gatewayProvider } from "@/services/providers/gateway.provider";
-import type { TextGenerationProvider } from "@/services/providers/types";
+import type {
+  ScriptGenerationResult,
+  TextGenerationProvider,
+} from "@/services/providers/types";
+
+/** Postgres unique-violation code, e.g. two concurrent generations racing
+ * either the `ScriptVersion` (scriptId, version) constraint or the
+ * `Script.videoId` constraint via the upsert. */
+const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
+
+function isUniqueConstraintViolation(
+  error: unknown,
+): error is Prisma.PrismaClientKnownRequestError {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === UNIQUE_CONSTRAINT_VIOLATION
+  );
+}
 
 export interface GenerateScriptInput {
   templateId?: string;
@@ -55,8 +73,14 @@ export class ScriptService {
       (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ??
       undefined;
 
+    // Declared outside the try so the catch block can report the provider's
+    // real figures: if generateScript() resolves, the operator has already
+    // been billed even if a later step in the transaction fails.
+    let result: ScriptGenerationResult | undefined;
+
     try {
-      const result = await this.provider.generateScript({ prompt, apiKey });
+      const generated = await this.provider.generateScript({ prompt, apiKey });
+      result = generated;
 
       return await prisma.$transaction(async (tx) => {
         const script = await tx.script.upsert({
@@ -75,11 +99,11 @@ export class ScriptService {
           data: {
             scriptId: script.id,
             version: (previous?.version ?? 0) + 1,
-            content: result.content,
-            wordCount: countWords(result.content),
+            content: generated.content,
+            wordCount: countWords(generated.content),
             prompt,
-            model: result.model,
-            provider: result.provider,
+            model: generated.model,
+            provider: generated.provider,
           },
         });
 
@@ -90,13 +114,13 @@ export class ScriptService {
 
         await tx.providerUsage.create({
           data: {
-            provider: result.provider,
+            provider: generated.provider,
             operation: "script.generate",
-            model: result.model,
-            inputTokens: result.inputTokens,
-            outputTokens: result.outputTokens,
-            costUsd: result.costUsd,
-            latencyMs: result.latencyMs,
+            model: generated.model,
+            inputTokens: generated.inputTokens,
+            outputTokens: generated.outputTokens,
+            costUsd: generated.costUsd,
+            latencyMs: generated.latencyMs,
             succeeded: true,
           },
         });
@@ -114,14 +138,35 @@ export class ScriptService {
         return version;
       });
     } catch (error) {
-      // Wasted spend still has to appear on the cost dashboard.
+      // Wasted spend still has to appear on the cost dashboard. If the
+      // provider already resolved, real spend already happened even though
+      // this generation ultimately failed — record its actual figures rather
+      // than zeros, which would make real spend look like nothing was spent.
+      // Only the provider-throws-before-returning case is truthfully zero.
       await prisma.providerUsage.create({
         data: {
-          provider: "ANTHROPIC",
+          provider: result?.provider ?? "ANTHROPIC",
           operation: "script.generate",
+          model: result?.model ?? null,
+          inputTokens: result?.inputTokens ?? 0,
+          outputTokens: result?.outputTokens ?? 0,
+          costUsd: result?.costUsd ?? 0,
+          latencyMs: result?.latencyMs ?? null,
           succeeded: false,
         },
       });
+
+      // A concurrent generation racing this one on the same script's version
+      // number (or its Script.videoId upsert) surfaces here as a raw unique
+      // constraint violation rather than data corruption — the DB did its
+      // job. Recast it as the typed conflict every other failure path in this
+      // service uses, so it survives toSerializedError() as something the
+      // operator can act on instead of collapsing to a generic 500.
+      if (isUniqueConstraintViolation(error)) {
+        throw new ConflictError(
+          "Another generation for this script is already in progress. Try again.",
+        );
+      }
 
       throw error;
     }
