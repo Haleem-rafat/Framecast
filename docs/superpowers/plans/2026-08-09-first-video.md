@@ -913,6 +913,22 @@ git commit -m "feat: show live pipeline progress on the video page"
 
 ---
 
+## Follow-ups recorded during implementation
+
+These were found while building and are deliberately not fixed mid-flight.
+
+- **`storage.ts` has no delete primitive.** Service tests write real objects to the bucket
+  and cleaning up database rows does not touch storage, so every test run leaves orphaned
+  `videos/{id}/...` files behind. Add `deleteObject(path)` and `deletePrefix(prefix)`, and
+  have the test fixtures call the latter. Until then the bucket accumulates junk.
+- **`Asset` had no link to `Video`.** It related only to `Scene`, so footage clips had
+  nowhere to attach. Task 5 added a migration for this — the spec's claim that no schema
+  changes were needed was wrong.
+- **A leftover `test-*@framecast.invalid` user** was found in the dev database after a
+  crashed run. The fixture deletes its user in `afterAll`, which does not run if the
+  process dies. Worth a periodic sweep, or accept that debris and filter it out of any
+  operator-facing count.
+
 ## Done when
 
 - [ ] `pnpm render <videoId>` produces an MP4 that plays, with narration in sync and captions burned in
