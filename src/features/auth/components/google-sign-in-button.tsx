@@ -45,6 +45,9 @@ export function GoogleSignInButton({ redirectTo }: { redirectTo: string }) {
     const { error } = await signIn.social({
       provider: "google",
       callbackURL: redirectTo,
+      // Without this, a rejected sign-in lands on Better Auth's own error route
+      // and the operator sees a bare error code with no way back.
+      errorCallbackURL: "/sign-in",
     });
 
     if (error) {

@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { Clapperboard } from "lucide-react";
+import { Clapperboard, TriangleAlert } from "lucide-react";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Card,
   CardContent,
@@ -11,12 +12,13 @@ import {
 } from "@/components/ui/card";
 import { env } from "@/config/env";
 import { SignInForm } from "@/features/auth/components/sign-in-form";
+import { signInErrorMessage } from "@/features/auth/sign-in-error";
 import { getSession } from "@/server/session";
 
 export const metadata: Metadata = { title: "Sign in" };
 
 interface SignInPageProps {
-  searchParams: Promise<{ redirectTo?: string }>;
+  searchParams: Promise<{ redirectTo?: string; error?: string }>;
 }
 
 /** Only same-origin relative paths are honoured, to prevent open redirects. */
@@ -29,29 +31,42 @@ function safeRedirectTo(value: string | undefined): string {
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
   const session = await getSession();
-  const { redirectTo } = await searchParams;
+  const { redirectTo, error } = await searchParams;
   const destination = safeRedirectTo(redirectTo);
 
   if (session) {
     redirect(destination);
   }
 
+  const errorMessage = signInErrorMessage(error);
+
   return (
-    <div className="flex min-h-svh items-center justify-center p-6">
-      <div className="w-full max-w-sm space-y-6">
+    <div className="relative flex min-h-svh items-center justify-center overflow-hidden p-6">
+      {/* Ambient wash. Purely decorative, so it stays out of the a11y tree. */}
+      <div
+        aria-hidden="true"
+        className="from-primary/10 pointer-events-none absolute inset-0 bg-gradient-to-b via-transparent to-transparent"
+      />
+
+      <div className="relative w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-3 text-center">
-          <div className="bg-primary text-primary-foreground flex size-11 items-center justify-center rounded-xl">
+          <div className="bg-primary text-primary-foreground flex size-11 items-center justify-center rounded-xl shadow-sm">
             <Clapperboard className="size-5" />
           </div>
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">
-              Framecast
-            </h1>
+            <h1 className="text-xl font-semibold tracking-tight">Framecast</h1>
             <p className="text-muted-foreground text-sm">
               Sign in to reach your studio.
             </p>
           </div>
         </div>
+
+        {errorMessage && (
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertDescription>{errorMessage}</AlertDescription>
+          </Alert>
+        )}
 
         <Card>
           <CardHeader>
@@ -67,6 +82,11 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
             />
           </CardContent>
         </Card>
+
+        <p className="text-muted-foreground text-center text-xs text-balance">
+          Framecast is a single-operator studio. Accounts are provisioned, not
+          self-registered.
+        </p>
       </div>
     </div>
   );
