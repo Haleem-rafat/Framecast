@@ -75,6 +75,14 @@ const serverEnvSchema = z.object({
   /** Vercel AI Gateway. Optional: a stored ANTHROPIC credential takes precedence. */
   AI_GATEWAY_API_KEY: z.string().min(1).optional(),
   AI_SCRIPT_MODEL: z.string().min(1).default("anthropic/claude-sonnet-5"),
+
+  /** Stock footage search. Platform-level, not per-operator — AiProviderType has no member for either. */
+  PEXELS_API_KEY: z.string().min(1).optional(),
+  PIXABAY_API_KEY: z.string().min(1).optional(),
+
+  /** ElevenLabs voice. Default is Roger — American, conversational. */
+  ELEVENLABS_VOICE_ID: z.string().min(1).default("CwhRBWXzGAHq8TQ4Fs17"),
+  ELEVENLABS_MODEL_ID: z.string().min(1).default("eleven_turbo_v2_5"),
 });
 
 /**

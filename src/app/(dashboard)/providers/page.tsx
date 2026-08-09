@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { subDays } from "date-fns";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { EnvironmentProviderTable } from "@/features/providers/components/environment-provider-table";
 import { ProviderSpendSummary } from "@/features/providers/components/provider-spend-summary";
 import { ProviderTable } from "@/features/providers/components/provider-table";
+import { getEnvironmentProviderStatuses } from "@/features/providers/environment-providers";
 import { prisma } from "@/lib/prisma";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import { requireUser } from "@/server/session";
@@ -41,7 +43,24 @@ export default async function ProvidersPage() {
         description="API keys used to generate scripts, voice, thumbnails, and scenes."
       />
 
-      <ProviderTable credentials={credentials} />
+      <div className="space-y-2">
+        <p className="text-muted-foreground text-sm">
+          Per-operator API keys, stored encrypted and managed from this page.
+        </p>
+        <ProviderTable credentials={credentials} />
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-muted-foreground text-sm">
+          Platform-level services configured via the deployment environment —
+          read-only here; change them where the deployment's environment
+          variables are set.
+        </p>
+        <EnvironmentProviderTable
+          statuses={getEnvironmentProviderStatuses()}
+        />
+      </div>
+
       <ProviderSpendSummary spend={spend} />
     </>
   );
