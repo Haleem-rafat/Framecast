@@ -33,7 +33,7 @@ function redirectUri(): string {
 
 export function buildAuthUrl(state: string): string {
   if (!env.GOOGLE_CLIENT_ID) {
-    throw new ProviderError("GEMINI", "Google OAuth is not configured.", false);
+    throw new ProviderError("YOUTUBE", "Google OAuth is not configured.", false);
   }
 
   const params = new URLSearchParams({
@@ -68,7 +68,7 @@ export async function exchangeCode(code: string): Promise<YouTubeTokens> {
 
   if (!response.ok) {
     throw new ProviderError(
-      "GEMINI",
+      "YOUTUBE",
       "Google rejected the authorisation code.",
       response.status >= 500,
     );
@@ -83,7 +83,7 @@ export async function exchangeCode(code: string): Promise<YouTubeTokens> {
 
   if (!body.refresh_token) {
     throw new ProviderError(
-      "GEMINI",
+      "YOUTUBE",
       "Google returned no refresh token. Revoke Framecast at myaccount.google.com/permissions and connect again.",
       false,
     );
@@ -107,7 +107,7 @@ export async function fetchChannel(
 
   if (!response.ok) {
     throw new ProviderError(
-      "GEMINI",
+      "YOUTUBE",
       "Could not read the channel from YouTube.",
       response.status >= 500,
     );
@@ -129,7 +129,7 @@ export async function fetchChannel(
 
   if (!channel) {
     throw new ProviderError(
-      "GEMINI",
+      "YOUTUBE",
       "That Google account has no YouTube channel.",
       false,
     );
