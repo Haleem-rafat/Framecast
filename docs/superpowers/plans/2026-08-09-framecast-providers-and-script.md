@@ -406,11 +406,17 @@ export function encryptSecret(plaintext: string): string {
  * ciphertext is well-formed.
  */
 export function decryptSecret(payload: string): string {
-  const [iv, authTag, ciphertext] = payload.split(".");
+  // Segment count, not truthiness: AES-GCM over an empty plaintext yields a
+  // zero-length ciphertext, whose base64 is "". A truthiness check would reject
+  // that legitimately-empty segment as if it were missing, so encryptSecret("")
+  // would produce a value this function could never decrypt.
+  const parts = payload.split(".");
 
-  if (!iv || !authTag || !ciphertext) {
+  if (parts.length !== 3) {
     throw new InternalError("Stored credential is unreadable.");
   }
+
+  const [iv, authTag, ciphertext] = parts;
 
   try {
     const decipher = createDecipheriv(
