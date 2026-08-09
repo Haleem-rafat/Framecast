@@ -45,6 +45,20 @@ const serverEnvSchema = z.object({
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
   SUPABASE_STORAGE_BUCKET: z.string().min(1).default("framecast"),
+
+  /**
+   * Supabase's PEM root certificate. Supabase signs Postgres with its own CA,
+   * which is not in Node's trust store, so without this the chain cannot be
+   * verified. Download it from Project Settings → Database → SSL Configuration.
+   */
+  SUPABASE_CA_CERT: z.string().min(1).optional(),
+
+  /**
+   * Escape hatch for local work before the CA cert is on hand. Encrypts the
+   * connection but does not authenticate the server, so a network attacker can
+   * impersonate the database. Refused in production — see below.
+   */
+  DATABASE_SSL_INSECURE: booleanFlag,
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
@@ -76,6 +90,14 @@ function loadServerEnv(): ServerEnv {
   if (parsed.data.PREVIEW_MODE && parsed.data.NODE_ENV === "production") {
     throw new Error(
       "PREVIEW_MODE cannot be enabled in production: it bypasses authentication.",
+    );
+  }
+
+  // An unauthenticated database connection carries password hashes and encrypted
+  // provider keys. Acceptable while developing, never against real traffic.
+  if (parsed.data.DATABASE_SSL_INSECURE && parsed.data.NODE_ENV === "production") {
+    throw new Error(
+      "DATABASE_SSL_INSECURE cannot be enabled in production: set SUPABASE_CA_CERT instead.",
     );
   }
 

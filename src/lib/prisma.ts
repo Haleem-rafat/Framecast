@@ -11,23 +11,52 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
+/**
+ * Supabase signs Postgres with its own CA, so Node cannot verify the chain from
+ * its default trust store — hence the explicit CA. Three tiers, most secure first:
+ *
+ *   1. SUPABASE_CA_CERT present → verify against it. The only production-valid mode.
+ *   2. DATABASE_SSL_INSECURE=true → encrypted but unauthenticated. Local only;
+ *      `config/env.ts` refuses it when NODE_ENV=production.
+ *   3. Neither → strict verification, which fails loudly against Supabase rather
+ *      than quietly downgrading.
+ *
+ * Local docker-compose Postgres speaks no TLS at all, so remote hosts only.
+ */
+function sslOptions(hostname: string) {
+  const isRemote = hostname !== "localhost" && hostname !== "127.0.0.1";
+
+  if (!isRemote) {
+    return undefined;
+  }
+
+  if (env.SUPABASE_CA_CERT) {
+    return { ca: env.SUPABASE_CA_CERT, rejectUnauthorized: true };
+  }
+
+  if (env.DATABASE_SSL_INSECURE) {
+    console.warn(
+      "⚠️  Database TLS certificate is NOT being verified " +
+        "(DATABASE_SSL_INSECURE=true). Set SUPABASE_CA_CERT before deploying.",
+    );
+
+    return { rejectUnauthorized: false };
+  }
+
+  return { rejectUnauthorized: true };
+}
+
 function createPrismaClient(): PrismaClient {
   const connectionUrl = new URL(env.DATABASE_URL);
-  const isRemote =
-    connectionUrl.hostname !== "localhost" && connectionUrl.hostname !== "127.0.0.1";
+  const ssl = sslOptions(connectionUrl.hostname);
 
-  // node-postgres treats `sslmode=require` (what Supabase's pooler URL sets) as
-  // an alias for `verify-full`, which then rejects Supabase's pooler certificate
-  // chain. The connection is still encrypted, just not chain-validated — the
-  // documented workaround for Supabase + node-postgres. Local docker-compose
-  // Postgres has no SSL at all, so this only applies to remote hosts.
-  if (isRemote) {
-    connectionUrl.searchParams.delete("sslmode");
-  }
+  // node-postgres reads `sslmode` itself and it would override the `ssl` object
+  // below, so the explicit configuration has to be the only source of truth.
+  connectionUrl.searchParams.delete("sslmode");
 
   const adapter = new PrismaPg({
     connectionString: connectionUrl.toString(),
-    ...(isRemote ? { ssl: { rejectUnauthorized: false } } : {}),
+    ...(ssl ? { ssl } : {}),
   });
 
   return new PrismaClient({
