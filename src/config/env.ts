@@ -78,6 +78,10 @@ const serverEnvSchema = z.object({
    * comment above the check for what it does and doesn't prove.
    */
   DATABASE_SSL_DISABLE: booleanFlag,
+
+  /** Vercel AI Gateway. Optional: a stored ANTHROPIC credential takes precedence. */
+  AI_GATEWAY_API_KEY: z.string().min(1).optional(),
+  AI_SCRIPT_MODEL: z.string().min(1).default("anthropic/claude-sonnet-5"),
 });
 
 /**
