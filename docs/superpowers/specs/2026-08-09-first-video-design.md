@@ -136,6 +136,51 @@ far beyond this skeleton's needs.
 
 ---
 
+## 4.6 Progress — the operator must be able to watch it
+
+A render takes several minutes across five stages. A button that goes quiet for that long
+is indistinguishable from a hang, and the operator cannot tell a slow ElevenLabs call from
+a crashed FFmpeg. Progress is therefore part of the deliverable, not a later polish pass.
+
+`/videos/[id]` shows a **pipeline panel** while the video is between `QUEUED` and
+`PUBLISHED`:
+
+```
+● Narration    done      12,431 chars · 7m42s audio · 58s
+● Footage      done      9 clips · Pexels 5, Pixabay 4 · 41s
+● Captions     done      312 lines
+◐ Render       running   ████████░░░░  63%   ~2m left
+○ Upload       pending
+```
+
+Each stage shows one of pending / running / done / failed, and a failed stage shows the
+reason inline rather than only in a log file.
+
+**Mechanism: polling, not streaming.** TanStack Query is already in the project; the panel
+refetches every 2 seconds while the video is in a non-terminal state and stops entirely
+once it reaches `READY`, `PUBLISHED` or `FAILED`. Supabase Realtime and SSE were both
+considered and rejected — the render is one operator watching one job, and neither
+justifies a persistent connection or a second data path. Polling also survives the CLI
+process dying, which a stream would not.
+
+**Where the data comes from, all existing:**
+
+| Panel row | Source |
+|---|---|
+| Stage completion | `VideoStatusEvent` (append-only) and the presence of `VoiceOver` / `Asset` rows |
+| Render percentage | `RenderJob.progress`, written by the runner as FFmpeg reports frames |
+| Failure reason | `Video.failureReason`, and `RenderLog` for the FFmpeg detail |
+| Elapsed time | `RenderJob.startedAt` |
+
+The render runner writes `RenderJob.progress` as it goes by parsing FFmpeg's `-progress`
+output against the known narration duration. Without that the bar would be decorative,
+which is worse than no bar — a progress indicator that does not track real progress
+teaches the operator to distrust the whole panel.
+
+The last 20 lines of `RenderLog` are shown under the render row, collapsed by default.
+When FFmpeg fails, the reason is almost always in its stderr, and making the operator go
+to a terminal to find it defeats the purpose of the panel.
+
 ## 5. Data model
 
 No schema changes. Every table already exists: `VoiceOver`, `Asset`, `RenderJob`,
@@ -202,6 +247,7 @@ spend quota.
 | Layer | Tested |
 |---|---|
 | Caption builder | alignment → SRT: line grouping, timing, escaping |
+| Progress read model | stage states derived correctly from events and rows; polling stops on terminal status |
 | Footage selection | clip count for a given duration, source alternation, dedup |
 | FFmpeg command builder | the argument list, as a pure function — no invocation |
 | Stage resumption | a failed render does not re-synthesise existing audio |
@@ -225,12 +271,13 @@ output — a test asserting that video encoding "worked" proves very little.
 | Free-tier audio published publicly | `unlisted` hardcoded, no public option |
 | Pixabay attribution missed | Credit line added by the publish step, not left to the operator |
 | Render takes very long | Progress written to `RenderJob`; encode 1080p, not 4K |
+| Operator cannot tell slow from hung | Per-stage panel with real percentages and a log tail (§4.6) |
 
 ---
 
 ## 11. Task decomposition
 
-Seven tasks, each independently testable:
+Eight tasks, each independently testable:
 
 | # | Task |
 |---|---|
@@ -241,6 +288,7 @@ Seven tasks, each independently testable:
 | 5 | FFmpeg command builder and local render runner |
 | 6 | YouTube upload service + Gate 2 |
 | 7 | `pnpm render <videoId>` CLI tying the stages together |
+| 8 | Pipeline progress panel on `/videos/[id]` — polling, per-stage state, render percentage, log tail |
 
 ---
 
