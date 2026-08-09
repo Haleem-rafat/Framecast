@@ -47,4 +47,10 @@ describe("renderTemplate", () => {
   it("leaves unknown placeholders untouched so typos stay visible", () => {
     expect(renderTemplate("{{typo}}", {}, [])).toBe("{{typo}}");
   });
+
+  it("leaves an unknown placeholder untouched even when a value is supplied for it", () => {
+    expect(renderTemplate("{{typo}}", { typo: "surprise" }, [])).toBe(
+      "{{typo}}",
+    );
+  });
 });

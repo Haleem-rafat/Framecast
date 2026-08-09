@@ -28,16 +28,18 @@ export function renderTemplate(
   const missing: string[] = [];
 
   const rendered = content.replace(PLACEHOLDER, (original, key: string) => {
+    const definition = byKey.get(key);
+
+    // Definitions are authoritative: a placeholder nobody declared is a typo, and
+    // must stay visible in the output rather than being filled from a stray value.
+    if (!definition) {
+      return original;
+    }
+
     const supplied = values[key]?.trim();
 
     if (supplied) {
       return supplied;
-    }
-
-    const definition = byKey.get(key);
-
-    if (!definition) {
-      return original;
     }
 
     if (definition.defaultValue) {
