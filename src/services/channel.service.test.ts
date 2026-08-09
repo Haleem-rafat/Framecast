@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
-import { channelService } from "@/services/channel.service";
+import type { FetchLike } from "@/services/channel.service";
+import { ChannelService, channelService } from "@/services/channel.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Supabase database (see src/test/setup.ts)
@@ -110,5 +111,144 @@ describe("channelService", () => {
 
     const mine = await channelService.list(userId);
     expect(mine).toHaveLength(0);
+  });
+
+  // Google access tokens expire after ~1h. `resolveAccessToken` refreshes
+  // them transparently rather than handing back a token that will fail the
+  // caller's next request minutes later. `fetch` is injected here so these
+  // tests never hit Google's real token endpoint.
+  describe("resolveAccessToken — refresh", () => {
+    function stubFetch(
+      response: { access_token: string; expires_in: number; refresh_token?: string },
+      ok = true,
+    ): { fetchImpl: FetchLike; calls: unknown[] } {
+      const calls: unknown[] = [];
+      const fetchImpl: FetchLike = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        calls.push({ input, init });
+        return {
+          ok,
+          status: ok ? 200 : 400,
+          json: async () => response,
+        } as Response;
+      }) as FetchLike;
+      return { fetchImpl, calls };
+    }
+
+    it("does not refresh when the token is not close to expiring", async () => {
+      await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Money Mechanics",
+        ...TOKENS, // expiresInSeconds: 3600 — an hour away, well outside the 5-minute window.
+      });
+      const channel = await prisma.channel.findFirstOrThrow({
+        where: { userId, youtubeChannelId: YOUTUBE_CHANNEL_ID },
+      });
+
+      const { fetchImpl, calls } = stubFetch({
+        access_token: "ya29.should-not-be-used",
+        expires_in: 3600,
+      });
+      const service = new ChannelService(fetchImpl);
+
+      const token = await service.resolveAccessToken(userId, channel.id);
+
+      expect(token).toBe("ya29.test-access-token");
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refreshes and persists a new access token when the stored one is near expiry", async () => {
+      await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Money Mechanics",
+        ...TOKENS,
+      });
+      const channel = await prisma.channel.findFirstOrThrow({
+        where: { userId, youtubeChannelId: YOUTUBE_CHANNEL_ID },
+      });
+      // Inside the 5-minute refresh window.
+      await prisma.channel.update({
+        where: { id: channel.id },
+        data: { tokenExpiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      const { fetchImpl, calls } = stubFetch({
+        access_token: "ya29.refreshed-token",
+        expires_in: 3600,
+        // Google does not always return a new refresh token on this exchange.
+      });
+      const service = new ChannelService(fetchImpl);
+
+      const token = await service.resolveAccessToken(userId, channel.id);
+
+      expect(token).toBe("ya29.refreshed-token");
+      expect(calls).toHaveLength(1);
+
+      const row = await prisma.channel.findUniqueOrThrow({ where: { id: channel.id } });
+      expect(row.accessToken).not.toContain("ya29.refreshed-token"); // stored encrypted
+      // The refresh moved the row's expiry an hour out, so a second call
+      // (even against the default singleton, with its real fetch) returns
+      // the persisted refreshed token without refreshing again.
+      expect(row.tokenExpiresAt.getTime()).toBeGreaterThan(Date.now() + 55 * 60 * 1000);
+      expect(await channelService.resolveAccessToken(userId, channel.id)).toBe(
+        "ya29.refreshed-token",
+      );
+    });
+
+    it("keeps the existing refresh token when Google does not return a new one", async () => {
+      await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Money Mechanics",
+        ...TOKENS,
+      });
+      const channel = await prisma.channel.findFirstOrThrow({
+        where: { userId, youtubeChannelId: YOUTUBE_CHANNEL_ID },
+      });
+      await prisma.channel.update({
+        where: { id: channel.id },
+        data: { tokenExpiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      const { fetchImpl } = stubFetch({
+        access_token: "ya29.refreshed-token-2",
+        expires_in: 3600,
+        // No refresh_token in the response.
+      });
+      const service = new ChannelService(fetchImpl);
+      await service.resolveAccessToken(userId, channel.id);
+
+      const row = await prisma.channel.findUniqueOrThrow({ where: { id: channel.id } });
+      const { decryptSecret } = await import("@/lib/crypto");
+      expect(decryptSecret(row.refreshToken)).toBe("1//test-refresh-token");
+    });
+
+    it("replaces the refresh token when Google does return a new one", async () => {
+      await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Money Mechanics",
+        ...TOKENS,
+      });
+      const channel = await prisma.channel.findFirstOrThrow({
+        where: { userId, youtubeChannelId: YOUTUBE_CHANNEL_ID },
+      });
+      await prisma.channel.update({
+        where: { id: channel.id },
+        data: { tokenExpiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      const { fetchImpl } = stubFetch({
+        access_token: "ya29.refreshed-token-3",
+        expires_in: 3600,
+        refresh_token: "1//new-refresh-token",
+      });
+      const service = new ChannelService(fetchImpl);
+      await service.resolveAccessToken(userId, channel.id);
+
+      const row = await prisma.channel.findUniqueOrThrow({ where: { id: channel.id } });
+      const { decryptSecret } = await import("@/lib/crypto");
+      expect(decryptSecret(row.refreshToken)).toBe("1//new-refresh-token");
+    });
   });
 });

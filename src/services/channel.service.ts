@@ -1,9 +1,17 @@
 import "server-only";
 
-import { NotFoundError } from "@/lib/errors";
+import { env } from "@/config/env";
+import { NotFoundError, ProviderError } from "@/lib/errors";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/prisma";
 import type { YouTubeTokens } from "@/lib/youtube-oauth";
+
+/** Injectable so tests never make a real call to Google's token endpoint. */
+export type FetchLike = typeof fetch;
+
+/** Google access tokens last ~1h; refresh a little early rather than racing
+ * an upload that starts mid-request against the exact expiry instant. */
+const REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
 export interface ChannelSummary {
   id: string;
@@ -45,6 +53,8 @@ const SUMMARY_SELECT = {
  * decrypted. Every other consumer works from `ChannelSummary`.
  */
 export class ChannelService {
+  constructor(private readonly fetchImpl: FetchLike = fetch) {}
+
   async list(userId: string): Promise<ChannelSummary[]> {
     return prisma.channel.findMany({
       where: { userId, deletedAt: null },
@@ -124,18 +134,85 @@ export class ChannelService {
     }
   }
 
-  /** The only place a stored access token is ever decrypted back to plaintext. */
+  /**
+   * The only place a stored access token is ever decrypted back to
+   * plaintext. Google's access tokens expire after ~1h; a channel connected
+   * minutes ago works, but the same call an hour later fails with what looks
+   * like an intermittent, unrelated error unless the token is refreshed here.
+   * Refreshing eagerly (rather than letting the caller retry on a 401) means
+   * every consumer gets a token good for the request it's about to make.
+   */
   async resolveAccessToken(userId: string, channelId: string): Promise<string> {
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
-      select: { accessToken: true },
+      select: { accessToken: true, refreshToken: true, tokenExpiresAt: true },
     });
 
     if (!channel) {
       throw new NotFoundError("Channel");
     }
 
-    return decryptSecret(channel.accessToken);
+    const msUntilExpiry = channel.tokenExpiresAt.getTime() - Date.now();
+    if (msUntilExpiry > REFRESH_WINDOW_MS) {
+      return decryptSecret(channel.accessToken);
+    }
+
+    return this.refreshAccessToken(userId, channelId, decryptSecret(channel.refreshToken));
+  }
+
+  /**
+   * Exchanges the stored refresh token for a new access token and persists
+   * it, encrypted. Google does not always return a new refresh token on this
+   * exchange — when it doesn't, the existing one is kept rather than
+   * overwritten with `undefined`; losing it means the operator has to
+   * reconnect the channel by hand.
+   */
+  private async refreshAccessToken(
+    userId: string,
+    channelId: string,
+    refreshToken: string,
+  ): Promise<string> {
+    const response = await this.fetchImpl("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: env.GOOGLE_CLIENT_ID ?? "",
+        client_secret: env.GOOGLE_CLIENT_SECRET ?? "",
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
+
+    if (!response.ok) {
+      throw new ProviderError(
+        "YOUTUBE",
+        "Could not refresh this channel's access token. Reconnect the channel.",
+        response.status >= 500,
+      );
+    }
+
+    const body = (await response.json()) as {
+      access_token: string;
+      expires_in: number;
+      refresh_token?: string;
+    };
+
+    const tokenExpiresAt = new Date(Date.now() + body.expires_in * 1000);
+
+    await prisma.channel.updateMany({
+      where: { id: channelId, userId, deletedAt: null },
+      data: {
+        accessToken: encryptSecret(body.access_token),
+        tokenExpiresAt,
+        // Absent unless Google re-issues one (e.g. forced consent) — keep the
+        // existing refresh token rather than clobbering it with undefined.
+        ...(body.refresh_token
+          ? { refreshToken: encryptSecret(body.refresh_token) }
+          : {}),
+      },
+    });
+
+    return body.access_token;
   }
 }
 
