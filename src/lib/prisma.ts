@@ -20,9 +20,13 @@ const globalForPrisma = globalThis as unknown as {
  *      `postgres` service (plain postgres:17-alpine, SSL off). That profile
  *      hardcodes NODE_ENV=production, so this can't be gated on environment the
  *      way DATABASE_SSL_INSECURE is — instead `config/env.ts` refuses it
- *      outright whenever DATABASE_URL's hostname contains a dot, so it can never
- *      apply to a real (or public-IP) domain, only to bare container/service
- *      names on a private Docker network.
+ *      outright unless DATABASE_URL's host is a single-label DNS name (no dots,
+ *      and not an IPv4/IPv6 address literal — see `isSingleLabelHostname` in
+ *      config/env.ts). That's a lexical check only: it doesn't resolve the
+ *      name, so it can't tell a genuinely private single-label host from one an
+ *      `/etc/hosts` entry or internal DNS zone points at a public address. It
+ *      only guarantees the flag can't be pointed at something that's obviously
+ *      a real domain or IP — treat it as a discipline aid, not a guarantee.
  *   2. SUPABASE_CA_CERT present → verify against it. The only production-valid
  *      mode for a real Supabase host.
  *   3. DATABASE_SSL_INSECURE=true → encrypted but unauthenticated. Local only;

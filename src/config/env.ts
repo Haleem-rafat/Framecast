@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 import { z } from "zod";
 
 /**
@@ -70,11 +72,43 @@ const serverEnvSchema = z.object({
    * profile's own `postgres` service, reached over a private Docker network.
    * That profile hardcodes NODE_ENV=production, so this can't be refused by
    * environment the way DATABASE_SSL_INSECURE is; instead it's refused below
-   * whenever DATABASE_URL's hostname contains a dot, so it can never silently
-   * drop TLS against a real domain or a public IP address.
+   * unless DATABASE_URL's host is a single-label DNS name (no dots, and not an
+   * IPv4/IPv6 address literal), so it can never apply to a real domain or an IP
+   * address. That check is lexical only, not a network guarantee — see the
+   * comment above the check for what it does and doesn't prove.
    */
   DATABASE_SSL_DISABLE: booleanFlag,
 });
+
+/**
+ * True only for a bare, single-label DNS name — e.g. `postgres`, a
+ * docker-compose service name — never a dotted hostname and never an IPv4 or
+ * IPv6 address literal (`URL.hostname` keeps the brackets on IPv6 literals,
+ * e.g. `[2001:db8::1]`, so those are stripped before testing).
+ *
+ * This is a syntactic check, not a network one: it does not resolve the name.
+ * An `/etc/hosts` entry or an internal DNS zone can point a single-label name
+ * at a public address, and this function has no way to see that — resolving
+ * it would require an async DNS lookup, but `loadServerEnv` (and every
+ * synchronous consumer of `env`, including `PrismaClient` construction in
+ * `src/lib/prisma.ts`) runs synchronously at module load, so a real
+ * resolution-time check would mean restructuring app startup to be async.
+ * That's out of scope here — treat this as a discipline aid that keeps
+ * DATABASE_SSL_DISABLE off any hostname that is *obviously* a real domain or
+ * IP, not as proof the target is actually private.
+ */
+function isSingleLabelHostname(hostname: string): boolean {
+  const literal =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+
+  if (isIP(literal) !== 0) {
+    return false;
+  }
+
+  return !hostname.includes(".");
+}
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
@@ -125,16 +159,18 @@ function loadServerEnv(): ServerEnv {
   }
 
   // DATABASE_SSL_DISABLE turns off TLS negotiation entirely, so it's valid only
-  // for a private container/service hostname (no dot) — never a real domain or
-  // a public IP address (which also always contains a dot). Checked regardless
-  // of NODE_ENV, since the docker-compose "full" profile that needs this flag
+  // for a single-label container/service hostname — never a dotted domain and
+  // never an IPv4/IPv6 address literal (see isSingleLabelHostname's doc comment
+  // for exactly what this check does and does not prove). Checked regardless of
+  // NODE_ENV, since the docker-compose "full" profile that needs this flag
   // hardcodes NODE_ENV=production.
   if (parsed.data.DATABASE_SSL_DISABLE) {
     const { hostname } = new URL(parsed.data.DATABASE_URL);
-    if (hostname.includes(".")) {
+    if (!isSingleLabelHostname(hostname)) {
       throw new Error(
         `DATABASE_SSL_DISABLE cannot be used with DATABASE_URL host "${hostname}": ` +
-          "it looks like a real domain or IP address, not a private container/service name.",
+          "it must be a single-label container/service name — not a dotted domain " +
+          "and not an IPv4 or IPv6 address literal.",
       );
     }
   }
