@@ -763,6 +763,12 @@ Inject the process spawner so no FFmpeg runs in tests. Cover: a `RenderJob` is c
 
 - [ ] **Step 3: Implement**
 
+**Guard clip coverage before building the command.** `clipSeconds * clipPaths.length`
+must be at least `durationSeconds`, or FFmpeg silently truncates the video to the clips'
+combined length and the narration is cut off mid-sentence — a failure that produces a
+plausible-looking file rather than an error. If coverage is short, repeat the clip list
+until it covers the narration. Task 3's implementer found this; it is not hypothetical.
+
 Download the narration, clips and captions from storage to a temporary directory. Write the SRT from the persisted alignment via `buildSrt`. Build args with `buildRenderArgs`. Spawn `ffmpeg` with `spawn("ffmpeg", args)` — **never** a shell string, so a path with a space or quote cannot become an injection.
 
 Parse `-progress` output from stdout: lines of `key=value`, with `out_time_ms` giving elapsed microseconds. Percentage is `out_time_ms / 1000 / durationSeconds / 1000`. Throttle writes to `RenderJob.progress` to at most one per second — FFmpeg emits progress far faster than a database should be written.
