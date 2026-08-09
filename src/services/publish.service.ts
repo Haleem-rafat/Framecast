@@ -1,5 +1,6 @@
 import "server-only";
 
+import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getObject } from "@/lib/storage";
@@ -7,6 +8,21 @@ import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. */
 export type FetchLike = typeof fetch;
+
+/** Postgres unique-violation code — `Publication.videoId` is `@unique`, so a
+ * second concurrent claim's `create()` fails with this rather than data
+ * corruption. Same constant/check `script.service.ts` uses for its own
+ * unique-constraint race. */
+const UNIQUE_CONSTRAINT_VIOLATION = "P2002";
+
+function isUniqueConstraintViolation(
+  error: unknown,
+): error is Prisma.PrismaClientKnownRequestError {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === UNIQUE_CONSTRAINT_VIOLATION
+  );
+}
 
 export interface PublishResult {
   youtubeVideoId: string;
@@ -42,6 +58,18 @@ function buildDescription(scriptContent: string | null | undefined): string {
  * everything upstream only ever produces a video that is *eligible* to
  * upload; this is the one place the upload itself happens, and it refuses
  * unless a human has already moved the video to READY via a finished render.
+ *
+ * Retries after a failed upload: intentionally require clearing the row, not
+ * automatic. A `FAILED` `Publication` is left in place rather than deleted
+ * (see the failure branch of `publish()`), and `Publication.videoId` being
+ * `@unique` means that row blocks a second `create()` regardless of its
+ * status. Calling `publish()` again for the same video will therefore fail
+ * with a unique-constraint violation even though the underlying issue may
+ * have been fixed. That's deliberate: this method has no reclaim logic for
+ * a `FAILED` row, so nothing here can silently re-fire an upload the moment
+ * it's called twice — a real retry needs a separate, explicit action (not
+ * built by this task) that resets or removes the failed row first. Trading
+ * "no built-in retry yet" for "no accidental retry storm."
  */
 export class PublishService {
   constructor(private readonly fetchImpl: FetchLike = fetch) {}
@@ -90,6 +118,36 @@ export class PublishService {
 
     const description = buildDescription(video.script?.activeVersion?.content);
 
+    // The gate itself, and it happens *before* the upload — not after, the
+    // way the first draft of this method had it. `Publication.videoId` is
+    // `@unique`, so this `create()` is the claim: two callers can both read
+    // READY above, but only one's insert can land, so only one ever goes on
+    // to call YouTube. The loser fails here with a unique-constraint
+    // violation, never touches the network, and gets a ConflictError instead
+    // of a data-corrupting double upload. Same claim-before-expensive-work
+    // shape as RenderService.render()'s GENERATING -> RENDERING transition,
+    // just claimed via the Publication row instead of the Video row because
+    // VideoStatus has no intermediate value between READY and
+    // PUBLISHED/FAILED to claim into.
+    let publication;
+    try {
+      publication = await prisma.publication.create({
+        data: {
+          videoId,
+          channelId,
+          title: video.title,
+          description,
+          visibility: "UNLISTED",
+          status: "UPLOADING",
+        },
+      });
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        throw new ConflictError("This video is already being published.");
+      }
+      throw error;
+    }
+
     let youtubeVideoId: string;
     try {
       const accessToken = await channelService.resolveAccessToken(userId, channelId);
@@ -101,11 +159,15 @@ export class PublishService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
-      // Same atomic conditional update as the success path below, guarding
-      // against the video having moved on for some other reason while the
-      // upload was in flight. No Publication is ever created on this path —
-      // an upload that never succeeded has nothing to record.
+      // The claim row is never deleted on failure — it's the record that an
+      // attempt happened, and it's what stops a retry storm from firing
+      // another upload immediately (see the module doc comment on retries).
       await prisma.$transaction(async (tx) => {
+        await tx.publication.update({
+          where: { id: publication.id },
+          data: { status: "FAILED", error: message },
+        });
+
         const { count } = await tx.video.updateMany({
           where: { id: videoId, userId, deletedAt: null, status: "READY" },
           data: { status: "FAILED", failureReason: message },
@@ -121,11 +183,6 @@ export class PublishService {
       throw error;
     }
 
-    // The gate itself: two callers can both read READY and both run the
-    // upload above, but the `status: "READY"` clause here means only one of
-    // their updates can match the row, so only one goes on to create the
-    // Publication and append the event below. Same shape as
-    // VideoService.approveScript's Gate 1 and RenderService's render() gate.
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.video.updateMany({
         where: { id: videoId, userId, deletedAt: null, status: "READY" },
@@ -147,17 +204,9 @@ export class PublishService {
         },
       });
 
-      await tx.publication.create({
-        data: {
-          videoId,
-          channelId,
-          title: video.title,
-          description,
-          visibility: "UNLISTED",
-          status: "PUBLISHED",
-          youtubeVideoId,
-          publishedAt: new Date(),
-        },
+      await tx.publication.update({
+        where: { id: publication.id },
+        data: { status: "PUBLISHED", youtubeVideoId, publishedAt: new Date() },
       });
     });
 

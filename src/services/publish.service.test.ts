@@ -274,7 +274,7 @@ describe("publishService.publish — Gate 2", () => {
     expect(events.map((e) => `${e.from}->${e.to}`)).toContain("READY->PUBLISHED");
   });
 
-  it("a failed upload sets the video FAILED without creating a Publication", async () => {
+  it("a failed upload sets the video and its Publication FAILED — the claim row is kept, not deleted", async () => {
     const { videoId } = await makePublishableVideo();
     const { fetchImpl } = createUploadFetch({ failUpload: true });
     const service = new PublishService(fetchImpl);
@@ -285,14 +285,19 @@ describe("publishService.publish — Gate 2", () => {
     expect(video.status).toBe("FAILED");
     expect(video.failureReason).toBeTruthy();
 
-    const publications = await prisma.publication.count({ where: { videoId } });
-    expect(publications).toBe(0);
+    // The claim Publication created before the upload attempt is updated to
+    // FAILED, not deleted — deleting it would let a retry storm re-upload
+    // immediately (see PublishService's class doc comment on retries).
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("FAILED");
+    expect(publication.error).toBeTruthy();
+    expect(publication.youtubeVideoId).toBeNull();
 
     const events = await prisma.videoStatusEvent.findMany({ where: { videoId } });
     expect(events.map((e) => `${e.from}->${e.to}`)).toContain("READY->FAILED");
   });
 
-  it("a failed upload init also sets FAILED without creating a Publication", async () => {
+  it("a failed upload init also sets the video and Publication FAILED", async () => {
     const { videoId } = await makePublishableVideo();
     const { fetchImpl } = createUploadFetch({ failInit: true });
     const service = new PublishService(fetchImpl);
@@ -302,18 +307,53 @@ describe("publishService.publish — Gate 2", () => {
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("FAILED");
 
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("FAILED");
+  });
+
+  it("a second publish attempt after a failure is refused — retrying requires clearing the failed row first", async () => {
+    const { videoId } = await makePublishableVideo();
+    const { fetchImpl: failingFetch } = createUploadFetch({ failUpload: true });
+    await expect(new PublishService(failingFetch).publish(userId, videoId)).rejects.toThrow();
+
+    // The video is now FAILED (not READY), so this is refused on the status
+    // check alone — but even if an operator manually flipped the video back
+    // to READY, the surviving FAILED Publication row's unique videoId
+    // constraint would still refuse a second create(). Exercise the more
+    // interesting case directly: force the video back to READY and confirm
+    // the stale Publication row is what blocks the retry.
+    await prisma.video.update({ where: { id: videoId }, data: { status: "READY" } });
+
+    const { fetchImpl: secondAttemptFetch, calls } = createUploadFetch();
+    await expect(
+      new PublishService(secondAttemptFetch).publish(userId, videoId),
+    ).rejects.toThrow(ConflictError);
+    expect(calls).toHaveLength(0); // never reached the network
+
     const publications = await prisma.publication.count({ where: { videoId } });
-    expect(publications).toBe(0);
+    expect(publications).toBe(1); // still just the original FAILED row
   });
 });
 
 describe("publishService.publish — concurrency", () => {
-  it("Gate 2: two concurrent publishes produce exactly one Publication and one VideoStatusEvent", async () => {
+  it("Gate 2: two concurrent publishes produce exactly one Publication, one VideoStatusEvent, and exactly one real upload", async () => {
     const { videoId } = await makePublishableVideo();
 
+    // One shared fetch client (and one shared `calls` array) across both
+    // concurrent PublishService instances. The claim (Publication.create,
+    // guarded by the unique videoId constraint) happens before either
+    // instance ever calls this — so if the claim is doing its job, the loser
+    // must be rejected without ever invoking it, and `calls` must show
+    // exactly the one init+PUT pair the winner made. Asserting the call
+    // count is what actually proves no double upload happened; asserting
+    // just the DB row counts (as an earlier version of this test did) cannot
+    // tell a "claimed before upload" gate apart from a "claimed after
+    // upload" one — both leave exactly one Publication behind.
+    const { fetchImpl, calls } = createUploadFetch();
+
     const results = await Promise.allSettled([
-      new PublishService(createUploadFetch().fetchImpl).publish(userId, videoId),
-      new PublishService(createUploadFetch().fetchImpl).publish(userId, videoId),
+      new PublishService(fetchImpl).publish(userId, videoId),
+      new PublishService(fetchImpl).publish(userId, videoId),
     ]);
 
     const fulfilled = results.filter((r) => r.status === "fulfilled");
@@ -323,6 +363,10 @@ describe("publishService.publish — concurrency", () => {
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect(rejected[0].reason).toBeInstanceOf(ConflictError);
+
+    // Exactly one upload sequence: the resumable-init POST and the bytes PUT.
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((c) => c.url.includes("uploadType=resumable"))).toHaveLength(1);
 
     const publications = await prisma.publication.count({ where: { videoId } });
     expect(publications).toBe(1);
