@@ -1043,7 +1043,7 @@ export interface TextGenerationProvider {
 ```ts
 import "server-only";
 
-import { generateText } from "ai";
+import { createGateway, generateText } from "ai";
 
 import { env } from "@/config/env";
 import { estimateCostUsd } from "@/lib/cost";
@@ -1084,9 +1084,12 @@ export class GatewayProvider implements TextGenerationProvider {
 
     try {
       const result = await generateText({
-        model,
+        // ai@7 resolves a plain "provider/model" string through a shared
+        // gateway singleton that reads AI_GATEWAY_API_KEY from the environment,
+        // so a per-request key has to come in as its own provider instance.
+        // A `headers` override does not reach the gateway credential.
+        model: createGateway({ apiKey }).languageModel(model),
         prompt: input.prompt,
-        headers: { Authorization: `Bearer ${apiKey}` },
       });
 
       const inputTokens = result.usage.inputTokens ?? 0;
@@ -1118,7 +1121,7 @@ export const gatewayProvider: TextGenerationProvider = new GatewayProvider();
 - [ ] **Step 5: Verify it typechecks**
 
 Run: `pnpm typecheck`
-Expected: no errors. If `generateText` rejects the `headers` option or the `usage` field names differ in the installed AI SDK version, consult `node_modules/ai/dist/index.d.ts` and adjust — the surrounding contract (`ScriptGenerationResult`) must not change.
+Expected: no errors. Verify the installed SDK version before trusting this snippet — it was written for `ai@7`. If `generateText`'s options or the `usage` field names differ, read the package's own type definitions and adapt the call site; the surrounding contract (`ScriptGenerationResult`) must not change, because Task 9 depends on it.
 
 - [ ] **Step 6: Commit**
 
