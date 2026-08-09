@@ -102,3 +102,27 @@ export async function signedUrl(
 
   return data.signedUrl;
 }
+
+/**
+ * There is no single-object "stat" call in the storage API — `list()` on the
+ * containing folder is the only way to get an object's size, so this pays for
+ * a folder listing to answer what feels like a one-object question. Throws
+ * like the rest of this module's I/O (`getObject`, `putObject`, `signedUrl`);
+ * callers that treat file size as optional page decoration, not load-bearing
+ * data, should catch it the same way they catch a failed `signedUrl`.
+ */
+export async function objectSizeBytes(path: string): Promise<number | null> {
+  const lastSlash = path.lastIndexOf("/");
+  const folder = path.slice(0, lastSlash);
+  const filename = path.slice(lastSlash + 1);
+
+  const { data, error } = await client.storage
+    .from(env.SUPABASE_STORAGE_BUCKET)
+    .list(folder, { search: filename });
+
+  if (error) {
+    throw new InternalError(`Could not list ${folder}: ${error.message}`);
+  }
+
+  return data?.find((item) => item.name === filename)?.metadata?.size ?? null;
+}

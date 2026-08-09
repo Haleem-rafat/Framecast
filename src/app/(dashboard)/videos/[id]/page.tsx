@@ -6,7 +6,9 @@ import { ScriptPanel } from "@/features/videos/components/script-panel";
 import { StatusEventsList } from "@/features/videos/components/status-events-list";
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
+import { VideoPreview } from "@/features/videos/components/video-preview";
 import { isAppError } from "@/lib/errors";
+import { objectSizeBytes, signedUrl } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
 import { videoService } from "@/services/video.service";
@@ -15,6 +17,32 @@ export const metadata: Metadata = { title: "Video" };
 
 interface VideoDetailPageProps {
   params: Promise<{ id: string }>;
+}
+
+/** Long enough that an operator reviewing a video doesn't hit expiry
+ * mid-watch; short enough that a leaked link to unpublished, unapproved work
+ * goes stale on its own. A page left open past this needs a reload — the
+ * player and download link will 403 until then. */
+const SIGNED_URL_TTL_SECONDS = 60 * 60;
+
+/**
+ * Turns a private-bucket path into something the browser can play — a signed
+ * URL plus (best-effort) its size. Never throws: this page's rendered video
+ * and narration are worth showing even if the storage round trip for one of
+ * them fails, so a failure here just means that section falls back to its
+ * "couldn't load" state instead of taking the whole page down.
+ */
+async function resolvePreviewAsset(
+  storagePath: string,
+): Promise<{ url: string; sizeBytes: number | null } | null> {
+  const url = await signedUrl(storagePath, SIGNED_URL_TTL_SECONDS).catch(() => null);
+
+  if (!url) {
+    return null;
+  }
+
+  const sizeBytes = await objectSizeBytes(storagePath).catch(() => null);
+  return { url, sizeBytes };
 }
 
 export default async function VideoDetailPage({ params }: VideoDetailPageProps) {
@@ -42,6 +70,19 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   const pipelineState =
     video.status === "DRAFT" ? null : await pipelineService.getState(user.id, video.id);
 
+  // outputUrl/audioUrl are storage paths, not URLs — resolved here, server-side,
+  // so the client only ever receives a signed URL. Passing a raw path to the
+  // browser (plus this app's service-role key) is exactly how a private bucket
+  // ends up de facto public.
+  const [renderPreview, audioPreview] = await Promise.all([
+    video.renderJobs[0]?.outputUrl
+      ? resolvePreviewAsset(video.renderJobs[0].outputUrl)
+      : Promise.resolve(null),
+    video.voiceOver?.audioUrl
+      ? resolvePreviewAsset(video.voiceOver.audioUrl)
+      : Promise.resolve(null),
+  ]);
+
   return (
     <>
       <VideoHeader
@@ -55,6 +96,15 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
       {pipelineState && (
         <PipelinePanel videoId={video.id} initialState={pipelineState} />
       )}
+
+      {/* Above the script panel: once a video exists, watching it is the
+       * primary action on this page, and it's the one an operator needs to
+       * see before Gate 2 (YouTube publish) means anything. */}
+      <VideoPreview
+        render={video.renderJobs[0]?.outputUrl ? renderPreview : null}
+        audio={video.voiceOver?.audioUrl ? audioPreview : null}
+        durationSeconds={video.voiceOver?.durationSeconds ?? null}
+      />
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">

@@ -32,6 +32,15 @@ export class VideoService {
           },
         },
         statusEvents: { orderBy: { createdAt: "desc" }, take: 10 },
+        // Most recent attempt only — a retried render leaves earlier FAILED
+        // rows behind (see RenderService.render), and only the latest one
+        // can have the outputUrl the preview cares about.
+        renderJobs: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { outputUrl: true },
+        },
+        voiceOver: { select: { audioUrl: true, durationSeconds: true } },
       },
     });
 

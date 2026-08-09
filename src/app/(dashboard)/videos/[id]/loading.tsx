@@ -22,6 +22,16 @@ export default function VideoDetailLoading() {
         <Skeleton className="h-9 w-36" />
       </div>
 
+      {/* Mirrors VideoPreview's layout so a video that has a render doesn't
+       * jump the page once the real player paints in. A DRAFT video has
+       * neither a RenderJob nor a VoiceOver and would just show two empty
+       * cards here — acceptable since this skeleton is on screen for a single
+       * fetch, not indefinitely. */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Skeleton className="aspect-video w-full lg:col-span-2" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card>
