@@ -64,6 +64,16 @@ const serverEnvSchema = z.object({
    * impersonate the database. Refused in production — see below.
    */
   DATABASE_SSL_INSECURE: booleanFlag,
+
+  /**
+   * For Postgres that speaks no TLS at all — the docker-compose "full"
+   * profile's own `postgres` service, reached over a private Docker network.
+   * That profile hardcodes NODE_ENV=production, so this can't be refused by
+   * environment the way DATABASE_SSL_INSECURE is; instead it's refused below
+   * whenever DATABASE_URL's hostname contains a dot, so it can never silently
+   * drop TLS against a real domain or a public IP address.
+   */
+  DATABASE_SSL_DISABLE: booleanFlag,
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
@@ -112,6 +122,21 @@ function loadServerEnv(): ServerEnv {
     throw new Error(
       "DATABASE_SSL_INSECURE cannot be enabled in production: set SUPABASE_CA_CERT instead.",
     );
+  }
+
+  // DATABASE_SSL_DISABLE turns off TLS negotiation entirely, so it's valid only
+  // for a private container/service hostname (no dot) — never a real domain or
+  // a public IP address (which also always contains a dot). Checked regardless
+  // of NODE_ENV, since the docker-compose "full" profile that needs this flag
+  // hardcodes NODE_ENV=production.
+  if (parsed.data.DATABASE_SSL_DISABLE) {
+    const { hostname } = new URL(parsed.data.DATABASE_URL);
+    if (hostname.includes(".")) {
+      throw new Error(
+        `DATABASE_SSL_DISABLE cannot be used with DATABASE_URL host "${hostname}": ` +
+          "it looks like a real domain or IP address, not a private container/service name.",
+      );
+    }
   }
 
   return parsed.data;

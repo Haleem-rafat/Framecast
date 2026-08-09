@@ -13,20 +13,30 @@ const globalForPrisma = globalThis as unknown as {
 
 /**
  * Supabase signs Postgres with its own CA, so Node cannot verify the chain from
- * its default trust store — hence the explicit CA. Three tiers, most secure first:
+ * its default trust store — hence the explicit CA. Four tiers, most secure first:
  *
- *   1. SUPABASE_CA_CERT present → verify against it. The only production-valid mode.
- *   2. DATABASE_SSL_INSECURE=true → encrypted but unauthenticated. Local only;
+ *   1. DATABASE_SSL_DISABLE=true → no TLS negotiated at all. For Postgres that
+ *      speaks no TLS whatsoever, e.g. the docker-compose "full" profile's own
+ *      `postgres` service (plain postgres:17-alpine, SSL off). That profile
+ *      hardcodes NODE_ENV=production, so this can't be gated on environment the
+ *      way DATABASE_SSL_INSECURE is — instead `config/env.ts` refuses it
+ *      outright whenever DATABASE_URL's hostname contains a dot, so it can never
+ *      apply to a real (or public-IP) domain, only to bare container/service
+ *      names on a private Docker network.
+ *   2. SUPABASE_CA_CERT present → verify against it. The only production-valid
+ *      mode for a real Supabase host.
+ *   3. DATABASE_SSL_INSECURE=true → encrypted but unauthenticated. Local only;
  *      `config/env.ts` refuses it when NODE_ENV=production.
- *   3. Neither → strict verification, which fails loudly against Supabase rather
- *      than quietly downgrading.
+ *   4. None of the above → strict verification, which fails loudly against
+ *      Supabase rather than quietly downgrading.
  *
- * Local docker-compose Postgres speaks no TLS at all, so remote hosts only.
+ * localhost/127.0.0.1 are also assumed to speak no TLS (same as tier 1) since
+ * that's the shape of `pnpm dev` against docker-compose's postgres port mapping.
  */
 function sslOptions(hostname: string) {
-  const isRemote = hostname !== "localhost" && hostname !== "127.0.0.1";
+  const isLoopback = hostname === "localhost" || hostname === "127.0.0.1";
 
-  if (!isRemote) {
+  if (isLoopback || env.DATABASE_SSL_DISABLE) {
     return undefined;
   }
 

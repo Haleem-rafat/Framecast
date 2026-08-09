@@ -31,6 +31,9 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-framecast}
+      # The `postgres` service above speaks no TLS at all (plain postgres:17-alpine).
+      # config/env.ts only allows this for dot-free (private/container) hostnames.
+      DATABASE_SSL_DISABLE: "true"
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
