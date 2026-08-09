@@ -10,10 +10,17 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { GoogleSignInButton } from "@/features/auth/components/google-sign-in-button";
 import { signIn } from "@/lib/auth-client";
 import { signInSchema, type SignInInput } from "@/schemas/auth.schema";
 
-export function SignInForm({ redirectTo }: { redirectTo: string }) {
+export function SignInForm({
+  redirectTo,
+  googleEnabled,
+}: {
+  redirectTo: string;
+  googleEnabled: boolean;
+}) {
   const router = useRouter();
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -86,6 +93,18 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
         {isSubmitting && <Loader2 className="animate-spin" />}
         {isSubmitting ? "Signing in…" : "Sign in"}
       </Button>
+
+      {googleEnabled && (
+        <>
+          <div className="flex items-center gap-3">
+            <span className="bg-border h-px flex-1" />
+            <span className="text-muted-foreground text-xs">or</span>
+            <span className="bg-border h-px flex-1" />
+          </div>
+
+          <GoogleSignInButton redirectTo={redirectTo} />
+        </>
+      )}
     </form>
   );
 }

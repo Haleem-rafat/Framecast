@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { env } from "@/config/env";
 import { SignInForm } from "@/features/auth/components/sign-in-form";
 import { getSession } from "@/server/session";
 
@@ -60,7 +61,10 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <SignInForm redirectTo={destination} />
+            <SignInForm
+              redirectTo={destination}
+              googleEnabled={Boolean(env.GOOGLE_CLIENT_ID)}
+            />
           </CardContent>
         </Card>
       </div>
