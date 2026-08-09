@@ -30,10 +30,12 @@ export function TestCredentialButton({
       }
 
       if (result.data.ok) {
-        toast.success(`${PROVIDER_LABELS[provider]} key is working`);
+        toast.success(`${PROVIDER_LABELS[provider]} key is working`, {
+          description: result.data.reason,
+        });
       } else {
         toast.error(`${PROVIDER_LABELS[provider]} key was rejected`, {
-          description: "The upstream provider did not accept this key.",
+          description: result.data.reason,
         });
       }
 

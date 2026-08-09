@@ -9,6 +9,7 @@ import { requireSession } from "@/server/session";
 import {
   providerCredentialService,
   type CredentialSummary,
+  type CredentialTestResult,
 } from "@/services/provider-credential.service";
 
 export async function upsertCredentialAction(
@@ -40,13 +41,13 @@ export async function removeCredentialAction(
 
 export async function testCredentialAction(
   provider: AiProviderType,
-): Promise<ActionResult<{ ok: boolean }>> {
+): Promise<ActionResult<CredentialTestResult>> {
   return run(async () => {
     const session = await requireSession();
-    const ok = await providerCredentialService.test(session.user.id, provider);
+    const result = await providerCredentialService.test(session.user.id, provider);
 
     revalidatePath("/providers");
 
-    return { ok };
+    return result;
   });
 }

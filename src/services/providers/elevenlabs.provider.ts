@@ -8,7 +8,8 @@ import type {
   SpeechSynthesisResult,
 } from "@/services/providers/types";
 
-const ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1";
+/** Exported so ProviderCredentialService.test() can hit the same host for its own check. */
+export const ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1";
 
 /** ElevenLabs' own alignment shape — snake_case, mapped to `Alignment` below. */
 interface ElevenLabsAlignment {
