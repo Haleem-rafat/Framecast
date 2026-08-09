@@ -1,4 +1,5 @@
 import type { AiProviderType } from "@/generated/prisma/enums";
+import type { Alignment } from "@/lib/captions";
 
 export interface ScriptGenerationInput {
   prompt: string;
@@ -19,4 +20,20 @@ export interface ScriptGenerationResult {
 
 export interface TextGenerationProvider {
   generateScript(input: ScriptGenerationInput): Promise<ScriptGenerationResult>;
+}
+
+export interface SpeechSynthesisInput {
+  text: string;
+  voiceId: string;
+  apiKey: string;
+}
+
+export interface SpeechSynthesisResult {
+  audio: Buffer;
+  alignment: Alignment;
+  characterCount: number;
+}
+
+export interface SpeechProvider {
+  synthesize(input: SpeechSynthesisInput): Promise<SpeechSynthesisResult>;
 }

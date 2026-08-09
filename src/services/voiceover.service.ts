@@ -1,0 +1,201 @@
+import "server-only";
+
+import { env } from "@/config/env";
+import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
+import { prisma } from "@/lib/prisma";
+import { putObject, storagePath } from "@/lib/storage";
+import { providerCredentialService } from "@/services/provider-credential.service";
+import { elevenLabsProvider } from "@/services/providers/elevenlabs.provider";
+import type {
+  SpeechProvider,
+  SpeechSynthesisResult,
+} from "@/services/providers/types";
+
+export interface GenerateVoiceOverOptions {
+  force?: boolean;
+}
+
+export interface GenerateVoiceOverResult {
+  durationSeconds: number;
+  characterCount: number;
+}
+
+/**
+ * ElevenLabs' with-timestamps endpoint doesn't return a human name for the
+ * voice, only its id. Filled in for the one voice this app defaults to;
+ * anything else stores no name rather than a guess.
+ */
+const KNOWN_VOICE_NAMES: Record<string, string> = {
+  CwhRBWXzGAHq8TQ4Fs17: "Roger",
+};
+
+export class VoiceOverService {
+  constructor(private readonly provider: SpeechProvider = elevenLabsProvider) {}
+
+  async generate(
+    userId: string,
+    videoId: string,
+    opts: GenerateVoiceOverOptions = {},
+  ): Promise<GenerateVoiceOverResult> {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: {
+        id: true,
+        status: true,
+        script: { select: { activeVersion: { select: { content: true } } } },
+        voiceOver: { select: { id: true } },
+      },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    // Narration is only eligible once the script has been approved —
+    // videoService.approveScript is what moves a video from DRAFT to QUEUED,
+    // and only ever does so once an active script version exists.
+    if (video.status !== "QUEUED") {
+      throw new ConflictError(
+        `Narration can only be generated once the script is approved. This video is ${video.status.toLowerCase()}.`,
+      );
+    }
+
+    const content = video.script?.activeVersion?.content?.trim();
+
+    if (!content) {
+      throw new ConflictError("This video has no approved script to narrate.");
+    }
+
+    // The operator is on ElevenLabs' free tier (10,000 characters/month) and
+    // one script is around 7,000. This check — and everything above it —
+    // must run, and refuse, before the provider is ever called: a re-run
+    // that called ElevenLabs and only discarded the result afterwards would
+    // still spend the quota it was trying to protect.
+    if (video.voiceOver && !opts.force) {
+      throw new ConflictError(
+        "Narration already exists for this video. Pass force to re-synthesise it " +
+          "(this calls ElevenLabs again and spends quota).",
+      );
+    }
+
+    const apiKey = await providerCredentialService.resolveKey(userId, "ELEVENLABS");
+
+    if (!apiKey) {
+      throw new ProviderError(
+        "ELEVENLABS",
+        "No ElevenLabs API key configured. Add one on the Providers page.",
+        false,
+      );
+    }
+
+    const voiceId = env.ELEVENLABS_VOICE_ID;
+
+    // Declared outside the try so the catch block can report real spend if
+    // the provider already succeeded and a later step (upload, transaction)
+    // is what failed — mirrors script.service.ts's generate().
+    let result: SpeechSynthesisResult | undefined;
+
+    try {
+      const synthesized = await this.provider.synthesize({
+        text: content,
+        voiceId,
+        apiKey,
+      });
+      result = synthesized;
+
+      const characterEndTimes = synthesized.alignment.characterEndTimesSeconds;
+      const lastEnd = characterEndTimes.length
+        ? characterEndTimes[characterEndTimes.length - 1]
+        : 0;
+      // VoiceOver.durationSeconds is an Int column; the alignment's raw end
+      // time is fractional.
+      const durationSeconds = Math.round(lastEnd);
+
+      // Uploaded before the transaction opens: a storage call inside a DB
+      // transaction would hold the connection open for the length of the
+      // network round trip.
+      const audioPath = storagePath(videoId, "audio", "narration.mp3");
+      const audioUrl = await putObject(audioPath, synthesized.audio, "audio/mpeg");
+
+      // The raw alignment is stored so captions can be rebuilt later without
+      // re-billing the audio — that's the entire reason it's persisted
+      // rather than only held in memory.
+      const alignmentPath = storagePath(videoId, "captions", "alignment.json");
+      await putObject(
+        alignmentPath,
+        Buffer.from(JSON.stringify(synthesized.alignment)),
+        "application/json",
+      );
+
+      return await prisma.$transaction(async (tx) => {
+        await tx.voiceOver.upsert({
+          where: { videoId },
+          create: {
+            videoId,
+            provider: "ELEVENLABS",
+            voiceId,
+            voiceName: KNOWN_VOICE_NAMES[voiceId] ?? null,
+            audioUrl,
+            durationSeconds,
+          },
+          update: {
+            provider: "ELEVENLABS",
+            voiceId,
+            voiceName: KNOWN_VOICE_NAMES[voiceId] ?? null,
+            audioUrl,
+            durationSeconds,
+          },
+        });
+
+        await tx.asset.create({
+          data: {
+            kind: "SUBTITLE",
+            storagePath: alignmentPath,
+            mimeType: "application/json",
+            provider: "ELEVENLABS",
+          },
+        });
+
+        await tx.providerUsage.create({
+          data: {
+            provider: "ELEVENLABS",
+            operation: "voiceover.generate",
+            inputTokens: synthesized.characterCount,
+            succeeded: true,
+          },
+        });
+
+        await tx.activityLog.create({
+          data: {
+            userId,
+            action: "voiceover.generate",
+            entityType: "Video",
+            entityId: videoId,
+            message: `Generated narration (${durationSeconds}s, ${synthesized.characterCount} characters)`,
+          },
+        });
+
+        return { durationSeconds, characterCount: synthesized.characterCount };
+      });
+    } catch (error) {
+      // Wasted spend still has to appear on the cost dashboard. If the
+      // provider already resolved, real spend already happened even though
+      // this generation ultimately failed — record its actual character
+      // count rather than zero.
+      if (result) {
+        await prisma.providerUsage.create({
+          data: {
+            provider: "ELEVENLABS",
+            operation: "voiceover.generate",
+            inputTokens: result.characterCount,
+            succeeded: false,
+          },
+        });
+      }
+
+      throw error;
+    }
+  }
+}
+
+export const voiceOverService = new VoiceOverService();
