@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache";
 import { run, type ActionResult } from "@/actions/action-result";
 import { createVideoSchema } from "@/schemas/video.schema";
 import { requireSession } from "@/server/session";
+import type { PipelineState } from "@/services/pipeline.service";
+import { pipelineService } from "@/services/pipeline.service";
 import { videoService } from "@/services/video.service";
 
 export async function createVideoAction(
@@ -32,5 +34,19 @@ export async function approveScriptAction(
     revalidatePath(`/videos/${videoId}`);
 
     return null;
+  });
+}
+
+/**
+ * Polled by the pipeline panel every couple of seconds while a render is
+ * active (see pipeline-panel.tsx). No `revalidatePath` here — this is a read,
+ * not a mutation, and Next's cache has nothing stale to invalidate.
+ */
+export async function getPipelineStateAction(
+  videoId: string,
+): Promise<ActionResult<PipelineState>> {
+  return run(async () => {
+    const session = await requireSession();
+    return pipelineService.getState(session.user.id, videoId);
   });
 }
