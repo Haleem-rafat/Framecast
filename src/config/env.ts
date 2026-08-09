@@ -42,8 +42,8 @@ const serverEnvSchema = z.object({
   /** Comma-separated additional addresses permitted to hold an account. */
   AUTH_ALLOWED_EMAILS: z.string().optional(),
 
-  SUPABASE_URL: z.string().url().optional(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  SUPABASE_URL: z.string().url(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_STORAGE_BUCKET: z.string().min(1).default("framecast"),
 
   /**
