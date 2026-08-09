@@ -209,15 +209,39 @@ The repo has no tests. Everything after this task is written test-first.
 pnpm add -D vitest @vitejs/plugin-react vite-tsconfig-paths
 ```
 
-- [ ] **Step 2: Create `vitest.config.ts`**
+- [ ] **Step 2: Create the `server-only` stub**
+
+`src/test/server-only.stub.ts`:
 
 ```ts
+// Intentionally empty. See the alias in vitest.config.ts.
+export {};
+```
+
+- [ ] **Step 3: Create `vitest.config.ts`**
+
+```ts
+import { fileURLToPath } from "node:url";
+
 import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [tsconfigPaths(), react()],
+  resolve: {
+    alias: {
+      /**
+       * The `server-only` package throws unless the bundler sets the
+       * `react-server` export condition, which Next.js does and Vitest does
+       * not. Every service imports it, so without this alias each service test
+       * fails at import rather than on any behaviour under test.
+       */
+      "server-only": fileURLToPath(
+        new URL("./src/test/server-only.stub.ts", import.meta.url),
+      ),
+    },
+  },
   test: {
     environment: "node",
     setupFiles: ["src/test/setup.ts"],
@@ -228,7 +252,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 3: Create `src/test/setup.ts`**
+- [ ] **Step 4: Create `src/test/setup.ts`**
 
 ```ts
 import { config } from "dotenv";
@@ -241,22 +265,22 @@ process.env.NODE_ENV = "test";
 process.env.PREVIEW_MODE = "false";
 ```
 
-- [ ] **Step 4: Add scripts to `package.json`**
+- [ ] **Step 5: Add scripts to `package.json`**
 
 ```json
     "test": "vitest run",
     "test:watch": "vitest",
 ```
 
-- [ ] **Step 5: Verify the harness runs**
+- [ ] **Step 6: Verify the harness runs**
 
 Run: `pnpm test`
 Expected: `No test files found` — exit code 0, no configuration errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add vitest.config.ts src/test/setup.ts package.json pnpm-lock.yaml
+git add vitest.config.ts src/test package.json pnpm-lock.yaml
 git commit -m "chore: add vitest harness"
 ```
 
