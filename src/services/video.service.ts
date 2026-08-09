@@ -98,17 +98,30 @@ export class VideoService {
       throw new ConflictError("Generate a script before approving.");
     }
 
-    await prisma.$transaction([
-      prisma.video.update({ where: { id }, data: { status: "QUEUED" } }),
-      prisma.videoStatusEvent.create({
+    await prisma.$transaction(async (tx) => {
+      // The reads above exist only to produce a precise error message. The
+      // actual guard against a concurrent double-approval is this conditional
+      // update: two callers can both read DRAFT, but the `status: "DRAFT"`
+      // clause means only one of their updates can match the row, so only one
+      // can go on to append the QUEUED event below.
+      const { count } = await tx.video.updateMany({
+        where: { id, userId, deletedAt: null, status: "DRAFT" },
+        data: { status: "QUEUED" },
+      });
+
+      if (count === 0) {
+        throw new ConflictError("Only draft videos can be approved.");
+      }
+
+      await tx.videoStatusEvent.create({
         data: {
           videoId: id,
           from: "DRAFT",
           to: "QUEUED",
           message: "Script approved by operator",
         },
-      }),
-    ]);
+      });
+    });
   }
 }
 

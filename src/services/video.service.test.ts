@@ -46,6 +46,30 @@ beforeEach(async () => {
 afterEach(cleanupCurrentProject);
 afterAll(cleanupAnyStrayRuns);
 
+/**
+ * Builds a DRAFT video with a non-empty active ScriptVersion — the minimum
+ * state approveScript needs to succeed — bypassing the (not-yet-built)
+ * script service since Task 8 only owns project/video/prompt services.
+ */
+async function createApprovableVideo() {
+  const video = await videoService.create(userId, {
+    projectId: projectId as string,
+    title: "Ready for approval",
+    topic: "approval race",
+  });
+
+  const script = await prisma.script.create({ data: { videoId: video.id } });
+  const version = await prisma.scriptVersion.create({
+    data: { scriptId: script.id, version: 1, content: "Full script content." },
+  });
+  await prisma.script.update({
+    where: { id: script.id },
+    data: { activeVersionId: version.id },
+  });
+
+  return video.id;
+}
+
 describe("videoService", () => {
   it("creates a video in DRAFT", async () => {
     const video = await videoService.create(userId, {
@@ -79,5 +103,21 @@ describe("videoService", () => {
     await expect(
       videoService.get("00000000-0000-4000-8000-000000000001", video.id),
     ).rejects.toThrow();
+  });
+
+  it("appends exactly one event when approved concurrently", async () => {
+    const videoId = await createApprovableVideo();
+
+    const results = await Promise.allSettled([
+      videoService.approveScript(userId, videoId),
+      videoService.approveScript(userId, videoId),
+    ]);
+
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+
+    const events = await prisma.videoStatusEvent.count({
+      where: { videoId, to: "QUEUED" },
+    });
+    expect(events).toBe(1);
   });
 });
