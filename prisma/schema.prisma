@@ -1,0 +1,680 @@
+// Framecast — data model.
+//
+// Conventions enforced across every model:
+//   - UUID primary keys
+//   - createdAt / updatedAt timestamps
+//   - `deletedAt` soft delete on user-owned domain entities
+//   - every entity is scoped to a User so multi-tenancy is a filter change, not a migration
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Authentication (Better Auth managed tables)
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions            Session[]
+  accounts            Account[]
+  channels            Channel[]
+  projects            Project[]
+  videos              Video[]
+  promptTemplates     PromptTemplate[]
+  providerCredentials ProviderCredential[]
+  activityLogs        ActivityLog[]
+  settings            UserSetting?
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(uuid()) @db.Uuid
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(uuid()) @db.Uuid
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ---------------------------------------------------------------------------
+// Channels
+// ---------------------------------------------------------------------------
+
+model Channel {
+  id               String    @id @default(uuid()) @db.Uuid
+  youtubeChannelId String
+  title            String
+  handle           String?
+  description      String?
+  thumbnailUrl     String?
+  // OAuth tokens are written by the server only and never selected into client payloads.
+  accessToken      String
+  refreshToken     String
+  tokenExpiresAt   DateTime
+  scopes           String[]
+  isActive         Boolean   @default(true)
+  connectedAt      DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  statistics   ChannelStatistic[]
+  publications Publication[]
+  projects     Project[]
+
+  @@unique([userId, youtubeChannelId])
+  @@index([userId, deletedAt])
+  @@map("channel")
+}
+
+/// Point-in-time snapshot so channel growth is derivable without mutating Channel.
+model ChannelStatistic {
+  id              String   @id @default(uuid()) @db.Uuid
+  subscriberCount BigInt   @default(0)
+  viewCount       BigInt   @default(0)
+  videoCount      Int      @default(0)
+  capturedAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  channelId String  @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, capturedAt])
+  @@map("channel_statistic")
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  archivedAt  DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Optional default publishing target for videos in this project.
+  channelId String?  @db.Uuid
+  channel   Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+
+  videos Video[]
+
+  @@index([userId, status, deletedAt])
+  @@map("project")
+}
+
+// ---------------------------------------------------------------------------
+// Videos — the pipeline aggregate root
+// ---------------------------------------------------------------------------
+
+enum VideoStatus {
+  DRAFT
+  QUEUED
+  GENERATING
+  RENDERING
+  READY
+  PUBLISHED
+  FAILED
+}
+
+model Video {
+  id          String      @id @default(uuid()) @db.Uuid
+  title       String
+  description String?
+  topic       String?
+  status      VideoStatus @default(DRAFT)
+  // Denormalised only as a UI hint; the durable record lives in VideoStatusEvent.
+  failureReason   String?
+  durationSeconds Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  projectId String  @db.Uuid
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  script       Script?
+  voiceOver    VoiceOver?
+  thumbnail    Thumbnail?
+  scenes       Scene[]
+  renderJobs   RenderJob[]
+  publication  Publication?
+  statusEvents VideoStatusEvent[]
+
+  @@index([userId, status, deletedAt])
+  @@index([projectId, deletedAt])
+  @@index([createdAt])
+  @@map("video")
+}
+
+/// Append-only pipeline history. Never updated — one row per transition.
+model VideoStatusEvent {
+  id        String       @id @default(uuid()) @db.Uuid
+  from      VideoStatus?
+  to        VideoStatus
+  message   String?
+  createdAt DateTime     @default(now())
+
+  videoId String @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, createdAt])
+  @@map("video_status_event")
+}
+
+// ---------------------------------------------------------------------------
+// Script
+// ---------------------------------------------------------------------------
+
+model Script {
+  id              String   @id @default(uuid()) @db.Uuid
+  activeVersionId String?  @unique @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  videoId String @unique @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  versions      ScriptVersion[] @relation("ScriptVersions")
+  activeVersion ScriptVersion?  @relation("ActiveScriptVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
+
+  @@map("script")
+}
+
+model ScriptVersion {
+  id        String   @id @default(uuid()) @db.Uuid
+  version   Int
+  content   String
+  wordCount Int      @default(0)
+  // The rendered prompt actually sent, retained for reproducibility.
+  prompt    String?
+  model     String?
+  provider  AiProviderType?
+  createdAt DateTime @default(now())
+
+  scriptId String @db.Uuid
+  script   Script @relation("ScriptVersions", fields: [scriptId], references: [id], onDelete: Cascade)
+
+  activeFor Script? @relation("ActiveScriptVersion")
+
+  @@unique([scriptId, version])
+  @@index([scriptId, createdAt])
+  @@map("script_version")
+}
+
+// ---------------------------------------------------------------------------
+// Voice
+// ---------------------------------------------------------------------------
+
+model VoiceOver {
+  id              String         @id @default(uuid()) @db.Uuid
+  provider        AiProviderType
+  voiceId         String
+  voiceName       String?
+  speed           Float          @default(1.0)
+  emotion         String?
+  audioUrl        String?
+  durationSeconds Int?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  videoId String @unique @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@map("voice_over")
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnail
+// ---------------------------------------------------------------------------
+
+model Thumbnail {
+  id              String   @id @default(uuid()) @db.Uuid
+  activeVersionId String?  @unique @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  videoId String @unique @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  versions      ThumbnailVersion[] @relation("ThumbnailVersions")
+  activeVersion ThumbnailVersion?  @relation("ActiveThumbnailVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
+
+  @@map("thumbnail")
+}
+
+model ThumbnailVersion {
+  id        String          @id @default(uuid()) @db.Uuid
+  version   Int
+  imageUrl  String
+  prompt    String
+  provider  AiProviderType?
+  model     String?
+  createdAt DateTime        @default(now())
+
+  thumbnailId String    @db.Uuid
+  thumbnail   Thumbnail @relation("ThumbnailVersions", fields: [thumbnailId], references: [id], onDelete: Cascade)
+
+  activeFor Thumbnail? @relation("ActiveThumbnailVersion")
+
+  @@unique([thumbnailId, version])
+  @@map("thumbnail_version")
+}
+
+// ---------------------------------------------------------------------------
+// Scenes & assets
+// ---------------------------------------------------------------------------
+
+enum SceneStatus {
+  PENDING
+  GENERATING
+  READY
+  FAILED
+}
+
+model Scene {
+  id           String      @id @default(uuid()) @db.Uuid
+  index        Int
+  prompt       String
+  narration    String?
+  status       SceneStatus @default(PENDING)
+  startSeconds Float?
+  endSeconds   Float?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  videoId String @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  assets Asset[]
+
+  @@unique([videoId, index])
+  @@map("scene")
+}
+
+enum AssetKind {
+  IMAGE
+  VIDEO
+  AUDIO
+  MUSIC
+  SUBTITLE
+}
+
+model Asset {
+  id          String          @id @default(uuid()) @db.Uuid
+  kind        AssetKind
+  storagePath String
+  url         String?
+  mimeType    String?
+  sizeBytes   BigInt?
+  provider    AiProviderType?
+  model       String?
+  prompt      String?
+  createdAt   DateTime        @default(now())
+  deletedAt   DateTime?
+
+  sceneId String? @db.Uuid
+  scene   Scene?  @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([sceneId, kind])
+  @@map("asset")
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+enum RenderStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model RenderJob {
+  id         String       @id @default(uuid()) @db.Uuid
+  status     RenderStatus @default(QUEUED)
+  progress   Int          @default(0)
+  outputUrl  String?
+  error      String?
+  attempts   Int          @default(0)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  videoId String @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  logs RenderLog[]
+
+  @@index([videoId, createdAt])
+  @@index([status])
+  @@map("render_job")
+}
+
+model RenderLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  level     LogLevel @default(INFO)
+  message   String
+  createdAt DateTime @default(now())
+
+  renderJobId String    @db.Uuid
+  renderJob   RenderJob @relation(fields: [renderJobId], references: [id], onDelete: Cascade)
+
+  @@index([renderJobId, createdAt])
+  @@map("render_log")
+}
+
+// ---------------------------------------------------------------------------
+// Publishing
+// ---------------------------------------------------------------------------
+
+enum PublishVisibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum PublishStatus {
+  PENDING
+  SCHEDULED
+  UPLOADING
+  PUBLISHED
+  FAILED
+}
+
+model Publication {
+  id             String            @id @default(uuid()) @db.Uuid
+  youtubeVideoId String?
+  title          String
+  description    String?
+  tags           String[]
+  playlistId     String?
+  visibility     PublishVisibility @default(PRIVATE)
+  status         PublishStatus     @default(PENDING)
+  scheduledFor   DateTime?
+  publishedAt    DateTime?
+  error          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  videoId String @unique @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  channelId String  @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  analytics VideoAnalytic[]
+
+  @@index([channelId, status])
+  @@index([scheduledFor])
+  @@map("publication")
+}
+
+/// Daily analytics snapshot per publication.
+model VideoAnalytic {
+  id                 String   @id @default(uuid()) @db.Uuid
+  views              BigInt   @default(0)
+  likes              BigInt   @default(0)
+  comments           BigInt   @default(0)
+  impressions        BigInt   @default(0)
+  clickThroughRate   Float    @default(0)
+  averageViewSeconds Float    @default(0)
+  watchTimeMinutes   Float    @default(0)
+  subscribersGained  Int      @default(0)
+  estimatedRevenue   Decimal  @default(0) @db.Decimal(12, 4)
+  capturedFor        DateTime @db.Date
+  createdAt          DateTime @default(now())
+
+  publicationId String      @db.Uuid
+  publication   Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+
+  @@unique([publicationId, capturedFor])
+  @@index([capturedFor])
+  @@map("video_analytic")
+}
+
+// ---------------------------------------------------------------------------
+// Prompt library
+// ---------------------------------------------------------------------------
+
+enum PromptCategory {
+  SCRIPT
+  THUMBNAIL
+  SCENE
+  TITLE
+  DESCRIPTION
+  TAGS
+}
+
+model PromptTemplate {
+  id          String         @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  category    PromptCategory
+  content     String
+  isDefault   Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  deletedAt   DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  variables PromptVariable[]
+
+  @@unique([userId, name])
+  @@index([userId, category, deletedAt])
+  @@map("prompt_template")
+}
+
+model PromptVariable {
+  id           String  @id @default(uuid()) @db.Uuid
+  key          String
+  label        String
+  defaultValue String?
+  required     Boolean @default(false)
+
+  promptTemplateId String         @db.Uuid
+  promptTemplate   PromptTemplate @relation(fields: [promptTemplateId], references: [id], onDelete: Cascade)
+
+  @@unique([promptTemplateId, key])
+  @@map("prompt_variable")
+}
+
+// ---------------------------------------------------------------------------
+// AI providers
+// ---------------------------------------------------------------------------
+
+enum AiProviderType {
+  OPENAI
+  ANTHROPIC
+  GEMINI
+  ELEVENLABS
+  GOOGLE_VEO
+  RUNWAY
+  KLING
+  REPLICATE
+  PIKA
+  LUMA
+}
+
+model ProviderCredential {
+  id           String         @id @default(uuid()) @db.Uuid
+  provider     AiProviderType
+  label        String?
+  /// AES-256-GCM ciphertext. Never selected into any client-bound payload.
+  encryptedKey String
+  keyLastFour  String
+  isActive     Boolean        @default(true)
+  lastTestedAt DateTime?
+  lastTestOk   Boolean?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  deletedAt    DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  usages ProviderUsage[]
+
+  @@unique([userId, provider])
+  @@index([userId, deletedAt])
+  @@map("provider_credential")
+}
+
+model ProviderUsage {
+  id           String         @id @default(uuid()) @db.Uuid
+  provider     AiProviderType
+  operation    String
+  model        String?
+  inputTokens  Int            @default(0)
+  outputTokens Int            @default(0)
+  requestCount Int            @default(1)
+  costUsd      Decimal        @default(0) @db.Decimal(12, 6)
+  succeeded    Boolean        @default(true)
+  latencyMs    Int?
+  createdAt    DateTime       @default(now())
+
+  credentialId String?             @db.Uuid
+  credential   ProviderCredential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+
+  @@index([provider, createdAt])
+  @@index([credentialId, createdAt])
+  @@map("provider_usage")
+}
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+model ActivityLog {
+  id     String   @id @default(uuid()) @db.Uuid
+  level  LogLevel @default(INFO)
+  action String
+  /// Entity type + id the action targeted, for filtering without a polymorphic FK.
+  entityType String?
+  entityId   String?  @db.Uuid
+  message    String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  userId String? @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+  @@index([level, createdAt])
+  @@map("activity_log")
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+enum ThemePreference {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+model UserSetting {
+  id                    String            @id @default(uuid()) @db.Uuid
+  theme                 ThemePreference   @default(SYSTEM)
+  defaultScriptProvider AiProviderType    @default(OPENAI)
+  defaultVoiceProvider  AiProviderType    @default(ELEVENLABS)
+  defaultVoiceId        String?
+  defaultVisibility     PublishVisibility @default(PRIVATE)
+  defaultTags           String[]
+  storageBucket         String?
+  defaultScriptPromptId String?           @db.Uuid
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_setting")
+}

@@ -1,0 +1,159 @@
+import type { LucideIcon } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  FileText,
+  Film,
+  Image,
+  KeyRound,
+  LayoutDashboard,
+  Library,
+  Mic,
+  MonitorPlay,
+  Settings,
+  Sparkles,
+  Upload,
+  Video,
+} from "lucide-react";
+
+export interface NavItem {
+  title: string;
+  href: string;
+  icon: LucideIcon;
+  /** Command palette keywords — matched in addition to the title. */
+  keywords?: string[];
+}
+
+export interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+/**
+ * Single source of truth for the sidebar, the command palette, and breadcrumb
+ * labels. Adding a route here wires it into all three.
+ */
+export const navigation: NavGroup[] = [
+  {
+    label: "Overview",
+    items: [
+      {
+        title: "Dashboard",
+        href: "/dashboard",
+        icon: LayoutDashboard,
+        keywords: ["home", "overview", "today"],
+      },
+      {
+        title: "Analytics",
+        href: "/analytics",
+        icon: BarChart3,
+        keywords: ["views", "ctr", "watch time", "revenue", "retention"],
+      },
+      {
+        title: "Activity",
+        href: "/logs",
+        icon: Activity,
+        keywords: ["logs", "history", "errors", "audit"],
+      },
+    ],
+  },
+  {
+    label: "Content",
+    items: [
+      {
+        title: "Projects",
+        href: "/projects",
+        icon: Library,
+        keywords: ["series", "archive"],
+      },
+      {
+        title: "Videos",
+        href: "/videos",
+        icon: Video,
+        keywords: ["draft", "queued", "rendering", "published", "failed"],
+      },
+      {
+        title: "Channels",
+        href: "/channels",
+        icon: MonitorPlay,
+        keywords: ["youtube", "connect", "oauth"],
+      },
+    ],
+  },
+  {
+    label: "Studio",
+    items: [
+      {
+        title: "Automation",
+        href: "/automation",
+        icon: Sparkles,
+        keywords: ["one click", "pipeline", "generate"],
+      },
+      {
+        title: "Script",
+        href: "/studio/script",
+        icon: FileText,
+        keywords: ["writing", "generate", "versions"],
+      },
+      {
+        title: "Voice",
+        href: "/studio/voice",
+        icon: Mic,
+        keywords: ["tts", "narration", "elevenlabs"],
+      },
+      {
+        title: "Thumbnail",
+        href: "/studio/thumbnail",
+        icon: Image,
+        keywords: ["cover", "image", "art"],
+      },
+      {
+        title: "Scenes",
+        href: "/studio/scenes",
+        icon: Film,
+        keywords: ["veo", "runway", "kling", "assets"],
+      },
+      {
+        title: "Publishing",
+        href: "/publishing",
+        icon: Upload,
+        keywords: ["upload", "schedule", "visibility"],
+      },
+    ],
+  },
+  {
+    label: "Configuration",
+    items: [
+      {
+        title: "Prompt Library",
+        href: "/prompts",
+        icon: Library,
+        keywords: ["templates", "variables"],
+      },
+      {
+        title: "AI Providers",
+        href: "/providers",
+        icon: KeyRound,
+        keywords: ["api keys", "openai", "anthropic", "gemini"],
+      },
+      {
+        title: "Settings",
+        href: "/settings",
+        icon: Settings,
+        keywords: ["theme", "defaults", "storage"],
+      },
+    ],
+  },
+];
+
+export const navItems: NavItem[] = navigation.flatMap((group) => group.items);
+
+/** Longest-prefix match so `/videos/:id` still resolves to the Videos entry. */
+export function findNavItemByPath(pathname: string): NavItem | undefined {
+  return navItems
+    .filter(
+      (item) => pathname === item.href || pathname.startsWith(`${item.href}/`),
+    )
+    .sort((a, b) => b.href.length - a.href.length)
+    .at(0);
+}
