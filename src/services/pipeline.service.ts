@@ -43,7 +43,17 @@ export interface PipelineState {
    * for. The single definition of "finished", so the panel never re-derives
    * it and risks disagreeing with the service about when to stop polling. */
   isTerminal: boolean;
-  /** Most recent `RenderLog` lines for the latest `RenderJob`, oldest first. */
+  /** True while something is genuinely in flight — the latest `RenderJob` is
+   * `RUNNING`, or the video itself is `GENERATING`/`RENDERING`. `false` for
+   * `QUEUED` with no running job (nothing will change until a render worker
+   * claims it) and for every terminal status. The single definition of
+   * "actually moving", so the panel picks its poll interval from this
+   * instead of re-deriving it from `VideoStatus`/`RenderStatus` itself. */
+  isActive: boolean;
+  /** Most recent `RenderLog` lines for the latest `RenderJob`, oldest first.
+   * Only ever populated while that job is `RUNNING` or after it `FAILED` —
+   * the only times the tail is shown or useful — so an idle poll never pays
+   * for fetching lines nobody will look at. */
   logs: PipelineLogLine[];
 }
 
@@ -140,15 +150,11 @@ export class PipelineService {
           orderBy: { createdAt: "desc" },
           take: 1,
           select: {
+            id: true,
             status: true,
             progress: true,
             startedAt: true,
             finishedAt: true,
-            logs: {
-              orderBy: { createdAt: "desc" },
-              take: LOG_LIMIT,
-              select: { id: true, level: true, message: true, createdAt: true },
-            },
           },
         },
       },
@@ -181,8 +187,38 @@ export class PipelineService {
     // services one after another rather than fanning them out — so "the
     // first stage that isn't done yet" doubles as "what's running now" even
     // for narration/footage/captions, none of which have an in-progress row
-    // of their own the way RenderJob does.
-    const isActive = !isTerminal && video.status !== "DRAFT";
+    // of their own the way RenderJob does. This is deliberately looser than
+    // the outward `isActive` below (it also promotes a merely-`QUEUED`
+    // video, since something is nominally "next up" even before a worker
+    // claims it) — it only decides which stage row gets the spinner, never
+    // the poll interval.
+    const promoteNextPendingStage = !isTerminal && video.status !== "DRAFT";
+    // The read model's one definition of "genuinely in flight": a render
+    // actually running, or the video actively mid-stage. `QUEUED` with no
+    // `RUNNING` RenderJob is deliberately excluded — there is no render
+    // worker yet, so that state can sit forever and the panel must poll it
+    // slowly rather than as if progress were imminent.
+    const isActive =
+      !isTerminal &&
+      (video.status === "GENERATING" ||
+        video.status === "RENDERING" ||
+        renderJob?.status === "RUNNING");
+
+    // The tail is only ever displayed while the render row is expanded, and
+    // only matters while it's running or after it failed — fetching it on
+    // every idle poll (the common case with no render worker yet) would pay
+    // for LOG_LIMIT rows nobody looks at. Queried separately, rather than
+    // nested off `renderJobs` above, so that cost is skipped entirely
+    // outside those two statuses instead of always joining it in.
+    const logs =
+      renderJob && (renderJob.status === "RUNNING" || renderJob.status === "FAILED")
+        ? await prisma.renderLog.findMany({
+            where: { renderJobId: renderJob.id },
+            orderBy: { createdAt: "desc" },
+            take: LOG_LIMIT,
+            select: { id: true, level: true, message: true, createdAt: true },
+          })
+        : [];
 
     // Computed here (rather than where it's returned, below) so the render
     // stage's own `detail` can report elapsed time alongside percentage,
@@ -239,7 +275,7 @@ export class PipelineService {
       ...stageResults[key],
     }));
 
-    if (isActive) {
+    if (promoteNextPendingStage) {
       const runningIndex = stages.findIndex((stage) => stage.status === "pending");
       if (runningIndex !== -1) {
         stages[runningIndex] = { ...stages[runningIndex], status: "running" };
@@ -270,9 +306,10 @@ export class PipelineService {
       progress: renderJob?.progress ?? null,
       elapsedSeconds,
       isTerminal,
+      isActive,
       // Queried newest-first to respect LOG_LIMIT; reversed here so the
       // panel can render top-to-bottom like a terminal without re-sorting.
-      logs: renderJob ? [...renderJob.logs].reverse() : [],
+      logs: [...logs].reverse(),
     };
   }
 }

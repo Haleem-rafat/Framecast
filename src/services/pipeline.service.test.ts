@@ -131,18 +131,20 @@ async function addRenderJob(opts: {
 }
 
 /** Explicit, increasing `createdAt` values so ordering is deterministic even
- * when rows are created faster than the clock's resolution. */
+ * when rows are created faster than the clock's resolution. A single
+ * `createMany` rather than `count` sequential `create` round trips — against
+ * this suite's real, long-haul database, 25 one-at-a-time awaited inserts
+ * routinely blew past vitest's 5s default test timeout on its own, before
+ * `getState` was ever called. */
 async function addRenderLogs(renderJobId: string, count: number) {
   const base = Date.now();
-  for (let i = 0; i < count; i++) {
-    await prisma.renderLog.create({
-      data: {
-        renderJobId,
-        message: `log line ${i}`,
-        createdAt: new Date(base + i * 1000),
-      },
-    });
-  }
+  await prisma.renderLog.createMany({
+    data: Array.from({ length: count }, (_, i) => ({
+      renderJobId,
+      message: `log line ${i}`,
+      createdAt: new Date(base + i * 1000),
+    })),
+  });
 }
 
 async function addPublication() {
@@ -191,6 +193,55 @@ describe("pipelineService.getState — isTerminal", () => {
     await setVideoStatus(status);
     const state = await service.getState(userId, videoId);
     expect(state.isTerminal).toBe(expected);
+  });
+});
+
+describe("pipelineService.getState — isActive", () => {
+  it.each([
+    ["DRAFT", false],
+    ["QUEUED", false],
+    ["GENERATING", true],
+    ["RENDERING", true],
+    ["READY", false],
+    ["PUBLISHED", false],
+    ["FAILED", false],
+  ] as const)("is %s for status %s with no RenderJob", async (status, expected) => {
+    await setVideoStatus(status);
+    const state = await service.getState(userId, videoId);
+    expect(state.isActive).toBe(expected);
+  });
+
+  it("is false when QUEUED and the only RenderJob is itself still QUEUED", async () => {
+    // No render worker exists yet — a RenderJob sitting at QUEUED is exactly
+    // the "nothing is actually running" case the slow poll interval exists
+    // for, even though the render stage row shows as "running" (see
+    // renderStageStatus's QUEUED-counts-as-running display quirk below).
+    await addRenderJob({ status: "QUEUED", progress: 0 });
+    await setVideoStatus("QUEUED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isActive).toBe(false);
+    expect(stageStatus(state.stages, "render")).toBe("running");
+  });
+
+  it("is true when a RenderJob is RUNNING, even before the video status catches up", async () => {
+    await addRenderJob({ status: "RUNNING", progress: 12 });
+    await setVideoStatus("QUEUED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isActive).toBe(true);
+  });
+
+  it("is false once terminal, even with a stale RUNNING RenderJob row", async () => {
+    await addRenderJob({ status: "RUNNING", progress: 99 });
+    await setVideoStatus("FAILED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isTerminal).toBe(true);
+    expect(state.isActive).toBe(false);
   });
 });
 
@@ -414,6 +465,33 @@ describe("pipelineService.getState — logs", () => {
 
   it("returns no logs when no RenderJob has ever been created", async () => {
     const state = await service.getState(userId, videoId);
+    expect(state.logs).toEqual([]);
+  });
+
+  it("fetches logs for a FAILED RenderJob (diagnosing the crash)", async () => {
+    const job = await addRenderJob({ status: "FAILED", progress: 40 });
+    await addRenderLogs(job.id, 3);
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.logs).toHaveLength(3);
+  });
+
+  it("skips fetching logs for a SUCCEEDED RenderJob (the tail no longer matters)", async () => {
+    const job = await addRenderJob({ status: "SUCCEEDED", progress: 100 });
+    await addRenderLogs(job.id, 5);
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.logs).toEqual([]);
+  });
+
+  it("skips fetching logs for a RenderJob that is only QUEUED (not yet running)", async () => {
+    const job = await addRenderJob({ status: "QUEUED", progress: 0 });
+    await addRenderLogs(job.id, 5);
+
+    const state = await service.getState(userId, videoId);
+
     expect(state.logs).toEqual([]);
   });
 });

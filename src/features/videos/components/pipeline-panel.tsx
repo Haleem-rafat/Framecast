@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Circle, CircleCheck, CircleX, Clock, Loader2, Terminal } from "lucide-react";
+import { Circle, CircleCheck, CircleX, Clock, Hourglass, Loader2, Terminal } from "lucide-react";
 
 import {
   Accordion,
@@ -9,6 +9,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { getPipelineStateAction } from "@/actions/video.action";
@@ -18,8 +19,15 @@ import { formatDuration } from "@/utils/format";
 
 /** A render spans several minutes; frequent enough that the panel reads as
  * live, far below query-provider.tsx's 30s staleTime so every tick is a real
- * request rather than a served-from-cache no-op. */
-const POLL_INTERVAL_MS = 2000;
+ * request rather than a served-from-cache no-op. Only used while
+ * `isActive` — something is actually moving and worth watching tick up. */
+const POLL_INTERVAL_ACTIVE_MS = 2000;
+
+/** Used whenever the video is queued but nothing is actually running yet.
+ * There is no render worker today, so a `QUEUED` video can sit for a long
+ * time with nothing to show — polling every 2s just piles up overlapping
+ * requests against a database that's a long round trip away for nothing. */
+const POLL_INTERVAL_IDLE_MS = 15_000;
 
 async function fetchPipelineState(videoId: string): Promise<PipelineState> {
   const result = await getPipelineStateAction(videoId);
@@ -101,11 +109,19 @@ export function PipelinePanel({
     // The requirement most likely to get missed: this must eventually return
     // `false`, or an operator who leaves the tab open polls forever on an
     // idle page. `isTerminal` is the read model's one definition of
-    // "finished" so this can never drift out of sync with it.
-    refetchInterval: (query) => (query.state.data?.isTerminal ? false : POLL_INTERVAL_MS),
+    // "finished" so this can never drift out of sync with it. Below that,
+    // `isActive` — also computed server-side, never re-derived here — picks
+    // fast vs. slow: a `QUEUED` video with nothing running yet (no render
+    // worker exists today) has nothing to gain from a 2s poll.
+    refetchInterval: (query) => {
+      const latest = query.state.data;
+      if (!latest || latest.isTerminal) return false;
+      return latest.isActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+    },
   });
 
   const state = data ?? initialState;
+  const isIdleQueued = !state.isTerminal && !state.isActive;
 
   return (
     <Card>
@@ -116,16 +132,34 @@ export function PipelinePanel({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-3">
-          {state.stages.map((stage) => (
-            <StageRow
-              key={stage.key}
-              stage={stage}
-              progress={state.progress}
-              elapsedSeconds={state.elapsedSeconds}
-            />
-          ))}
-        </div>
+        {isIdleQueued ? (
+          // A row of pending-grey dots reads as "broken", not "waiting" —
+          // there's no render worker yet, so say plainly what's actually
+          // going on instead of leaving the operator to guess.
+          <Alert>
+            <Hourglass />
+            <AlertTitle>Waiting to start</AlertTitle>
+            <AlertDescription>
+              This video is queued but nothing is processing it yet — there is
+              no render worker running today. Start it manually with{" "}
+              <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">
+                pnpm render {videoId}
+              </code>
+              .
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <div className="space-y-3">
+            {state.stages.map((stage) => (
+              <StageRow
+                key={stage.key}
+                stage={stage}
+                progress={state.progress}
+                elapsedSeconds={state.elapsedSeconds}
+              />
+            ))}
+          </div>
+        )}
 
         {state.logs.length > 0 && (
           <Accordion type="single" collapsible>

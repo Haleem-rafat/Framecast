@@ -38,8 +38,10 @@ export async function approveScriptAction(
 }
 
 /**
- * Polled by the pipeline panel every couple of seconds while a render is
- * active (see pipeline-panel.tsx). No `revalidatePath` here — this is a read,
+ * Polled by the pipeline panel — every couple of seconds while something is
+ * actually running, far more slowly while idle-`QUEUED` with nothing to
+ * watch, not at all once terminal (see pipeline-panel.tsx's `isActive`/
+ * `isTerminal`-driven interval). No `revalidatePath` here — this is a read,
  * not a mutation, and Next's cache has nothing stale to invalidate.
  */
 export async function getPipelineStateAction(
