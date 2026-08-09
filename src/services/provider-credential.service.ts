@@ -89,15 +89,19 @@ export class ProviderCredentialService {
    * revoked key.
    */
   async test(userId: string, provider: AiProviderType): Promise<boolean> {
-    const apiKey = await this.resolveKey(userId, provider);
-
     let ok = false;
 
+    // A stored key that cannot even be decrypted — a rotated encryption key, a
+    // row copied between environments — is a failed test, not an exception. The
+    // operator needs to see a red badge, not a 500.
     try {
+      const apiKey = await this.resolveKey(userId, provider);
+
       await gatewayProvider.generateScript({
         prompt: "Reply with the single word: ok",
         apiKey: apiKey ?? undefined,
       });
+
       ok = true;
     } catch {
       ok = false;

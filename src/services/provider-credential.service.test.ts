@@ -103,4 +103,29 @@ describe("providerCredentialService", () => {
       "sk-second11111",
     );
   });
+
+  it("resolves false rather than rejecting when the stored key cannot be decrypted", async () => {
+    // Planted directly via Prisma, bypassing the service's encryptSecret —
+    // this simulates a row copied between environments or left over from a
+    // rotated CREDENTIAL_ENCRYPTION_KEY, which decryptSecret cannot parse.
+    await prisma.providerCredential.create({
+      data: {
+        userId,
+        provider: "ANTHROPIC",
+        label: RUN,
+        encryptedKey: "corrupted-ciphertext",
+        keyLastFour: "xxxx",
+      },
+    });
+
+    await expect(providerCredentialService.test(userId, "ANTHROPIC")).resolves.toBe(
+      false,
+    );
+
+    const row = await prisma.providerCredential.findFirstOrThrow({
+      where: { userId, provider: "ANTHROPIC", label: RUN },
+    });
+    expect(row.lastTestOk).toBe(false);
+    expect(row.lastTestedAt).not.toBeNull();
+  });
 });
