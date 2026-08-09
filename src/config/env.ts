@@ -42,6 +42,11 @@ const serverEnvSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
 
+  /** Seeded operator address; also the first entry on the sign-in allowlist. */
+  SEED_USER_EMAIL: z.string().email().optional(),
+  /** Comma-separated additional addresses permitted to hold an account. */
+  AUTH_ALLOWED_EMAILS: z.string().optional(),
+
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
   SUPABASE_STORAGE_BUCKET: z.string().min(1).default("framecast"),
