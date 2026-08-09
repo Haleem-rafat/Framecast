@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { setActiveVersionAction } from "@/actions/script.action";
+import type { VideoStatus } from "@/generated/prisma/enums";
 import { cn } from "@/lib/utils";
 
 interface VersionSummary {
@@ -21,18 +22,25 @@ interface VersionSummary {
 
 export function VersionHistory({
   videoId,
+  status,
   versions,
   activeVersionId,
 }: {
   videoId: string;
+  status: VideoStatus;
   versions: VersionSummary[];
   activeVersionId: string | null;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  // Same Gate 1 invariant script-panel.tsx enforces for editing: once the
+  // video is past DRAFT, the approved content must stay exactly what it was
+  // at approval. The service now rejects this regardless, but a disabled
+  // button here means the operator never has a reason to hit that rejection.
+  const isDraft = status === "DRAFT";
 
   function onSelect(versionId: string) {
-    if (versionId === activeVersionId) return;
+    if (!isDraft || versionId === activeVersionId) return;
 
     startTransition(async () => {
       const result = await setActiveVersionAction(videoId, versionId);
@@ -68,7 +76,7 @@ export function VersionHistory({
                 key={version.id}
                 type="button"
                 onClick={() => onSelect(version.id)}
-                disabled={isPending}
+                disabled={isPending || !isDraft}
                 className={cn(
                   "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50 disabled:pointer-events-none disabled:opacity-50",
                   isActive && "bg-accent/50",
@@ -93,6 +101,11 @@ export function VersionHistory({
               </button>
             );
           })
+        )}
+        {!isDraft && versions.length > 0 && (
+          <p className="text-muted-foreground pt-1 text-xs">
+            This video is past the draft stage, so the active version is locked.
+          </p>
         )}
       </CardContent>
     </Card>

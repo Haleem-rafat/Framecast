@@ -176,11 +176,20 @@ export class ScriptService {
   async saveEdit(userId: string, videoId: string, content: string) {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
-      select: { id: true, script: { select: { id: true } } },
+      select: { id: true, status: true, script: { select: { id: true } } },
     });
 
     if (!video?.script) {
       throw new NotFoundError("Script");
+    }
+
+    // Gate 1: once approval has moved the video past DRAFT, the script that
+    // was approved must stay exactly what downstream stages read. Without
+    // this guard, an edit here would rewrite content nobody re-approved.
+    if (video.status !== "DRAFT") {
+      throw new ConflictError(
+        "This video's script was already approved and can no longer be changed.",
+      );
     }
 
     const scriptId = video.script.id;
@@ -213,11 +222,20 @@ export class ScriptService {
   async setActiveVersion(userId: string, videoId: string, versionId: string) {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
-      select: { script: { select: { id: true } } },
+      select: { status: true, script: { select: { id: true } } },
     });
 
     if (!video?.script) {
       throw new NotFoundError("Script");
+    }
+
+    // Same Gate 1 invariant as saveEdit: swapping the active pointer after
+    // approval would let the UI silently present unapproved content as if it
+    // were what was signed off.
+    if (video.status !== "DRAFT") {
+      throw new ConflictError(
+        "This video's script was already approved and can no longer be changed.",
+      );
     }
 
     const version = await prisma.scriptVersion.findFirst({

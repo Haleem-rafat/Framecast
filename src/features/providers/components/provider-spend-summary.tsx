@@ -26,7 +26,7 @@ export function ProviderSpendSummary({ spend }: { spend: ProviderSpend[] }) {
         label="Spend (last 30 days)"
         value={formatCurrency(total)}
         icon={Wallet}
-        hint="Sum of ProviderUsage.costUsd across every provider"
+        hint="Deployment-wide across every provider — not scoped per operator"
       />
 
       {spend.length > 0 && (

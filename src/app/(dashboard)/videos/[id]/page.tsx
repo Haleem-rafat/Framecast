@@ -54,6 +54,7 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         <div className="space-y-4">
           <VersionHistory
             videoId={video.id}
+            status={video.status}
             versions={versions}
             activeVersionId={script?.activeVersionId ?? null}
           />

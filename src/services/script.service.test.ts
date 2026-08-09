@@ -285,3 +285,55 @@ describe("scriptService.generate", () => {
     60_000,
   );
 });
+
+describe("Gate 1 — script is frozen once the video leaves DRAFT", () => {
+  it("still allows both setActiveVersion and saveEdit while the video is DRAFT", async () => {
+    const v1 = await service.generate(userId, videoId, {});
+    const v2 = await service.generate(userId, videoId, {});
+
+    await service.setActiveVersion(userId, videoId, v1.id);
+    let script = await prisma.script.findUniqueOrThrow({ where: { videoId } });
+    expect(script.activeVersionId).toBe(v1.id);
+
+    const v3 = await service.saveEdit(userId, videoId, "Edited while still a draft.");
+    script = await prisma.script.findUniqueOrThrow({ where: { videoId } });
+    expect(script.activeVersionId).toBe(v3.id);
+    expect(v3.content).toBe("Edited while still a draft.");
+
+    // Sanity check that v2 really was in play — otherwise the assertions
+    // above could pass by accident on a script with only one version.
+    expect(v2.id).not.toBe(v1.id);
+  });
+
+  it("refuses setActiveVersion once the video leaves DRAFT, and leaves the active pointer untouched", async () => {
+    const v1 = await service.generate(userId, videoId, {});
+    const v2 = await service.generate(userId, videoId, {});
+    await prisma.video.update({ where: { id: videoId }, data: { status: "QUEUED" } });
+
+    await expect(
+      service.setActiveVersion(userId, videoId, v1.id),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    // The refusal has to be more than "it threw" — the pointer a downstream
+    // stage reads must still be exactly what it was before the refused call.
+    const script = await prisma.script.findUniqueOrThrow({ where: { videoId } });
+    expect(script.activeVersionId).toBe(v2.id);
+  });
+
+  it("refuses saveEdit once the video leaves DRAFT, and creates no new version", async () => {
+    const v1 = await service.generate(userId, videoId, {});
+    await prisma.video.update({ where: { id: videoId }, data: { status: "QUEUED" } });
+
+    await expect(
+      service.saveEdit(userId, videoId, "An edit nobody approved."),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    const script = await prisma.script.findUniqueOrThrow({
+      where: { videoId },
+      include: { versions: true },
+    });
+    expect(script.activeVersionId).toBe(v1.id);
+    expect(script.versions).toHaveLength(1);
+    expect(script.versions[0].content).not.toBe("An edit nobody approved.");
+  });
+});
