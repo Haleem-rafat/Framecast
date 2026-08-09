@@ -261,7 +261,7 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config({ path: ".env" });
 
-process.env.NODE_ENV = "test";
+// Not NODE_ENV — Vitest sets that itself, and @types/node marks it read-only.
 process.env.PREVIEW_MODE = "false";
 ```
 
@@ -272,12 +272,38 @@ process.env.PREVIEW_MODE = "false";
     "test:watch": "vitest",
 ```
 
-- [ ] **Step 6: Verify the harness runs**
+- [ ] **Step 6: Add a smoke test**
+
+An empty suite verifies nothing, and Vitest exits 1 when it finds no tests —
+`passWithNoTests` would only mask a broken glob later. `src/test/harness.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+
+describe("test harness", () => {
+  it("resolves `server-only` to a no-op", async () => {
+    await expect(import("server-only")).resolves.toBeDefined();
+  });
+
+  it("loads environment variables from .env.local", () => {
+    const databaseUrl =
+      process.env.DATABASE_URL ?? process.env.POSTGRES_PRISMA_URL;
+
+    expect(databaseUrl).toBeTruthy();
+  });
+
+  it("forces PREVIEW_MODE off so tests never hit stubbed auth", () => {
+    expect(process.env.PREVIEW_MODE).toBe("false");
+  });
+});
+```
+
+- [ ] **Step 7: Verify the harness runs**
 
 Run: `pnpm test`
-Expected: `No test files found` — exit code 0, no configuration errors.
+Expected: PASS — 3 tests, exit code 0.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add vitest.config.ts src/test package.json pnpm-lock.yaml
