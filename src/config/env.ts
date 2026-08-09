@@ -17,13 +17,6 @@ const serverEnvSchema = z.object({
     .enum(["development", "test", "production"])
     .default("development"),
 
-  /**
-   * Design-preview scaffolding: stubs the session and serves fixture data so the
-   * UI renders with no database. Refused in production (see below). Temporary —
-   * delete alongside the *.preview.ts services once the database is running.
-   */
-  PREVIEW_MODE: booleanFlag,
-
   DATABASE_URL: z.string().url(),
   /** Unpooled connection. Migrations run DDL, which pgBouncer cannot proxy safely. */
   DIRECT_URL: z.string().url(),
@@ -155,13 +148,6 @@ function loadServerEnv(): ServerEnv {
     throw new Error(`Invalid environment variables:\n${issues}`);
   }
 
-  // Fail the process rather than ever serving a stubbed session to real traffic.
-  if (parsed.data.PREVIEW_MODE && parsed.data.NODE_ENV === "production") {
-    throw new Error(
-      "PREVIEW_MODE cannot be enabled in production: it bypasses authentication.",
-    );
-  }
-
   // An unauthenticated database connection carries password hashes and encrypted
   // provider keys. Acceptable while developing, never against real traffic.
   if (parsed.data.DATABASE_SSL_INSECURE && parsed.data.NODE_ENV === "production") {
@@ -194,4 +180,3 @@ export const env: ServerEnv = loadServerEnv();
 
 export const isProduction = env.NODE_ENV === "production";
 export const isDevelopment = env.NODE_ENV === "development";
-export const isPreviewMode = env.PREVIEW_MODE;

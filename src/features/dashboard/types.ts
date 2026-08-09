@@ -30,9 +30,8 @@ export interface DashboardOverview {
 }
 
 /**
- * The contract the dashboard page depends on. Both the Prisma-backed service
- * and the fixture-backed preview service satisfy it, so the page never knows
- * which one it is talking to.
+ * The contract the dashboard page depends on, so it never needs to know which
+ * implementation of `DashboardReader` is bound.
  */
 export interface DashboardReader {
   getOverview(userId: string): Promise<DashboardOverview>;

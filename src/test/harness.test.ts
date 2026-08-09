@@ -15,7 +15,13 @@ describe("test harness", () => {
     expect(databaseUrl).toBeTruthy();
   });
 
-  it("forces PREVIEW_MODE off so tests never hit stubbed auth", () => {
-    expect(process.env.PREVIEW_MODE).toBe("false");
+  it("loads the validated server env without throwing", async () => {
+    // config/env.ts parses process.env through a Zod schema at import time and
+    // throws if it's invalid. There is no stubbed auth path anymore — every
+    // test run exercises the real schema, so this catches a broken .env.local
+    // or a schema regression before any service test does.
+    const { env } = await import("@/config/env");
+
+    expect(env.DATABASE_URL).toBeTruthy();
   });
 });

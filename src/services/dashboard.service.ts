@@ -2,7 +2,6 @@ import "server-only";
 
 import { endOfDay, startOfDay } from "date-fns";
 
-import { isPreviewMode } from "@/config/env";
 import type {
   DashboardOverview,
   DashboardReader,
@@ -11,7 +10,6 @@ import type {
   RecentVideo,
 } from "@/features/dashboard/types";
 import { prisma } from "@/lib/prisma";
-import { PreviewDashboardService } from "@/services/dashboard.preview.service";
 
 const RECENT_VIDEO_LIMIT = 6;
 const RECENT_ACTIVITY_LIMIT = 8;
@@ -98,8 +96,6 @@ export class DashboardService implements DashboardReader {
 
 /**
  * Composition point. Consumers depend on `DashboardReader`, never on which
- * implementation is bound — so removing preview mode is a one-line change here.
+ * implementation is bound.
  */
-export const dashboardService: DashboardReader = isPreviewMode
-  ? new PreviewDashboardService()
-  : new DashboardService();
+export const dashboardService: DashboardReader = new DashboardService();

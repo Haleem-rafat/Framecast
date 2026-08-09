@@ -45,10 +45,20 @@ async function main(): Promise<void> {
       category: "SCRIPT" as const,
       description: "Baseline narrated explainer script.",
       content:
-        "Write a {{duration}}-minute YouTube script about {{topic}}.\n" +
-        "Audience: {{audience}}.\n" +
-        "Tone: {{tone}}.\n" +
-        "Open with a hook in the first 5 seconds, then deliver the content in clear beats, and close with a call to action.",
+        "You are writing a {{duration}}-minute narration script for Money Mechanics, " +
+        "a YouTube channel that explains how business and money actually work.\n\n" +
+        "Topic: {{topic}}\n" +
+        "Audience: {{audience}}\n" +
+        "Tone: {{tone}}\n\n" +
+        "Rules — these are not stylistic preferences:\n" +
+        "- Explain how something works or what happened. Never give financial advice.\n" +
+        "- Never recommend buying or selling any asset, stock, or cryptocurrency.\n" +
+        "- Never predict a price or promise a return.\n" +
+        "- Every factual claim must name its source inline, e.g. (SEC filing, 2001).\n" +
+        "- End with a SOURCES section listing each source on its own line.\n\n" +
+        "Structure: a hook in the first 5 seconds that poses the question, " +
+        "then the explanation in clear beats, then a one-line close. " +
+        "Write spoken prose only — no scene directions, no speaker labels.",
       variables: [
         { key: "topic", label: "Topic", required: true },
         { key: "duration", label: "Duration (minutes)", defaultValue: "8" },
