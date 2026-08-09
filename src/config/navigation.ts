@@ -22,6 +22,12 @@ export interface NavItem {
   icon: LucideIcon;
   /** Command palette keywords — matched in addition to the title. */
   keywords?: string[];
+  /**
+   * Whether `href` resolves to a real page. Unbuilt items stay in this file —
+   * the roadmap they describe is intentional — but render disabled with a
+   * "Soon" badge instead of linking, so the sidebar never advertises a 404.
+   */
+  built: boolean;
 }
 
 export interface NavGroup {
@@ -42,18 +48,21 @@ export const navigation: NavGroup[] = [
         href: "/dashboard",
         icon: LayoutDashboard,
         keywords: ["home", "overview", "today"],
+        built: true,
       },
       {
         title: "Analytics",
         href: "/analytics",
         icon: BarChart3,
         keywords: ["views", "ctr", "watch time", "revenue", "retention"],
+        built: false,
       },
       {
         title: "Activity",
         href: "/logs",
         icon: Activity,
         keywords: ["logs", "history", "errors", "audit"],
+        built: false,
       },
     ],
   },
@@ -65,18 +74,21 @@ export const navigation: NavGroup[] = [
         href: "/projects",
         icon: Library,
         keywords: ["series", "archive"],
+        built: true,
       },
       {
         title: "Videos",
         href: "/videos",
         icon: Video,
         keywords: ["draft", "queued", "rendering", "published", "failed"],
+        built: true,
       },
       {
         title: "Channels",
         href: "/channels",
         icon: MonitorPlay,
         keywords: ["youtube", "connect", "oauth"],
+        built: true,
       },
     ],
   },
@@ -88,36 +100,42 @@ export const navigation: NavGroup[] = [
         href: "/automation",
         icon: Sparkles,
         keywords: ["one click", "pipeline", "generate"],
+        built: false,
       },
       {
         title: "Script",
         href: "/studio/script",
         icon: FileText,
         keywords: ["writing", "generate", "versions"],
+        built: false,
       },
       {
         title: "Voice",
         href: "/studio/voice",
         icon: Mic,
         keywords: ["tts", "narration", "elevenlabs"],
+        built: false,
       },
       {
         title: "Thumbnail",
         href: "/studio/thumbnail",
         icon: Image,
         keywords: ["cover", "image", "art"],
+        built: false,
       },
       {
         title: "Scenes",
         href: "/studio/scenes",
         icon: Film,
         keywords: ["veo", "runway", "kling", "assets"],
+        built: false,
       },
       {
         title: "Publishing",
         href: "/publishing",
         icon: Upload,
         keywords: ["upload", "schedule", "visibility"],
+        built: false,
       },
     ],
   },
@@ -129,18 +147,21 @@ export const navigation: NavGroup[] = [
         href: "/prompts",
         icon: Library,
         keywords: ["templates", "variables"],
+        built: true,
       },
       {
         title: "AI Providers",
         href: "/providers",
         icon: KeyRound,
         keywords: ["api keys", "openai", "anthropic", "gemini"],
+        built: true,
       },
       {
         title: "Settings",
         href: "/settings",
         icon: Settings,
         keywords: ["theme", "defaults", "storage"],
+        built: false,
       },
     ],
   },

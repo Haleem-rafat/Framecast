@@ -34,8 +34,10 @@ export function RecentVideosCard({ videos }: { videos: RecentVideo[] }) {
             title="No videos yet"
             description="Create your first video and the pipeline will take it from script to publish."
             action={
+              // No standalone create page — video creation happens via the
+              // dialog on the Videos page itself.
               <Button asChild size="sm">
-                <Link href="/videos/new">Create video</Link>
+                <Link href="/videos">Create video</Link>
               </Button>
             }
           />

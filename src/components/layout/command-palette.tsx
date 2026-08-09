@@ -32,12 +32,13 @@ export function CommandPalette() {
     command();
   }, []);
 
-  // Warm the router cache for top-level routes so palette navigation is instant.
+  // Warm the router cache for top-level routes so palette navigation is
+  // instant. Unbuilt routes have no page to prefetch.
   useEffect(() => {
     if (!open) return;
     for (const group of navigation) {
       for (const item of group.items) {
-        router.prefetch(item.href);
+        if (item.built) router.prefetch(item.href);
       }
     }
   }, [open, router]);
@@ -66,20 +67,28 @@ export function CommandPalette() {
         <CommandList>
           <CommandEmpty>No results found.</CommandEmpty>
 
-          {navigation.map((group) => (
-            <CommandGroup key={group.label} heading={group.label}>
-              {group.items.map((item) => (
-                <CommandItem
-                  key={item.href}
-                  value={`${item.title} ${item.keywords?.join(" ") ?? ""}`}
-                  onSelect={() => runCommand(() => router.push(item.href))}
-                >
-                  <item.icon />
-                  <span>{item.title}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          ))}
+          {navigation.map((group) => {
+            // Unbuilt items have no page to jump to — leaving them out of
+            // search results is safer than showing a disabled row a fuzzy
+            // matcher might still let the user "select".
+            const builtItems = group.items.filter((item) => item.built);
+            if (builtItems.length === 0) return null;
+
+            return (
+              <CommandGroup key={group.label} heading={group.label}>
+                {builtItems.map((item) => (
+                  <CommandItem
+                    key={item.href}
+                    value={`${item.title} ${item.keywords?.join(" ") ?? ""}`}
+                    onSelect={() => runCommand(() => router.push(item.href))}
+                  >
+                    <item.icon />
+                    <span>{item.title}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            );
+          })}
 
           <CommandSeparator />
 
