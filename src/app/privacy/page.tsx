@@ -54,15 +54,33 @@ export default function PrivacyPage() {
           <ul className="text-muted-foreground space-y-2 text-sm">
             <li className="text-pretty">
               <span className="text-foreground font-medium">Read your channel</span>{" "}
-              — channel name, thumbnail, subscriber and view counts, and statistics
-              for videos published through Framecast. Used to display your channel
-              in the studio and to report how published videos performed.
+              — channel name, thumbnail, subscriber and view counts, and the list of
+              videos published through Framecast. Used to display your channel in
+              the studio.
             </li>
             <li className="text-pretty">
               <span className="text-foreground font-medium">Upload videos</span> —
               used only to publish a video you have explicitly approved. Framecast
               never uploads, edits, deletes or comments on anything without that
               approval.
+            </li>
+            <li className="text-pretty">
+              <span className="text-foreground font-medium">
+                Read your channel&apos;s analytics
+              </span>{" "}
+              — views, watch time, average view duration, impressions,
+              click-through rate and subscribers gained. Used to show how your
+              videos performed inside the studio, so you can see which topics and
+              thumbnails worked.
+            </li>
+            <li className="text-pretty">
+              <span className="text-foreground font-medium">
+                Read your estimated revenue
+              </span>{" "}
+              — the earnings figure YouTube reports for your own videos. Displayed
+              back to you alongside what each video cost to produce. It is never
+              shared, aggregated with anyone else&apos;s data, or used for any
+              other purpose.
             </li>
           </ul>
           <p className="text-muted-foreground text-sm text-pretty">

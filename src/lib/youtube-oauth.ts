@@ -10,6 +10,13 @@ import { ProviderError } from "@/lib/errors";
 export const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
   "https://www.googleapis.com/auth/youtube.readonly",
+  // Retention, click-through rate, impressions and watch time come from the
+  // YouTube Analytics API, which is a different API from the Data API above and
+  // needs its own scope. `VideoAnalytic` has columns for all of them.
+  "https://www.googleapis.com/auth/yt-analytics.readonly",
+  // `VideoAnalytic.estimatedRevenue` specifically. Separated by Google because
+  // it is money data, and it shows on the consent screen as such.
+  "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
 ];
 
 export interface YouTubeTokens {
