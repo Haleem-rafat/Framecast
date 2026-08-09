@@ -27,6 +27,19 @@ export async function GET(request: NextRequest) {
   // their own channel onto the operator's account.
   const state = randomBytes(32).toString("hex");
 
+  // GOOGLE_CLIENT_ID/SECRET are `.optional()` in config/env.ts, so a
+  // deployment missing them is reachable, not hypothetical — buildAuthUrl
+  // throws ProviderError in that case. Checked before the cookie is set so a
+  // misconfigured deployment doesn't leave a stray state cookie behind.
+  let authUrl: string;
+  try {
+    authUrl = buildAuthUrl(state);
+  } catch {
+    return NextResponse.redirect(
+      new URL("/channels?error=oauth_not_configured", request.url),
+    );
+  }
+
   const cookieStore = await cookies();
   cookieStore.set(STATE_COOKIE_NAME, state, {
     httpOnly: true,
@@ -36,5 +49,5 @@ export async function GET(request: NextRequest) {
     path: "/",
   });
 
-  return NextResponse.redirect(buildAuthUrl(state));
+  return NextResponse.redirect(authUrl);
 }

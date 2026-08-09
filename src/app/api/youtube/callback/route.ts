@@ -2,10 +2,20 @@ import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { STATE_COOKIE_NAME } from "@/app/api/youtube/connect/route";
-import { isAppError } from "@/lib/errors";
 import { exchangeCode, fetchChannel } from "@/lib/youtube-oauth";
 import { channelService } from "@/services/channel.service";
 import { requireSession } from "@/server/session";
+
+/**
+ * `code` here is always one of the fixed strings `channel-error.ts` knows
+ * about — never a message pulled from a thrown error. Round-tripping a
+ * provider's message through the URL would make `/channels?error=…`
+ * attacker-steerable, since that page is reachable directly, not only via
+ * this redirect.
+ */
+function errorRedirect(request: NextRequest, code: string): NextResponse {
+  return NextResponse.redirect(new URL(`/channels?error=${code}`, request.url));
+}
 
 export async function GET(request: NextRequest) {
   let session;
@@ -25,9 +35,7 @@ export async function GET(request: NextRequest) {
   cookieStore.delete(STATE_COOKIE_NAME);
 
   if (googleError) {
-    return NextResponse.redirect(
-      new URL("/channels?error=access_denied", request.url),
-    );
+    return errorRedirect(request, "access_denied");
   }
 
   // The whole point of the cookie: reject unless the state Google echoed back
@@ -36,36 +44,38 @@ export async function GET(request: NextRequest) {
   // state, then replay their own code against this callback to graft their
   // channel onto the operator's account.
   if (!state || !expectedState || state !== expectedState) {
-    return NextResponse.redirect(
-      new URL("/channels?error=invalid_state", request.url),
-    );
+    return errorRedirect(request, "invalid_state");
   }
 
   if (!code) {
-    return NextResponse.redirect(
-      new URL("/channels?error=missing_code", request.url),
-    );
+    return errorRedirect(request, "missing_code");
+  }
+
+  let tokens;
+  try {
+    tokens = await exchangeCode(code);
+  } catch {
+    // Covers both of exchangeCode's failure modes — Google rejecting the code
+    // and Google granting access but withholding a refresh token — under one
+    // code. channel-error.ts's message for it already tells the operator to
+    // revoke and retry, which is safe advice either way.
+    return errorRedirect(request, "token_exchange_failed");
+  }
+
+  let channelInfo;
+  try {
+    channelInfo = await fetchChannel(tokens.accessToken);
+  } catch {
+    return errorRedirect(request, "channel_fetch_failed");
   }
 
   try {
-    const tokens = await exchangeCode(code);
-    const channelInfo = await fetchChannel(tokens.accessToken);
-
     await channelService.connect(session.user.id, {
       ...channelInfo,
       ...tokens,
     });
-  } catch (error) {
-    // Our own thrown errors already carry an operator-facing message (e.g. the
-    // "no refresh token" case in youtube-oauth.ts) — surface it as-is. Anything
-    // else collapses to a generic message rather than leaking internals.
-    const message = isAppError(error)
-      ? error.message
-      : "Something went wrong connecting your channel. Please try again.";
-
-    return NextResponse.redirect(
-      new URL(`/channels?error=${encodeURIComponent(message)}`, request.url),
-    );
+  } catch {
+    return errorRedirect(request, "connect_failed");
   }
 
   return NextResponse.redirect(new URL("/channels", request.url));
