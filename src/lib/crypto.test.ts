@@ -29,4 +29,31 @@ describe("crypto", () => {
     const { decryptSecret } = await import("@/lib/crypto");
     expect(() => decryptSecret("not-a-payload")).toThrow();
   });
+
+  it("round-trips an empty string", async () => {
+    const { encryptSecret, decryptSecret } = await import("@/lib/crypto");
+    expect(decryptSecret(encryptSecret(""))).toBe("");
+  });
+
+  it("round-trips multi-byte UTF-8", async () => {
+    const { encryptSecret, decryptSecret } = await import("@/lib/crypto");
+    const value = "🔑 مفتاح 密鑰";
+    expect(decryptSecret(encryptSecret(value))).toBe(value);
+  });
+
+  it("round-trips a value containing the delimiter", async () => {
+    const { encryptSecret, decryptSecret } = await import("@/lib/crypto");
+    expect(decryptSecret(encryptSecret("a.b.c.d"))).toBe("a.b.c.d");
+  });
+
+  it("rejects a payload with extra segments", async () => {
+    const { encryptSecret, decryptSecret } = await import("@/lib/crypto");
+    const [iv, tag, data] = encryptSecret("secret").split(".");
+    expect(() => decryptSecret(`${iv}.${tag}.${data}.EXTRA`)).toThrow();
+  });
+
+  it("rejects a payload with too few segments", async () => {
+    const { decryptSecret } = await import("@/lib/crypto");
+    expect(() => decryptSecret("only.two")).toThrow();
+  });
 });
