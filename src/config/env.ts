@@ -81,10 +81,18 @@ const serverEnvSchema = z.object({
 });
 
 /**
- * True only for a bare, single-label DNS name — e.g. `postgres`, a
- * docker-compose service name — never a dotted hostname and never an IPv4 or
- * IPv6 address literal (`URL.hostname` keeps the brackets on IPv6 literals,
- * e.g. `[2001:db8::1]`, so those are stripped before testing).
+ * True only when `hostname` starts with a letter and otherwise contains just
+ * letters, digits, and hyphens (`/^[a-zA-Z][a-zA-Z0-9-]*$/`) — e.g. `postgres`,
+ * `db`, `postgres-primary`, `pg1`. That is an allowlist of what a legitimate
+ * single-label DNS name looks like, not a blocklist of IP notations: no IP
+ * literal, in any notation, can start with a letter, so this rejects dotted
+ * IPv4, bracketed/bare IPv6, *and* the numeric IPv4 forms `node:net`'s isIP()
+ * doesn't recognise as addresses (decimal `3221225985`, hex `0xCB00710A`,
+ * octal `017700000001` — all of which Node's own `dns.lookup` still resolves
+ * as literals via local getaddrinfo parsing, no DNS query involved). It also
+ * rejects a trailing dot and anything containing a colon. The `isIP()` check
+ * below is redundant with the regex today but kept as a second, differently-
+ * implemented line of defense.
  *
  * This is a syntactic check, not a network one: it does not resolve the name.
  * An `/etc/hosts` entry or an internal DNS zone can point a single-label name
@@ -95,7 +103,7 @@ const serverEnvSchema = z.object({
  * resolution-time check would mean restructuring app startup to be async.
  * That's out of scope here — treat this as a discipline aid that keeps
  * DATABASE_SSL_DISABLE off any hostname that is *obviously* a real domain or
- * IP, not as proof the target is actually private.
+ * IP literal, not as proof the target is actually private.
  */
 function isSingleLabelHostname(hostname: string): boolean {
   const literal =
@@ -107,7 +115,7 @@ function isSingleLabelHostname(hostname: string): boolean {
     return false;
   }
 
-  return !hostname.includes(".");
+  return /^[a-zA-Z][a-zA-Z0-9-]*$/.test(hostname);
 }
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
