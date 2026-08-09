@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 import {
   Select,
@@ -26,21 +26,17 @@ const STATUS_LABELS: Record<string, string> = {
   FAILED: "Failed",
 };
 
-/** Reflects the filter in the URL so the list stays a plain server fetch, not client state. */
+/**
+ * Reflects the filter in the URL so the list stays a plain server fetch, not
+ * client state. `status` is the only query param this route reads, so this
+ * writes it directly rather than pulling in `useSearchParams()` — which would
+ * force a Suspense boundary around this component for no benefit here.
+ */
 export function VideoStatusFilter({ current }: { current: string }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   function onChange(value: string) {
-    const params = new URLSearchParams(searchParams);
-
-    if (value === ALL) {
-      params.delete("status");
-    } else {
-      params.set("status", value);
-    }
-
-    router.push(`/videos${params.size > 0 ? `?${params.toString()}` : ""}`);
+    router.push(value === ALL ? "/videos" : `/videos?status=${value}`);
   }
 
   return (
