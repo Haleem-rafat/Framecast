@@ -198,6 +198,52 @@ UI hint; the event table is the durable record.
 
 ---
 
+## 4a. Environments
+
+Two of everything, so testing can never touch production data.
+
+| | Production | Dev / Preview | Local |
+|---|---|---|---|
+| Domain | `framecasts.com` | `dev.framecasts.com` | `localhost:3000` |
+| Branch | `main` | `dev` | — |
+| Supabase project | `framecast` | `framecast-dev` | → dev |
+| Google OAuth client | `framecast-505012`, **In production** | separate project, **Testing** | = dev |
+| `BETTER_AUTH_SECRET` | unique | unique | = dev |
+| `CREDENTIAL_ENCRYPTION_KEY` | unique | unique | = dev |
+
+`CREDENTIAL_ENCRYPTION_KEY` differing per environment is deliberate: a key stored on
+dev must not be decryptable from production. The consequence is that provider keys are
+entered once per environment, and **rotating the key makes every stored credential
+unreadable** — it is not a routine operation.
+
+The Google OAuth consent screen must be **published ("In production")** for any client
+whose tokens are used unattended. In "Testing" status Google expires refresh tokens after
+7 days, which would break the upload pipeline weekly and silently.
+
+### Access control
+
+Framecast is single-operator. `emailAndPassword.disableSignUp` governs only the password
+path — social sign-in creates users through a different one. Every account-creation path
+therefore passes a single allowlist gate (`AUTH_ALLOWED_EMAILS` plus `SEED_USER_EMAIL`)
+implemented as a Better Auth `databaseHooks.user.create.before` hook. Without it, any
+Google account on the internet could obtain a studio account.
+
+### Database TLS
+
+Supabase signs Postgres with its own CA (`Supabase Root 2021 CA`), which is not in Node's
+trust store, so `SUPABASE_CA_CERT` must be set for verification to succeed. Connections
+fail closed rather than downgrading. The docker-compose `full` profile reaches a plain
+Postgres that speaks no TLS at all and is the sole legitimate use of `DATABASE_SSL_DISABLE`.
+
+### Public pages
+
+`framecasts.com` must serve real content — a landing page plus `/privacy` and `/terms`.
+These are required twice over: Google's OAuth consent screen demands both URLs before
+publishing, and a newly registered domain serving nothing but a login form is flagged by
+Chrome Safe Browsing as phishing. Deployment Protection must be off for the assigned
+domains, since redirecting visitors to a login page on another host is itself a phishing
+signal.
+
 ## 5. Sub-project decomposition
 
 Four sub-projects, each independently useful, each with its own plan and implementation
@@ -205,10 +251,20 @@ cycle. This document specifies Sub-project 1 in detail.
 
 | # | Name | Delivers |
 |---|---|---|
-| **1** | **Providers + Script** | Key vault, prompt library, projects, videos, topic → script, Gate 1 |
+| **1** | **Providers + Script** | Key vault, prompt library, projects, videos, topic → script, Gate 1, **channel connection** |
 | 2 | Voice + Visuals | ElevenLabs narration, scene splitting, stock footage matching, thumbnails, storage |
-| 3 | Render + Publish | Worker, job queue, FFmpeg assembly, Shorts extraction, YouTube OAuth + upload, Gate 2 |
+| 3 | Render + Publish | Worker, job queue, FFmpeg assembly, Shorts extraction, YouTube upload, Gate 2 |
 | 4 | Analytics + Automation | YouTube stats sync, scheduling, one-click pipeline, cost dashboard |
+
+**Channel connection moved into sub-project 1** (operator decision, 2026-08-09). It sits
+immediately after `lib/crypto.ts` and before everything else, because `Channel.accessToken`
+and `Channel.refreshToken` are plain `String` columns and a YouTube refresh token is
+permanent upload access to the channel. Connecting before the encryption module exists
+would write those credentials to disk in the clear. The connect flow must encrypt both
+columns with `lib/crypto.ts`; the column types do not change, only their contents.
+
+Uploading remains in sub-project 3 — connecting proves the authorization and shows channel
+metadata, nothing more.
 
 ---
 
