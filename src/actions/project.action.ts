@@ -48,3 +48,24 @@ export async function archiveProjectAction(
     return null;
   });
 }
+
+/**
+ * Soft-deletes a project and its videos. `projectService.remove` refuses
+ * outright if any of those videos is actively leased, rather than deleting the
+ * rest — a partially-deleted project is harder to reason about than a clear
+ * refusal. It reports how many videos went with it so the confirmation can say
+ * so afterwards.
+ */
+export async function deleteProjectAction(
+  projectId: string,
+): Promise<ActionResult<{ deletedVideoCount: number }>> {
+  return run(async () => {
+    const session = await requireSession();
+    const result = await projectService.remove(session.user.id, projectId);
+
+    revalidatePath("/projects");
+    revalidatePath("/videos");
+
+    return result;
+  });
+}

@@ -4,6 +4,32 @@ import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { CreateVideoInput } from "@/schemas/video.schema";
 
+/** Shown whenever a delete is refused because the render worker holds the
+ * video's lease right now — both the single- and bulk-delete paths report the
+ * same reason, so an operator sees one consistent explanation everywhere. */
+const ACTIVE_LEASE_MESSAGE =
+  "This video is actively being processed by the render worker. Cancel it " +
+  "first from the pipeline panel, then delete it once it's stopped.";
+
+/**
+ * True exactly when a worker holds this video's lease right now.
+ * `GENERATING`/`RENDERING` alone isn't enough — a lapsed `leaseExpiresAt` on
+ * either status means the worker that claimed it died (see
+ * `job.service.ts`'s own doc comments on leases), and that video is
+ * deletable like any other. Only a lease still in the future means a worker
+ * process may be mid-write to this video's rows right now.
+ */
+function isActivelyLeased(
+  video: { status: string; leaseExpiresAt: Date | null },
+  now: Date,
+): boolean {
+  return (
+    (video.status === "GENERATING" || video.status === "RENDERING") &&
+    video.leaseExpiresAt !== null &&
+    video.leaseExpiresAt > now
+  );
+}
+
 export class VideoService {
   async list(userId: string) {
     return prisma.video.findMany({
@@ -148,6 +174,102 @@ export class VideoService {
         },
       });
     });
+  }
+
+  /**
+   * Soft delete: sets `deletedAt`, matching every other domain entity (see
+   * schema.prisma's top comment). The row — and everything Cascade-deletes
+   * off it transitively (script, voice-over, scenes, render jobs,
+   * publication, status events) — stays in Postgres, just excluded from
+   * every `deletedAt: null` query from here on. The render's Vercel Blob
+   * file and any Supabase-stored scene assets are deliberately left in
+   * place: destroying the underlying files here would make this exactly as
+   * unrecoverable as a hard delete, which defeats the point of soft
+   * deleting at all. Deleting Framecast's record of a video never touches
+   * YouTube either — there is no unpublish path (see
+   * `publish.service.ts`'s own doc comment) — so a published video's
+   * upload stays live at its original link after this.
+   *
+   * Refused while the render worker actively holds the video: a
+   * `leaseExpiresAt` still in the future on a `GENERATING`/`RENDERING`
+   * video means a worker process has it claimed right now and may be
+   * mid-write to its rows. Deleting out from under that is a
+   * use-after-free on the DB row, not a UI nicety to skip — the operator
+   * needs to cancel it first (`JobService.requestCancel`) and let the
+   * worker's next heartbeat actually stop it.
+   */
+  async remove(userId: string, id: string): Promise<void> {
+    const video = await prisma.video.findFirst({
+      where: { id, userId, deletedAt: null },
+      select: { id: true, status: true, leaseExpiresAt: true },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    const now = new Date();
+
+    if (isActivelyLeased(video, now)) {
+      throw new ConflictError(ACTIVE_LEASE_MESSAGE);
+    }
+
+    // Same shape as every other conditional-update guard in this codebase
+    // (see `approveScript` above, or `JobService.requeue`): the read above
+    // only produces a precise error message, this `NOT` clause is what
+    // actually stops a worker that claims the video in the instant between
+    // that read and this write from having its row deleted under it.
+    const { count } = await prisma.video.updateMany({
+      where: {
+        id,
+        userId,
+        deletedAt: null,
+        NOT: {
+          status: { in: ["GENERATING", "RENDERING"] },
+          leaseExpiresAt: { gt: now },
+        },
+      },
+      data: { deletedAt: now },
+    });
+
+    if (count === 0) {
+      throw new ConflictError(ACTIVE_LEASE_MESSAGE);
+    }
+  }
+
+  /**
+   * Bulk cleanup for the video list's multi-select — see `remove` for what a
+   * delete actually does. A single conditional `updateMany` rather than a
+   * loop of `remove` calls: `ids` comes straight off the operator's own
+   * checked rows, already scoped to their own visible list, so there is no
+   * per-row message worth computing — only how many landed. Any id that
+   * doesn't match (someone else's, already deleted, or actively leased —
+   * see `remove`'s own doc comment) is silently skipped rather than failing
+   * the whole batch, and reported back only as a count.
+   */
+  async removeMany(
+    userId: string,
+    ids: string[],
+  ): Promise<{ deletedCount: number; skippedCount: number }> {
+    if (ids.length === 0) {
+      return { deletedCount: 0, skippedCount: 0 };
+    }
+
+    const now = new Date();
+    const { count } = await prisma.video.updateMany({
+      where: {
+        id: { in: ids },
+        userId,
+        deletedAt: null,
+        NOT: {
+          status: { in: ["GENERATING", "RENDERING"] },
+          leaseExpiresAt: { gt: now },
+        },
+      },
+      data: { deletedAt: now },
+    });
+
+    return { deletedCount: count, skippedCount: ids.length - count };
   }
 }
 

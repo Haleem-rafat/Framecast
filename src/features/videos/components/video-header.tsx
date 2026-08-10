@@ -1,6 +1,7 @@
 import { Clock } from "lucide-react";
 
 import { ApproveScriptButton } from "@/features/videos/components/approve-script-button";
+import { DeleteVideoButton } from "@/features/videos/components/delete-video-button";
 import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import type { VideoStatus } from "@/generated/prisma/enums";
@@ -50,6 +51,12 @@ export function VideoHeader({
       </div>
 
       <div className="flex items-start gap-2">
+        <DeleteVideoButton
+          videoId={videoId}
+          title={title}
+          status={status}
+          redirectToList
+        />
         <ApproveScriptButton videoId={videoId} canApprove={canApprove} />
         <PublishVideoButton
           videoId={videoId}

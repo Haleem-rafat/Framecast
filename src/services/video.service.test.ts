@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ConflictError } from "@/lib/errors";
+import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
@@ -147,5 +147,65 @@ describe("videoService", () => {
       where: { videoId, to: "QUEUED" },
     });
     expect(events).toBe(1);
+  });
+
+  it("soft-deletes a video rather than removing the row", async () => {
+    const videoId = await createApprovableVideo();
+
+    await videoService.remove(userId, videoId);
+
+    const row = await prisma.video.findUnique({ where: { id: videoId } });
+    expect(row).not.toBeNull();
+    expect(row?.deletedAt).not.toBeNull();
+
+    await expect(videoService.get(userId, videoId)).rejects.toThrow(NotFoundError);
+  });
+
+  // Deleting a row a worker is mid-write to is a correctness problem, not a UI
+  // nicety — the operator has to cancel the run first.
+  it("refuses to delete a video a worker currently holds", async () => {
+    const videoId = await createApprovableVideo();
+    await prisma.video.update({
+      where: { id: videoId },
+      data: {
+        status: "RENDERING",
+        leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      },
+    });
+
+    await expect(videoService.remove(userId, videoId)).rejects.toThrow(ConflictError);
+
+    const row = await prisma.video.findUnique({ where: { id: videoId } });
+    expect(row?.deletedAt).toBeNull();
+  });
+
+  it("deletes a video whose worker died, leaving a lapsed lease", async () => {
+    const videoId = await createApprovableVideo();
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "RENDERING", leaseExpiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    await expect(videoService.remove(userId, videoId)).resolves.toBeUndefined();
+  });
+
+  it("skips the busy ones in a bulk delete instead of failing the batch", async () => {
+    const free = await createApprovableVideo();
+    const busy = await createApprovableVideo();
+    await prisma.video.update({
+      where: { id: busy },
+      data: {
+        status: "GENERATING",
+        leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      },
+    });
+
+    const result = await videoService.removeMany(userId, [free, busy]);
+
+    expect(result.deletedCount).toBe(1);
+    expect(result.skippedCount).toBe(1);
+
+    const busyRow = await prisma.video.findUnique({ where: { id: busy } });
+    expect(busyRow?.deletedAt).toBeNull();
   });
 });

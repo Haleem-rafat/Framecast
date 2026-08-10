@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { run, type ActionResult } from "@/actions/action-result";
-import { createVideoSchema } from "@/schemas/video.schema";
+import { createVideoSchema, deleteVideosSchema } from "@/schemas/video.schema";
 import { requireSession } from "@/server/session";
 import { jobService } from "@/services/job.service";
 import type { PipelineLogStream, PipelineState } from "@/services/pipeline.service";
@@ -123,5 +123,43 @@ export async function getPipelineLogsAction(
   return run(async () => {
     const session = await requireSession();
     return pipelineService.getLogStream(session.user.id, videoId);
+  });
+}
+
+/**
+ * Soft-deletes one video. `videoService.remove` refuses while a worker holds
+ * the lease — see its doc comment for why deleting a row mid-render is a
+ * correctness problem rather than a UI nicety — so the ConflictError it throws
+ * reaches the operator verbatim through `run()`.
+ */
+export async function deleteVideoAction(videoId: string): Promise<ActionResult<null>> {
+  return run(async () => {
+    const session = await requireSession();
+    await videoService.remove(session.user.id, videoId);
+
+    revalidatePath("/videos");
+    revalidatePath("/projects");
+
+    return null;
+  });
+}
+
+/**
+ * The list page's "Delete selected". Returns how many landed and how many were
+ * skipped rather than throwing on the first busy one, so clearing a dozen test
+ * videos is not blocked by one that happens to be rendering.
+ */
+export async function deleteVideosAction(
+  ids: unknown,
+): Promise<ActionResult<{ deletedCount: number; skippedCount: number }>> {
+  return run(async () => {
+    const session = await requireSession();
+    const parsed = deleteVideosSchema.parse(ids);
+    const result = await videoService.removeMany(session.user.id, parsed);
+
+    revalidatePath("/videos");
+    revalidatePath("/projects");
+
+    return result;
   });
 }
