@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -80,7 +81,7 @@ export function CreateVideoDialog({
         </Button>
       </DialogTrigger>
       <DialogContent>
-        <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
+        <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <DialogHeader>
             <DialogTitle>New video</DialogTitle>
             <DialogDescription>
@@ -88,6 +89,8 @@ export function CreateVideoDialog({
               script on the video page.
             </DialogDescription>
           </DialogHeader>
+
+          <DialogBody>
 
           <div className="space-y-2">
             <Label htmlFor="projectId">Project</Label>
@@ -141,6 +144,8 @@ export function CreateVideoDialog({
               <p className="text-destructive text-xs">{errors.topic.message}</p>
             )}
           </div>
+          </DialogBody>
+
 
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>

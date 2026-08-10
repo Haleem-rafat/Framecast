@@ -63,31 +63,16 @@ function AlertDialogContent({
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(
-          // Same height ceiling as DialogContent: a translated `fixed` box with
-          // no maximum grows off-screen and cannot be scrolled back into reach,
-          // which on a confirmation dialog would hide the confirm button itself.
-          // `grid-rows-[minmax(0,1fr)]`, not a bare `grid`: an implicit grid row
-          // is auto-sized to its content, so tall content grew the row past
-          // this box's max-height and `overflow-hidden` then clipped the
-          // dialog — the top and bottom were cut off on screen instead of the
-          // inner region scrolling. A `minmax(0,1fr)` row is allowed to shrink,
-          // which is what hands the overflow to the scroll container inside.
-          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid grid-rows-[minmax(0,1fr)] max-h-[calc(100dvh-2rem)] w-full -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // Same column layout as DialogContent: a fixed header region, a body
+          // that scrolls if it ever needs to, and a fixed footer. Confirmations
+          // are short, so the body rarely scrolls — but the footer holds the
+          // destructive action and must never be pushed off screen.
+          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-full -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 [&>form]:contents",
           className
         )}
         {...props}
       >
-        {/* Scrolling moved off the box itself and onto this inner wrapper,
-            mirroring DialogContent. The padding stays on the box above so a
-            sticky footer can cancel it with a negative margin and sit flush
-            to the dialog's edges; if the padding scrolled with the content
-            there would be a transparent strip beside the pinned footer for
-            the body to show through. `min-h-0` because a grid item will not
-            shrink below its content without it, which would defeat the
-            max-height above. */}
-        <div className="grid min-h-0 gap-4 overflow-y-auto overflow-x-clip overscroll-contain px-6 pt-6 pb-4">
-          {children}
-        </div>
+        {children}
       </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   )
@@ -101,7 +86,7 @@ function AlertDialogHeader({
     <div
       data-slot="alert-dialog-header"
       className={cn(
-        "grid grid-rows-[auto_1fr] place-items-center gap-1.5 text-center has-data-[slot=alert-dialog-media]:grid-rows-[auto_auto_1fr] has-data-[slot=alert-dialog-media]:gap-x-4 sm:group-data-[size=default]/alert-dialog-content:place-items-start sm:group-data-[size=default]/alert-dialog-content:text-left sm:group-data-[size=default]/alert-dialog-content:has-data-[slot=alert-dialog-media]:grid-rows-[auto_1fr]",
+        "grid shrink-0 grid-rows-[auto_1fr] place-items-center gap-1.5 px-6 pt-6 pb-4 text-center has-data-[slot=alert-dialog-media]:grid-rows-[auto_auto_1fr] has-data-[slot=alert-dialog-media]:gap-x-4 sm:group-data-[size=default]/alert-dialog-content:place-items-start sm:group-data-[size=default]/alert-dialog-content:text-left sm:group-data-[size=default]/alert-dialog-content:has-data-[slot=alert-dialog-media]:grid-rows-[auto_1fr]",
         className
       )}
       {...props}
@@ -121,7 +106,7 @@ function AlertDialogFooter({
         // holds the confirm button, so it must not scroll out of reach, and a
         // translucent background would let body content show through it once
         // pinned. `bg-muted` rather than `bg-muted/50`.
-        "sticky bottom-0 z-10 -mx-6 -mb-4 mt-2 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end sm:gap-3",
+        "flex shrink-0 flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end sm:gap-3",
         className
       )}
       {...props}

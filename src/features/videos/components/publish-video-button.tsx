@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -40,11 +41,17 @@ interface PublishFailure {
  * toast that vanishes before the operator reads it.
  */
 function describePublishFailure(error: SerializedError): PublishFailure {
-  if (error.code === "CONFLICT" && /channel before publishing/i.test(error.message)) {
+  if (
+    error.code === "CONFLICT" &&
+    /channel before publishing/i.test(error.message)
+  ) {
     return { message: error.message, showChannelsLink: true };
   }
 
-  if (error.code === "CONFLICT" && /already being published/i.test(error.message)) {
+  if (
+    error.code === "CONFLICT" &&
+    /already being published/i.test(error.message)
+  ) {
     return {
       message:
         `${error.message} There's no automatic retry for a stalled or failed publish — ` +
@@ -145,7 +152,9 @@ export function PublishVideoButton({
       const described = describePublishFailure(result.error);
       setPhase("error");
       setFailure(described);
-      toast.error("Could not publish this video", { description: described.message });
+      toast.error("Could not publish this video", {
+        description: described.message,
+      });
       return;
     }
 
@@ -181,13 +190,16 @@ export function PublishVideoButton({
               <DialogHeader>
                 <DialogTitle>Uploading to YouTube</DialogTitle>
                 <DialogDescription>
-                  This takes a few minutes for a video this size — don&apos;t close this tab.
+                  This takes a few minutes for a video this size — don&apos;t
+                  close this tab.
                 </DialogDescription>
               </DialogHeader>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                Uploading, please wait…
-              </div>
+              <DialogBody>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  Uploading, please wait…
+                </div>
+              </DialogBody>
             </>
           ) : (
             <>
@@ -198,31 +210,38 @@ export function PublishVideoButton({
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="space-y-2 text-sm text-muted-foreground">
-                <p>{UPLOAD_VISIBILITY_NOTE}</p>
-                <p>
-                  It publishes to <strong className="text-foreground">{channelName}</strong>.
-                </p>
-                <p>
-                  This can&apos;t be undone from Framecast: there&apos;s no unpublish action
-                  here, and a video can only be published once. To delete it or change its
-                  visibility afterwards, use YouTube Studio.
-                </p>
-              </div>
-
-              {phase === "error" && failure && (
-                <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
-                  <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                  <div className="space-y-1">
-                    <p>{failure.message}</p>
-                    {failure.showChannelsLink && (
-                      <Link href="/channels" className="underline underline-offset-3">
-                        Go to channels
-                      </Link>
-                    )}
-                  </div>
+              <DialogBody>
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p>{UPLOAD_VISIBILITY_NOTE}</p>
+                  <p>
+                    It publishes to{" "}
+                    <strong className="text-foreground">{channelName}</strong>.
+                  </p>
+                  <p>
+                    This can&apos;t be undone from Framecast: there&apos;s no
+                    unpublish action here, and a video can only be published
+                    once. To delete it or change its visibility afterwards, use
+                    YouTube Studio.
+                  </p>
                 </div>
-              )}
+
+                {phase === "error" && failure && (
+                  <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
+                    <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                    <div className="space-y-1">
+                      <p>{failure.message}</p>
+                      {failure.showChannelsLink && (
+                        <Link
+                          href="/channels"
+                          className="underline underline-offset-3"
+                        >
+                          Go to channels
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </DialogBody>
 
               <DialogFooter>
                 <Button onClick={onConfirm}>

@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -104,6 +105,8 @@ export function CredentialDialog({
             </DialogDescription>
           </DialogHeader>
 
+          <DialogBody>
+
           <div className="space-y-4 py-2">
             <div className="space-y-2">
               <Label htmlFor="apiKey">API key</Label>
@@ -137,6 +140,8 @@ export function CredentialDialog({
               )}
             </div>
           </div>
+          </DialogBody>
+
 
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>

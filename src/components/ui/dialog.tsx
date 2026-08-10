@@ -40,7 +40,7 @@ function DialogOverlay({
       data-slot="dialog-overlay"
       className={cn(
         // `black/50`, not `black/10`. At 10% the page behind stayed almost
-        // fully lit, so the dialog read as a pale card floating on live
+        // fully lit, so the dialog read as a pale card floating over live
         // content instead of as a focused, separate layer.
         "fixed inset-0 isolate z-50 bg-black/50 duration-100 supports-backdrop-filter:backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
@@ -50,6 +50,24 @@ function DialogOverlay({
   )
 }
 
+/**
+ * Three fixed regions, not one scrolling box: DialogHeader, DialogBody and
+ * DialogFooter are laid out as a column where only the body scrolls. The
+ * earlier design stuck the header and footer to a single scroll container,
+ * which meant content slid *underneath* them and, because a sticky element is
+ * constrained by its parent's box rather than the scrollport, the footer rode
+ * along with the content whenever a consumer wrapped its children in a
+ * `<form>` — which all of them do.
+ *
+ * `[&>form]:contents` is what makes that wrapper stop mattering: the form no
+ * longer generates a layout box, so header, body and footer become direct
+ * children of this column. Submission and validation are unaffected —
+ * `display: contents` removes the box, not the element.
+ *
+ * `p-0` because the padding belongs to each region; that is what lets the
+ * header and footer bars span edge to edge while their content stays inset.
+ * `overflow-hidden` clips those bars to the rounded corners.
+ */
 function DialogContent({
   className,
   children,
@@ -64,61 +82,24 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          // A centred `fixed` box with no height ceiling grows past both edges of
-          // the viewport, and because it is translated rather than laid out, the
-          // page cannot scroll to reach what overflows — the submit button ends
-          // up unreachable. `dvh` rather than `vh` so a mobile URL bar
-          // appearing does not reintroduce the same cut-off.
-          //
-          // `sm:max-w-md`, not `sm:max-w-sm`: every dialog
-          // in this app is a form (a select plus two or three labelled
-          // in this app is a form, and 384px left the fields cramped.
-          //
-          // No `text-sm` on the container either. Setting a base size here
-          // shrank titles and labels along with body copy, which flattened
-          // every dialog into one uniform small size with no hierarchy —
-          // DialogTitle and DialogDescription set their own sizes instead.
-          // `p-0` and `overflow-hidden`: the padding belongs to the three
-          // regions inside, not to this box. That is what lets the header and
-          // footer bars run edge to edge while their text stays inset, and
-          // `overflow-hidden` is what clips those full-bleed bars to the
-          // rounded corners instead of letting them square off the top and
-          // bottom of the dialog.
-          // `grid-rows-[minmax(0,1fr)]`, not a bare `grid`: an implicit grid row
-          // is auto-sized to its content, so tall content grew the row past
-          // this box's max-height and `overflow-hidden` then clipped the
-          // dialog — the top and bottom were cut off on screen instead of the
-          // inner region scrolling. A `minmax(0,1fr)` row is allowed to shrink,
-          // which is what hands the overflow to the scroll container inside.
-          "fixed top-1/2 left-1/2 z-50 grid grid-rows-[minmax(0,1fr)] max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // `dvh` rather than `vh` so a mobile URL bar appearing does not push
+          // the dialog past the bottom of the screen. The height ceiling is
+          // what forces DialogBody to scroll instead of the dialog growing off
+          // both edges, where nothing could scroll it back into reach.
+          "fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 [&>form]:contents",
           className
         )}
         {...props}
       >
-        {/* `overflow-x-clip` is load-bearing: the header and footer below use a
-            negative horizontal margin to reach the dialog's edges, which makes
-            them wider than this container — and a container with
-            `overflow-y: auto` and a visible x-axis resolves x to `auto` too,
-            so the whole dialog gained a horizontal scrollbar. Clipping x kills
-            that without clipping the sticky positioning the way
-            `overflow-x: hidden` on some ancestors would.
-
-            The horizontal padding lives here rather than on the box outside,
-            so ordinary content is inset while those two bars are not. */}
-        <div className="grid min-h-0 gap-4 overflow-y-auto overflow-x-clip overscroll-contain px-6 pb-4">
-          {children}
-        </div>
+        {children}
         {showCloseButton && (
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
             <Button
               variant="ghost"
-              // z-20: above the sticky header/footer's z-10, so it stays
-              // clickable even when one of them is pinned under it.
-              className="absolute top-4 right-4 z-20 text-muted-foreground hover:text-foreground"
+              className="absolute top-3.5 right-3.5 z-20 text-muted-foreground hover:text-foreground"
               size="icon-sm"
             >
-              <XIcon
-              />
+              <XIcon />
               <span className="sr-only">Close</span>
             </Button>
           </DialogPrimitive.Close>
@@ -128,15 +109,15 @@ function DialogContent({
   )
 }
 
+/** Fixed top region. `shrink-0` keeps it at its natural height while the body
+ *  absorbs the shrinking; `pr-12` reserves room for the close button so a long
+ *  title cannot run underneath it. */
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-header"
       className={cn(
-        // `-mx-6 px-6` gives a bar that spans the dialog edge to edge while its
-        // text stays inset, and `border-b` draws the line the content scrolls
-        // under. `pr-12` keeps the title clear of the close button.
-        "sticky top-0 z-10 -mx-6 flex flex-col gap-1 border-b bg-popover px-6 pt-5 pr-12 pb-3",
+        "flex shrink-0 flex-col gap-1 border-b px-6 pt-5 pr-12 pb-3",
         className
       )}
       {...props}
@@ -144,6 +125,26 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
+/**
+ * The only region that scrolls. `min-h-0` is what allows a flex item to shrink
+ * below its content — without it the body keeps its full height, the column
+ * overflows the dialog's max-height, and `overflow-hidden` clips the footer
+ * off the bottom of the screen rather than the body scrolling.
+ */
+function DialogBody({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="dialog-body"
+      className={cn(
+        "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-6 py-4",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+/** Fixed bottom region, mirroring the header. */
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -156,10 +157,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        // Mirrors the header: full-bleed bar, inset content, a rule the body
-        // scrolls under. `-mb-6` cancels the scroll container's bottom padding
-        // so the bar sits flush against the dialog's bottom edge.
-        "sticky bottom-0 z-10 -mx-6 -mb-4 mt-2 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 sm:flex-row sm:justify-end sm:gap-2",
+        "flex shrink-0 flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 sm:flex-row sm:justify-end sm:gap-2",
         className
       )}
       {...props}
@@ -182,9 +180,8 @@ function DialogTitle({
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        // `text-lg` + `font-semibold`: at text-base/medium the title sat at
-        // almost the same weight and size as the description under it, so a
-        // dialog opened with no clear focal point.
+        // At text-base/medium the title sat at almost the same size and weight
+        // as the description beneath it, so a dialog opened with no focal point.
         "font-heading text-lg leading-tight font-semibold tracking-tight",
         className
       )}
@@ -211,6 +208,7 @@ function DialogDescription({
 
 export {
   Dialog,
+  DialogBody,
   DialogClose,
   DialogContent,
   DialogDescription,

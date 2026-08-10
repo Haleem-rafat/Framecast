@@ -11,6 +11,7 @@ import type { z } from "zod";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -154,7 +155,7 @@ export function PromptTemplateDialog({
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="sm:max-w-2xl">
-        <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
+        <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <DialogHeader>
             <DialogTitle>{isEdit ? "Edit template" : "New template"}</DialogTitle>
             <DialogDescription>
@@ -163,6 +164,8 @@ export function PromptTemplateDialog({
               generated.
             </DialogDescription>
           </DialogHeader>
+
+          <DialogBody>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
@@ -308,6 +311,8 @@ export function PromptTemplateDialog({
               Make this the default template for its category
             </Label>
           </div>
+          </DialogBody>
+
 
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>

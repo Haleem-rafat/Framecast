@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -82,7 +83,7 @@ export function CreateProjectDialog({
         </Button>
       </DialogTrigger>
       <DialogContent>
-        <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
+        <form onSubmit={handleSubmit(onSubmit)} noValidate>
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
             <DialogDescription>
@@ -90,6 +91,8 @@ export function CreateProjectDialog({
               channel.
             </DialogDescription>
           </DialogHeader>
+
+          <DialogBody>
 
           <div className="space-y-2">
             <Label htmlFor="name">Name</Label>
@@ -137,6 +140,8 @@ export function CreateProjectDialog({
               />
             </div>
           )}
+          </DialogBody>
+
 
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting}>
