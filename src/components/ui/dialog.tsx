@@ -159,7 +159,7 @@ function DialogFooter({
         // Mirrors the header: full-bleed bar, inset content, a rule the body
         // scrolls under. `-mb-6` cancels the scroll container's bottom padding
         // so the bar sits flush against the dialog's bottom edge.
-        "sticky bottom-0 z-10 -mx-6 -mb-4 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 sm:flex-row sm:justify-end sm:gap-2",
+        "sticky bottom-0 z-10 -mx-6 -mb-4 mt-2 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 sm:flex-row sm:justify-end sm:gap-2",
         className
       )}
       {...props}

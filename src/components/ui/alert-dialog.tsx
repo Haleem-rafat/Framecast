@@ -121,7 +121,7 @@ function AlertDialogFooter({
         // holds the confirm button, so it must not scroll out of reach, and a
         // translucent background would let body content show through it once
         // pinned. `bg-muted` rather than `bg-muted/50`.
-        "sticky bottom-0 z-10 -mx-6 -mb-4 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end sm:gap-3",
+        "sticky bottom-0 z-10 -mx-6 -mb-4 mt-2 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end sm:gap-3",
         className
       )}
       {...props}
