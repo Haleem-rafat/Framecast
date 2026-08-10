@@ -341,6 +341,76 @@ export class JobService {
     });
   }
 
+  /**
+   * Takes the same lease the worker uses, for a runner that is not the
+   * worker — today that means `scripts/render.ts`.
+   *
+   * The CLI used to call `runPipeline` directly, holding nothing. That made
+   * it invisible to `claimNext`, which reads an unleased video as free work,
+   * so the worker would happily claim a video the CLI was already halfway
+   * through. `FootageService.collect` has no status guard and decides how
+   * many clips to fetch with a plain read-then-write, so both runners read
+   * "0 clips exist", both computed the same shortfall, and both downloaded
+   * and stored it — double the download time, double the storage against a
+   * free-tier bucket, and roughly twice the inputs handed to FFmpeg, whose
+   * memory growth is exactly what the clip cap exists to bound.
+   *
+   * Deliberately does not touch `status` or `attempts`. The CLI is a
+   * debugging tool and must keep running against a video in whatever state
+   * it is already in; all this does is make it visible to the worker, since
+   * `claimNext` skips any video whose lease is still live.
+   */
+  async acquireDirectLease(userId: string, videoId: string): Promise<void> {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    const now = new Date();
+    const { count } = await prisma.video.updateMany({
+      where: {
+        id: videoId,
+        userId,
+        deletedAt: null,
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+      },
+      data: { leaseExpiresAt: new Date(now.getTime() + LEASE_SECONDS * 1000) },
+    });
+
+    if (count === 0) {
+      throw new ConflictError(
+        "Another runner is already working on this video — either the render " +
+          "worker or a second CLI run. Wait for it to finish, or cancel it " +
+          "from the app, before running this again.",
+      );
+    }
+  }
+
+  /**
+   * Renews a lease taken by `acquireDirectLease`. Unlike `heartbeat` this
+   * reports nothing back: the CLI has no cooperative-cancellation loop, so
+   * there is no `cancelRequested` for it to act on.
+   */
+  async renewDirectLease(videoId: string): Promise<void> {
+    await prisma.video.updateMany({
+      where: { id: videoId },
+      data: { leaseExpiresAt: new Date(Date.now() + LEASE_SECONDS * 1000) },
+    });
+  }
+
+  /** Drops a lease taken by `acquireDirectLease`, so the worker can pick the
+   * video up again. Must run even when the pipeline threw. */
+  async releaseDirectLease(videoId: string): Promise<void> {
+    await prisma.video.updateMany({
+      where: { id: videoId },
+      data: { leaseExpiresAt: null },
+    });
+  }
+
   /** Queues an already-approved, idle video, or restarts a retryable
    * failure — without resetting `attempts`. See `requeue` for the guard. */
   async start(userId: string, videoId: string): Promise<void> {

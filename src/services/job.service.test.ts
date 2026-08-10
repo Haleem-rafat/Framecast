@@ -191,6 +191,23 @@ describe("jobService.claimNext", () => {
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.attempts).toBe(1);
   });
+
+  // Lives in this block, not with the other acquireDirectLease tests, because
+  // it calls claimNext — and claimNext scans every video system-wide, so it
+  // needs the shield this block installs.
+  it("does not claim a video the CLI holds a direct lease on", async () => {
+    const videoId = await createVideo({ status: "QUEUED" });
+
+    await jobService.acquireDirectLease(userId, videoId);
+
+    const claimed = await jobService.claimNext("worker-a");
+    expect(claimed?.videoId).not.toBe(videoId);
+
+    await jobService.releaseDirectLease(videoId);
+
+    const afterRelease = await jobService.claimNext("worker-a");
+    expect(afterRelease?.videoId).toBe(videoId);
+  });
 });
 
 describe("jobService.heartbeat", () => {
@@ -466,6 +483,30 @@ describe("jobService.retry", () => {
       expect(transitions).toBe(run + 1);
     }
   }, 30_000);
+});
+
+describe("jobService.acquireDirectLease — the CLI must be visible to the worker", () => {
+  it("refuses a second runner while a lease is live, and allows one once it lapses", async () => {
+    const videoId = await createVideo({ status: "QUEUED" });
+
+    await jobService.acquireDirectLease(userId, videoId);
+    await expect(jobService.acquireDirectLease(userId, videoId)).rejects.toThrow(ConflictError);
+
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+    });
+
+    await expect(jobService.acquireDirectLease(userId, videoId)).resolves.toBeUndefined();
+  });
+
+  it("refuses a video that does not belong to the caller", async () => {
+    const videoId = await createVideo({ status: "QUEUED" });
+
+    await expect(
+      jobService.acquireDirectLease("00000000-0000-4000-8000-000000000001", videoId),
+    ).rejects.toThrow(NotFoundError);
+  });
 });
 
 describe("jobService.start — recovering wedged videos", () => {

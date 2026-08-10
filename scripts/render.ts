@@ -75,30 +75,64 @@ async function main(): Promise<void> {
   console.log(`Operator: ${user.email}`);
   console.log(`Video:    ${videoId}`);
 
-  await runPipeline({
-    userId: user.id,
-    videoId,
-    force: forceNarration,
-    // No shouldCancel: the CLI runs to completion (or until the process is
-    // killed outright) — cooperative cancellation is a worker concern, wired
-    // up against its heartbeat.
-    onProgress: (event) => {
-      switch (event.type) {
-        case "stage-start":
-          console.log(`\n==> ${STAGE_LABELS[event.stage] ?? event.stage}`);
-          break;
-        case "message":
-          printProgress(event.message);
-          break;
-        case "stage-done":
-          console.log(`    done in ${formatElapsed(event.elapsedMs)} — ${event.detail}`);
-          break;
-        case "stage-failed":
-          console.log(`    failed after ${formatElapsed(event.elapsedMs)}`);
-          break;
-      }
-    },
-  });
+  // Take the same lease the worker takes. Without it this CLI is invisible
+  // to `JobService.claimNext`, which reads an unleased video as free work —
+  // so a running worker would claim a video this process is already halfway
+  // through and both would download footage and spend quota against it. See
+  // `acquireDirectLease` for the full failure it prevents.
+  const { jobService, HEARTBEAT_SECONDS } = await import("@/services/job.service");
+  await jobService.acquireDirectLease(user.id, videoId);
+
+  // Tracked, not fire-and-forget: `clearInterval` stops future ticks but does
+  // nothing about one already in flight, so a renewal could otherwise land
+  // *after* the release below and leave a ten-minute lease on a video nothing
+  // is working on — which `claimNext` would then refuse to touch until it
+  // expired. The worker had exactly this bug.
+  let inFlightRenewal: Promise<void> = Promise.resolve();
+
+  const leaseTimer = setInterval(() => {
+    inFlightRenewal = jobService.renewDirectLease(videoId).catch((error: unknown) => {
+      // A failed renewal is not fatal on its own — the lease has ten minutes
+      // of runway and the next tick may well succeed — but it must be
+      // visible, because the failure it precedes (a worker claiming this
+      // video mid-run) looks nothing like a lease problem.
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`    warning: could not renew the lease on this video: ${message}`);
+    });
+  }, HEARTBEAT_SECONDS * 1000);
+
+  try {
+    await runPipeline({
+      userId: user.id,
+      videoId,
+      force: forceNarration,
+      // No shouldCancel: the CLI runs to completion (or until the process is
+      // killed outright) — cooperative cancellation is a worker concern,
+      // wired up against its heartbeat.
+      onProgress: (event) => {
+        switch (event.type) {
+          case "stage-start":
+            console.log(`\n==> ${STAGE_LABELS[event.stage] ?? event.stage}`);
+            break;
+          case "message":
+            printProgress(event.message);
+            break;
+          case "stage-done":
+            console.log(`    done in ${formatElapsed(event.elapsedMs)} — ${event.detail}`);
+            break;
+          case "stage-failed":
+            console.log(`    failed after ${formatElapsed(event.elapsedMs)}`);
+            break;
+        }
+      },
+    });
+  } finally {
+    // Stop scheduling, then let any tick already running finish, and only
+    // then drop the lease — so the release is always the last write.
+    clearInterval(leaseTimer);
+    await inFlightRenewal;
+    await jobService.releaseDirectLease(videoId);
+  }
 
   console.log(
     `\nVideo ${videoId} is ready. Total time: ${formatElapsed(Date.now() - overallStart)}.`,
