@@ -77,7 +77,11 @@ function DialogContent({
         {...props}
       >
         {/* `min-h-0` — a grid item will not shrink below its content without it,
-            which would defeat the max-height above. */}
+            which would defeat the max-height above. DialogHeader/DialogFooter
+            pin themselves with `sticky` from inside this container instead of
+            this div splitting into header/body/footer regions — that way any
+            consumer's children work without being restructured, and the close
+            button below stays exempt from the scroll for the reason above. */}
         <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain">
           {children}
         </div>
@@ -85,7 +89,9 @@ function DialogContent({
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-2 right-2"
+              // z-20: above the sticky header/footer's z-10, so it stays
+              // clickable even when one of them is pinned under it.
+              className="absolute top-2 right-2 z-20"
               size="icon-sm"
             >
               <XIcon
@@ -103,7 +109,16 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-col gap-2", className)}
+      className={cn(
+        // `sticky top-0` pins this to the top of the scroll container above
+        // instead of it scrolling away with the body on a tall dialog. The
+        // `-mx-4 -mt-4` + `px-4 pt-4` pair cancels and re-applies the parent's
+        // padding so the header's own opaque background extends flush to the
+        // dialog's edges (matching DialogFooter below) instead of leaving a
+        // gap the scrolled body would show through.
+        "sticky top-0 z-10 -mx-4 -mt-4 flex flex-col gap-2 rounded-t-xl bg-popover px-4 pt-4",
+        className
+      )}
       {...props}
     />
   )
@@ -121,7 +136,11 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+        // `sticky bottom-0` pins this to the bottom of the scroll container
+        // above instead of it scrolling away with the body on a tall dialog.
+        // The background must stay opaque (not translucent) once pinned, or
+        // body content scrolling underneath would show through it.
+        "sticky bottom-0 z-10 -mx-4 -mb-4 flex flex-col-reverse gap-2.5 rounded-b-xl border-t bg-muted p-4 sm:flex-row sm:justify-end sm:gap-3",
         className
       )}
       {...props}
