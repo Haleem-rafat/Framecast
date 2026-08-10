@@ -287,14 +287,14 @@ export function PipelinePanel({
           // to guess whether this is stuck or just hasn't been picked up yet.
           <Alert>
             <Hourglass />
-            <AlertTitle>Waiting for a worker</AlertTitle>
+            <AlertTitle>Waiting for the render service</AlertTitle>
             <AlertDescription>
-              This video is queued, but no render worker has claimed it yet.
-              Start one with{" "}
-              <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">
-                pnpm worker
-              </code>{" "}
-              — it polls for queued videos and claims this one automatically.
+              This video is queued and will start automatically as soon as the
+              render service picks it up. Rendering runs on its own machine
+              because it needs FFmpeg and several minutes per video, so nothing
+              here needs to stay open — you can close this page and come back.
+              If a video stays queued for a long time, the render service is
+              offline.
             </AlertDescription>
           </Alert>
         ) : (
