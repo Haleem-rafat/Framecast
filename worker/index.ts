@@ -81,8 +81,18 @@ async function main(): Promise<void> {
     // the encode itself.
     let cancelRequested = false;
 
+    // Tracks whichever heartbeat call is currently in flight (or a resolved
+    // promise, between ticks). `clearInterval` only stops *future* ticks — a
+    // tick already dispatched keeps running, and `jobService.heartbeat`
+    // renews `leaseExpiresAt` into the future. If that write lands after
+    // `release`'s `leaseExpiresAt: null`, a video this worker just finished
+    // is left looking leased for another ten minutes. `stopHeartbeat` below
+    // awaits this before every `release` call so release's write is always
+    // the one that lands last.
+    let heartbeatInFlight: Promise<void> = Promise.resolve();
+
     const heartbeatTimer = setInterval(() => {
-      jobService
+      heartbeatInFlight = jobService
         .heartbeat(videoId)
         .then(({ cancelRequested: requested }) => {
           if (requested && !cancelRequested) {
@@ -95,6 +105,11 @@ async function main(): Promise<void> {
           log(`heartbeat failed for ${videoId}: ${message}`);
         });
     }, HEARTBEAT_SECONDS * 1000);
+
+    async function stopHeartbeat(): Promise<void> {
+      clearInterval(heartbeatTimer);
+      await heartbeatInFlight;
+    }
 
     try {
       await runPipeline({
@@ -119,6 +134,7 @@ async function main(): Promise<void> {
         },
       });
 
+      await stopHeartbeat();
       await jobService.release(videoId, "succeeded");
       log(`released video ${videoId}: READY`);
     } catch (error) {
@@ -136,6 +152,8 @@ async function main(): Promise<void> {
 
       log(`releasing video ${videoId}: ${outcome} — ${message}`);
 
+      await stopHeartbeat();
+
       try {
         await jobService.release(videoId, outcome, message);
       } catch (releaseError) {
@@ -144,10 +162,14 @@ async function main(): Promise<void> {
         log(`failed to release video ${videoId} after ${outcome}: ${releaseMessage}`);
       }
     } finally {
-      // Stopped in `finally`, unconditionally: a leaked interval would keep
-      // renewing this video's lease forever, which is worse than no lease at
-      // all — the video would look alive to `claimNext` even though nothing
-      // is running it.
+      // Belt-and-braces alongside the explicit `stopHeartbeat` calls above:
+      // a leaked interval would keep renewing this video's lease forever,
+      // which is worse than no lease at all — the video would look alive to
+      // `claimNext` even though nothing is running it. `clearInterval` is
+      // idempotent, so calling it again here (it was likely already called
+      // by `stopHeartbeat`) is harmless — this is only a backstop for a path
+      // that reaches here without having called it, e.g. an unexpected throw
+      // from `stopHeartbeat` or `release` themselves.
       clearInterval(heartbeatTimer);
     }
   }
