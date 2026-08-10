@@ -28,8 +28,12 @@ COPY prisma.config.ts ./
 # (see the `worker` script), which is a devDependency. There is no build step
 # that would strip it back out, so a `--prod` install would produce an image
 # that cannot start.
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+# No `--mount=type=cache` here, deliberately. Railway's builder requires every
+# cache mount id to carry its own cache-key prefix and rejects a bare one
+# outright ("missing the cacheKey prefix from its id"), which fails the build
+# before a single layer runs. The mount only ever saved download time on
+# rebuilds, so portability across builders is worth more than it is.
+RUN pnpm install --frozen-lockfile
 
 # ---- Runtime --------------------------------------------------------------
 FROM base AS runner
