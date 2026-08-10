@@ -196,6 +196,15 @@ model Video {
   // Denormalised only as a UI hint; the durable record lives in VideoStatusEvent.
   failureReason   String?
   durationSeconds Int?
+  /// Worker lease. Null when unclaimed; a value in the past means the holder
+  /// died and the video is claimable again. A lock would strand it forever.
+  leaseExpiresAt    DateTime?
+  /// Guards a deterministically-failing video against retrying until the end of
+  /// time, spending real provider money each round.
+  attempts          Int       @default(0)
+  /// Cooperative cancellation. The worker owns the FFmpeg child process, so
+  /// only it can stop one; it checks this on every heartbeat.
+  cancelRequestedAt DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
@@ -217,6 +226,7 @@ model Video {
   @@index([userId, status, deletedAt])
   @@index([projectId, deletedAt])
   @@index([createdAt])
+  @@index([status, leaseExpiresAt])
   @@map("video")
 }
 
