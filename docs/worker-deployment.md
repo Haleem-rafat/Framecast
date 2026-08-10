@@ -34,8 +34,16 @@ project's **production** environment (`vercel env pull` locally, or the Vercel d
 | `PIXABAY_API_KEY` | footage |
 | `AI_GATEWAY_API_KEY` | not used by the worker today, but the service graph reads it |
 
-`BETTER_AUTH_SECRET` and the Google OAuth variables are **not** needed — the worker
-serves no HTTP and signs nobody in.
+`BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` **are** required, despite the worker serving
+no HTTP and signing nobody in: `loadServerEnv` validates one schema for the whole
+codebase, and the worker imports the service graph that reads it. Without them it exits at
+boot on a validation error rather than running. The Google OAuth variables are genuinely
+not needed.
+
+Generate the whole block from a pulled environment rather than copying values by hand —
+`.framecast/env/railway-dev.env` is produced that way and pastes directly into Railway's
+**Variables → Raw Editor**. Railway's own "suggested variables" are scraped from source
+and default `DATABASE_URL` to `localhost`, which fails immediately; do not accept them.
 
 ### The one that will bite you
 

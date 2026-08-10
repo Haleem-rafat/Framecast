@@ -48,6 +48,15 @@ RUN apt-get update \
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Regenerate the Prisma client inside the image rather than shipping the one
+# from the repo. `src/generated` is committed, but it is generated on the
+# operator's macOS ARM machine, and Prisma's client is built against the
+# platform it was generated on — carrying that into a linux container is how
+# you get an engine mismatch at runtime instead of at build time. It is
+# excluded in .dockerignore for exactly this reason, so this step is what puts
+# a correct client in the image.
+RUN pnpm prisma generate
+
 # Fail fast and loudly if the image was built without the codecs the pipeline
 # needs, rather than discovering it when a render dies eight minutes in.
 RUN ffmpeg -hide_banner -encoders | grep -q libx264 \
