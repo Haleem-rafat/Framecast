@@ -295,17 +295,26 @@ export class JobService {
     // win; the other gets `count === 0` and a clean conflict rather than
     // silently queuing the same video twice.
     //
-    // The lease predicate is repeated here for the same reason the status is:
-    // it is what makes reclaiming a stranded video safe. Without it, a worker
-    // that renewed its lease between the read above and this write would have
-    // its video yanked out from under it mid-render.
+    // The lease predicate is repeated only when reclaiming a stranded video,
+    // where it is load-bearing: `GENERATING`/`RENDERING` is exactly the state
+    // a live worker holds, so without it a worker that renewed its lease
+    // between the read above and this write would have its video yanked out
+    // from under it mid-render. It is deliberately NOT applied to the
+    // `QUEUED` and `FAILED` cases — no worker holds a video in either, so a
+    // lease still sitting on one is stale by definition, and refusing to
+    // requeue because of it would strand the video for the full remaining
+    // lease over a value this very write clears.
+    const leaseGuard = isStranded
+      ? { OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }] }
+      : {};
+
     const { count } = await prisma.video.updateMany({
       where: {
         id: videoId,
         userId,
         deletedAt: null,
         status: video.status,
-        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+        ...leaseGuard,
       },
       data: {
         status: "QUEUED",

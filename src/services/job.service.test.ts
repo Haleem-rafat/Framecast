@@ -467,3 +467,54 @@ describe("jobService.retry", () => {
     }
   }, 30_000);
 });
+
+describe("jobService.start — recovering wedged videos", () => {
+  // Nothing but the worker's own `release` ever cleared `cancelRequestedAt`,
+  // and `claimNext` skips any video that has it set. A cancel whose worker
+  // died before its next heartbeat — or one pressed during a CLI run, which
+  // never reads the flag at all — therefore left the video permanently
+  // unclaimable, with a Cancel button that did nothing.
+  it("clears a stale cancel request so the video can be claimed again", async () => {
+    const videoId = await createVideo({
+      status: "FAILED",
+      attempts: 1,
+      cancelRequestedAt: new Date(),
+    });
+
+    await jobService.start(userId, videoId);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("QUEUED");
+    expect(video.cancelRequestedAt).toBeNull();
+  });
+
+  it("reclaims a video stranded mid-flight by a worker that died", async () => {
+    const videoId = await createVideo({
+      status: "RENDERING",
+      leaseExpiresAt: new Date(Date.now() - 60_000),
+      cancelRequestedAt: new Date(),
+    });
+
+    await jobService.start(userId, videoId);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("QUEUED");
+    expect(video.leaseExpiresAt).toBeNull();
+    expect(video.cancelRequestedAt).toBeNull();
+  });
+
+  // The other half of that guard: a live lease means a worker really is
+  // holding this video, and requeuing it would pull the row out from under a
+  // render that is still running.
+  it("refuses to reclaim a video whose worker still holds a live lease", async () => {
+    const videoId = await createVideo({
+      status: "RENDERING",
+      leaseExpiresAt: new Date(Date.now() + 600_000),
+    });
+
+    await expect(jobService.start(userId, videoId)).rejects.toThrow(ConflictError);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("RENDERING");
+  });
+});
