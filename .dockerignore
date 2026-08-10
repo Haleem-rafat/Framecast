@@ -1,0 +1,38 @@
+# Everything here is either rebuilt inside the image, useless to it, or must
+# never leave this machine. Without this file the build context also carries
+# .framecast/ — which holds finished renders, currently ~175MB — to the
+# builder on every single build.
+
+# Dependencies and build output: reinstalled/regenerated in the image.
+node_modules
+.next
+out
+src/generated
+
+# Finished renders and other local pipeline scratch.
+.framecast
+
+# Secrets. `.env.local` in particular holds the Supabase service-role key,
+# the credential-encryption key and the Blob token. Runtime configuration is
+# injected by the host, never baked into an image.
+.env
+.env.*
+!.env.example
+
+# Local-only tooling and history.
+.git
+.gitignore
+.vercel
+.superpowers
+.claude
+coverage
+*.log
+
+# Documentation and specs: not needed to run anything.
+docs
+README.md
+
+# NOTE: `public/` is deliberately NOT ignored. This file applies to every
+# build from this context, and the app's own Dockerfile copies public/ into
+# its runtime image — excluding it here would break that build to save the
+# worker a few kilobytes.
