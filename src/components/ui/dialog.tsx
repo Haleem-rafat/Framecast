@@ -39,7 +39,10 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        // `black/50`, not `black/10`. At 10% the page behind stayed almost
+        // fully lit, so the dialog read as a pale card floating on live
+        // content instead of as a focused, separate layer.
+        "fixed inset-0 isolate z-50 bg-black/50 duration-100 supports-backdrop-filter:backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}
@@ -71,7 +74,16 @@ function DialogContent({
           // is absolutely positioned against this box, and an absolute child of
           // a scrolling ancestor scrolls away with the content. Scrolling the
           // body instead keeps the close button pinned.
-          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // `sm:max-w-md` and `p-6`, not `sm:max-w-sm` and `p-4`: every dialog
+          // in this app is a form (a select plus two or three labelled
+          // inputs), and 384px of width with 16px of padding left the fields
+          // butting against the edges with no room to breathe.
+          //
+          // No `text-sm` on the container either. Setting a base size here
+          // shrank titles and labels along with body copy, which flattened
+          // every dialog into one uniform small size with no hierarchy —
+          // DialogTitle and DialogDescription set their own sizes instead.
+          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-popover p-6 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}
@@ -91,7 +103,7 @@ function DialogContent({
               variant="ghost"
               // z-20: above the sticky header/footer's z-10, so it stays
               // clickable even when one of them is pinned under it.
-              className="absolute top-2 right-2 z-20"
+              className="absolute top-3.5 right-3.5 z-20 text-muted-foreground hover:text-foreground"
               size="icon-sm"
             >
               <XIcon
@@ -116,7 +128,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
         // padding so the header's own opaque background extends flush to the
         // dialog's edges (matching DialogFooter below) instead of leaving a
         // gap the scrolled body would show through.
-        "sticky top-0 z-10 -mx-4 -mt-4 flex flex-col gap-2 rounded-t-xl bg-popover px-4 pt-4",
+        "sticky top-0 z-10 -mx-6 -mt-6 flex flex-col gap-1.5 rounded-t-xl bg-popover px-6 pt-6 pb-1",
         className
       )}
       {...props}
@@ -140,7 +152,7 @@ function DialogFooter({
         // above instead of it scrolling away with the body on a tall dialog.
         // The background must stay opaque (not translucent) once pinned, or
         // body content scrolling underneath would show through it.
-        "sticky bottom-0 z-10 -mx-4 -mb-4 flex flex-col-reverse gap-2.5 rounded-b-xl border-t bg-muted p-4 sm:flex-row sm:justify-end sm:gap-3",
+        "sticky bottom-0 z-10 -mx-6 -mb-6 mt-2 flex flex-col-reverse gap-2.5 rounded-b-xl border-t bg-muted px-6 py-4 sm:flex-row sm:justify-end sm:gap-3",
         className
       )}
       {...props}
@@ -163,7 +175,10 @@ function DialogTitle({
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        "font-heading text-base leading-none font-medium",
+        // `text-lg` + `font-semibold`: at text-base/medium the title sat at
+        // almost the same weight and size as the description under it, so a
+        // dialog opened with no clear focal point.
+        "font-heading text-lg leading-tight font-semibold tracking-tight",
         className
       )}
       {...props}
