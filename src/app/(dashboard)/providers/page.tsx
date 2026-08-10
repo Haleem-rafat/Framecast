@@ -53,7 +53,7 @@ export default async function ProvidersPage() {
       <div className="space-y-2">
         <p className="text-muted-foreground text-sm">
           Platform-level services configured via the deployment environment —
-          read-only here; change them where the deployment's environment
+          read-only here; change them where the deployment&apos;s environment
           variables are set.
         </p>
         <EnvironmentProviderTable

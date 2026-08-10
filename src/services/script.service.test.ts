@@ -302,7 +302,6 @@ describe("scriptService.generate", () => {
         }
       }
 
-      // eslint-disable-next-line no-console -- surfaced for the report's literal output
       console.info(
         `[collision-rate] ${collisions}/${attempts} concurrent pairs collided`,
       );
