@@ -66,7 +66,7 @@ function AlertDialogContent({
           // Same height ceiling as DialogContent: a translated `fixed` box with
           // no maximum grows off-screen and cannot be scrolled back into reach,
           // which on a confirmation dialog would hide the confirm button itself.
-          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full -translate-x-1/2 -translate-y-1/2 rounded-xl bg-popover p-6 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}
@@ -79,7 +79,7 @@ function AlertDialogContent({
             the body to show through. `min-h-0` because a grid item will not
             shrink below its content without it, which would defeat the
             max-height above. */}
-        <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain">
+        <div className="grid min-h-0 gap-4 overflow-y-auto overflow-x-clip overscroll-contain px-6 pt-6 pb-6">
           {children}
         </div>
       </AlertDialogPrimitive.Content>
@@ -115,7 +115,7 @@ function AlertDialogFooter({
         // holds the confirm button, so it must not scroll out of reach, and a
         // translucent background would let body content show through it once
         // pinned. `bg-muted` rather than `bg-muted/50`.
-        "sticky bottom-0 z-10 -mx-6 -mb-6 mt-2 flex flex-col-reverse gap-2.5 rounded-b-xl border-t bg-muted px-6 py-4 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end sm:gap-3",
+        "sticky bottom-0 z-10 -mx-6 -mb-6 mt-1 flex flex-col-reverse gap-2.5 border-t bg-popover px-6 py-4 group-data-[size=sm]/alert-dialog-content:grid group-data-[size=sm]/alert-dialog-content:grid-cols-2 sm:flex-row sm:justify-end sm:gap-3",
         className
       )}
       {...props}

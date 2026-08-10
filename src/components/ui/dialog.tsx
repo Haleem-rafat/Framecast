@@ -70,31 +70,36 @@ function DialogContent({
           // up unreachable. `dvh` rather than `vh` so a mobile URL bar
           // appearing does not reintroduce the same cut-off.
           //
-          // The overflow lives on the inner wrapper, not here: the close button
-          // is absolutely positioned against this box, and an absolute child of
-          // a scrolling ancestor scrolls away with the content. Scrolling the
-          // body instead keeps the close button pinned.
-          // `sm:max-w-md` and `p-6`, not `sm:max-w-sm` and `p-4`: every dialog
+          // `sm:max-w-md`, not `sm:max-w-sm`: every dialog
           // in this app is a form (a select plus two or three labelled
-          // inputs), and 384px of width with 16px of padding left the fields
-          // butting against the edges with no room to breathe.
+          // in this app is a form, and 384px left the fields cramped.
           //
           // No `text-sm` on the container either. Setting a base size here
           // shrank titles and labels along with body copy, which flattened
           // every dialog into one uniform small size with no hierarchy —
           // DialogTitle and DialogDescription set their own sizes instead.
-          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-popover p-6 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // `p-0` and `overflow-hidden`: the padding belongs to the three
+          // regions inside, not to this box. That is what lets the header and
+          // footer bars run edge to edge while their text stays inset, and
+          // `overflow-hidden` is what clips those full-bleed bars to the
+          // rounded corners instead of letting them square off the top and
+          // bottom of the dialog.
+          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}
       >
-        {/* `min-h-0` — a grid item will not shrink below its content without it,
-            which would defeat the max-height above. DialogHeader/DialogFooter
-            pin themselves with `sticky` from inside this container instead of
-            this div splitting into header/body/footer regions — that way any
-            consumer's children work without being restructured, and the close
-            button below stays exempt from the scroll for the reason above. */}
-        <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain">
+        {/* `overflow-x-clip` is load-bearing: the header and footer below use a
+            negative horizontal margin to reach the dialog's edges, which makes
+            them wider than this container — and a container with
+            `overflow-y: auto` and a visible x-axis resolves x to `auto` too,
+            so the whole dialog gained a horizontal scrollbar. Clipping x kills
+            that without clipping the sticky positioning the way
+            `overflow-x: hidden` on some ancestors would.
+
+            The horizontal padding lives here rather than on the box outside,
+            so ordinary content is inset while those two bars are not. */}
+        <div className="grid min-h-0 gap-4 overflow-y-auto overflow-x-clip overscroll-contain px-6 pb-6">
           {children}
         </div>
         {showCloseButton && (
@@ -103,7 +108,7 @@ function DialogContent({
               variant="ghost"
               // z-20: above the sticky header/footer's z-10, so it stays
               // clickable even when one of them is pinned under it.
-              className="absolute top-3.5 right-3.5 z-20 text-muted-foreground hover:text-foreground"
+              className="absolute top-4 right-4 z-20 text-muted-foreground hover:text-foreground"
               size="icon-sm"
             >
               <XIcon
@@ -122,13 +127,10 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="dialog-header"
       className={cn(
-        // `sticky top-0` pins this to the top of the scroll container above
-        // instead of it scrolling away with the body on a tall dialog. The
-        // `-mx-4 -mt-4` + `px-4 pt-4` pair cancels and re-applies the parent's
-        // padding so the header's own opaque background extends flush to the
-        // dialog's edges (matching DialogFooter below) instead of leaving a
-        // gap the scrolled body would show through.
-        "sticky top-0 z-10 -mx-6 -mt-6 flex flex-col gap-1.5 rounded-t-xl bg-popover px-6 pt-6 pb-1",
+        // `-mx-6 px-6` gives a bar that spans the dialog edge to edge while its
+        // text stays inset, and `border-b` draws the line the content scrolls
+        // under. `pr-12` keeps the title clear of the close button.
+        "sticky top-0 z-10 -mx-6 flex flex-col gap-1.5 border-b bg-popover px-6 pt-6 pr-12 pb-4",
         className
       )}
       {...props}
@@ -148,11 +150,10 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        // `sticky bottom-0` pins this to the bottom of the scroll container
-        // above instead of it scrolling away with the body on a tall dialog.
-        // The background must stay opaque (not translucent) once pinned, or
-        // body content scrolling underneath would show through it.
-        "sticky bottom-0 z-10 -mx-6 -mb-6 mt-2 flex flex-col-reverse gap-2.5 rounded-b-xl border-t bg-muted px-6 py-4 sm:flex-row sm:justify-end sm:gap-3",
+        // Mirrors the header: full-bleed bar, inset content, a rule the body
+        // scrolls under. `-mb-6` cancels the scroll container's bottom padding
+        // so the bar sits flush against the dialog's bottom edge.
+        "sticky bottom-0 z-10 -mx-6 -mb-6 mt-1 flex flex-col-reverse gap-2.5 border-t bg-popover px-6 py-4 sm:flex-row sm:justify-end sm:gap-3",
         className
       )}
       {...props}
