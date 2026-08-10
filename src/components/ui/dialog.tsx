@@ -84,7 +84,13 @@ function DialogContent({
           // `overflow-hidden` is what clips those full-bleed bars to the
           // rounded corners instead of letting them square off the top and
           // bottom of the dialog.
-          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // `grid-rows-[minmax(0,1fr)]`, not a bare `grid`: an implicit grid row
+          // is auto-sized to its content, so tall content grew the row past
+          // this box's max-height and `overflow-hidden` then clipped the
+          // dialog — the top and bottom were cut off on screen instead of the
+          // inner region scrolling. A `minmax(0,1fr)` row is allowed to shrink,
+          // which is what hands the overflow to the scroll container inside.
+          "fixed top-1/2 left-1/2 z-50 grid grid-rows-[minmax(0,1fr)] max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover p-0 text-popover-foreground shadow-2xl shadow-black/20 ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}
@@ -99,7 +105,7 @@ function DialogContent({
 
             The horizontal padding lives here rather than on the box outside,
             so ordinary content is inset while those two bars are not. */}
-        <div className="grid min-h-0 gap-4 overflow-y-auto overflow-x-clip overscroll-contain px-6 pb-6">
+        <div className="grid min-h-0 gap-4 overflow-y-auto overflow-x-clip overscroll-contain px-6 pb-4">
           {children}
         </div>
         {showCloseButton && (
@@ -130,7 +136,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
         // `-mx-6 px-6` gives a bar that spans the dialog edge to edge while its
         // text stays inset, and `border-b` draws the line the content scrolls
         // under. `pr-12` keeps the title clear of the close button.
-        "sticky top-0 z-10 -mx-6 flex flex-col gap-1.5 border-b bg-popover px-6 pt-6 pr-12 pb-4",
+        "sticky top-0 z-10 -mx-6 flex flex-col gap-1 border-b bg-popover px-6 pt-5 pr-12 pb-3",
         className
       )}
       {...props}
@@ -153,7 +159,7 @@ function DialogFooter({
         // Mirrors the header: full-bleed bar, inset content, a rule the body
         // scrolls under. `-mb-6` cancels the scroll container's bottom padding
         // so the bar sits flush against the dialog's bottom edge.
-        "sticky bottom-0 z-10 -mx-6 -mb-6 mt-1 flex flex-col-reverse gap-2.5 border-t bg-popover px-6 py-4 sm:flex-row sm:justify-end sm:gap-3",
+        "sticky bottom-0 z-10 -mx-6 -mb-4 flex flex-col-reverse gap-2 border-t bg-popover px-6 py-3 *:[button]:h-8 sm:flex-row sm:justify-end sm:gap-2",
         className
       )}
       {...props}
