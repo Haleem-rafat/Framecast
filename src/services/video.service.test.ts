@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ConflictError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
@@ -85,6 +86,51 @@ describe("videoService", () => {
     await expect(
       videoService.get("00000000-0000-4000-8000-000000000001", video.id),
     ).rejects.toThrow();
+  });
+
+  // Gate 2's confirmation dialog (publish-video-button.tsx) reads the
+  // project's assigned channel and any Publication straight off this
+  // method's return value — this is the coverage that its shape is actually
+  // there, not just assumed from the schema.
+  it("includes the project's assigned channel and any publication", async () => {
+    const channel = await channelService.connect(userId, {
+      youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
+      title: "Money Mechanics",
+      accessToken: "ya29.test-access-token",
+      refreshToken: "1//test-refresh-token",
+      expiresInSeconds: 3600,
+      scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+    });
+    const channelProjectId = (
+      await projectService.create(userId, {
+        name: `${PROJECT_NAME}-channel`,
+        channelId: channel.id,
+      })
+    ).id;
+
+    const video = await videoService.create(userId, {
+      projectId: channelProjectId,
+      title: "Has a channel",
+      topic: "x",
+    });
+
+    const beforePublish = await videoService.get(userId, video.id);
+    expect(beforePublish.project.channel?.title).toBe("Money Mechanics");
+    expect(beforePublish.publication).toBeNull();
+
+    await prisma.publication.create({
+      data: {
+        videoId: video.id,
+        channelId: channel.id,
+        title: "Has a channel",
+        visibility: "UNLISTED",
+        status: "PUBLISHED",
+        youtubeVideoId: "yt_test123",
+      },
+    });
+
+    const afterPublish = await videoService.get(userId, video.id);
+    expect(afterPublish.publication?.youtubeVideoId).toBe("yt_test123");
   });
 
   it("appends exactly one event when approved concurrently", async () => {

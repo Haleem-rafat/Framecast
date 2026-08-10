@@ -1,6 +1,7 @@
 import { Clock } from "lucide-react";
 
 import { ApproveScriptButton } from "@/features/videos/components/approve-script-button";
+import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import type { VideoStatus } from "@/generated/prisma/enums";
 
@@ -13,12 +14,19 @@ export function VideoHeader({
   status,
   projectName,
   wordCount,
+  channelName,
+  youtubeVideoId,
 }: {
   videoId: string;
   title: string;
   status: VideoStatus;
   projectName: string;
   wordCount: number;
+  /** The video's project's assigned channel, if any — Gate 2's confirmation
+   * names it so the operator isn't guessing where the upload goes. */
+  channelName: string | null;
+  /** Set once Gate 2 has actually published this video. */
+  youtubeVideoId: string | null;
 }) {
   const estimatedMinutes = wordCount > 0 ? wordCount / WORDS_PER_MINUTE : 0;
   const canApprove = status === "DRAFT" && wordCount > 0;
@@ -41,7 +49,15 @@ export function VideoHeader({
         </p>
       </div>
 
-      <ApproveScriptButton videoId={videoId} canApprove={canApprove} />
+      <div className="flex items-start gap-2">
+        <ApproveScriptButton videoId={videoId} canApprove={canApprove} />
+        <PublishVideoButton
+          videoId={videoId}
+          status={status}
+          channelName={channelName}
+          youtubeVideoId={youtubeVideoId}
+        />
+      </div>
     </div>
   );
 }

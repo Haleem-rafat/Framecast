@@ -24,7 +24,18 @@ export class VideoService {
     const video = await prisma.video.findFirst({
       where: { id, userId, deletedAt: null },
       include: {
-        project: { select: { id: true, name: true } },
+        // `channel` here is Gate 2's "which channel does this publish to"
+        // answer — the publish confirmation dialog names it rather than
+        // making the operator guess. Only `id`/`title` selected: never the
+        // token columns (see channel.service.ts's SUMMARY_SELECT for the
+        // same discipline).
+        project: {
+          select: {
+            id: true,
+            name: true,
+            channel: { select: { id: true, title: true } },
+          },
+        },
         script: {
           include: {
             versions: { orderBy: { version: "desc" } },
@@ -41,6 +52,12 @@ export class VideoService {
           select: { outputUrl: true },
         },
         voiceOver: { select: { audioUrl: true, durationSeconds: true } },
+        // `Publication` is `@unique` on `videoId` (Gate 2's claim row, see
+        // publish.service.ts) — at most one, so a direct `include` here is
+        // enough to show the operator the real result once PUBLISHED.
+        publication: {
+          select: { youtubeVideoId: true, status: true, error: true },
+        },
       },
     });
 

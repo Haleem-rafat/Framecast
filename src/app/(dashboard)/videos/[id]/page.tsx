@@ -9,6 +9,7 @@ import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
 import { VideoPreview } from "@/features/videos/components/video-preview";
 import { isAppError } from "@/lib/errors";
+import { statRenderFile } from "@/lib/local-render-storage";
 import { objectSizeBytes, signedUrl } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
@@ -28,10 +29,10 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 /**
  * Turns a private-bucket path into something the browser can play — a signed
- * URL plus (best-effort) its size. Never throws: this page's rendered video
- * and narration are worth showing even if the storage round trip for one of
- * them fails, so a failure here just means that section falls back to its
- * "couldn't load" state instead of taking the whole page down.
+ * URL plus (best-effort) its size. Never throws: this page's narration is
+ * worth showing even if the storage round trip fails, so a failure here just
+ * means that section falls back to its "couldn't load" state instead of
+ * taking the whole page down.
  */
 async function resolvePreviewAsset(
   storagePath: string,
@@ -44,6 +45,27 @@ async function resolvePreviewAsset(
 
   const sizeBytes = await objectSizeBytes(storagePath).catch(() => null);
   return { url, sizeBytes };
+}
+
+/**
+ * The rendered video's local-disk counterpart to `resolvePreviewAsset` above.
+ * No signed URL to mint — the browser is pointed at this app's own streaming
+ * route (`/api/videos/[id]/file`, see local-render-storage.ts), which
+ * resolves the file from the video id server-side. Same never-throws
+ * contract: a missing render (see `RenderFileMissingError`) just means this
+ * section falls back to "couldn't load" rather than taking the page down —
+ * the operator's next move either way is to re-render.
+ */
+async function resolveRenderPreview(
+  videoId: string,
+): Promise<{ url: string; sizeBytes: number | null } | null> {
+  const fileStat = await statRenderFile(videoId).catch(() => null);
+
+  if (!fileStat) {
+    return null;
+  }
+
+  return { url: `/api/videos/${videoId}/file`, sizeBytes: fileStat.sizeBytes };
 }
 
 export default async function VideoDetailPage({ params }: VideoDetailPageProps) {
@@ -80,14 +102,14 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
           pipelineService.getLogStream(user.id, video.id),
         ]);
 
-  // outputUrl/audioUrl are storage paths, not URLs — resolved here, server-side,
-  // so the client only ever receives a signed URL. Passing a raw path to the
-  // browser (plus this app's service-role key) is exactly how a private bucket
-  // ends up de facto public.
+  // audioUrl is a Supabase storage path, not a URL — resolved here,
+  // server-side, so the client only ever receives a signed URL. Passing a raw
+  // path to the browser (plus this app's service-role key) is exactly how a
+  // private bucket ends up de facto public. The render itself no longer lives
+  // in Supabase at all (see local-render-storage.ts), so it's resolved
+  // straight from the video id instead of its stored outputUrl.
   const [renderPreview, audioPreview] = await Promise.all([
-    video.renderJobs[0]?.outputUrl
-      ? resolvePreviewAsset(video.renderJobs[0].outputUrl)
-      : Promise.resolve(null),
+    video.renderJobs[0]?.outputUrl ? resolveRenderPreview(video.id) : Promise.resolve(null),
     video.voiceOver?.audioUrl
       ? resolvePreviewAsset(video.voiceOver.audioUrl)
       : Promise.resolve(null),
@@ -101,6 +123,8 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         status={video.status}
         projectName={video.project.name}
         wordCount={activeVersion?.wordCount ?? 0}
+        channelName={video.project.channel?.title ?? null}
+        youtubeVideoId={video.publication?.youtubeVideoId ?? null}
       />
 
       {pipelineState && (
