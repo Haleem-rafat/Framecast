@@ -263,8 +263,19 @@ describe("renderService.render — happy path", () => {
     await service.render(userId, videoId);
 
     expect(calls).toHaveLength(1);
-    const clipOccurrences = calls[0].args.filter((arg) => arg.endsWith("clip-0.mp4")).length;
-    expect(clipOccurrences).toBe(3);
+    const args = calls[0].args;
+
+    // Coverage is a property of the filter graph, not the input list. The one
+    // clip is opened exactly once — opening it per slot is what OOM-killed the
+    // worker — and `split` feeds that single decode into all three slots.
+    const clipInputs = args.filter(
+      (arg, index) => args[index - 1] === "-i" && arg.endsWith("clip-0.mp4"),
+    );
+    expect(clipInputs).toHaveLength(1);
+
+    const filter = args[args.indexOf("-filter_complex") + 1];
+    expect(filter).toContain("split=3");
+    expect(filter).toContain("concat=n=3");
   });
 
   it("writes progress as parsed FFmpeg output advances, throttled to at most one write per second", async () => {

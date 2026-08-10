@@ -74,4 +74,50 @@ describe("buildRenderArgs", () => {
     // The filter graph must not break on the space.
     expect(args.join(" ")).toContain("my\\ captions.srt");
   });
+
+  // The OOM that killed every render on the worker: RenderService repeats the
+  // clip sequence to cover the narration, and each repeat used to become its
+  // own input with its own decoder. Twelve clips over a 7-minute narration
+  // meant 36 live decoders in a 1GB container.
+  it("opens each distinct clip once however often the sequence repeats it", () => {
+    const sequence = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"];
+    const args = buildRenderArgs({
+      ...base,
+      // The same three clips, three times over — what a long narration asks for.
+      clipPaths: [...sequence, ...sequence, ...sequence],
+    });
+
+    const videoInputs = args.filter(
+      (arg, index) => args[index - 1] === "-i" && arg !== "/tmp/narration.mp3",
+    );
+
+    expect(videoInputs).toEqual(sequence);
+  });
+
+  it("still shows every repeat, in the order asked for", () => {
+    const args = buildRenderArgs({
+      ...base,
+      clipPaths: ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/a.mp4"],
+    });
+    const filter = args[args.indexOf("-filter_complex") + 1];
+
+    // a.mp4 is input 0 and used twice, so it splits into two labels; b.mp4 is
+    // used once and needs no split.
+    expect(filter).toContain("split=2[v0_0][v0_1]");
+    expect(filter).not.toContain("split=1");
+
+    // Concat consumes them in the sequence's own order: a, b, a.
+    expect(filter).toContain("[v0_0][v1_0][v0_1]concat=n=3");
+  });
+
+  it("points the audio map at the narration, not a clip", () => {
+    const args = buildRenderArgs({
+      ...base,
+      clipPaths: ["/tmp/a.mp4", "/tmp/a.mp4", "/tmp/a.mp4"],
+    });
+
+    // One unique clip means narration is input 1 — if the audio index were
+    // still derived from the sequence length it would point at input 3.
+    expect(args).toContain("1:a");
+  });
 });
