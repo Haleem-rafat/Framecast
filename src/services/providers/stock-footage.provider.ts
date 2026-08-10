@@ -81,19 +81,36 @@ interface PexelsSearchResponse {
   videos: PexelsVideo[];
 }
 
-const MAX_RENDITION_WIDTH = 1920;
+/** The render's frame width. A source narrower than this must be upscaled to
+ * fill the frame, which is what makes stock footage look soft. */
+const OUTPUT_WIDTH = 1920;
 
-/** The largest mp4 rendition at or below 1920px wide — 4K wastes bandwidth
- * and render time for a 1080p output with no visible gain. */
+/**
+ * Prefers the smallest rendition that is at least 1920 wide, and only falls
+ * back to the largest one below that when nothing bigger exists.
+ *
+ * The output is 1080p, so a 1280-wide source has to be scaled *up* to fill the
+ * frame, and upscaled stock footage reads as soft and cheap under sharp burnt
+ * in captions. Coming down from 2560 instead is a genuine resample and stays
+ * crisp. Picking the *smallest* qualifying rendition rather than the largest
+ * keeps 4K out — that really would be wasted bandwidth and render time — while
+ * still never upscaling when the source has something better to offer.
+ */
 function pickPexelsFile(files: PexelsVideoFile[]): PexelsVideoFile | undefined {
-  return files
-    .filter(
-      (file): file is PexelsVideoFile & { width: number } =>
-        file.file_type === "video/mp4" &&
-        file.width !== null &&
-        file.width <= MAX_RENDITION_WIDTH,
-    )
-    .sort((a, b) => b.width - a.width)[0];
+  const mp4s = files.filter(
+    (file): file is PexelsVideoFile & { width: number } =>
+      file.file_type === "video/mp4" && file.width !== null,
+  );
+
+  const atLeastOutputWidth = mp4s
+    .filter((file) => file.width >= OUTPUT_WIDTH)
+    .sort((a, b) => a.width - b.width);
+
+  if (atLeastOutputWidth.length > 0) {
+    return atLeastOutputWidth[0];
+  }
+
+  return mp4s.sort((a, b) => b.width - a.width)[0];
 }
 
 /** Pexels' search response carries no file size, unlike Pixabay's — the only
@@ -295,16 +312,25 @@ export class PixabayProvider implements StockFootageProvider {
         continue;
       }
 
-      const rendition = hit.videos.medium ?? hit.videos.small;
+      // `large` first — it is Pixabay's 1920-wide rendition and the only one
+      // that fills a 1080p frame without upscaling. This previously started at
+      // `medium` (1280 wide), so every Pixabay clip in a render was blown up
+      // by 50% and looked noticeably softer than the Pexels ones beside it.
+      // The size cap below is what keeps `large` from blowing the 40MB budget;
+      // when it does, the smaller renditions are still there to fall back on.
+      const rendition =
+        [hit.videos.large, hit.videos.medium, hit.videos.small].find(
+          (candidate) =>
+            candidate?.url &&
+            typeof candidate.size === "number" &&
+            candidate.size <= MAX_CLIP_SIZE_BYTES,
+        ) ?? null;
 
-      if (!rendition?.url) {
-        continue;
-      }
-
-      // Pixabay returns size directly — no HEAD request needed, unlike
-      // Pexels. A missing/non-numeric value is treated the same as "known to
-      // be too big": fail closed, same reasoning as Pexels' unknown case.
-      if (typeof rendition.size !== "number" || rendition.size > MAX_CLIP_SIZE_BYTES) {
+      // Every rendition failed the size check above — Pixabay reports size
+      // directly, so unlike Pexels this needs no HEAD request, and a missing
+      // or non-numeric value is treated as "known to be too big" rather than
+      // gambling on it.
+      if (!rendition) {
         continue;
       }
 
