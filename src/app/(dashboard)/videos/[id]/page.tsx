@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
+
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 
 import { LogStream } from "@/features/videos/components/log-stream";
 import { PipelinePanel } from "@/features/videos/components/pipeline-panel";
@@ -71,6 +75,89 @@ async function resolveRenderPreview(
   return { url: `/api/videos/${videoId}/file`, sizeBytes: fileStat.sizeBytes };
 }
 
+/**
+ * The pipeline panel and its log stream, streamed in rather than blocking the
+ * page. Both are fetched here on the server so the panel paints with real
+ * stages and real log lines — the client's poll then takes over from that
+ * state instead of flashing a placeholder that immediately flips.
+ */
+async function PipelineSection({ userId, videoId }: { userId: string; videoId: string }) {
+  const [state, logs] = await Promise.all([
+    pipelineService.getState(userId, videoId),
+    pipelineService.getLogStream(userId, videoId),
+  ]);
+
+  return (
+    <>
+      <PipelinePanel videoId={videoId} initialState={state} />
+      <LogStream videoId={videoId} initialLogs={logs} initialPipelineState={state} />
+    </>
+  );
+}
+
+/**
+ * The player. Its two sources resolve over the network — a Vercel Blob HEAD
+ * for the render and a Supabase signed URL for the narration — which is why
+ * this is behind its own boundary rather than holding up the page.
+ *
+ * Both paths stay on the server: the browser is handed this app's own
+ * streaming route for the render and a short-lived signed URL for the audio,
+ * never a raw storage path. Passing a bucket path to the client is how a
+ * private bucket ends up de facto public.
+ */
+async function PreviewSection({
+  videoId,
+  renderOutputUrl,
+  audioPath,
+  durationSeconds,
+}: {
+  videoId: string;
+  renderOutputUrl: string | null;
+  audioPath: string | null;
+  durationSeconds: number | null;
+}) {
+  const [render, audio] = await Promise.all([
+    renderOutputUrl ? resolveRenderPreview(videoId, renderOutputUrl) : Promise.resolve(null),
+    audioPath ? resolvePreviewAsset(audioPath) : Promise.resolve(null),
+  ]);
+
+  return <VideoPreview render={render} audio={audio} durationSeconds={durationSeconds} />;
+}
+
+/** Mirrors PipelinePanel's card so the layout doesn't jump when it lands. */
+function PipelineFallback() {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div className="space-y-2">
+          <Skeleton className="h-5 w-40" />
+          <Skeleton className="h-4 w-56" />
+        </div>
+        <Skeleton className="h-8 w-24" />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {Array.from({ length: 5 }, (_, index) => (
+          <div key={index} className="flex items-center gap-3">
+            <Skeleton className="size-4 rounded-full" />
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 flex-1" />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Mirrors VideoPreview: a 16:9 player beside the narration card. */
+function PreviewFallback() {
+  return (
+    <div className="grid gap-4 lg:grid-cols-3">
+      <Skeleton className="aspect-video w-full lg:col-span-2" />
+      <Skeleton className="h-24 w-full" />
+    </div>
+  );
+}
+
 export default async function VideoDetailPage({ params }: VideoDetailPageProps) {
   const user = await requireUser();
   const { id } = await params;
@@ -88,36 +175,7 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   const activeVersion = script?.activeVersion ?? null;
   const versions = script?.versions ?? [];
 
-  // A DRAFT video hasn't been approved yet, so there is no pipeline run to
-  // watch — fetching (and showing) the panel here would just be five
-  // "pending" rows with nothing behind them. Fetched server-side, not via
-  // the client's first poll, so the panel paints with real data instead of
-  // a placeholder that immediately flips.
-  // Same DRAFT gate as pipelineState below — there is no pipeline run to
-  // watch yet, so the log stream would just be an empty box. Fetched
-  // alongside pipelineState (both server-side) so the page paints with real
-  // logs on first load instead of the client's first poll.
-  const [pipelineState, pipelineLogs] =
-    video.status === "DRAFT"
-      ? [null, null]
-      : await Promise.all([
-          pipelineService.getState(user.id, video.id),
-          pipelineService.getLogStream(user.id, video.id),
-        ]);
-
-  // audioUrl is a Supabase storage path, not a URL — resolved here,
-  // server-side, so the client only ever receives a signed URL. Passing a raw
-  // path to the browser (plus this app's service-role key) is exactly how a
-  // private bucket ends up de facto public. The render itself lives in
-  // Vercel Blob instead (see blob-render-storage.ts), private access too, so
-  // its stored outputUrl is resolved the same server-side way.
   const renderOutputUrl = video.renderJobs[0]?.outputUrl;
-  const [renderPreview, audioPreview] = await Promise.all([
-    renderOutputUrl ? resolveRenderPreview(video.id, renderOutputUrl) : Promise.resolve(null),
-    video.voiceOver?.audioUrl
-      ? resolvePreviewAsset(video.voiceOver.audioUrl)
-      : Promise.resolve(null),
-  ]);
 
   return (
     <>
@@ -131,26 +189,29 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         youtubeVideoId={video.publication?.youtubeVideoId ?? null}
       />
 
-      {pipelineState && (
-        <PipelinePanel videoId={video.id} initialState={pipelineState} />
-      )}
-
-      {pipelineState && pipelineLogs && (
-        <LogStream
-          videoId={video.id}
-          initialLogs={pipelineLogs}
-          initialPipelineState={pipelineState}
-        />
+      {/* Everything below streams. Previously this page awaited the pipeline
+       * state, the log stream, a Vercel Blob HEAD and a Supabase signed URL
+       * before rendering a single element, so the whole route sat on its
+       * skeleton for the slowest of the four and then appeared at once. The
+       * header and script come from the query already resolved above and have
+       * no reason to wait on any of that. */}
+      {video.status !== "DRAFT" && (
+        <Suspense fallback={<PipelineFallback />}>
+          <PipelineSection userId={user.id} videoId={video.id} />
+        </Suspense>
       )}
 
       {/* Above the script panel: once a video exists, watching it is the
        * primary action on this page, and it's the one an operator needs to
        * see before Gate 2 (YouTube publish) means anything. */}
-      <VideoPreview
-        render={renderOutputUrl ? renderPreview : null}
-        audio={video.voiceOver?.audioUrl ? audioPreview : null}
-        durationSeconds={video.voiceOver?.durationSeconds ?? null}
-      />
+      <Suspense fallback={<PreviewFallback />}>
+        <PreviewSection
+          videoId={video.id}
+          renderOutputUrl={renderOutputUrl ?? null}
+          audioPath={video.voiceOver?.audioUrl ?? null}
+          durationSeconds={video.voiceOver?.durationSeconds ?? null}
+        />
+      </Suspense>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
