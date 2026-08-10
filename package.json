@@ -17,7 +17,8 @@
     "db:studio": "prisma studio",
     "db:seed": "prisma db seed",
     "render": "tsx --conditions=react-server scripts/render.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
