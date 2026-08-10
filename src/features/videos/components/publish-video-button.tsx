@@ -55,7 +55,7 @@ function describePublishFailure(error: SerializedError): PublishFailure {
 
   // Covers PROVIDER_ERROR (the upload itself failing — its message is
   // already e.g. "The YouTube upload failed (500)."), the
-  // RenderFileMissingError case ("no longer on disk"), and anything else —
+  // RenderFileMissingError case ("no longer available"), and anything else —
   // every message reaching here is already a complete, specific sentence.
   return { message: error.message, showChannelsLink: false };
 }

@@ -47,6 +47,15 @@ const serverEnvSchema = z.object({
   SUPABASE_STORAGE_BUCKET: z.string().min(1).default("framecast"),
 
   /**
+   * Vercel Blob (`framecast-renders`, private access). Finished renders live
+   * here, not local disk or Supabase Storage — see blob-render-storage.ts's
+   * doc comment for why. Required, not optional: every environment that
+   * renders a video (the worker) or serves one (the web app) needs it, and
+   * there is no fallback storage left for a finished render to land in.
+   */
+  BLOB_READ_WRITE_TOKEN: z.string().min(1),
+
+  /**
    * Supabase's PEM root certificate. Supabase signs Postgres with its own CA,
    * which is not in Node's trust store, so without this the chain cannot be
    * verified. Download it from Project Settings → Database → SSL Configuration.

@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
-import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { VideoStatus } from "@/generated/prisma/enums";
-import { localRenderPath, writeRenderFile } from "@/lib/local-render-storage";
+import { deleteRenderFile, renderBlobPathname, writeRenderFile } from "@/lib/blob-render-storage";
 import { prisma } from "@/lib/prisma";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
@@ -45,9 +43,10 @@ const SCRIPT_WITH_SOURCES = [
 let userId: string;
 
 /** Mirrors render.service.test.ts's own cleanup list — every video id this
- * file writes a local render fixture for (see `writeRenderFile` in
- * `makePublishableVideo`), so the `.mp4` under `.framecast/renders/` doesn't
- * outlive the test. */
+ * file writes a render fixture for (see `writeRenderFile` in
+ * `makePublishableVideo`), so the Blob object doesn't outlive the test. Keyed
+ * on video id (via `renderBlobPathname`), not a captured url, same rationale
+ * as render.service.test.ts's own list. */
 const publishedVideoIds: string[] = [];
 
 beforeEach(async () => {
@@ -58,7 +57,7 @@ afterEach(async () => {
   await deleteTestUser(userId);
   await Promise.all(
     publishedVideoIds.splice(0).map((id) =>
-      rm(path.join(process.cwd(), localRenderPath(id)), { force: true }),
+      deleteRenderFile(renderBlobPathname(id)).catch(() => {}),
     ),
   );
 });
@@ -133,7 +132,7 @@ function createUploadFetch(
  */
 async function makePublishableVideo(
   opts: { scriptContent?: string | null; status?: VideoStatus } = {},
-): Promise<{ videoId: string; channelId: string; outputPath: string }> {
+): Promise<{ videoId: string; channelId: string; outputUrl: string }> {
   const channel = await channelService.connect(userId, {
     youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
     title: "Money Mechanics",
@@ -169,13 +168,13 @@ async function makePublishableVideo(
     });
   }
 
-  // The render itself lives on local disk, not Supabase — see
-  // local-render-storage.ts. `outputPath` is the same relative path
+  // The render itself lives in Vercel Blob, not Supabase — see
+  // blob-render-storage.ts. `outputUrl` is the same value
   // `RenderService.render` would have written to `RenderJob.outputUrl`.
-  const outputPath = await writeRenderFile(video.id, Buffer.from(`fake-rendered-mp4-${RUN}`));
+  const outputUrl = await writeRenderFile(video.id, Buffer.from(`fake-rendered-mp4-${RUN}`));
   publishedVideoIds.push(video.id);
   await prisma.renderJob.create({
-    data: { videoId: video.id, status: "SUCCEEDED", progress: 100, outputUrl: outputPath },
+    data: { videoId: video.id, status: "SUCCEEDED", progress: 100, outputUrl },
   });
 
   await prisma.video.update({
@@ -183,7 +182,7 @@ async function makePublishableVideo(
     data: { status: opts.status ?? "READY" },
   });
 
-  return { videoId: video.id, channelId: channel.id, outputPath };
+  return { videoId: video.id, channelId: channel.id, outputUrl };
 }
 
 describe("publishService.publish — extractSourcesSection", () => {
@@ -236,13 +235,14 @@ describe("publishService.publish — Gate 2", () => {
     await expect(service.publish(userId, videoId)).rejects.toThrow(ConflictError);
   });
 
-  it("refuses to publish, with a clear typed error (not a raw ENOENT), when the render is on the DB but no longer on local disk", async () => {
-    const { videoId, outputPath } = await makePublishableVideo();
-    // A RenderJob row with an outputUrl exists, but the bytes it points at
-    // are gone — a cleaned checkout, a render made on a different machine.
-    // This is exactly the failure mode local-render-storage.ts's
+  it("refuses to publish, with a clear typed error (not a raw fetch failure), when the render is on the DB but no longer in Blob", async () => {
+    const { videoId, outputUrl } = await makePublishableVideo();
+    // A RenderJob row with an outputUrl exists, but the blob it points at is
+    // gone — deleted from the store, or (before this module existed) a
+    // render that only ever lived on a since-wiped local disk. This is
+    // exactly the failure mode blob-render-storage.ts's
     // RenderFileMissingError exists for.
-    await rm(path.join(process.cwd(), outputPath), { force: true });
+    await deleteRenderFile(outputUrl);
 
     const service = new PublishService(createUploadFetch().fetchImpl);
     // One in-flight call, checked twice — not two calls. A second real call
@@ -250,11 +250,11 @@ describe("publishService.publish — Gate 2", () => {
     // attempt" test below) instead of exercising the missing-file path again.
     const publishAttempt = service.publish(userId, videoId);
     await expect(publishAttempt).rejects.toThrow(ConflictError);
-    await expect(publishAttempt).rejects.toThrow(/no longer on disk/);
+    await expect(publishAttempt).rejects.toThrow(/no longer available/);
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("FAILED");
-    expect(video.failureReason).toContain("no longer on disk");
+    expect(video.failureReason).toContain("no longer available");
   });
 
   it("uploads with privacyStatus always unlisted, regardless of channel default visibility", async () => {

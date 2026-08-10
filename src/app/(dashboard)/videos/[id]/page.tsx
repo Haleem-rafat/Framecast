@@ -8,8 +8,8 @@ import { StatusEventsList } from "@/features/videos/components/status-events-lis
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
 import { VideoPreview } from "@/features/videos/components/video-preview";
+import { statRenderFile } from "@/lib/blob-render-storage";
 import { isAppError } from "@/lib/errors";
-import { statRenderFile } from "@/lib/local-render-storage";
 import { objectSizeBytes, signedUrl } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
@@ -48,18 +48,21 @@ async function resolvePreviewAsset(
 }
 
 /**
- * The rendered video's local-disk counterpart to `resolvePreviewAsset` above.
- * No signed URL to mint — the browser is pointed at this app's own streaming
- * route (`/api/videos/[id]/file`, see local-render-storage.ts), which
- * resolves the file from the video id server-side. Same never-throws
- * contract: a missing render (see `RenderFileMissingError`) just means this
- * section falls back to "couldn't load" rather than taking the page down —
- * the operator's next move either way is to re-render.
+ * The rendered video's Vercel Blob counterpart to `resolvePreviewAsset`
+ * above. No signed URL to mint — the browser is pointed at this app's own
+ * streaming route (`/api/videos/[id]/file`, see blob-render-storage.ts),
+ * which resolves the render from the video id server-side. `statRenderFile`
+ * already returns `null` (not a throw) for a missing blob, but this still
+ * wraps it in `.catch` — the *page's* contract is "never throw", regardless
+ * of which failure (missing blob vs. a real network error) produced it.
+ * Either way this section falls back to "couldn't load" rather than taking
+ * the page down; the operator's next move either way is to re-render.
  */
 async function resolveRenderPreview(
   videoId: string,
+  outputUrl: string,
 ): Promise<{ url: string; sizeBytes: number | null } | null> {
-  const fileStat = await statRenderFile(videoId).catch(() => null);
+  const fileStat = await statRenderFile(outputUrl).catch(() => null);
 
   if (!fileStat) {
     return null;
@@ -105,11 +108,12 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   // audioUrl is a Supabase storage path, not a URL — resolved here,
   // server-side, so the client only ever receives a signed URL. Passing a raw
   // path to the browser (plus this app's service-role key) is exactly how a
-  // private bucket ends up de facto public. The render itself no longer lives
-  // in Supabase at all (see local-render-storage.ts), so it's resolved
-  // straight from the video id instead of its stored outputUrl.
+  // private bucket ends up de facto public. The render itself lives in
+  // Vercel Blob instead (see blob-render-storage.ts), private access too, so
+  // its stored outputUrl is resolved the same server-side way.
+  const renderOutputUrl = video.renderJobs[0]?.outputUrl;
   const [renderPreview, audioPreview] = await Promise.all([
-    video.renderJobs[0]?.outputUrl ? resolveRenderPreview(video.id) : Promise.resolve(null),
+    renderOutputUrl ? resolveRenderPreview(video.id, renderOutputUrl) : Promise.resolve(null),
     video.voiceOver?.audioUrl
       ? resolvePreviewAsset(video.voiceOver.audioUrl)
       : Promise.resolve(null),
@@ -143,7 +147,7 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
        * primary action on this page, and it's the one an operator needs to
        * see before Gate 2 (YouTube publish) means anything. */}
       <VideoPreview
-        render={video.renderJobs[0]?.outputUrl ? renderPreview : null}
+        render={renderOutputUrl ? renderPreview : null}
         audio={video.voiceOver?.audioUrl ? audioPreview : null}
         durationSeconds={video.voiceOver?.durationSeconds ?? null}
       />

@@ -186,6 +186,6 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
     }
 
     const result = await renderService.render(userId, videoId, report, shouldCancel);
-    return `rendered ${result.durationSeconds}s to ${result.outputPath}`;
+    return `rendered ${result.durationSeconds}s to ${result.outputUrl}`;
   });
 }

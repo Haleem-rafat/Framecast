@@ -1,14 +1,13 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { writeFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { deleteRenderFile, getRenderFile, renderBlobPathname } from "@/lib/blob-render-storage";
 import type { Alignment } from "@/lib/captions";
 import { ConflictError, NotFoundError } from "@/lib/errors";
-import { localRenderPath } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
 import { projectService } from "@/services/project.service";
@@ -28,9 +27,16 @@ const RUN = randomUUID().slice(0, 8);
 const PROJECT_NAME = `test-render-${RUN}`;
 
 // Several tests wait out the real 1s progress-write throttle and/or make
-// several sequential storage round trips against a live bucket — comfortably
-// past Vitest's 5s default under any network variance.
-vi.setConfig({ testTimeout: 15_000 });
+// several sequential storage round trips against a live bucket. On top of
+// that, every "happy path" test now makes a real multipart upload to Blob
+// (see blob-render-storage.ts's writeRenderFile) — a few seconds in
+// isolation, but this file's tests run back-to-back against the same live
+// store, and the concurrency test at the bottom (which does its own real
+// Blob write, right after eight others already have) was observed taking
+// 47s under that cumulative load despite running in well under 15s alone.
+// 60s leaves real margin rather than pinning this to whatever the store's
+// latency happened to be during one measurement.
+vi.setConfig({ testTimeout: 60_000 });
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,11 +97,13 @@ function createSucceedingSpawner() {
 
 let userId: string;
 
-/** Every video id `makeRenderableVideo` hands out, so the local `.mp4` a
- * successful render leaves under `.framecast/renders/` (see
- * local-render-storage.ts) is cleaned up alongside the test user rather than
- * accumulating on disk across test runs. `rm(..., { force: true })` makes
- * this safe for ids whose render never got that far. */
+/** Every video id `makeRenderableVideo` hands out, so the Blob object a
+ * successful render leaves behind (see blob-render-storage.ts) is cleaned up
+ * alongside the test user rather than accumulating in the real store across
+ * test runs. Deleted by the deterministic pathname (`renderBlobPathname`),
+ * not a captured `url` — every test id lands here regardless of whether its
+ * render actually got as far as `writeRenderFile`, and `del()` on a pathname
+ * that was never written is nothing to clean up, hence the `.catch`. */
 const renderedVideoIds: string[] = [];
 
 beforeEach(async () => {
@@ -108,7 +116,7 @@ afterEach(async () => {
 
   await Promise.all(
     renderedVideoIds.splice(0).map((id) =>
-      rm(path.join(process.cwd(), localRenderPath(id)), { force: true }),
+      deleteRenderFile(renderBlobPathname(id)).catch(() => {}),
     ),
   );
 });
@@ -205,13 +213,14 @@ describe("renderService.render — happy path", () => {
     const result = await service.render(userId, videoId);
 
     expect(result.durationSeconds).toBe(2);
-    // The finished MP4 now lands on local disk (see local-render-storage.ts),
-    // not a Supabase key — outputPath is the relative path RenderJob.outputUrl
-    // stores, e.g. `.framecast/renders/<videoId>.mp4`.
-    expect(result.outputPath).toBe(path.join(".framecast", "renders", `${videoId}.mp4`));
+    // The finished MP4 now lands in Vercel Blob (see blob-render-storage.ts),
+    // not local disk — outputUrl is the same value RenderJob.outputUrl stores.
+    expect(result.outputUrl).toContain(renderBlobPathname(videoId));
 
-    const writtenFile = await readFile(path.join(process.cwd(), result.outputPath));
-    expect(writtenFile.toString()).toBe("fake-rendered-mp4-bytes");
+    const written = await getRenderFile(videoId, result.outputUrl);
+    expect(written).not.toBeNull();
+    const writtenBytes = await new Response(written!.stream).text();
+    expect(writtenBytes).toBe("fake-rendered-mp4-bytes");
 
     // The job passed through RUNNING on its way to SUCCEEDED — RenderJob's
     // schema default is QUEUED, so combined with the final status below this
@@ -224,7 +233,7 @@ describe("renderService.render — happy path", () => {
     const job = await prisma.renderJob.findFirstOrThrow({ where: { videoId } });
     expect(job.status).toBe("SUCCEEDED");
     expect(job.progress).toBe(100);
-    expect(job.outputUrl).toBe(result.outputPath);
+    expect(job.outputUrl).toBe(result.outputUrl);
     expect(job.startedAt).toBeTruthy();
     expect(job.finishedAt).toBeTruthy();
 

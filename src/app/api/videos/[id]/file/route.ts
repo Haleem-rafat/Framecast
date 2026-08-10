@@ -1,27 +1,29 @@
-import { createReadStream } from "node:fs";
-import { Readable } from "node:stream";
-
 import { NextResponse, type NextRequest } from "next/server";
 
+import { getRenderFile } from "@/lib/blob-render-storage";
 import { isAppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
-import { statRenderFile } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/server/session";
 
 /**
- * Streams a video's finished render off local disk (see
- * local-render-storage.ts) so `video-preview.tsx` can play it and the
- * download link can save it — the local-disk replacement for what used to be
- * a Supabase signed URL.
+ * Streams a video's finished render out of Vercel Blob (see
+ * blob-render-storage.ts) so `video-preview.tsx` can play it and the
+ * download link can save it.
  *
- * This route takes a video **id**, never a path — the filesystem path is
- * always derived server-side from the id via `statRenderFile` /
- * `localRenderPath`. A route that accepted a path directly would be a
- * directory-traversal hole; there is deliberately no parameter here that
- * could become one.
+ * This route takes a video **id**, never a Blob url or pathname directly —
+ * the url is always resolved server-side from `RenderJob.outputUrl`. A
+ * route that accepted a Blob url straight from the client would let anyone
+ * who obtained one (a leaked link, a browser devtools peek) read the store
+ * with this route's own credentials, bypassing the ownership check below.
  *
- * Needs Node's `fs` module for streaming, so this route cannot run on the
- * Edge runtime.
+ * Range handling is Blob's, not this route's own: the incoming `Range`
+ * header is forwarded to `getRenderFile` untouched (see its doc comment for
+ * why partial vs. full is detected via `content-range`, not `statusCode`).
+ * This route used to hand-parse RFC 7233 itself against local disk; that
+ * parsing no longer exists.
+ *
+ * Still Node, not Edge — not because of `fs` (this route no longer touches
+ * it) but because Prisma's query engine requires the Node runtime.
  */
 export const runtime = "nodejs";
 
@@ -34,55 +36,6 @@ function errorResponse(error: unknown): NextResponse {
     return NextResponse.json(error.serialize(), { status: error.httpStatus });
   }
   throw error;
-}
-
-/** Parses a single-range `Range: bytes=start-end` header per RFC 7233.
- * Returns `null` for anything this route doesn't support (multi-range,
- * malformed) so the caller falls back to serving the whole file — the same
- * "range headers are advisory" behaviour real HTTP servers use. Returns
- * `undefined` for an unsatisfiable range so the caller can respond 416. */
-function parseRange(
-  header: string,
-  sizeBytes: number,
-): { start: number; end: number } | null | undefined {
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!match) {
-    return null;
-  }
-
-  const [, startStr, endStr] = match;
-  if (startStr === "" && endStr === "") {
-    return null;
-  }
-
-  let start: number;
-  let end: number;
-
-  if (startStr === "") {
-    // A suffix range ("bytes=-500") means "the last 500 bytes."
-    const suffixLength = Number(endStr);
-    start = Math.max(sizeBytes - suffixLength, 0);
-    end = sizeBytes - 1;
-  } else {
-    start = Number(startStr);
-    end = endStr === "" ? sizeBytes - 1 : Number(endStr);
-  }
-
-  if (
-    !Number.isInteger(start) ||
-    !Number.isInteger(end) ||
-    start < 0 ||
-    start > end ||
-    start >= sizeBytes
-  ) {
-    return undefined;
-  }
-
-  return { start, end: Math.min(end, sizeBytes - 1) };
-}
-
-function toWebStream(nodeStream: ReturnType<typeof createReadStream>): ReadableStream {
-  return Readable.toWeb(nodeStream) as unknown as ReadableStream;
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -99,72 +52,62 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   // Same ownership check every service in this codebase does
   // (`findFirst({ where: { id, userId, deletedAt: null } })`) — a video id
   // that exists but belongs to someone else must look identical to one that
-  // doesn't exist at all.
+  // doesn't exist at all. The latest successful RenderJob's outputUrl is
+  // fetched in the same query rather than derived from videoId — unlike the
+  // local-disk pathname this route used to use, a Blob url is not
+  // reconstructable from the video id alone (see blob-render-storage.ts).
   const video = await prisma.video.findFirst({
     where: { id: videoId, userId: session.user.id, deletedAt: null },
-    select: { id: true },
+    select: {
+      id: true,
+      renderJobs: {
+        where: { status: "SUCCEEDED" },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { outputUrl: true },
+      },
+    },
   });
 
   if (!video) {
     return errorResponse(new NotFoundError("Video"));
   }
 
-  let fileStat;
+  const outputUrl = video.renderJobs[0]?.outputUrl;
+  if (!outputUrl) {
+    // Never rendered (or no *successful* render yet) — a file-serving route's
+    // ordinary 404, not the 409 `RenderFileMissingError` publish.service.ts
+    // and the video detail page use for the same underlying condition.
+    return errorResponse(new NotFoundError("Video render"));
+  }
+
+  const rangeHeader = request.headers.get("range");
+
+  let file;
   try {
-    fileStat = await statRenderFile(videoId);
+    file = await getRenderFile(video.id, outputUrl, rangeHeader);
   } catch (error) {
     return errorResponse(error);
   }
 
-  const { absolutePath, sizeBytes } = fileStat;
-  const rangeHeader = request.headers.get("range");
-
-  if (!rangeHeader) {
-    const stream = toWebStream(createReadStream(absolutePath));
-    return new NextResponse(stream, {
-      status: 200,
-      headers: {
-        "content-type": "video/mp4",
-        "content-length": String(sizeBytes),
-        "accept-ranges": "bytes",
-      },
-    });
+  if (!file) {
+    // The RenderJob row says a render exists; the blob it points at doesn't
+    // (deleted from the store, wrong environment's token, ...). Same 404 as
+    // "never rendered" above — from this route's caller's point of view,
+    // both mean "there is nothing to play right now."
+    return errorResponse(new NotFoundError("Video render"));
   }
 
-  const range = parseRange(rangeHeader, sizeBytes);
+  const headers: Record<string, string> = {
+    "content-type": file.contentType,
+    "content-length": String(file.contentLength),
+    "accept-ranges": "bytes",
+  };
 
-  if (range === undefined) {
-    return new NextResponse(null, {
-      status: 416,
-      headers: { "content-range": `bytes */${sizeBytes}` },
-    });
+  if (file.contentRange) {
+    headers["content-range"] = file.contentRange;
+    return new NextResponse(file.stream, { status: 206, headers });
   }
 
-  if (range === null) {
-    // Unsupported range shape — fall back to the whole file rather than
-    // failing a request the client can still make progress with.
-    const stream = toWebStream(createReadStream(absolutePath));
-    return new NextResponse(stream, {
-      status: 200,
-      headers: {
-        "content-type": "video/mp4",
-        "content-length": String(sizeBytes),
-        "accept-ranges": "bytes",
-      },
-    });
-  }
-
-  const { start, end } = range;
-  const chunkSize = end - start + 1;
-  const stream = toWebStream(createReadStream(absolutePath, { start, end }));
-
-  return new NextResponse(stream, {
-    status: 206,
-    headers: {
-      "content-type": "video/mp4",
-      "content-length": String(chunkSize),
-      "content-range": `bytes ${start}-${end}/${sizeBytes}`,
-      "accept-ranges": "bytes",
-    },
-  });
+  return new NextResponse(file.stream, { status: 200, headers });
 }

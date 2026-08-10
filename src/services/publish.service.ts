@@ -1,8 +1,8 @@
 import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
+import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
-import { readRenderFile } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
 import { channelService } from "@/services/channel.service";
 
@@ -151,15 +151,21 @@ export class PublishService {
     let youtubeVideoId: string;
     try {
       const accessToken = await channelService.resolveAccessToken(userId, channelId);
-      // Reads from local disk, not Supabase — see local-render-storage.ts.
-      // Resolved from `video.id`, not the stored `outputUrl` string: the
-      // route-handler discipline of "never trust a path, derive it from the
-      // id" applies here too, even though this call site is trusted
-      // server-only code. Throws RenderFileMissingError (never a raw
-      // ENOENT) if the file isn't on this machine — a real possibility
-      // given only this operator's Mac ever has it (see the design doc's
-      // "Known conflicts" section).
-      const fileBuffer = await readRenderFile(video.id);
+      // Reads from Vercel Blob, not local disk — see blob-render-storage.ts.
+      // `getRenderFile` returns `null` rather than throwing for a missing
+      // blob (see its doc comment); this is the one call site that turns
+      // that `null` into the typed `RenderFileMissingError` the operator
+      // sees, the same "recognisable, non-fatal" condition the local-disk
+      // version of this code used to throw directly.
+      const file = await getRenderFile(video.id, outputUrl);
+      if (!file) {
+        throw new RenderFileMissingError(video.id);
+      }
+      // YouTube's resumable upload needs the full byte length up front (see
+      // uploadToYouTube's X-Upload-Content-Length below), so the stream is
+      // buffered here rather than piped through — same memory tradeoff the
+      // local-disk version made reading the whole file at once.
+      const fileBuffer = Buffer.from(await new Response(file.stream).arrayBuffer());
       youtubeVideoId = await this.uploadToYouTube(accessToken, {
         title: video.title,
         description,

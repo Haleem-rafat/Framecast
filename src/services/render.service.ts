@@ -2,15 +2,16 @@ import "server-only";
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { writeRenderFile } from "@/lib/blob-render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import { buildRenderArgs } from "@/lib/ffmpeg-command";
-import { writeRenderFile } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
 import { getObject } from "@/lib/storage";
 import { formatElapsed } from "@/utils/format";
@@ -22,9 +23,9 @@ export type ProcessSpawner = (
 ) => ChildProcessWithoutNullStreams;
 
 export interface RenderResult {
-  /** Relative path under the repo root (see local-render-storage.ts) — the
-   * same value written to `RenderJob.outputUrl`, not a Supabase key anymore. */
-  outputPath: string;
+  /** The Vercel Blob URL of the finished render (see blob-render-storage.ts)
+   * — the same value written to `RenderJob.outputUrl`. */
+  outputUrl: string;
   durationSeconds: number;
 }
 
@@ -254,12 +255,17 @@ export class RenderService {
 
       await this.runFfmpeg(args, job.id, durationSeconds, onProgress, shouldCancel);
 
-      // The finished MP4 goes to local disk, not Supabase Storage — a real
-      // 1080p render (~170MB) exceeds Supabase's free-tier 50MB object cap
-      // (see local-render-storage.ts's doc comment). Narration, clips and
-      // captions above are unaffected; only this final output changed.
-      const outputBuffer = await readFile(outputPath);
-      const localOutputPath = await writeRenderFile(videoId, outputBuffer);
+      // The finished MP4 goes to Vercel Blob, not local disk or Supabase
+      // Storage — a real 1080p render (~170MB) exceeds Supabase's free-tier
+      // 50MB object cap, and unlike local disk, Blob is reachable both from
+      // this app (on Vercel) and from the render worker (on Railway). See
+      // blob-render-storage.ts's doc comment. Streamed straight from the
+      // temp file rather than buffered into memory first — `put()`'s
+      // `multipart: true` handles chunking a file this large on its own; a
+      // ~170MB Buffer held in this process's memory just to hand it off
+      // again would be wasted risk. Narration, clips and captions above are
+      // unaffected; only this final output's destination changed.
+      const outputUrl = await writeRenderFile(videoId, createReadStream(outputPath));
 
       await prisma.$transaction(async (tx) => {
         await tx.renderJob.update({
@@ -267,7 +273,7 @@ export class RenderService {
           data: {
             status: "SUCCEEDED",
             progress: 100,
-            outputUrl: localOutputPath,
+            outputUrl,
             finishedAt: new Date(),
           },
         });
@@ -293,7 +299,7 @@ export class RenderService {
         });
       });
 
-      return { outputPath: localOutputPath, durationSeconds };
+      return { outputUrl, durationSeconds };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
