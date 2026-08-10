@@ -17,6 +17,7 @@
     "db:studio": "prisma studio",
     "db:seed": "prisma db seed",
     "render": "tsx --conditions=react-server scripts/render.ts",
+    "worker": "tsx --conditions=react-server worker/index.ts",
     "postinstall": "prisma generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },
