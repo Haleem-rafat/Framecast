@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { Clapperboard, TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { LogoMark } from "@/components/brand/logo-mark";
 import {
   Card,
   CardContent,
@@ -51,7 +52,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
       <div className="relative w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-3 text-center">
           <div className="bg-primary text-primary-foreground flex size-11 items-center justify-center rounded-xl shadow-sm">
-            <Clapperboard className="size-5" />
+            <LogoMark className="size-5" />
           </div>
           <div className="space-y-1">
             <h1 className="text-xl font-semibold tracking-tight">Framecast</h1>

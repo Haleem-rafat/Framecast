@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Clapperboard } from "lucide-react";
+
+import { LogoMark } from "@/components/brand/logo-mark";
 
 /**
  * Public shell for the pages served to signed-out visitors. Kept deliberately
@@ -14,7 +15,7 @@ export function MarketingShell({ children }: { children: React.ReactNode }) {
         <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-6 py-4">
           <Link href="/" className="flex items-center gap-2 font-semibold">
             <span className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg">
-              <Clapperboard className="size-4" />
+              <LogoMark className="size-4" />
             </span>
             Framecast
           </Link>
