@@ -10,8 +10,9 @@ import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import { buildRenderArgs } from "@/lib/ffmpeg-command";
+import { writeRenderFile } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
-import { getObject, putObject, storagePath } from "@/lib/storage";
+import { getObject } from "@/lib/storage";
 import { formatElapsed } from "@/utils/format";
 
 /** Injectable so tests never spawn a real `ffmpeg` process. */
@@ -21,6 +22,8 @@ export type ProcessSpawner = (
 ) => ChildProcessWithoutNullStreams;
 
 export interface RenderResult {
+  /** Relative path under the repo root (see local-render-storage.ts) — the
+   * same value written to `RenderJob.outputUrl`, not a Supabase key anymore. */
   outputPath: string;
   durationSeconds: number;
 }
@@ -43,6 +46,13 @@ const CLIP_SECONDS = 12;
 /** FFmpeg emits `-progress` lines far faster than a database should be
  * written; at most one `RenderJob.progress` write per this window. */
 const PROGRESS_THROTTLE_MS = 1000;
+
+/** How often `shouldCancel` is polled while FFmpeg runs. Independent of
+ * `PROGRESS_THROTTLE_MS` — FFmpeg's `-progress` lines are what drive that
+ * throttle, but cancellation must keep being checked even if progress output
+ * ever stalls, so it runs on its own timer rather than piggybacking on the
+ * `stdout` handler. */
+const CANCEL_CHECK_INTERVAL_MS = 1000;
 
 /** Stderr is batched into `RenderLog` rather than written per line — flush
  * once the buffer crosses this size, and always on process exit. */
@@ -106,6 +116,12 @@ export class RenderService {
     userId: string,
     videoId: string,
     onProgress: RenderProgress = noopProgress,
+    /** Polled while FFmpeg runs (see `runFfmpeg`'s `CANCEL_CHECK_INTERVAL_MS`)
+     * so a long render can be interrupted mid-encode rather than only
+     * between pipeline stages. Optional and additive: omitting it leaves
+     * this identical to a render that can never be cancelled, which is what
+     * every caller before the render worker (Task 3) still does. */
+    shouldCancel?: () => boolean,
   ): Promise<RenderResult> {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
@@ -236,11 +252,14 @@ export class RenderService {
         clipSeconds: CLIP_SECONDS,
       });
 
-      await this.runFfmpeg(args, job.id, durationSeconds, onProgress);
+      await this.runFfmpeg(args, job.id, durationSeconds, onProgress, shouldCancel);
 
+      // The finished MP4 goes to local disk, not Supabase Storage — a real
+      // 1080p render (~170MB) exceeds Supabase's free-tier 50MB object cap
+      // (see local-render-storage.ts's doc comment). Narration, clips and
+      // captions above are unaffected; only this final output changed.
       const outputBuffer = await readFile(outputPath);
-      const outputStoragePath = storagePath(videoId, "output", "video.mp4");
-      await putObject(outputStoragePath, outputBuffer, "video/mp4");
+      const localOutputPath = await writeRenderFile(videoId, outputBuffer);
 
       await prisma.$transaction(async (tx) => {
         await tx.renderJob.update({
@@ -248,7 +267,7 @@ export class RenderService {
           data: {
             status: "SUCCEEDED",
             progress: 100,
-            outputUrl: outputStoragePath,
+            outputUrl: localOutputPath,
             finishedAt: new Date(),
           },
         });
@@ -274,7 +293,7 @@ export class RenderService {
         });
       });
 
-      return { outputPath: outputStoragePath, durationSeconds };
+      return { outputPath: localOutputPath, durationSeconds };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
@@ -318,6 +337,7 @@ export class RenderService {
     jobId: string,
     durationSeconds: number,
     onProgress: RenderProgress,
+    shouldCancel?: () => boolean,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const child = this.spawnProcess("ffmpeg", args);
@@ -325,6 +345,21 @@ export class RenderService {
       const pendingWrites: Promise<unknown>[] = [];
       const renderStartedAt = Date.now();
       let lastProgressWriteAt = 0;
+
+      // Cooperative cancellation: this is the one place a long FFmpeg run can
+      // be interrupted mid-encode rather than only at a pipeline stage
+      // boundary (see pipeline-runner.ts's `shouldCancel`). No-op when the
+      // caller passes nothing — every caller before the render worker.
+      let cancelled = false;
+      const cancelCheck = shouldCancel
+        ? setInterval(() => {
+            if (shouldCancel()) {
+              cancelled = true;
+              clearInterval(cancelCheck);
+              child.kill("SIGTERM");
+            }
+          }, CANCEL_CHECK_INTERVAL_MS)
+        : undefined;
 
       let stderrBuffer = "";
       const flushStderr = () => {
@@ -383,19 +418,37 @@ export class RenderService {
       });
 
       child.on("error", (error: Error) => {
+        if (cancelCheck) clearInterval(cancelCheck);
         flushStderr();
         Promise.all(pendingWrites)
           .catch(() => {})
           .finally(() => reject(error));
       });
 
-      child.on("close", (code: number | null) => {
+      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        if (cancelCheck) clearInterval(cancelCheck);
+        // Flush whatever stderr was captured before FFmpeg died, signal or
+        // not — a SIGKILL (e.g. the OS OOM killer, see render-oom-report.md)
+        // gives the process no chance to write more, but anything already
+        // buffered here from earlier `data` events must not be dropped on
+        // the way to a FAILED RenderJob with an empty RenderLog.
         flushStderr();
         Promise.all(pendingWrites)
           .catch(() => {})
           .finally(() => {
-            if (code === 0) {
+            if (cancelled) {
+              // Distinguish an intentional stop from the OOM-killer's SIGKILL
+              // below — both arrive as a signal on `close`, but only this one
+              // was requested, and callers (the worker) need to tell them
+              // apart to avoid treating a cancellation as a failed attempt.
+              reject(new InternalError("Render was cancelled."));
+            } else if (code === 0) {
               resolve();
+            } else if (signal) {
+              // No exit code exists when a process is killed by signal — say
+              // so explicitly rather than surfacing a bare "terminated" /
+              // "exited with code null" that gives no clue what happened.
+              reject(new InternalError(`ffmpeg was killed by signal ${signal}`));
             } else {
               reject(new InternalError(`ffmpeg exited with code ${code}`));
             }

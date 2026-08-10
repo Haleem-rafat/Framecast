@@ -132,6 +132,26 @@ describe("footageService.collect", () => {
     expect(result.clipCount).toBe(4);
   });
 
+  it("caps the number of unique clips fetched even for a long video, relying on render-time repetition for coverage", async () => {
+    // A real ~7-minute (420s) narration would want ceil(420/12)+2 = 37
+    // unique clips uncapped — the exact shape of the bug that made a real
+    // render OOM (see render-oom-report.md). The cap keeps the fetch itself
+    // bounded regardless of narration length.
+    await createVoiceOverFixture(420);
+    const pexelsClips = Array.from({ length: 20 }, (_, n) => makeClip("PEXELS", `p-${n}`));
+    const pixabayClips = Array.from({ length: 20 }, (_, n) => makeClip("PIXABAY", `x-${n}`));
+    const service = new FootageService(
+      { PEXELS: fakeProvider(pexelsClips), PIXABAY: fakeProvider(pixabayClips) },
+      makeDownloader(),
+    );
+
+    const result = await service.collect(userId, videoId);
+
+    expect(result.clipCount).toBe(12);
+    const assets = await findClipAssets();
+    expect(assets).toHaveLength(12);
+  });
+
   it("stores one Asset of kind VIDEO with a storagePath per clip", async () => {
     await createVoiceOverFixture(25); // ceil(25/12) + 2 = 3 + 2 = 5
     const pexelsClips = [1, 2, 3, 4, 5].map((n) => makeClip("PEXELS", `pex-${n}`));

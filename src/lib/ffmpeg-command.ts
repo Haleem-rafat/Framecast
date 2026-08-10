@@ -33,10 +33,21 @@ export function buildRenderArgs(input: RenderInput): string[] {
 
   for (const clip of input.clipPaths) {
     // Loop each clip so a short one still fills its slot rather than freezing.
-    // Duration is capped inside the filter graph below (via `trim`), not with
-    // an input-level `-t` — that would collide with the output `-t` below and
-    // make it ambiguous which one callers are looking at.
-    args.push("-stream_loop", "-1", "-i", clip);
+    // `-stream_loop -1` alone makes the input infinite — with no input-level
+    // `-t`, FFmpeg opens and decodes every input as an unbounded stream, and
+    // with dozens of clips that grows memory until the OS kills the process
+    // (observed live: 38 clips, killed after 9.5s with no stderr at all — see
+    // render-oom-report.md). The `trim=duration=…` below only bounds each
+    // clip's *output*, which is too late to stop that growth. The input-level
+    // `-t` here is what actually caps memory; `trim` stays too, as a second,
+    // cheap guarantee that a clip never contributes more than its slot even
+    // if the input bound were ever relaxed.
+    //
+    // This does mean there are now two `-t` flags in the final arg list — one
+    // per clip input, plus the output one below. `args.indexOf("-t")` will
+    // find the wrong one; tests must use `lastIndexOf` (the output `-t`,
+    // pushed last, is always the last occurrence).
+    args.push("-stream_loop", "-1", "-t", String(clipSeconds), "-i", clip);
   }
 
   args.push("-i", input.audioPath);

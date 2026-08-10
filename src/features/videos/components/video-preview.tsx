@@ -74,10 +74,10 @@ export function VideoPreview({
                     ])}
                   </p>
                   <Button asChild variant="outline" size="sm">
-                    {/* `download` is only honored by the browser for same-origin
-                     * resources; cross-origin (this signed URL) it still opens
-                     * the file in a new tab, which is enough to save from a
-                     * private bucket link. */}
+                    {/* `render.url` is this app's own streaming route
+                     * (/api/videos/[id]/file), not a signed Supabase URL —
+                     * same-origin, so `download` triggers a real save
+                     * instead of just opening the file in a new tab. */}
                     <a href={render.url} download target="_blank" rel="noopener noreferrer">
                       <Download />
                       Download

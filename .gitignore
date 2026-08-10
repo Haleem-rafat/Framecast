@@ -45,3 +45,7 @@ next-env.d.ts
 # prisma generated client
 src/generated/prisma
 .env*
+
+# finished renders live on local disk, not Supabase Storage — see
+# src/lib/local-render-storage.ts. Large binaries, machine-local, never committed.
+.framecast/

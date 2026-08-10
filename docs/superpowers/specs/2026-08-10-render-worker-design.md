@@ -219,6 +219,44 @@ no HTTP and authenticates nobody.
 
 ---
 
+## 8.1 Known conflicts
+
+**Finished renders are now local-only, and this worker design will need to be revisited
+before it can ship.**
+
+A real 7-minute render came in around 170MB — well past Supabase Storage's free-tier 50MB
+object cap (uploads above it fail outright, they don't get resized down). Re-encoding to fit
+50MB would mean ~930kbps at 1080p, visibly soft for content that gets published. The operator
+chose instead to keep the finished MP4 on local disk (`.framecast/renders/`, see
+`src/lib/local-render-storage.ts`) and drop it from the Supabase upload entirely. Narration,
+clips and captions are unaffected — they're small and still go through Supabase Storage, which
+this worker design's §5 configuration table already accounts for.
+
+That fix directly conflicts with §4's architecture: **a file on the operator's Mac is
+unreachable from a container running on Railway.** The worker can finish a render inside its
+own container and have nothing reachable for Gate 2 preview or for `publish.service.ts` to
+upload — both currently resolve the file from local disk on the same machine that rendered it,
+an assumption that is simply false once rendering moves off that machine.
+
+This is understood and accepted for now, not rediscovered later as a surprise. It does not
+block Task decomposition items 1-5 (schema, claiming, orchestration extraction, the worker
+loop, Docker/Railway deploy) — none of those depend on where the finished file ends up. It
+does block treating the worker as done: Gate 2 preview and Gate 2 publish need a place to read
+the finished video from that both the app (on Vercel) and the worker (on Railway) can reach.
+
+The alternative considered and deferred, rather than building local disk storage in the first
+place: **upload to YouTube as `private` immediately after rendering, and use YouTube's own
+player for Gate 2 preview** instead of streaming the app's own copy of the bytes. The operator
+reviews the private YouTube video directly; approving Gate 2 becomes flipping its visibility
+from `private` to `unlisted` (a metadata call, not a second upload) rather than uploading for
+the first time. This sidesteps the reachability problem entirely — YouTube is reachable from
+both Vercel and Railway — at the cost of every render consuming a YouTube upload slot even for
+videos the operator ultimately rejects at Gate 2, and losing the ability to preview a render
+before any YouTube quota is spent on it. That tradeoff is why it was deferred rather than built
+now: the operator is still watching most renders fail or need adjustment before Gate 2, and
+today's local-disk player costs nothing per attempt. Revisit this once the worker is otherwise
+ready to ship and this conflict is the one thing left blocking it.
+
 ## 9. What this deliberately does not solve
 
 The worker makes production *possible* without a terminal. It does not make it

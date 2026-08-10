@@ -1,12 +1,14 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Alignment } from "@/lib/captions";
 import { ConflictError, NotFoundError } from "@/lib/errors";
+import { localRenderPath } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
 import { projectService } from "@/services/project.service";
@@ -89,6 +91,13 @@ function createSucceedingSpawner() {
 
 let userId: string;
 
+/** Every video id `makeRenderableVideo` hands out, so the local `.mp4` a
+ * successful render leaves under `.framecast/renders/` (see
+ * local-render-storage.ts) is cleaned up alongside the test user rather than
+ * accumulating on disk across test runs. `rm(..., { force: true })` makes
+ * this safe for ids whose render never got that far. */
+const renderedVideoIds: string[] = [];
+
 beforeEach(async () => {
   userId = await createTestUser("render");
 });
@@ -96,6 +105,12 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await deleteTestUser(userId);
+
+  await Promise.all(
+    renderedVideoIds.splice(0).map((id) =>
+      rm(path.join(process.cwd(), localRenderPath(id)), { force: true }),
+    ),
+  );
 });
 
 /**
@@ -151,6 +166,7 @@ async function makeRenderableVideo(
     await prisma.asset.create({ data: { kind: "VIDEO", storagePath: clipPath } });
   }
 
+  renderedVideoIds.push(video.id);
   return video.id;
 }
 
@@ -189,8 +205,13 @@ describe("renderService.render — happy path", () => {
     const result = await service.render(userId, videoId);
 
     expect(result.durationSeconds).toBe(2);
-    expect(result.outputPath).toContain(videoId);
-    expect(result.outputPath).toContain("output/video.mp4");
+    // The finished MP4 now lands on local disk (see local-render-storage.ts),
+    // not a Supabase key — outputPath is the relative path RenderJob.outputUrl
+    // stores, e.g. `.framecast/renders/<videoId>.mp4`.
+    expect(result.outputPath).toBe(path.join(".framecast", "renders", `${videoId}.mp4`));
+
+    const writtenFile = await readFile(path.join(process.cwd(), result.outputPath));
+    expect(writtenFile.toString()).toBe("fake-rendered-mp4-bytes");
 
     // The job passed through RUNNING on its way to SUCCEEDED — RenderJob's
     // schema default is QUEUED, so combined with the final status below this
@@ -308,6 +329,29 @@ describe("renderService.render — failure path", () => {
       orderBy: { createdAt: "asc" },
     });
     expect(events.map((e) => `${e.from}->${e.to}`)).toContain("RENDERING->FAILED");
+  });
+
+  it("names the signal and still flushes captured stderr when ffmpeg is killed rather than exiting", async () => {
+    // Mirrors what an OOM-killed ffmpeg looks like to Node: `close` fires
+    // with code null and a signal, not a normal exit code. See
+    // render-oom-report.md — this is exactly what silently produced
+    // `RenderJob.error: "terminated"` with an empty RenderLog before the fix.
+    const videoId = await makeRenderableVideo();
+    const { spawner } = createSpawner(async (child) => {
+      child.stderr.emit("data", "some output written before the kill\n");
+      child.emit("close", null, "SIGKILL");
+    });
+    const service = new RenderService(spawner);
+
+    await expect(service.render(userId, videoId)).rejects.toThrow(/killed by signal SIGKILL/);
+
+    const job = await prisma.renderJob.findFirstOrThrow({ where: { videoId } });
+    expect(job.status).toBe("FAILED");
+    expect(job.error).toContain("killed by signal SIGKILL");
+
+    const logs = await prisma.renderLog.findMany({ where: { renderJobId: job.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].message).toContain("some output written before the kill");
   });
 });
 

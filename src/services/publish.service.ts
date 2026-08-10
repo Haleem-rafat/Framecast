@@ -2,8 +2,8 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
+import { readRenderFile } from "@/lib/local-render-storage";
 import { prisma } from "@/lib/prisma";
-import { getObject } from "@/lib/storage";
 import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. */
@@ -151,7 +151,15 @@ export class PublishService {
     let youtubeVideoId: string;
     try {
       const accessToken = await channelService.resolveAccessToken(userId, channelId);
-      const fileBuffer = await getObject(outputUrl);
+      // Reads from local disk, not Supabase — see local-render-storage.ts.
+      // Resolved from `video.id`, not the stored `outputUrl` string: the
+      // route-handler discipline of "never trust a path, derive it from the
+      // id" applies here too, even though this call site is trusted
+      // server-only code. Throws RenderFileMissingError (never a raw
+      // ENOENT) if the file isn't on this machine — a real possibility
+      // given only this operator's Mac ever has it (see the design doc's
+      // "Known conflicts" section).
+      const fileBuffer = await readRenderFile(video.id);
       youtubeVideoId = await this.uploadToYouTube(accessToken, {
         title: video.title,
         description,

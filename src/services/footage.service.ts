@@ -99,12 +99,29 @@ const SECONDS_PER_CLIP = 12;
 /** Padding beyond exact coverage so the render's last clip isn't cut short — see Task 6. */
 const EXTRA_CLIPS = 2;
 
+// Uncapped, `ceil(duration / SECONDS_PER_CLIP) + EXTRA_CLIPS` grows without
+// limit — a real ~7-minute video needed 38 *unique* clips, which took 11m51s
+// and 218MB to fetch (see render-oom-report.md). render.service.ts's
+// `ensureCoverage` already repeats the clip list to cover any narration
+// length once the unique set runs out, so there's no need to fetch a fresh
+// clip per slot: capping the unique pool at MAX_UNIQUE_CLIPS and letting
+// render-time repetition fill the rest cuts download time and storage by
+// roughly two thirds. At the cap, a clip repeats about every
+// MAX_UNIQUE_CLIPS * SECONDS_PER_CLIP = 144s (2-3 minutes) of narration —
+// noticeable, but this is a walking skeleton whose stock clips don't match
+// the narration's content anyway, so a viewer isn't losing anything a
+// higher cap would have given them. Do not raise this back up to "unique
+// clip per slot" without also solving the unbounded fetch time/memory it
+// reintroduces.
+const MAX_UNIQUE_CLIPS = 12;
+
 /** Pixabay's hard cap on search terms. Applied to the one query both sources
  * share, so Pexels' (uncapped) search stays consistent with Pixabay's. */
 const QUERY_MAX_LENGTH = 100;
 
 function computeClipCount(durationSeconds: number): number {
-  return Math.ceil(durationSeconds / SECONDS_PER_CLIP) + EXTRA_CLIPS;
+  const target = Math.ceil(durationSeconds / SECONDS_PER_CLIP) + EXTRA_CLIPS;
+  return Math.min(target, MAX_UNIQUE_CLIPS);
 }
 
 function extensionFromUrl(url: string): string {
