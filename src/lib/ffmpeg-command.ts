@@ -73,10 +73,22 @@ export function buildRenderArgs(input: RenderInput): string[] {
 
   args.push(
     "-filter_complex", filter,
+    // The filter graph decodes every clip in parallel, and each worker thread
+    // carries its own frame buffers. Unbounded, FFmpeg sizes its pool to the
+    // host's core count — on the render container that meant far more memory
+    // than its 1GB allows, on top of the per-input decoders. Two threads per
+    // stage still saturates the container's 2 vCPU.
+    "-filter_threads", "2",
+    "-filter_complex_threads", "2",
     "-map", "[vout]",
     "-map", `${audioIndex}:a`,
     "-c:v", "libx264",
-    "-preset", "medium",
+    // `veryfast` rather than `medium`: x264's slower presets widen the
+    // lookahead and reference buffers, which is memory the container does not
+    // have. It costs perhaps 10% file size at the same CRF and roughly halves
+    // encode time — a good trade for stock footage under captions.
+    "-preset", "veryfast",
+    "-threads", "2",
     "-crf", "22",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",

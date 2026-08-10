@@ -44,6 +44,23 @@ const noopProgress: RenderProgress = () => {};
  * exact value actually passed to the command builder. */
 const CLIP_SECONDS = 12;
 
+/**
+ * How many distinct clips a single render may open, regardless of how many the
+ * video has collected.
+ *
+ * The concat filter opens every input simultaneously, so each clip costs a live
+ * h264 decoder plus a scaler for the whole run — and stock footage arrives at
+ * up to 2560x1440. The worker's container has 1GB of memory, and a video whose
+ * footage predates FootageService's own download cap had 38 clips: the kernel
+ * killed FFmpeg with SIGKILL before it produced a frame, reported only as
+ * "killed by signal SIGKILL" with no FFmpeg error to explain it.
+ *
+ * Twelve at 1080p fits comfortably. Beyond that the extra clips buy very little
+ * visual variety anyway, since `ensureCoverage` loops the sequence to fill the
+ * narration regardless.
+ */
+const MAX_RENDER_CLIPS = 12;
+
 /** FFmpeg emits `-progress` lines far faster than a database should be
  * written; at most one `RenderJob.progress` write per this window. */
 const PROGRESS_THROTTLE_MS = 1000;
@@ -168,7 +185,7 @@ export class RenderService {
       throw new ConflictError("Narration alignment must be generated before rendering.");
     }
 
-    const clipAssets = await prisma.asset.findMany({
+    const allClipAssets = await prisma.asset.findMany({
       where: {
         kind: "VIDEO",
         deletedAt: null,
@@ -178,9 +195,20 @@ export class RenderService {
       select: { storagePath: true },
     });
 
-    if (clipAssets.length === 0) {
+    if (allClipAssets.length === 0) {
       throw new ConflictError("Stock footage must be collected before rendering.");
     }
+
+    // FootageService caps how many clips it *downloads*, but nothing capped how
+    // many the render *opens*, and a video collected before that cap existed
+    // still has every clip it ever gathered. FFmpeg opens all of them at once —
+    // the concat filter has to — so each one holds a live h264 decoder and a
+    // scaler, several at 2560x1440. On the operator's Mac that was merely
+    // wasteful. In the worker's 1GB container it was fatal: 38 clips, and the
+    // kernel killed FFmpeg with SIGKILL before it emitted a single frame, which
+    // surfaced as a bare "killed by signal SIGKILL" with no FFmpeg error to
+    // explain it.
+    const clipAssets = allClipAssets.slice(0, MAX_RENDER_CLIPS);
 
     // The real guard against a second concurrent render: two callers can both
     // read GENERATING above, but only one's `status: "GENERATING"` clause can
