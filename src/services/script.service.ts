@@ -107,6 +107,45 @@ export class ScriptService {
           },
         });
 
+        // The model call above already happened — and, in production, was
+        // already billed — before this transaction opened. A regeneration
+        // that takes that long can lose a race with an operator who approves
+        // the video's *current* script while the spinner is still running:
+        // "Approve script" wins the atomic DRAFT -> QUEUED update in
+        // videoService.approveScript and reports success, and this call must
+        // not then repoint activeVersionId at content no human has read.
+        // Re-checking status before the model call would only narrow that
+        // window — the call itself is what takes the seconds the race needs.
+        //
+        // This conditional update is the same shape approveScript uses, and
+        // closes the race for real: only one of "approve" and "this
+        // regeneration" can still find the video DRAFT. Throwing rolls the
+        // whole transaction back, so the ScriptVersion created just above is
+        // discarded along with the repoint — the two can never both land.
+        //
+        // It sits here, immediately before the repoint, rather than at the
+        // top of the transaction: an UPDATE takes a row lock on the video
+        // that is held until commit, and taking it first meant a concurrent
+        // regeneration blocked behind it for the transaction's whole
+        // remaining round-trip budget. Against the remote database that
+        // exceeded Prisma's interactive-transaction timeout and the second
+        // call died instead of serialising. Taking the lock last holds it
+        // for one statement. Concurrent regenerations then race the
+        // (scriptId, version) unique constraint as they always did, which
+        // the P2002 handling below already converts to a ConflictError.
+        const { count } = await tx.video.updateMany({
+          where: { id: videoId, userId, deletedAt: null, status: "DRAFT" },
+          data: { updatedAt: new Date() },
+        });
+
+        if (count === 0) {
+          throw new ConflictError(
+            "Your script was approved while this regeneration was still " +
+              "running. The newly generated version has been discarded; the " +
+              "version you approved is unchanged.",
+          );
+        }
+
         await tx.script.update({
           where: { id: script.id },
           data: { activeVersionId: version.id },

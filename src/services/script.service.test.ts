@@ -302,18 +302,74 @@ describe("scriptService.generate", () => {
         }
       }
 
-      console.info(
-        `[collision-rate] ${collisions}/${attempts} concurrent pairs collided`,
-      );
+      console.info(`[collision-rate] ${collisions}/${attempts} concurrent pairs collided`);
 
       // Two concurrent generate() calls racing the same script's version
       // number collide on the DB unique constraint almost every time; this
       // asserts the race is actually being exercised rather than silently
-      // serialising.
+      // serialising. The C2 Gate 1 guard deliberately takes its row lock as
+      // the transaction's last statement precisely so this stays true —
+      // taking it first serialised these calls and blew the transaction
+      // timeout instead.
       expect(collisions).toBeGreaterThan(0);
     },
     60_000,
   );
+});
+
+describe("Gate 1 bypass — approval mid-generation must not overwrite the approved script (C2 regression)", () => {
+  it("discards a regeneration that resolves after Approve won the DRAFT -> QUEUED race, and leaves activeVersionId on the approved version", async () => {
+    // Reproduces: press Regenerate, then press Approve script while the
+    // spinner is still running. Approve wins the atomic DRAFT -> QUEUED
+    // update and reports success; seconds later the stale regeneration
+    // resolves. Before the fix it repointed activeVersionId at content no
+    // human ever read.
+    const approved = await service.generate(userId, videoId, {});
+
+    // A provider whose generateScript() we hold open until approval has
+    // landed underneath it, so the approval is guaranteed to fall inside
+    // the generation's in-flight window rather than racing it.
+    let resolveGeneration!: (value: Awaited<ReturnType<TextGenerationProvider["generateScript"]>>) => void;
+    const pendingGeneration = new Promise<
+      Awaited<ReturnType<TextGenerationProvider["generateScript"]>>
+    >((resolve) => {
+      resolveGeneration = resolve;
+    });
+    const holdingProvider: TextGenerationProvider = {
+      generateScript: vi.fn(() => pendingGeneration),
+    };
+    const holdingService = new ScriptService(holdingProvider);
+
+    const generatePromise = holdingService.generate(userId, videoId, {});
+
+    // Give generate() a tick to reach and await the (held-open) provider
+    // call before Approve fires, so Approve genuinely lands mid-flight.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await videoService.approveScript(userId, videoId);
+
+    resolveGeneration({
+      content: "Unapproved content nobody read.",
+      model: FAKE_MODEL,
+      provider: "ANTHROPIC",
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 0.001,
+      latencyMs: 1,
+    });
+
+    await expect(generatePromise).rejects.toThrow(ConflictError);
+
+    const script = await prisma.script.findUniqueOrThrow({
+      where: { videoId },
+      include: { versions: true },
+    });
+    expect(script.activeVersionId).toBe(approved.id);
+    expect(script.versions).toHaveLength(1);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("QUEUED");
+  });
 });
 
 describe("Gate 1 — script is frozen once the video leaves DRAFT", () => {
