@@ -147,6 +147,44 @@ async function addRenderLogs(renderJobId: string, count: number) {
   });
 }
 
+/** Explicit `createdAt` for deterministic merge-ordering assertions, same
+ * reasoning as `addRenderLogs` above. */
+function addStatusEvent(opts: {
+  from?: string | null;
+  to: string;
+  message?: string | null;
+  createdAt: Date;
+}) {
+  return prisma.videoStatusEvent.create({
+    data: {
+      videoId,
+      from: (opts.from ?? null) as never,
+      to: opts.to as never,
+      message: opts.message ?? null,
+      createdAt: opts.createdAt,
+    },
+  });
+}
+
+function addActivityLog(opts: {
+  action: string;
+  message?: string | null;
+  level?: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  createdAt: Date;
+}) {
+  return prisma.activityLog.create({
+    data: {
+      userId,
+      action: opts.action,
+      entityType: "Video",
+      entityId: videoId,
+      message: opts.message ?? null,
+      level: opts.level ?? "INFO",
+      createdAt: opts.createdAt,
+    },
+  });
+}
+
 async function addPublication() {
   const channel = await prisma.channel.create({
     data: {
@@ -493,5 +531,191 @@ describe("pipelineService.getState — logs", () => {
     const state = await service.getState(userId, videoId);
 
     expect(state.logs).toEqual([]);
+  });
+});
+
+describe("pipelineService.getLogStream — access", () => {
+  it("throws NotFoundError for a video that does not belong to the caller", async () => {
+    await expect(service.getLogStream(userId, randomUUID())).rejects.toThrow(NotFoundError);
+  });
+
+  it("throws NotFoundError when a different user asks for this video's logs", async () => {
+    // Guards the actual scoping mechanism: getLogStream never filters the
+    // RenderLog/VideoStatusEvent/ActivityLog queries by userId directly (see
+    // its comment) — ownership is enforced once, up front, by the video
+    // lookup. A foreign caller must be rejected there, before any log rows
+    // are ever touched.
+    const otherUserId = await createTestUser("pipeline-foreign");
+    try {
+      await expect(service.getLogStream(otherUserId, videoId)).rejects.toThrow(NotFoundError);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+});
+
+describe("pipelineService.getLogStream — merge ordering", () => {
+  it("merges render, status, and activity entries into one oldest-first stream", async () => {
+    const base = Date.now();
+    const job = await addRenderJob({ status: "RUNNING", progress: 10 });
+    await prisma.renderLog.create({
+      data: { renderJobId: job.id, message: "ffmpeg: frame=100", createdAt: new Date(base + 2000) },
+    });
+    await addActivityLog({
+      action: "voiceover.generate",
+      message: "Generated narration",
+      createdAt: new Date(base + 1000),
+    });
+    await addStatusEvent({
+      from: "DRAFT",
+      to: "QUEUED",
+      message: "Script approved by operator",
+      createdAt: new Date(base + 3000),
+    });
+
+    const stream = await service.getLogStream(userId, videoId);
+
+    // videoService.create's own "Video created" VideoStatusEvent (written in
+    // beforeEach, before `base`) sorts ahead of all three of these — so this
+    // only asserts the tail of the merge, not the very first entry.
+    const tail = stream.entries.slice(-3);
+    expect(tail.map((entry) => entry.source)).toEqual(["activity", "render", "status"]);
+    expect(tail.map((entry) => entry.message)).toEqual([
+      "Generated narration",
+      "ffmpeg: frame=100",
+      "Script approved by operator",
+    ]);
+
+    for (let i = 1; i < stream.entries.length; i++) {
+      expect(stream.entries[i].createdAt.getTime()).toBeGreaterThanOrEqual(
+        stream.entries[i - 1].createdAt.getTime(),
+      );
+    }
+  });
+
+  it("includes RenderLog rows from every render attempt for the video, not just the latest", async () => {
+    const firstJob = await addRenderJob({ status: "FAILED", progress: 20 });
+    await prisma.renderLog.create({
+      data: {
+        renderJobId: firstJob.id,
+        message: "first attempt crashed",
+        createdAt: new Date(Date.now() - 5000),
+      },
+    });
+    const secondJob = await addRenderJob({ status: "SUCCEEDED", progress: 100 });
+    await prisma.renderLog.create({
+      data: { renderJobId: secondJob.id, message: "second attempt succeeded", createdAt: new Date() },
+    });
+
+    const stream = await service.getLogStream(userId, videoId);
+    const messages = stream.entries.map((entry) => entry.message);
+
+    expect(messages).toContain("first attempt crashed");
+    expect(messages).toContain("second attempt succeeded");
+  });
+});
+
+describe("pipelineService.getLogStream — level", () => {
+  it("derives ERROR for a status transition to FAILED, INFO for any other transition", async () => {
+    await addStatusEvent({
+      from: "RENDERING",
+      to: "FAILED",
+      message: "Render crashed",
+      createdAt: new Date(),
+    });
+    await addStatusEvent({
+      from: "DRAFT",
+      to: "QUEUED",
+      message: "Approved",
+      createdAt: new Date(Date.now() + 1),
+    });
+
+    const stream = await service.getLogStream(userId, videoId);
+
+    expect(stream.entries.find((entry) => entry.message === "Render crashed")?.level).toBe(
+      "ERROR",
+    );
+    expect(stream.entries.find((entry) => entry.message === "Approved")?.level).toBe("INFO");
+  });
+
+  it("falls back to a 'from → to' message when a VideoStatusEvent has none", async () => {
+    await addStatusEvent({ from: "QUEUED", to: "GENERATING", message: null, createdAt: new Date() });
+
+    const stream = await service.getLogStream(userId, videoId);
+    const entry = stream.entries.find(
+      (candidate) => candidate.source === "status" && candidate.message.includes("GENERATING"),
+    );
+
+    expect(entry?.message).toBe("QUEUED → GENERATING");
+  });
+
+  it("passes ActivityLog's level through and falls back to the action name when message is null", async () => {
+    await addActivityLog({
+      action: "voiceover.generate",
+      message: null,
+      level: "WARN",
+      createdAt: new Date(),
+    });
+
+    const stream = await service.getLogStream(userId, videoId);
+    const entry = stream.entries.find((candidate) => candidate.source === "activity");
+
+    expect(entry?.level).toBe("WARN");
+    expect(entry?.message).toBe("voiceover.generate");
+  });
+
+  it("never surfaces ActivityLog.metadata even when a row has one set", async () => {
+    await prisma.activityLog.create({
+      data: {
+        userId,
+        action: "test.action",
+        entityType: "Video",
+        entityId: videoId,
+        message: "has metadata",
+        metadata: { secret: "should-not-leak" },
+        createdAt: new Date(),
+      },
+    });
+
+    const stream = await service.getLogStream(userId, videoId);
+    const entry = stream.entries.find((candidate) => candidate.message === "has metadata");
+
+    expect(entry).toBeDefined();
+    expect(entry).not.toHaveProperty("metadata");
+  });
+});
+
+describe("pipelineService.getLogStream — cap and truncation", () => {
+  it("caps the merged stream at 200 entries, keeps the newest, and flags truncation", async () => {
+    const job = await addRenderJob({ status: "RUNNING", progress: 0 });
+    const base = Date.now();
+    await prisma.renderLog.createMany({
+      data: Array.from({ length: 210 }, (_, i) => ({
+        renderJobId: job.id,
+        message: `line ${i}`,
+        createdAt: new Date(base + i * 1000),
+      })),
+    });
+
+    const stream = await service.getLogStream(userId, videoId);
+
+    expect(stream.truncated).toBe(true);
+    expect(stream.entries).toHaveLength(200);
+    // The oldest 10 of the 210 render lines — plus the fixture's own
+    // "Video created" status event, older still — are the ones cut. The
+    // stream keeps the newest 200, so its oldest surviving entry is line 10.
+    expect(stream.entries[0].message).toBe("line 10");
+    expect(stream.entries[199].message).toBe("line 209");
+  });
+
+  it("does not flag truncation when the total is at or under the cap", async () => {
+    const job = await addRenderJob({ status: "RUNNING", progress: 0 });
+    await addRenderLogs(job.id, 50);
+
+    const stream = await service.getLogStream(userId, videoId);
+
+    expect(stream.truncated).toBe(false);
+    // 50 render lines plus the fixture's own "Video created" status event.
+    expect(stream.entries).toHaveLength(51);
   });
 });

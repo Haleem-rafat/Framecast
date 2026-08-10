@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
+import { LogStream } from "@/features/videos/components/log-stream";
 import { PipelinePanel } from "@/features/videos/components/pipeline-panel";
 import { ScriptPanel } from "@/features/videos/components/script-panel";
 import { StatusEventsList } from "@/features/videos/components/status-events-list";
@@ -67,8 +68,17 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   // "pending" rows with nothing behind them. Fetched server-side, not via
   // the client's first poll, so the panel paints with real data instead of
   // a placeholder that immediately flips.
-  const pipelineState =
-    video.status === "DRAFT" ? null : await pipelineService.getState(user.id, video.id);
+  // Same DRAFT gate as pipelineState below — there is no pipeline run to
+  // watch yet, so the log stream would just be an empty box. Fetched
+  // alongside pipelineState (both server-side) so the page paints with real
+  // logs on first load instead of the client's first poll.
+  const [pipelineState, pipelineLogs] =
+    video.status === "DRAFT"
+      ? [null, null]
+      : await Promise.all([
+          pipelineService.getState(user.id, video.id),
+          pipelineService.getLogStream(user.id, video.id),
+        ]);
 
   // outputUrl/audioUrl are storage paths, not URLs — resolved here, server-side,
   // so the client only ever receives a signed URL. Passing a raw path to the
@@ -95,6 +105,14 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
 
       {pipelineState && (
         <PipelinePanel videoId={video.id} initialState={pipelineState} />
+      )}
+
+      {pipelineState && pipelineLogs && (
+        <LogStream
+          videoId={video.id}
+          initialLogs={pipelineLogs}
+          initialPipelineState={pipelineState}
+        />
       )}
 
       {/* Above the script panel: once a video exists, watching it is the

@@ -20,8 +20,10 @@ import { formatDuration } from "@/utils/format";
 /** A render spans several minutes; frequent enough that the panel reads as
  * live, far below query-provider.tsx's 30s staleTime so every tick is a real
  * request rather than a served-from-cache no-op. Only used while
- * `isActive` — something is actually moving and worth watching tick up. */
-const POLL_INTERVAL_ACTIVE_MS = 2000;
+ * `isActive` — something is actually moving and worth watching tick up.
+ * Exported so log-stream.tsx's own poll rides the exact same cadence instead
+ * of a second, separately-tuned number that could drift from this one. */
+export const POLL_INTERVAL_ACTIVE_MS = 2000;
 
 /** Used whenever the video is queued but nothing is actually running yet.
  * There is no render worker today, so a `QUEUED` video can sit for a long
@@ -37,6 +39,35 @@ async function fetchPipelineState(videoId: string): Promise<PipelineState> {
   }
 
   return result.data;
+}
+
+/**
+ * The one place `["pipeline-state", videoId]` is fetched and polled.
+ * Exported so the log stream (log-stream.tsx) can read the same `isActive`/
+ * `isTerminal` signal to gate its own poll instead of re-deriving them or
+ * running an independently-tuned interval — see that file's comment. Calling
+ * this from two components does not mean two competing polling loops: React
+ * Query keys a single underlying query by `queryKey`, so both observers share
+ * one in-flight fetch and one scheduled refetch per tick, not one each.
+ */
+export function usePipelineState(videoId: string, initialState: PipelineState) {
+  return useQuery({
+    queryKey: ["pipeline-state", videoId],
+    queryFn: () => fetchPipelineState(videoId),
+    initialData: initialState,
+    // The requirement most likely to get missed: this must eventually return
+    // `false`, or an operator who leaves the tab open polls forever on an
+    // idle page. `isTerminal` is the read model's one definition of
+    // "finished" so this can never drift out of sync with it. Below that,
+    // `isActive` — also computed server-side, never re-derived here — picks
+    // fast vs. slow: a `QUEUED` video with nothing running yet (no render
+    // worker exists today) has nothing to gain from a 2s poll.
+    refetchInterval: (query) => {
+      const latest = query.state.data;
+      if (!latest || latest.isTerminal) return false;
+      return latest.isActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+    },
+  });
 }
 
 const STATUS_ICON: Record<PipelineStage["status"], typeof Circle> = {
@@ -102,23 +133,7 @@ export function PipelinePanel({
   videoId: string;
   initialState: PipelineState;
 }) {
-  const { data } = useQuery({
-    queryKey: ["pipeline-state", videoId],
-    queryFn: () => fetchPipelineState(videoId),
-    initialData: initialState,
-    // The requirement most likely to get missed: this must eventually return
-    // `false`, or an operator who leaves the tab open polls forever on an
-    // idle page. `isTerminal` is the read model's one definition of
-    // "finished" so this can never drift out of sync with it. Below that,
-    // `isActive` — also computed server-side, never re-derived here — picks
-    // fast vs. slow: a `QUEUED` video with nothing running yet (no render
-    // worker exists today) has nothing to gain from a 2s poll.
-    refetchInterval: (query) => {
-      const latest = query.state.data;
-      if (!latest || latest.isTerminal) return false;
-      return latest.isActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
-    },
-  });
+  const { data } = usePipelineState(videoId, initialState);
 
   const state = data ?? initialState;
   const isIdleQueued = !state.isTerminal && !state.isActive;

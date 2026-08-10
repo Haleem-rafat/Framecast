@@ -67,6 +67,48 @@ const TERMINAL_STATUSES: ReadonlySet<VideoStatus> = new Set([
  * is enough recent lines to diagnose a crash without paging through history. */
 const LOG_LIMIT = 20;
 
+/** Source table a merged log-stream entry came from. Kept distinct from
+ * `LogLevel` — a `VideoStatusEvent` carries no level of its own (see
+ * `statusEventLevel` below), so the stream needs a separate signal for "which
+ * table" versus "how severe". */
+export type PipelineLogSource = "render" | "status" | "activity";
+
+export interface PipelineLogEntry {
+  id: string;
+  source: PipelineLogSource;
+  level: LogLevel;
+  message: string;
+  createdAt: Date;
+}
+
+export interface PipelineLogStream {
+  videoId: string;
+  /** Oldest first, capped at `LOG_STREAM_LIMIT` — the merge queries newest
+   * first (see `getLogStream`) and reverses once, here, so callers never
+   * re-sort. */
+  entries: PipelineLogEntry[];
+  /** True when older lines exist beyond what was fetched, so the UI can say
+   * so plainly instead of implying this is the whole history. */
+  truncated: boolean;
+}
+
+/** The full merged stream, not the render-only preview `getState` embeds in
+ * the panel (`LOG_LIMIT`, above). FFmpeg alone can emit hundreds of lines on
+ * a slow failure; this is enough to diagnose one without an unbounded fetch. */
+const LOG_STREAM_LIMIT = 200;
+
+/** One more than the display cap, per source. Fetching `LOG_STREAM_LIMIT + 1`
+ * from every source guarantees the true global top-`LOG_STREAM_LIMIT` (by
+ * `createdAt`) is fully contained in the union — no source can contribute
+ * more than that many rows to the merged head — while the "+1" turns "did any
+ * source hit its own cap" into an exact truncation signal: if the merged
+ * candidate count exceeds `LOG_STREAM_LIMIT`, something real was cut; if not,
+ * every source returned its true total and nothing was. */
+const LOG_STREAM_FETCH_LIMIT = LOG_STREAM_LIMIT + 1;
+
+const STATUS_EVENT_MESSAGE_FALLBACK = (from: VideoStatus | null, to: VideoStatus): string =>
+  from ? `${from} → ${to}` : to;
+
 const STAGE_LABELS: Record<PipelineStageKey, string> = {
   narration: "Narration",
   footage: "Footage",
@@ -310,6 +352,102 @@ export class PipelineService {
       // Queried newest-first to respect LOG_LIMIT; reversed here so the
       // panel can render top-to-bottom like a terminal without re-sorting.
       logs: [...logs].reverse(),
+    };
+  }
+
+  /**
+   * Merged, time-ordered view of everything the pipeline did to a video:
+   * FFmpeg's stderr (`RenderLog`, across every render attempt — not just the
+   * latest, unlike `getState`'s panel preview), every status transition
+   * (`VideoStatusEvent`), and app-level actions (`ActivityLog`, scoped by
+   * `entityType`/`entityId` rather than `userId` — a video's log is a video's
+   * log regardless of which of its owner's actions produced a given row).
+   * `userId` ownership is enforced by the initial video lookup alone, the
+   * same pattern `getState` uses: only an owner can ever obtain a `videoId`
+   * to pass in, so scoping the follow-up queries by it too would be
+   * redundant, not safer. No `metadata` — `ActivityLog.metadata` is nullable,
+   * schema-free JSON no code in this app currently populates with anything,
+   * so surfacing it here would forward whatever a future writer puts there,
+   * sight unseen, straight to the browser.
+   */
+  async getLogStream(userId: string, videoId: string): Promise<PipelineLogStream> {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    const [renderLogs, statusEvents, activityLogs] = await Promise.all([
+      prisma.renderLog.findMany({
+        // Every render attempt for this video, not just the latest job — a
+        // retry's earlier FAILED attempt is exactly the kind of history this
+        // stream exists to surface.
+        where: { renderJob: { videoId } },
+        orderBy: { createdAt: "desc" },
+        take: LOG_STREAM_FETCH_LIMIT,
+        select: { id: true, level: true, message: true, createdAt: true },
+      }),
+      prisma.videoStatusEvent.findMany({
+        where: { videoId },
+        orderBy: { createdAt: "desc" },
+        take: LOG_STREAM_FETCH_LIMIT,
+        select: { id: true, from: true, to: true, message: true, createdAt: true },
+      }),
+      prisma.activityLog.findMany({
+        where: { entityType: "Video", entityId: videoId },
+        orderBy: { createdAt: "desc" },
+        take: LOG_STREAM_FETCH_LIMIT,
+        select: { id: true, level: true, action: true, message: true, createdAt: true },
+      }),
+    ]);
+
+    const candidates: PipelineLogEntry[] = [
+      ...renderLogs.map((log) => ({
+        id: log.id,
+        source: "render" as const,
+        level: log.level,
+        message: log.message,
+        createdAt: log.createdAt,
+      })),
+      ...statusEvents.map((event) => ({
+        id: event.id,
+        source: "status" as const,
+        // VideoStatusEvent carries no level column of its own; a transition
+        // *to* FAILED is the one case worth flagging as an error rather than
+        // routine progress, so the "warnings and errors" filter catches it.
+        level: (event.to === "FAILED" ? "ERROR" : "INFO") as LogLevel,
+        message: event.message ?? STATUS_EVENT_MESSAGE_FALLBACK(event.from, event.to),
+        createdAt: event.createdAt,
+      })),
+      ...activityLogs.map((entry) => ({
+        id: entry.id,
+        source: "activity" as const,
+        level: entry.level,
+        // `message` is optional on ActivityLog (some actions only ever set
+        // `action`); the action name itself is still a meaningful line
+        // rather than showing nothing.
+        message: entry.message ?? entry.action,
+        createdAt: entry.createdAt,
+      })),
+    ];
+
+    candidates.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    // See LOG_STREAM_FETCH_LIMIT's comment: exceeding the display cap here
+    // proves a real row was cut, and staying under it proves every source
+    // returned its true total.
+    const truncated = candidates.length > LOG_STREAM_LIMIT;
+    const newestFirst = candidates.slice(0, LOG_STREAM_LIMIT);
+
+    return {
+      videoId: video.id,
+      // Reversed once, here, to oldest-first — the stream reads top-to-bottom
+      // like a terminal, same convention as getState's `logs`.
+      entries: newestFirst.reverse(),
+      truncated,
     };
   }
 }

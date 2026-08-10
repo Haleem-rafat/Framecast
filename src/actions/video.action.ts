@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { run, type ActionResult } from "@/actions/action-result";
 import { createVideoSchema } from "@/schemas/video.schema";
 import { requireSession } from "@/server/session";
-import type { PipelineState } from "@/services/pipeline.service";
+import type { PipelineLogStream, PipelineState } from "@/services/pipeline.service";
 import { pipelineService } from "@/services/pipeline.service";
 import { videoService } from "@/services/video.service";
 
@@ -50,5 +50,21 @@ export async function getPipelineStateAction(
   return run(async () => {
     const session = await requireSession();
     return pipelineService.getState(session.user.id, videoId);
+  });
+}
+
+/**
+ * Polled by the log stream, gated on the same `isActive` signal the pipeline
+ * panel already computes (see `use-pipeline-state.ts`) rather than a second,
+ * independently-tuned interval — while active it tracks the same 2s cadence;
+ * once idle-`QUEUED` or terminal it stops, since a merged three-table fetch
+ * is not something to pay for on every idle tick.
+ */
+export async function getPipelineLogsAction(
+  videoId: string,
+): Promise<ActionResult<PipelineLogStream>> {
+  return run(async () => {
+    const session = await requireSession();
+    return pipelineService.getLogStream(session.user.id, videoId);
   });
 }
