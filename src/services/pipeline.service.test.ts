@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { MAX_ATTEMPTS } from "@/services/job.service";
 import { PipelineService } from "@/services/pipeline.service";
 import { projectService } from "@/services/project.service";
 import { videoService } from "@/services/video.service";
@@ -280,6 +281,57 @@ describe("pipelineService.getState — isActive", () => {
 
     expect(state.isTerminal).toBe(true);
     expect(state.isActive).toBe(false);
+  });
+});
+
+describe("pipelineService.getState — isFailed / attempts", () => {
+  it.each([
+    ["DRAFT", false],
+    ["QUEUED", false],
+    ["GENERATING", false],
+    ["RENDERING", false],
+    ["READY", false],
+    ["PUBLISHED", false],
+    ["FAILED", true],
+  ] as const)("isFailed is %s for status %s", async (status, expected) => {
+    await setVideoStatus(status);
+    const state = await service.getState(userId, videoId);
+    expect(state.isFailed).toBe(expected);
+  });
+
+  it("is not failed from a stale FAILED RenderJob row once the video itself is QUEUED again", async () => {
+    // Exactly the shape a Retry leaves behind: the latest RenderJob is still
+    // the old failed attempt (a fresh one doesn't exist until the render
+    // stage starts again), but the video row has already moved back to
+    // QUEUED. isFailed must track the video, not infer from the stage.
+    await addRenderJob({ status: "FAILED" });
+    await setVideoStatus("QUEUED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isFailed).toBe(false);
+    expect(stageStatus(state.stages, "render")).toBe("failed");
+  });
+
+  it("reports attempts, maxAttempts and attemptsExhausted", async () => {
+    await prisma.video.update({ where: { id: videoId }, data: { attempts: 2, status: "FAILED" } });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.attempts).toBe(2);
+    expect(state.maxAttempts).toBe(MAX_ATTEMPTS);
+    expect(state.attemptsExhausted).toBe(2 >= MAX_ATTEMPTS);
+  });
+
+  it("is exhausted once attempts reaches maxAttempts", async () => {
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { attempts: MAX_ATTEMPTS, status: "FAILED" },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.attemptsExhausted).toBe(true);
   });
 });
 

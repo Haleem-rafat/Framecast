@@ -3,6 +3,7 @@ import "server-only";
 import { NotFoundError } from "@/lib/errors";
 import type { LogLevel, RenderStatus, VideoStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
+import { MAX_ATTEMPTS } from "@/services/job.service";
 import { formatBytes, formatDuration } from "@/utils/format";
 
 export type PipelineStageKey =
@@ -50,6 +51,24 @@ export interface PipelineState {
    * "actually moving", so the panel picks its poll interval from this
    * instead of re-deriving it from `VideoStatus`/`RenderStatus` itself. */
   isActive: boolean;
+  /** True precisely when `VideoStatus` is `FAILED` — the one discriminator
+   * `isTerminal` alone can't give the Run/Cancel/Retry controls, since
+   * `READY`/`PUBLISHED` are terminal too but call for no button at all.
+   * Deliberately not inferred from `stages` (a stage can read "failed" from
+   * a stale `RenderJob` row even while the video itself is freshly `QUEUED`
+   * again after a retry — see `getState`'s render-stage comment), so this is
+   * read straight off the video row instead. */
+  isFailed: boolean;
+  /** How many claim attempts this video has spent. 0 until a worker first
+   * claims it (`JobService.claimNext` increments on claim, not on queue). */
+  attempts: number;
+  /** The cap `JobService.claimNext`/`JobService.retry` both enforce,
+   * forwarded rather than hardcoded a second time in the panel. */
+  maxAttempts: number;
+  /** True once `attempts` has reached `maxAttempts` — `claimNext` will never
+   * claim this video again, so Retry has nothing left to offer and the panel
+   * must say so instead of rendering a button that does nothing. */
+  attemptsExhausted: boolean;
   /** Most recent `RenderLog` lines for the latest `RenderJob`, oldest first.
    * Only ever populated while that job is `RUNNING` or after it `FAILED` —
    * the only times the tail is shown or useful — so an idle poll never pays
@@ -181,6 +200,7 @@ export class PipelineService {
       select: {
         id: true,
         status: true,
+        attempts: true,
         // Narration's detail reports "characters sent" alongside its
         // duration — the same character count voiceover.service.ts actually
         // sent to ElevenLabs, already stored here rather than duplicated
@@ -349,6 +369,10 @@ export class PipelineService {
       elapsedSeconds,
       isTerminal,
       isActive,
+      isFailed: video.status === "FAILED",
+      attempts: video.attempts,
+      maxAttempts: MAX_ATTEMPTS,
+      attemptsExhausted: video.attempts >= MAX_ATTEMPTS,
       // Queried newest-first to respect LOG_LIMIT; reversed here so the
       // panel can render top-to-bottom like a terminal without re-sorting.
       logs: [...logs].reverse(),

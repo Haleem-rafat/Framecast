@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStatus } from "@/generated/prisma/enums";
-import { jobService } from "@/services/job.service";
+import { jobService, MAX_ATTEMPTS } from "@/services/job.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Supabase database (see src/test/setup.ts)
@@ -316,4 +316,154 @@ describe("jobService.requestCancel", () => {
       jobService.requestCancel("00000000-0000-4000-8000-000000000001", videoId),
     ).rejects.toThrow(NotFoundError);
   });
+});
+
+describe("jobService.start", () => {
+  it("re-affirms an already-queued, idle video: QUEUED with a clear lease", async () => {
+    const videoId = await createVideo({
+      status: "QUEUED",
+      leaseExpiresAt: new Date(Date.now() + 1000),
+    });
+
+    await jobService.start(userId, videoId);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("QUEUED");
+    expect(video.leaseExpiresAt).toBeNull();
+  });
+
+  it("requeues a retryable FAILED video without resetting attempts", async () => {
+    const videoId = await createVideo({ status: "FAILED", attempts: 1 });
+
+    await jobService.start(userId, videoId);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("QUEUED");
+    expect(video.attempts).toBe(1);
+
+    const event = await prisma.videoStatusEvent.findFirst({
+      where: { videoId, to: "QUEUED" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(event?.from).toBe("FAILED");
+  });
+
+  it("refuses a FAILED video that has exhausted its attempts", async () => {
+    const videoId = await createVideo({ status: "FAILED", attempts: MAX_ATTEMPTS });
+
+    await expect(jobService.start(userId, videoId)).rejects.toThrow(ConflictError);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("FAILED");
+  });
+
+  it.each(["DRAFT", "GENERATING", "RENDERING", "READY", "PUBLISHED"] as const)(
+    "refuses a %s video",
+    async (status) => {
+      const videoId = await createVideo({ status });
+
+      await expect(jobService.start(userId, videoId)).rejects.toThrow(ConflictError);
+    },
+  );
+
+  it("refuses a video that does not belong to the caller", async () => {
+    const videoId = await createVideo({ status: "QUEUED" });
+
+    await expect(
+      jobService.start("00000000-0000-4000-8000-000000000001", videoId),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it("lets the FAILED -> QUEUED transition happen exactly once under a race", async () => {
+    // `start` treats QUEUED as a valid (idempotent) starting point as well as
+    // FAILED, so two concurrent calls racing a FAILED video are not
+    // guaranteed to produce exactly one *successful call* — whichever call's
+    // read lands after the winner's write simply finds the video already
+    // QUEUED and re-affirms it, harmlessly (that is the same "already
+    // queued, idle" case Run always permits). What must never happen is the
+    // FAILED -> QUEUED transition itself firing twice — that's the one
+    // Postgres's row lock actually guards, the same mechanism proven safe by
+    // claimNext's own concurrency test above. So: assert on the transition,
+    // not on how many of the two calls happened to resolve.
+    const videoId = await createVideo({ status: "FAILED", attempts: 1 });
+
+    // Gate 1's equivalent race (VideoService.approveScript) reproduced in
+    // only 2 of 3 runs, so a single green run here proves nothing. Counted
+    // cumulatively (never wiped between runs) rather than reset every
+    // iteration, to save a round trip against this suite's real, long-haul
+    // database — after `run + 1` resets there must be exactly `run + 1` such
+    // transitions, never two from the same race.
+    for (let run = 0; run < 10; run++) {
+      await prisma.video.update({
+        where: { id: videoId },
+        data: { status: "FAILED", attempts: 1, leaseExpiresAt: null },
+      });
+
+      const results = await Promise.allSettled([
+        jobService.start(userId, videoId),
+        jobService.start(userId, videoId),
+      ]);
+
+      // At least one must have won — a race can never leave the video worse
+      // off than before either call.
+      expect(results.some((r) => r.status === "fulfilled")).toBe(true);
+
+      const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+      expect(video.status).toBe("QUEUED");
+
+      const transitions = await prisma.videoStatusEvent.count({
+        where: { videoId, from: "FAILED", to: "QUEUED" },
+      });
+      expect(transitions).toBe(run + 1);
+    }
+  }, 30_000);
+});
+
+describe("jobService.retry", () => {
+  it("requeues a FAILED video and resets attempts to 0", async () => {
+    const videoId = await createVideo({ status: "FAILED", attempts: 2 });
+
+    await jobService.retry(userId, videoId);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("QUEUED");
+    expect(video.attempts).toBe(0);
+  });
+
+  it("refuses a FAILED video that has already exhausted its attempts", async () => {
+    const videoId = await createVideo({ status: "FAILED", attempts: MAX_ATTEMPTS });
+
+    await expect(jobService.retry(userId, videoId)).rejects.toThrow(ConflictError);
+  });
+
+  it("lets the FAILED -> QUEUED transition happen exactly once under a race", async () => {
+    // Same reasoning as jobService.start's equivalent test above: assert on
+    // the transition that must never double-fire, not on how many of the two
+    // racing calls happened to resolve successfully.
+    const videoId = await createVideo({ status: "FAILED", attempts: 2 });
+
+    // Cumulative for the same reason as jobService.start's version above.
+    for (let run = 0; run < 10; run++) {
+      await prisma.video.update({
+        where: { id: videoId },
+        data: { status: "FAILED", attempts: 2, leaseExpiresAt: null },
+      });
+
+      const results = await Promise.allSettled([
+        jobService.retry(userId, videoId),
+        jobService.retry(userId, videoId),
+      ]);
+
+      expect(results.some((r) => r.status === "fulfilled")).toBe(true);
+
+      const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+      expect(video.status).toBe("QUEUED");
+      expect(video.attempts).toBe(0);
+
+      const transitions = await prisma.videoStatusEvent.count({
+        where: { videoId, from: "FAILED", to: "QUEUED" },
+      });
+      expect(transitions).toBe(run + 1);
+    }
+  }, 30_000);
 });

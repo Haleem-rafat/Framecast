@@ -1,7 +1,21 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Circle, CircleCheck, CircleX, Clock, Hourglass, Loader2, Terminal } from "lucide-react";
+import { useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Ban,
+  Circle,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Hourglass,
+  Loader2,
+  Play,
+  RotateCw,
+  Terminal,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import {
   Accordion,
@@ -10,9 +24,15 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { getPipelineStateAction } from "@/actions/video.action";
+import {
+  cancelPipelineAction,
+  getPipelineStateAction,
+  retryPipelineAction,
+  startPipelineAction,
+} from "@/actions/video.action";
 import { cn } from "@/lib/utils";
 import type { PipelineStage, PipelineState } from "@/services/pipeline.service";
 import { formatDuration } from "@/utils/format";
@@ -26,9 +46,10 @@ import { formatDuration } from "@/utils/format";
 export const POLL_INTERVAL_ACTIVE_MS = 2000;
 
 /** Used whenever the video is queued but nothing is actually running yet.
- * There is no render worker today, so a `QUEUED` video can sit for a long
- * time with nothing to show — polling every 2s just piles up overlapping
- * requests against a database that's a long round trip away for nothing. */
+ * A worker isn't guaranteed to be running (it's started separately, with
+ * `pnpm worker`), so a `QUEUED` video can sit for a long time with nothing
+ * to show — polling every 2s just piles up overlapping requests against a
+ * database that's a long round trip away for nothing. */
 const POLL_INTERVAL_IDLE_MS = 15_000;
 
 async function fetchPipelineState(videoId: string): Promise<PipelineState> {
@@ -126,6 +147,111 @@ function StageRow({
   );
 }
 
+/**
+ * Run / Cancel / Retry — driving the pipeline from the app instead of a
+ * terminal, and a way to recover a failed step. All three route through
+ * `run()`-wrapped, `userId`-scoped actions (`video.action.ts`) whose atomic
+ * conditional update (`JobService.requeue` / `requestCancel`) is what
+ * actually guards against two rapid clicks; this component only ever picks
+ * one control for the current state and reports the result.
+ *
+ * Exactly one of {Cancel, Retry, "failed N times" message, Run, nothing} is
+ * shown at a time — an operator looking at a button that would silently do
+ * nothing is worse off than one looking at no button.
+ */
+function PipelineControls({ videoId, state }: { videoId: string; state: PipelineState }) {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const [isPending, startTransition] = useTransition();
+
+  // Refetches this panel's own poll immediately, rather than waiting out
+  // POLL_INTERVAL_IDLE_MS, and refreshes the rest of the page — the status
+  // badge, the Approve button, the script lock — which only update through
+  // the server-rendered tree, not this component's own query.
+  function afterMutation(): void {
+    void queryClient.invalidateQueries({ queryKey: ["pipeline-state", videoId] });
+    router.refresh();
+  }
+
+  function onRun(): void {
+    startTransition(async () => {
+      const result = await startPipelineAction(videoId);
+      if (!result.ok) {
+        toast.error("Could not start the pipeline", { description: result.error.message });
+        return;
+      }
+      toast.success("Queued — a worker will pick this up next.");
+      afterMutation();
+    });
+  }
+
+  function onRetry(): void {
+    startTransition(async () => {
+      const result = await retryPipelineAction(videoId);
+      if (!result.ok) {
+        toast.error("Could not retry", { description: result.error.message });
+        return;
+      }
+      toast.success("Queued for retry — a worker will pick this up next.");
+      afterMutation();
+    });
+  }
+
+  function onCancel(): void {
+    startTransition(async () => {
+      const result = await cancelPipelineAction(videoId);
+      if (!result.ok) {
+        toast.error("Could not cancel", { description: result.error.message });
+        return;
+      }
+      toast.success("Cancellation requested — the worker stops at its next heartbeat.");
+      afterMutation();
+    });
+  }
+
+  if (state.isActive) {
+    return (
+      <Button variant="destructive" size="sm" onClick={onCancel} disabled={isPending}>
+        {isPending ? <Loader2 className="size-4 animate-spin" /> : <Ban className="size-4" />}
+        Cancel
+      </Button>
+    );
+  }
+
+  if (state.isFailed) {
+    if (state.attemptsExhausted) {
+      return (
+        <p className="text-destructive max-w-56 text-right text-xs">
+          Failed {state.attempts} time{state.attempts === 1 ? "" : "s"} — the maximum. Fix the
+          issue before trying again.
+        </p>
+      );
+    }
+
+    return (
+      <Button size="sm" onClick={onRetry} disabled={isPending}>
+        {isPending ? <Loader2 className="size-4 animate-spin" /> : <RotateCw className="size-4" />}
+        Retry
+      </Button>
+    );
+  }
+
+  if (!state.isTerminal) {
+    // This panel never mounts for a DRAFT video (see the video detail page),
+    // and not-terminal-and-not-active leaves only QUEUED — approved and
+    // waiting on a worker.
+    return (
+      <Button size="sm" onClick={onRun} disabled={isPending}>
+        {isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+        Run
+      </Button>
+    );
+  }
+
+  // READY / PUBLISHED: the pipeline is done, nothing left to run.
+  return null;
+}
+
 export function PipelinePanel({
   videoId,
   initialState,
@@ -140,27 +266,35 @@ export function PipelinePanel({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm font-medium">
-          <Terminal className="size-4" />
-          Pipeline progress
-        </CardTitle>
+      <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+        <div className="space-y-1">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            <Terminal className="size-4" />
+            Pipeline progress
+          </CardTitle>
+          {state.attempts > 0 && (
+            <p className="text-muted-foreground text-xs">
+              Attempt {state.attempts} of {state.maxAttempts}
+            </p>
+          )}
+        </div>
+        <PipelineControls videoId={videoId} state={state} />
       </CardHeader>
       <CardContent className="space-y-4">
         {isIdleQueued ? (
-          // A row of pending-grey dots reads as "broken", not "waiting" —
-          // there's no render worker yet, so say plainly what's actually
-          // going on instead of leaving the operator to guess.
+          // A row of pending-grey dots reads as "broken", not "waiting" — say
+          // plainly what's actually going on instead of leaving the operator
+          // to guess whether this is stuck or just hasn't been picked up yet.
           <Alert>
             <Hourglass />
-            <AlertTitle>Waiting to start</AlertTitle>
+            <AlertTitle>Waiting for a worker</AlertTitle>
             <AlertDescription>
-              This video is queued but nothing is processing it yet — there is
-              no render worker running today. Start it manually with{" "}
+              This video is queued, but no render worker has claimed it yet.
+              Start one with{" "}
               <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">
-                pnpm render {videoId}
-              </code>
-              .
+                pnpm worker
+              </code>{" "}
+              — it polls for queued videos and claims this one automatically.
             </AlertDescription>
           </Alert>
         ) : (

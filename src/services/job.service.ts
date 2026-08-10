@@ -7,8 +7,10 @@ import { prisma } from "@/lib/prisma";
 const LEASE_SECONDS = 600;
 /** Renewal interval is far shorter, so a slow stage never loses its own lease. */
 export const HEARTBEAT_SECONDS = 30;
-/** A video that fails this many times stops costing money. */
-const MAX_ATTEMPTS = 3;
+/** A video that fails this many times stops costing money. Exported so the
+ * read model (`pipeline.service.ts`) can tell an operator "retry is pointless
+ * now" without duplicating the cap as a second magic number. */
+export const MAX_ATTEMPTS = 3;
 
 /**
  * Claim, heartbeat and release: the worker-facing half of the pipeline. The
@@ -219,6 +221,128 @@ export class JobService {
       where: { id: videoId },
       data: { cancelRequestedAt: new Date() },
     });
+  }
+
+  /**
+   * The operator-facing half of the queue: puts a video back to `QUEUED` so
+   * the worker's own `claimNext` picks it up on its next poll. Only ever
+   * touches `status` and `leaseExpiresAt` — every other stage-completion
+   * signal (narration, footage, captions) lives on rows `runPipeline` reads
+   * directly, so re-queuing never needs to reset any of them, and a retried
+   * video skips straight past the stages it already finished (in particular,
+   * narration is never re-synthesised — see `runPipeline`'s own comment on
+   * why that matters for ElevenLabs quota).
+   *
+   * Three starting states are valid. `QUEUED` and idle (the video passed Gate 1
+   * — see `VideoService.approveScript`, which is the only thing that ever
+   * sets `QUEUED` — and nothing has claimed it yet, so this is a harmless
+   * re-affirmation); `FAILED` with attempts still under `MAX_ATTEMPTS`; or
+   * stranded mid-flight — `GENERATING`/`RENDERING` with a lapsed lease, which
+   * is the only way an operator can recover a video whose worker died holding
+   * it. `DRAFT` is deliberately never valid here: this codebase has no notion of
+   * "script approved" independent of that same `QUEUED` transition, so a
+   * `DRAFT` video is by definition not yet approved, and the page never even
+   * mounts the pipeline panel this method is called from until a video
+   * leaves `DRAFT` (see the video detail page's own gate).
+   *
+   * `resetAttempts` is the one difference between "Run" and "Retry": a
+   * deliberate retry means the operator has presumably fixed whatever failed
+   * and is asking for a fresh three attempts, not the automatic-retry-loop
+   * protection `MAX_ATTEMPTS` exists for.
+   */
+  private async requeue(
+    userId: string,
+    videoId: string,
+    resetAttempts: boolean,
+    eventMessage: string,
+  ): Promise<void> {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: { id: true, status: true, attempts: true, leaseExpiresAt: true },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    const now = new Date();
+    // An expired lease is proof no worker is holding this video: the holder
+    // renews every HEARTBEAT_SECONDS and would have renewed long before
+    // LEASE_SECONDS elapsed. Anything still sitting in a mid-flight status
+    // past that point was abandoned by a worker that died — Railway redeploy,
+    // crash, laptop sleep — and nothing else will ever recover it, because
+    // `release` only runs inside the worker that died.
+    const leaseHasLapsed = video.leaseExpiresAt !== null && video.leaseExpiresAt < now;
+
+    const isIdleQueued = video.status === "QUEUED";
+    const isRetryableFailure = video.status === "FAILED" && video.attempts < MAX_ATTEMPTS;
+    const isStranded =
+      (video.status === "GENERATING" || video.status === "RENDERING") && leaseHasLapsed;
+
+    if (!isIdleQueued && !isRetryableFailure && !isStranded) {
+      const reason =
+        video.status === "FAILED"
+          ? `This video has already failed ${video.attempts} times, the maximum. Fix the underlying issue before trying again.`
+          : `Only a queued video, or a failed video that hasn't exhausted its retries, can be run. This one is ${video.status.toLowerCase()}.`;
+      throw new ConflictError(reason);
+    }
+
+    // Same shape as `claimNext`'s own win-the-row step and
+    // `VideoService.approveScript`'s DRAFT -> QUEUED guard: the `where`
+    // clause repeats the exact status just read, so a second rapid click (or
+    // a worker claiming the video in the instant between the read above and
+    // this write) can no longer match the row. Only one caller's update can
+    // win; the other gets `count === 0` and a clean conflict rather than
+    // silently queuing the same video twice.
+    //
+    // The lease predicate is repeated here for the same reason the status is:
+    // it is what makes reclaiming a stranded video safe. Without it, a worker
+    // that renewed its lease between the read above and this write would have
+    // its video yanked out from under it mid-render.
+    const { count } = await prisma.video.updateMany({
+      where: {
+        id: videoId,
+        userId,
+        deletedAt: null,
+        status: video.status,
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+      },
+      data: {
+        status: "QUEUED",
+        leaseExpiresAt: null,
+        // Nothing outside the worker's own `release` ever clears this, and
+        // `claimNext` treats a set flag as permanently disqualifying. So a
+        // cancel whose worker died before its next heartbeat — or a cancel
+        // pressed during a CLI run, which never reads the flag at all — left
+        // the video unclaimable forever, with a Cancel button that did
+        // nothing and a panel polling every 2s until the tab closed.
+        // Requeuing is the operator asking for this video to run, which is by
+        // definition a withdrawal of any earlier cancel.
+        cancelRequestedAt: null,
+        ...(resetAttempts ? { attempts: 0 } : {}),
+      },
+    });
+
+    if (count === 0) {
+      throw new ConflictError("The video's status changed unexpectedly.");
+    }
+
+    await prisma.videoStatusEvent.create({
+      data: { videoId, from: video.status, to: "QUEUED", message: eventMessage },
+    });
+  }
+
+  /** Queues an already-approved, idle video, or restarts a retryable
+   * failure — without resetting `attempts`. See `requeue` for the guard. */
+  async start(userId: string, videoId: string): Promise<void> {
+    await this.requeue(userId, videoId, false, "Started by operator");
+  }
+
+  /** Like `start`, but resets `attempts` to 0 first: a deliberate operator
+   * retry gets a fresh three attempts rather than picking up where the
+   * automatic cap left off. See `requeue` for the guard. */
+  async retry(userId: string, videoId: string): Promise<void> {
+    await this.requeue(userId, videoId, true, "Retried by operator");
   }
 }
 
