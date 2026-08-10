@@ -52,7 +52,10 @@ let fakeProvider: SpeechProvider;
  * upstream stages this file isn't exercising; only the resulting DB state
  * matters to voiceOverService.
  */
-async function approveScriptFixture(content = SCRIPT_CONTENT) {
+async function approveScriptFixture(
+  content = SCRIPT_CONTENT,
+  status: "QUEUED" | "GENERATING" = "QUEUED",
+) {
   const script = await prisma.script.create({ data: { videoId } });
   const version = await prisma.scriptVersion.create({
     data: {
@@ -66,7 +69,7 @@ async function approveScriptFixture(content = SCRIPT_CONTENT) {
     where: { id: script.id },
     data: { activeVersionId: version.id },
   });
-  await prisma.video.update({ where: { id: videoId }, data: { status: "QUEUED" } });
+  await prisma.video.update({ where: { id: videoId }, data: { status } });
 }
 
 beforeEach(async () => {
@@ -169,6 +172,41 @@ describe("voiceOverService.generate", () => {
       where: { id: script.id },
       data: { activeVersionId: version.id },
     });
+
+    await expect(service.generate(userId, videoId)).rejects.toThrow(ConflictError);
+    expect(fakeProvider.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("narrates a video the worker has claimed into GENERATING (C1 regression)", async () => {
+    // JobService.claimNext (job.service.ts) moves QUEUED -> GENERATING
+    // *before* runPipeline ever reads the video, so by the time this method
+    // runs inside the worker, video.status is always GENERATING, never
+    // QUEUED. Before the fix, generate() refused any status other than
+    // exactly QUEUED, so every worker-claimed video with no existing
+    // VoiceOver row failed narration immediately, burned all 3 attempts, and
+    // became permanently unclaimable. This reproduces that claim.
+    await approveScriptFixture(SCRIPT_CONTENT, "GENERATING");
+
+    const result = await service.generate(userId, videoId);
+
+    expect(result.characterCount).toBe(5);
+    const voiceOver = await prisma.voiceOver.findUniqueOrThrow({ where: { videoId } });
+    expect(voiceOver.audioUrl).toBeTruthy();
+  });
+
+  it("still refuses a DRAFT video (Gate 1 stays closed)", async () => {
+    // GENERATING must be accepted without weakening Gate 1: a video that
+    // never passed approveScript's DRAFT -> QUEUED gate must still be
+    // refused.
+    const script = await prisma.script.create({ data: { videoId } });
+    const version = await prisma.scriptVersion.create({
+      data: { scriptId: script.id, version: 1, content: SCRIPT_CONTENT, wordCount: 1 },
+    });
+    await prisma.script.update({
+      where: { id: script.id },
+      data: { activeVersionId: version.id },
+    });
+    // videoId's video is still DRAFT — never moved.
 
     await expect(service.generate(userId, videoId)).rejects.toThrow(ConflictError);
     expect(fakeProvider.synthesize).not.toHaveBeenCalled();

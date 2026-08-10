@@ -66,7 +66,26 @@ export class VoiceOverService {
     // Narration is only eligible once the script has been approved —
     // videoService.approveScript is what moves a video from DRAFT to QUEUED,
     // and only ever does so once an active script version exists.
-    if (video.status !== "QUEUED") {
+    //
+    // GENERATING is accepted too: JobService.claimNext (job.service.ts)
+    // claims a video by moving QUEUED -> GENERATING *before* runPipeline
+    // ever reads the video, so inside the worker video.status is always
+    // GENERATING, never QUEUED, by the time this method runs. Refusing
+    // GENERATING here meant every worker-claimed video failed narration
+    // immediately and became permanently unclaimable.
+    //
+    // This does not weaken Gate 1: GENERATING is only ever reachable through
+    // QUEUED. Every writer of `status: "GENERATING"` either requires the row
+    // to already be QUEUED (JobService.claimNext's own conditional update,
+    // and pipeline-runner.ts's QUEUED -> GENERATING edge before handing off
+    // to render.service), or is re-claiming a row already GENERATING/
+    // RENDERING with a lapsed lease (claimNext's stranded-worker path) —
+    // and RENDERING itself is only reachable from GENERATING
+    // (render.service.ts). So every path to GENERATING traces back to a
+    // QUEUED, and QUEUED is produced only by videoService.approveScript's
+    // DRAFT -> QUEUED gate. "Status is QUEUED or GENERATING" therefore still
+    // means "a human approved this script".
+    if (video.status !== "QUEUED" && video.status !== "GENERATING") {
       throw new ConflictError(
         `Narration can only be generated once the script is approved. This video is ${video.status.toLowerCase()}.`,
       );
