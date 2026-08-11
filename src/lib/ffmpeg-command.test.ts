@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAssembleArgs,
   buildSegmentArgs,
+  buildTransitionArgs,
   concatListLine,
   planRender,
 } from "@/lib/ffmpeg-command";
@@ -42,6 +43,103 @@ describe("planRender", () => {
 
   it("refuses to plan with no clips", () => {
     expect(() => planRender([], "/tmp")).toThrow();
+  });
+});
+
+describe("planRender with transitions", () => {
+  const transitions = { enabled: true, durationSeconds: 0.5 };
+
+  it("puts one stub between each adjacent pair", () => {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"], "/tmp", 8, transitions);
+    expect(plan.transitions).toHaveLength(2);
+  });
+
+  it("preserves the total duration exactly", () => {
+    const clipSeconds = 8;
+    const paths = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4", "/tmp/d.mp4"];
+    const plan = planRender(paths, "/tmp", clipSeconds, transitions);
+
+    // Every crossfade consumes D seconds of overlap, so a naive version comes
+    // out D x boundaries short and drifts the picture off the narration.
+    const segmentTotal = plan.trimmedSeconds.reduce((sum, seconds) => sum + seconds, 0);
+    const stubTotal = plan.transitions.length * transitions.durationSeconds;
+
+    expect(segmentTotal + stubTotal).toBeCloseTo(paths.length * clipSeconds, 5);
+  });
+
+  it("asks for extra source on every segment but the last", () => {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", 8, transitions);
+
+    expect(plan.segments[0].clipSeconds).toBeCloseTo(8.5, 5);
+    expect(plan.segments[1].clipSeconds).toBeCloseTo(8, 5);
+  });
+
+  it("trims the head and tail a stub already covers", () => {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"], "/tmp", 8, transitions);
+
+    expect(plan.trims[0]).toEqual({ inpoint: undefined, outpoint: 8 });
+    expect(plan.trims[1]).toEqual({ inpoint: 0.5, outpoint: 8 });
+    expect(plan.trims[2]).toEqual({ inpoint: 0.5, outpoint: undefined });
+  });
+
+  it("plans no transitions for a single segment", () => {
+    const plan = planRender(["/tmp/a.mp4"], "/tmp", 8, transitions);
+    expect(plan.transitions).toHaveLength(0);
+  });
+
+  it("plans no transitions when they are disabled", () => {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", 8, {
+      enabled: false,
+      durationSeconds: 0.5,
+    });
+
+    expect(plan.transitions).toHaveLength(0);
+  });
+});
+
+describe("concatListLine with a trim", () => {
+  it("emits the demuxer's own in/out directives after the file line", () => {
+    const line = concatListLine("/tmp/segment-1.mp4", { inpoint: 0.5, outpoint: 8 });
+
+    // The demuxer plays whole files unless told otherwise; these directives
+    // are the only way to drop the half-second a stub already covers.
+    expect(line).toBe("file '/tmp/segment-1.mp4'\ninpoint 0.5\noutpoint 8");
+  });
+
+  it("emits a bare file line when nothing is trimmed", () => {
+    expect(concatListLine("/tmp/segment-0.mp4")).toBe("file '/tmp/segment-0.mp4'");
+  });
+});
+
+describe("buildTransitionArgs", () => {
+  it("crossfades exactly two inputs and nothing else", () => {
+    const args = buildTransitionArgs({
+      fromPath: "/tmp/segment-0.mp4",
+      toPath: "/tmp/segment-1.mp4",
+      outputPath: "/tmp/stub-0.mp4",
+      durationSeconds: 0.5,
+      startSeconds: 7.5,
+    });
+
+    // Two decoders at a time is the whole point — this is why xfade is never
+    // applied across the timeline.
+    expect(args.filter((arg) => arg === "-i")).toHaveLength(2);
+    expect(args.join(" ")).toContain("xfade=transition=fade:duration=0.5");
+    expect(args.at(-1)).toBe("/tmp/stub-0.mp4");
+  });
+
+  it("reads the outgoing clip from where the crossfade starts", () => {
+    const args = buildTransitionArgs({
+      fromPath: "/tmp/segment-0.mp4",
+      toPath: "/tmp/segment-1.mp4",
+      outputPath: "/tmp/stub-0.mp4",
+      durationSeconds: 0.5,
+      startSeconds: 7.5,
+    });
+
+    // -ss before the first -i, so it seeks the input rather than the output.
+    expect(args.indexOf("-ss")).toBeLessThan(args.indexOf("-i"));
+    expect(valueOf(args, "-ss")).toBe("7.5");
   });
 });
 

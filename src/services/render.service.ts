@@ -303,7 +303,7 @@ export class RenderService {
       const concatListPath = path.join(tempDir, "segments.txt");
       await writeFile(
         concatListPath,
-        `${plan.playOrder.map(concatListLine).join("\n")}\n`,
+        `${plan.playOrder.map((segmentPath) => concatListLine(segmentPath)).join("\n")}\n`,
       );
 
       onProgress(

@@ -1,5 +1,10 @@
 import { ValidationError } from "@/lib/errors";
-import type { AudioStyle, CaptionStyle, MotionStyle } from "@/lib/video-style";
+import type {
+  AudioStyle,
+  CaptionStyle,
+  MotionStyle,
+  TransitionStyle,
+} from "@/lib/video-style";
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -55,13 +60,30 @@ function escapeForFilter(path: string): string {
   return path.replace(/([\\:'[\],; ])/g, "\\$1");
 }
 
+export interface SegmentTrim {
+  inpoint?: number;
+  outpoint?: number;
+}
+
 /**
- * A concat-demuxer list line. That parser treats `'` as a delimiter and its
+ * A concat-demuxer list entry. That parser treats `'` as a delimiter and its
  * escape is closing, escaping, reopening the quote — a backslash inside the
  * quotes would be read literally.
  */
-export function concatListLine(segmentPath: string): string {
-  return `file '${segmentPath.replace(/'/g, "'\\''")}'`;
+export function concatListLine(segmentPath: string, trim?: SegmentTrim): string {
+  const lines = [`file '${segmentPath.replace(/'/g, "'\\''")}'`];
+
+  // The demuxer plays whole files unless told otherwise, and these directives
+  // apply to the `file` line above them. They are the only way to drop the
+  // overlap a transition stub already covers.
+  if (trim?.inpoint !== undefined) {
+    lines.push(`inpoint ${trim.inpoint}`);
+  }
+  if (trim?.outpoint !== undefined) {
+    lines.push(`outpoint ${trim.outpoint}`);
+  }
+
+  return lines.join("\n");
 }
 
 export interface SegmentInput {
@@ -318,11 +340,61 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
   ];
 }
 
+export interface TransitionJob {
+  fromPath: string;
+  toPath: string;
+  outputPath: string;
+  durationSeconds: number;
+  /** Offset into `fromPath` where the crossfade begins. */
+  startSeconds: number;
+}
+
 export interface RenderPlan {
   /** One entry per distinct clip — pass one runs these in turn. */
   segments: SegmentInput[];
   /** Segment output paths in playing order, repeats included. */
   playOrder: string[];
+  /** One per adjacent pair. Empty when transitions are off or there is only
+   *  one entry to play. */
+  transitions: TransitionJob[];
+  /** Index-aligned with `playOrder`. What the concat demuxer must skip at each
+   *  end because a stub already covers it. */
+  trims: SegmentTrim[];
+  /** Index-aligned with `playOrder`. What survives after the stubs take their
+   *  share — the numbers that must sum, with the stubs, to the narration. */
+  trimmedSeconds: number[];
+}
+
+/**
+ * A crossfade between two adjacent segments, as a standalone file.
+ *
+ * `xfade` holds both inputs open, which is exactly the shape that OOM-killed
+ * the worker at thirty-eight clips — but two decoders for half a second is
+ * affordable, and pass two then reads stub and segment alike, one file at a
+ * time. Applying `xfade` across the whole timeline would reintroduce a failure
+ * mode already paid for once.
+ */
+export function buildTransitionArgs(job: TransitionJob): string[] {
+  return [
+    "-y",
+    // Before `-i`, so this seeks the input rather than decoding from zero and
+    // discarding everything up to the crossfade.
+    "-ss", String(job.startSeconds),
+    "-t", String(job.durationSeconds),
+    "-i", job.fromPath,
+    "-t", String(job.durationSeconds),
+    "-i", job.toPath,
+    "-filter_complex",
+    `[0:v][1:v]xfade=transition=fade:duration=${job.durationSeconds}:offset=0[vout]`,
+    "-map", "[vout]",
+    "-an",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", SEGMENT_CRF,
+    "-pix_fmt", "yuv420p",
+    "-threads", THREADS,
+    job.outputPath,
+  ];
 }
 
 /**
@@ -338,26 +410,82 @@ export function planRender(
   clipPaths: string[],
   segmentDir: string,
   clipSeconds = DEFAULT_CLIP_SECONDS,
+  transitions?: TransitionStyle,
 ): RenderPlan {
   if (clipPaths.length === 0) {
     throw new ValidationError("Cannot render without at least one clip.");
   }
 
+  const count = clipPaths.length;
+  const overlap = transitions?.enabled ? transitions.durationSeconds : 0;
+  const hasStubs = overlap > 0 && count > 1;
+
   const segmentPathOf = new Map<string, string>();
   const segments: SegmentInput[] = [];
+  const sourceSecondsOf: number[] = [];
 
-  for (const clipPath of clipPaths) {
-    if (segmentPathOf.has(clipPath)) {
-      continue;
+  clipPaths.forEach((clipPath, index) => {
+    // Every segment but the last donates its tail to an outgoing stub, so it
+    // must be generated that much longer. Without this the timeline comes out
+    // `overlap` short per boundary and the picture drifts off the narration.
+    const sourceSeconds = hasStubs && index < count - 1 ? clipSeconds + overlap : clipSeconds;
+    sourceSecondsOf.push(sourceSeconds);
+
+    // Keyed on both path and length, not path alone: a clip used mid-timeline
+    // and again as the last entry needs two different source lengths, and
+    // reusing the shorter one would silently truncate the longer slot.
+    const key = `${clipPath}@${sourceSeconds}`;
+    if (!segmentPathOf.has(key)) {
+      const outputPath = `${segmentDir}/segment-${segments.length}.mp4`;
+      segmentPathOf.set(key, outputPath);
+      segments.push({
+        clipPath,
+        outputPath,
+        clipSeconds: sourceSeconds,
+        index: segments.length,
+      });
     }
+  });
 
-    const outputPath = `${segmentDir}/segment-${segments.length}.mp4`;
-    segmentPathOf.set(clipPath, outputPath);
-    segments.push({ clipPath, outputPath, clipSeconds });
+  const playOrder = clipPaths.map(
+    (clipPath, index) => segmentPathOf.get(`${clipPath}@${sourceSecondsOf[index]}`)!,
+  );
+
+  if (!hasStubs) {
+    return {
+      segments,
+      playOrder,
+      transitions: [],
+      trims: playOrder.map(() => ({})),
+      trimmedSeconds: playOrder.map(() => clipSeconds),
+    };
   }
 
-  return {
-    segments,
-    playOrder: clipPaths.map((clipPath) => segmentPathOf.get(clipPath)!),
-  };
+  const trims: SegmentTrim[] = [];
+  const trimmedSeconds: number[] = [];
+  const jobs: TransitionJob[] = [];
+
+  playOrder.forEach((segmentPath, index) => {
+    const source = sourceSecondsOf[index];
+    const dropsHead = index > 0;
+    const dropsTail = index < count - 1;
+
+    trims.push({
+      inpoint: dropsHead ? overlap : undefined,
+      outpoint: dropsTail ? source - overlap : undefined,
+    });
+    trimmedSeconds.push(source - (dropsHead ? overlap : 0) - (dropsTail ? overlap : 0));
+
+    if (dropsTail) {
+      jobs.push({
+        fromPath: segmentPath,
+        toPath: playOrder[index + 1],
+        outputPath: `${segmentDir}/stub-${index}.mp4`,
+        durationSeconds: overlap,
+        startSeconds: source - overlap,
+      });
+    }
+  });
+
+  return { segments, playOrder, transitions: jobs, trims, trimmedSeconds };
 }
