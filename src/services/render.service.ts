@@ -81,14 +81,19 @@ const MAX_RENDER_CLIPS = 12;
  * window — two cues resolving to the same character, which `cueWindows`
  * deliberately floors at zero-length rather than inverting — and a legacy
  * video with twelve clips over a very short narration. Either way FFmpeg is
- * handed `-t 0`, produces an empty segment, and every later section plays
- * early against the words.
+ * handed `-t 0`, produces an empty segment, and the sections after it play
+ * against the wrong words.
  *
- * Rounding a slot up costs at most a fraction of a second of drift, and only
- * ever pushes the timeline *longer* than the narration, which the assemble
- * pass's `-t` then trims. Rounding down, or passing the zero through, is what
- * cuts the narration off mid-sentence — the failure this whole timing model
- * exists to prevent.
+ * What the floor costs is paid by the *neighbouring* slot, never by the
+ * timeline: `sectionDurations` widens the short section by moving the boundary
+ * after it, which shortens exactly one following slot and leaves every
+ * boundary beyond that untouched. Simply clamping each length instead would
+ * have added the shortfall to the total, and since the assemble pass cuts the
+ * output at the narration's length regardless, that surplus does not extend
+ * the video — it pushes every later section late against its own words, one
+ * floored slot at a time, and the last section loses the accumulated
+ * difference off its end. Drift, not truncation, is the hazard here, and `-t`
+ * cannot undo drift.
  */
 const MIN_CLIP_SECONDS = 1;
 
@@ -135,19 +140,49 @@ function sectionClipPath(videoId: string, index: number): string {
  * [0, durationSeconds] with no gaps, which is the only arrangement where the
  * picture and the words stay together for the whole video.
  *
- * The floor at `MIN_CLIP_SECONDS` is the last line of defence; see its comment.
+ * Slots are derived as the differences between those boundaries, and every
+ * repair below moves a boundary rather than a length. That is what makes the
+ * sum exactly `durationSeconds` no matter what the alignment hands over: the
+ * two ends are pinned, and moving anything between them takes from one slot
+ * exactly what it gives to another.
+ *
+ * The repairs enforce `minClipSeconds` (see its comment for why a slot cannot
+ * be arbitrarily short). Forwards, each boundary is pushed late enough to give
+ * the section before it room — which borrows that time from the section after,
+ * and only from that one, so nothing further down the timeline moves.
+ * Backwards then pulls boundaries in from the end, which is what stops the
+ * final section being squeezed to nothing by the pushing, and also handles an
+ * alignment whose last characters are timed past the narration's stored
+ * (integer) length.
  */
 function sectionDurations(
   startTimes: number[],
   durationSeconds: number,
   minClipSeconds: number,
 ): number[] {
-  const boundaries = startTimes.map((start, index) => (index === 0 ? 0 : start));
+  const count = startTimes.length;
 
-  return boundaries.map((start, index) => {
-    const end = index === boundaries.length - 1 ? durationSeconds : boundaries[index + 1];
-    return Math.max(minClipSeconds, end - start);
-  });
+  // More sections than there is narration to divide between them: no
+  // arrangement gives all of them the floor, so give them equal shares
+  // instead. Still sums to the narration exactly; a script this shape (a
+  // section per second) is a bug upstream, and planRender refuses outright if
+  // the shares come out too short to carry a transition.
+  if (count * minClipSeconds > durationSeconds) {
+    return Array.from({ length: count }, () => durationSeconds / count);
+  }
+
+  // Section starts, with the two fixed ends: the video begins at 0 whatever
+  // the first cue anchored to, and ends where the narration does.
+  const boundaries = [0, ...startTimes.slice(1), durationSeconds];
+
+  for (let i = 1; i < count; i++) {
+    boundaries[i] = Math.max(boundaries[i], boundaries[i - 1] + minClipSeconds);
+  }
+  for (let i = count - 1; i >= 1; i--) {
+    boundaries[i] = Math.min(boundaries[i], boundaries[i + 1] - minClipSeconds);
+  }
+
+  return boundaries.slice(1).map((end, index) => end - boundaries[index]);
 }
 
 /** Parses `key=value` lines from FFmpeg's `-progress pipe:1` stdout. Lines can
@@ -251,13 +286,18 @@ export class RenderService {
         deletedAt: null,
         storagePath: { startsWith: `videos/${videoId}/` },
       },
-      // By path, not by `createdAt`. Section clips are named `section-NNN.mp4`
-      // and their *names* carry the play order; the order they happened to be
-      // written in does not. A section re-fetched by a resumed collection run
-      // is inserted last however early it plays, so ordering by insertion time
-      // would put its clip at the end of the video — the picture playing under
-      // someone else's sentence for the rest of the render. Path order is a
-      // property of the data rather than of the timing of the run that made it.
+      // By path, not by `createdAt`, and this decides two things for an
+      // *uncued* video: which clips survive the MAX_RENDER_CLIPS cap, and what
+      // order they play in. Insertion time is a property of the run that
+      // collected them — re-fetch one clip and a legacy video re-renders with
+      // a different selection in a different order — whereas the path is a
+      // property of the data, so the same footage always produces the same
+      // video.
+      //
+      // A cued video is unaffected either way: it maps each section to the
+      // exact path FootageService stored it at, so this list is only ever a
+      // membership check for it. Ordering it consistently is still worth doing
+      // — one rule for both paths beats a rule that quietly matters for one.
       orderBy: { storagePath: "asc" },
       select: { storagePath: true },
     });
@@ -294,9 +334,18 @@ export class RenderService {
     // never render. FFmpeg would happily play what it was given, every later
     // section sliding forward into the gap, and the result is a finished video
     // whose picture is seconds ahead of its words from the middle onward —
-    // wrong in the specific way nobody notices until it is published. It also
-    // can only come from a bug or a half-finished collection, both of which
-    // are fixed by collecting again, so refusing costs nothing but a re-run.
+    // wrong in the specific way nobody notices until it is published.
+    //
+    // This is not only a bug state. FootageService fills a section that finds
+    // nothing of its own by copying the nearest section that already has a
+    // clip, but it builds that index as it goes, so a section near the front
+    // whose cue search, Pixabay and the topic pool all come back empty has
+    // nothing behind it to copy and is skipped — a routine first collection
+    // can leave exactly this hole (see collectPerCue's last `if (!picked)`).
+    // Collecting again is what closes it: the second run seeds that same index
+    // from the assets the first run stored, so the gap can copy a section
+    // that now exists. Hence the error names re-collection rather than
+    // suggesting the video is broken.
     if (cued && presentSections.length !== sectionPaths.length) {
       const missing = sectionPaths
         .map((sectionPath, index) => ({ sectionPath, index }))
@@ -305,8 +354,9 @@ export class RenderService {
 
       throw new ConflictError(
         `Footage is missing for section(s) ${missing.join(", ")} of ${sectionPaths.length}. ` +
-          "Collect stock footage again before rendering — rendering without them would " +
-          "play every later section against the wrong narration.",
+          "Run footage collection again — it fills a section that found nothing of its " +
+          "own from the sections that did, which the first run could not do for these. " +
+          "Rendering as-is would play every later section against the wrong narration.",
       );
     }
 
