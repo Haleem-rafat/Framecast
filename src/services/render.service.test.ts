@@ -95,6 +95,20 @@ function createSucceedingSpawner() {
   });
 }
 
+/**
+ * The input-level `-t` of every segment pass, in play order.
+ *
+ * A segment pass is the one that carries `-vf`: the crossfade stubs also take
+ * a `-t`, but build their picture with `-filter_complex`, and the assemble
+ * pass's `-t` is an output-side cut rather than a slot length. Filtering on
+ * `-vf` is therefore what isolates "how long does this clip hold the screen".
+ */
+function segmentSeconds(calls: SpawnCall[]): number[] {
+  return calls
+    .filter((call) => call.args.includes("-vf"))
+    .map((call) => Number(call.args[call.args.indexOf("-t") + 1]));
+}
+
 let userId: string;
 
 /** Every video id `makeRenderableVideo` hands out, so the Blob object a
@@ -114,10 +128,22 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await deleteTestUser(userId);
 
+  const videoIds = renderedVideoIds.splice(0);
+
+  // Asset carries no videoId column, so the user cascade above cannot reach
+  // the narration, caption and clip rows these fixtures wrote — they would
+  // otherwise accumulate in the shared database run after run. Scoped by the
+  // storage prefix, and every one of these ids was minted by this run.
+  if (videoIds.length > 0) {
+    await prisma.asset.deleteMany({
+      where: {
+        OR: videoIds.map((id) => ({ storagePath: { startsWith: `videos/${id}/` } })),
+      },
+    });
+  }
+
   await Promise.all(
-    renderedVideoIds.splice(0).map((id) =>
-      deleteRenderFile(renderBlobPathname(id)).catch(() => {}),
-    ),
+    videoIds.map((id) => deleteRenderFile(renderBlobPathname(id)).catch(() => {})),
   );
 });
 
@@ -176,6 +202,129 @@ async function makeRenderableVideo(
 
   renderedVideoIds.push(video.id);
   return video.id;
+}
+
+interface CuedVideo {
+  videoId: string;
+  /** The narration verbatim — the same string the alignment indexes, so a
+   *  test can convert a character position into the second it is spoken. */
+  content: string;
+  durationSeconds: number;
+}
+
+/** Every character takes 0.1s in `evenAlignment`, so this is where a section
+ *  starting at `charIndex` lands on the finished timeline. */
+const SECONDS_PER_CHAR = 0.1;
+
+/**
+ * A video whose script carries b-roll cues and whose footage was collected
+ * per section — the arrangement Task 5's timing model is built for.
+ *
+ * Sections are deliberately different lengths (the filler grows with the
+ * index) because equal ones would hide the whole point: a slot has to be as
+ * long as its own section is spoken, not as long as some shared average.
+ *
+ * As with `makeRenderableVideo`, these rows are written directly rather than
+ * through script.service / footage.service — render.service only ever reads
+ * what those produce, and going through them would couple this suite to
+ * their provider fakes.
+ */
+async function makeRenderableVideoWithCues(
+  cues: { anchor: string; cue: string }[],
+  options: {
+    /** Section indices to leave without a clip, as a half-finished footage
+     *  collection would. */
+    skipSections?: number[];
+    /** Insert the Asset rows back-to-front, so `createdAt` order is the
+     *  reverse of play order. */
+    reverseInsertion?: boolean;
+    /** Name the clips the way the pre-cue topic-level collector did, as a
+     *  video collected before per-section footage existed still has them. */
+    topicNamedClips?: boolean;
+  } = {},
+): Promise<CuedVideo> {
+  const project = await projectService.create(userId, {
+    name: `${PROJECT_NAME}-${randomUUID().slice(0, 8)}`,
+  });
+  const video = await videoService.create(userId, {
+    projectId: project.id,
+    title: "Cued render fixture video",
+    topic: "testing",
+  });
+
+  const sections = cues
+    .map((cue, index) => `${cue.anchor} ${"filler ".repeat(3 + index * 4)}`.trim())
+    .join(" ");
+
+  // `VoiceOver.durationSeconds` is an integer column, so a narration of 13.6s
+  // is stored as 13 and the render's idea of "the end" is a truncation of the
+  // alignment's. Padding the script to a whole number of seconds (every
+  // character is SECONDS_PER_CHAR in `evenAlignment`) keeps the two the same
+  // number, so a test measuring slot lengths is measuring the timing model
+  // rather than that rounding. Production lives with the truncation; the last
+  // section simply runs to the stored duration.
+  const padding = (10 - (sections.length % 10)) % 10;
+  const content = padding === 0 ? sections : `${sections} ${"z".repeat(padding - 1)}`;
+  const durationSeconds = Math.round(content.length * SECONDS_PER_CHAR);
+
+  const script = await prisma.script.create({ data: { videoId: video.id } });
+  const version = await prisma.scriptVersion.create({
+    data: { scriptId: script.id, version: 1, content, cues },
+  });
+  await prisma.script.update({
+    where: { id: script.id },
+    data: { activeVersionId: version.id },
+  });
+
+  await prisma.video.update({ where: { id: video.id }, data: { status: "GENERATING" } });
+
+  const audioPath = storagePath(video.id, "audio", "narration.mp3");
+  await putObject(audioPath, Buffer.from(`fake-audio-${RUN}`), "audio/mpeg");
+  await prisma.voiceOver.create({
+    data: {
+      videoId: video.id,
+      provider: "ELEVENLABS",
+      voiceId: "test-voice",
+      audioUrl: audioPath,
+      durationSeconds,
+    },
+  });
+
+  // The alignment indexes the very same string the cues are anchored in —
+  // that identity is what makes a character offset convertible to a time at
+  // all (see cueWindows' doc comment).
+  const alignmentPath = storagePath(video.id, "captions", "alignment.json");
+  await putObject(
+    alignmentPath,
+    Buffer.from(JSON.stringify(evenAlignment(content))),
+    "application/json",
+  );
+  await prisma.asset.create({
+    data: { kind: "SUBTITLE", storagePath: alignmentPath, provider: "ELEVENLABS" },
+  });
+
+  const indices = cues.map((_cue, index) => index).filter(
+    (index) => !(options.skipSections ?? []).includes(index),
+  );
+  if (options.reverseInsertion) {
+    indices.reverse();
+  }
+
+  for (const index of indices) {
+    const filename = options.topicNamedClips
+      ? `pexels-${1000 + index}.mp4`
+      : `section-${String(index).padStart(3, "0")}.mp4`;
+    const clipPath = storagePath(video.id, "clips", filename);
+    // Distinct bytes per section, so a test can tell which clip a segment
+    // pass actually opened — the temp filenames alone only carry position.
+    await putObject(clipPath, Buffer.from(`fake-section-${index}-${RUN}`), "video/mp4");
+    await prisma.asset.create({
+      data: { kind: "VIDEO", storagePath: clipPath, provider: "PEXELS", externalId: `s${index}` },
+    });
+  }
+
+  renderedVideoIds.push(video.id);
+  return { videoId: video.id, content, durationSeconds };
 }
 
 describe("renderService.render — guards", () => {
@@ -252,10 +401,12 @@ describe("renderService.render — happy path", () => {
     expect(uploaded).toBeGreaterThanOrEqual(0);
   });
 
-  it("extends clip coverage by repeating the clip list when clips fall short of the narration", async () => {
-    // clipSeconds is 12 internally; one 12s slot covers 12s, short of a 30s
-    // narration. Coverage must be extended (12*3=36 >= 30) rather than
-    // silently truncating FFmpeg's output to the clips' combined length.
+  it("stretches the clips it has over the whole narration instead of repeating them", async () => {
+    // A video with no cues has no section boundaries to cut on, so its clips
+    // divide the narration evenly — one clip, one 30s slot. The old fixed
+    // 12s slot would have needed the list repeated three times to reach the
+    // end; anything short of the end and `-shortest` silently truncates the
+    // output mid-sentence.
     const videoId = await makeRenderableVideo({ durationSeconds: 30, clipCount: 1 });
 
     // The concat list has to be read while FFmpeg would be running: render()
@@ -274,10 +425,10 @@ describe("renderService.render — happy path", () => {
 
     await service.render(userId, videoId);
 
-    // Coverage lives in the concat list, not in repeated inputs — opening a
-    // decoder per slot is what OOM-killed the worker. Every segment pass must
-    // therefore open the one clip exactly once, however many slots it fills.
+    // One clip, one segment pass, and it opens that clip exactly once —
+    // opening a decoder per slot is what OOM-killed the worker.
     const segmentCalls = calls.filter((call) => call.args.includes("-vf"));
+    expect(segmentCalls).toHaveLength(1);
     for (const segment of segmentCalls) {
       const clipInputs = segment.args.filter(
         (arg, index) => segment.args[index - 1] === "-i" && arg.endsWith("clip-0.mp4"),
@@ -285,23 +436,44 @@ describe("renderService.render — happy path", () => {
       expect(clipInputs).toHaveLength(1);
     }
 
+    // That single slot covers the whole narration; `-stream_loop -1` is what
+    // fills 30 seconds from a shorter clip.
+    expect(segmentCalls[0].args[segmentCalls[0].args.indexOf("-t") + 1]).toBe("30");
+
     // The assemble pass opens the list, not the clips.
     const assemble = calls.at(-1)!;
     expect(assemble.args[assemble.args.indexOf("-f") + 1]).toBe("concat");
 
-    // Three slots cover the 30s narration. Each `file` line may be followed by
-    // inpoint/outpoint directives, and the stubs between them add their own,
-    // so count the file lines rather than every line.
+    // Each `file` line may be followed by inpoint/outpoint directives, so
+    // count the file lines rather than every line. One clip means one entry
+    // and no boundary for a stub to sit on.
     const fileLines = concatList
       .trim()
       .split("\n")
       .filter((line) => line.startsWith("file "));
-    const segmentLines = fileLines.filter((line) => line.includes("segment-"));
-    const stubLines = fileLines.filter((line) => line.includes("stub-"));
 
-    expect(segmentLines).toHaveLength(3);
-    // One stub per boundary between the three slots.
-    expect(stubLines).toHaveLength(2);
+    expect(fileLines.filter((line) => line.includes("segment-"))).toHaveLength(1);
+    expect(fileLines.filter((line) => line.includes("stub-"))).toHaveLength(0);
+  });
+
+  it("divides the narration evenly between the clips of a video with no cues", async () => {
+    const videoId = await makeRenderableVideo({ durationSeconds: 30, clipCount: 3 });
+
+    const { spawner, calls } = createSpawner(async (child, args) => {
+      await writeFile(args[args.length - 1], "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
+
+    await new RenderService(spawner).render(userId, videoId);
+
+    // 30s over three clips. The first two are generated half a second longer
+    // than their slot because they donate that tail to the crossfade after
+    // them (see planRender) — what must hold is that no clip is favoured.
+    const slots = segmentSeconds(calls);
+    expect(slots).toHaveLength(3);
+    expect(slots[0]).toBeCloseTo(10.5, 5);
+    expect(slots[1]).toBeCloseTo(10.5, 5);
+    expect(slots[2]).toBeCloseTo(10, 5);
   });
 
   it("writes progress as parsed FFmpeg output advances, throttled to at most one write per second", async () => {
@@ -349,6 +521,151 @@ describe("renderService.render — happy path", () => {
 
     const job = await prisma.renderJob.findFirstOrThrow({ where: { videoId } });
     expect(job.progress).toBe(100);
+  });
+});
+
+describe("renderService.render — cut on the sentence", () => {
+  /** A spawner that succeeds, recording what each pass was given. */
+  function recordingSpawner() {
+    return createSpawner(async (child, args) => {
+      await writeFile(args[args.length - 1], "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
+  }
+
+  it("gives each section a segment as long as that section is spoken", async () => {
+    const { videoId, content, durationSeconds } = await makeRenderableVideoWithCues([
+      { anchor: "first section opening words here", cue: "money" },
+      { anchor: "second section opening words here", cue: "cash" },
+    ]);
+
+    const { spawner, calls } = recordingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    // Where the second section's first word is spoken — the boundary the
+    // picture has to cut on.
+    const boundary = content.indexOf("second section opening words here") * SECONDS_PER_CHAR;
+
+    const slots = segmentSeconds(calls);
+    expect(slots).toHaveLength(2);
+    // The first slot runs from zero to the boundary, plus the half-second it
+    // donates to the crossfade after it (see planRender). The second runs
+    // from the boundary to the end of the narration.
+    expect(slots[0]).toBeCloseTo(boundary + 0.5, 5);
+    expect(slots[1]).toBeCloseTo(durationSeconds - boundary, 5);
+    // Two sections, two segments, and their lengths differ because the
+    // sections take different times to say.
+    expect(new Set(slots).size).toBe(2);
+  });
+
+  it("covers the narration exactly, no matter how the sections divide it", async () => {
+    const { videoId, durationSeconds } = await makeRenderableVideoWithCues([
+      { anchor: "opening section words appear right here", cue: "sunrise" },
+      { anchor: "middle section words appear right here", cue: "traffic" },
+      { anchor: "closing section words appear right here", cue: "sunset" },
+    ]);
+
+    const { spawner, calls } = recordingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    // Every segment but the last is generated a crossfade longer than its
+    // slot and gives that tail back at the boundary, so the timeline is the
+    // sources minus one overlap per boundary. That total is what has to equal
+    // the narration: short, and `-shortest` cuts the last words off; long, and
+    // the picture runs on past them.
+    const slots = segmentSeconds(calls);
+    const donated = (slots.length - 1) * 0.5;
+    const timeline = slots.reduce((sum, seconds) => sum + seconds, 0) - donated;
+
+    expect(slots).toHaveLength(3);
+    expect(timeline).toBeCloseTo(durationSeconds, 5);
+  });
+
+  it("plays the sections in path order, not in the order their clips were stored", async () => {
+    // A resumed collection re-fetches an early section last, so `createdAt`
+    // says "last" about a clip that plays first. Ordering by it would put
+    // that section's picture at the end of the video.
+    const { videoId } = await makeRenderableVideoWithCues(
+      [
+        { anchor: "opening section words appear right here", cue: "sunrise" },
+        { anchor: "middle section words appear right here", cue: "traffic" },
+        { anchor: "closing section words appear right here", cue: "sunset" },
+      ],
+      { reverseInsertion: true },
+    );
+
+    // Temp clip filenames only carry position, so read the bytes each segment
+    // pass actually opened — those are unique per section.
+    const opened: string[] = [];
+    const { spawner } = createSpawner(async (child, args) => {
+      if (args.includes("-vf")) {
+        opened.push(await readFile(args[args.indexOf("-i") + 1], "utf-8"));
+      }
+      await writeFile(args[args.length - 1], "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
+
+    await new RenderService(spawner).render(userId, videoId);
+
+    expect(opened).toEqual([
+      `fake-section-0-${RUN}`,
+      `fake-section-1-${RUN}`,
+      `fake-section-2-${RUN}`,
+    ]);
+  });
+
+  it("refuses to render when a section in the middle has no footage", async () => {
+    // The defect this whole feature exists to prevent: FFmpeg would happily
+    // play two clips over three sections, every later section sliding forward
+    // into the gap, and the result is a finished video whose picture is
+    // seconds ahead of its words.
+    const { videoId } = await makeRenderableVideoWithCues(
+      [
+        { anchor: "opening section words appear right here", cue: "sunrise" },
+        { anchor: "middle section words appear right here", cue: "traffic" },
+        { anchor: "closing section words appear right here", cue: "sunset" },
+      ],
+      { skipSections: [1] },
+    );
+
+    const { spawner, calls } = recordingSpawner();
+
+    await expect(new RenderService(spawner).render(userId, videoId)).rejects.toThrow(
+      ConflictError,
+    );
+    // Named, so the operator knows which section to collect again.
+    await expect(
+      new RenderService(spawner).render(userId, videoId),
+    ).rejects.toThrow(/section\(s\) 2 of 3/);
+
+    // Refused before anything was spawned or the video was moved, so
+    // collecting the missing clip and rendering again is all it takes.
+    expect(calls).toHaveLength(0);
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("GENERATING");
+    expect(await prisma.renderJob.count({ where: { videoId } })).toBe(0);
+  });
+
+  it("falls back to even slots when a cued video's footage predates per-section clips", async () => {
+    // Cues exist, but the clips on disk are the old topic-level pool — a
+    // video collected in the window between the two features. There is no
+    // section-to-clip mapping to honour, so this is a no-cues render, not a
+    // failed one.
+    const { videoId, durationSeconds } = await makeRenderableVideoWithCues(
+      [
+        { anchor: "opening section words appear right here", cue: "sunrise" },
+        { anchor: "closing section words appear right here", cue: "sunset" },
+      ],
+      { topicNamedClips: true },
+    );
+
+    const { spawner, calls } = recordingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    const slots = segmentSeconds(calls);
+    expect(slots).toHaveLength(2);
+    expect(slots[0]).toBeCloseTo(durationSeconds / 2 + 0.5, 5);
+    expect(slots[1]).toBeCloseTo(durationSeconds / 2, 5);
   });
 });
 

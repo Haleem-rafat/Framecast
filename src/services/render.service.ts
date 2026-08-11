@@ -19,8 +19,9 @@ import {
   planRender,
 } from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
+import { anchorCues, cueWindows, type ScriptCue } from "@/lib/script-cues";
 import { buildSfxTrackArgs, planSfxCues } from "@/lib/sfx-track";
-import { getObject } from "@/lib/storage";
+import { getObject, storagePath } from "@/lib/storage";
 import { DEFAULT_STYLE } from "@/lib/video-style";
 import { musicService } from "@/services/music.service";
 import { formatElapsed } from "@/utils/format";
@@ -48,27 +49,48 @@ export type RenderProgress = (message: string) => void;
 
 const noopProgress: RenderProgress = () => {};
 
-/** Matches the default the segment builder uses when `clipSeconds` is omitted,
- * but named explicitly here so the coverage guard below computes against the
- * exact value actually passed to the command builder. */
-const CLIP_SECONDS = 12;
-
 /**
- * How many distinct clips a single render may open, regardless of how many the
- * video has collected.
+ * How many clips a video with no b-roll cues may play, regardless of how many
+ * it has collected.
  *
- * The concat filter opens every input simultaneously, so each clip costs a live
- * h264 decoder plus a scaler for the whole run — and stock footage arrives at
- * up to 2560x1440. The worker's container has 1GB of memory, and a video whose
- * footage predates FootageService's own download cap had 38 clips: the kernel
- * killed FFmpeg with SIGKILL before it produced a frame, reported only as
- * "killed by signal SIGKILL" with no FFmpeg error to explain it.
+ * This was introduced when the render still joined clips with the concat
+ * filter, which opens every input simultaneously: each clip cost a live h264
+ * decoder plus a scaler for the whole run, stock footage arrives at up to
+ * 2560x1440, and a video whose footage predates FootageService's own download
+ * cap had 38 of them. Inside the worker's 1GB container the kernel killed
+ * FFmpeg with SIGKILL before it produced a frame, reported only as "killed by
+ * signal SIGKILL" with no FFmpeg error to explain it.
  *
- * Twelve at 1080p fits comfortably. Beyond that the extra clips buy very little
- * visual variety anyway, since `ensureCoverage` loops the sequence to fill the
- * narration regardless.
+ * The two-pass design has since removed that pressure, but the cap stays: at
+ * twelve, each clip simply holds the screen longer, and a pre-cue video's
+ * clips have nothing to do with what is being said anyway, so the thirteenth
+ * buys a slightly less repetitive backdrop for a real encode per clip.
+ *
+ * A cued video is deliberately NOT capped by this. Its clips are played one at
+ * a time by the concat demuxer, one decoder open at any moment (see
+ * ffmpeg-command.ts's two-pass rationale), so the memory this bounds is not
+ * the memory a fiftieth section would cost — and dropping section fifty would
+ * leave the narration's last minute with no picture at all.
  */
 const MAX_RENDER_CLIPS = 12;
+
+/**
+ * The shortest slot any clip may hold the screen for.
+ *
+ * Two different things can ask for an impossibly short one. A degenerate cue
+ * window — two cues resolving to the same character, which `cueWindows`
+ * deliberately floors at zero-length rather than inverting — and a legacy
+ * video with twelve clips over a very short narration. Either way FFmpeg is
+ * handed `-t 0`, produces an empty segment, and every later section plays
+ * early against the words.
+ *
+ * Rounding a slot up costs at most a fraction of a second of drift, and only
+ * ever pushes the timeline *longer* than the narration, which the assemble
+ * pass's `-t` then trims. Rounding down, or passing the zero through, is what
+ * cuts the narration off mid-sentence — the failure this whole timing model
+ * exists to prevent.
+ */
+const MIN_CLIP_SECONDS = 1;
 
 /** FFmpeg emits `-progress` lines far faster than a database should be
  * written; at most one `RenderJob.progress` write per this window. */
@@ -90,25 +112,42 @@ function defaultSpawner(command: string, args: string[]): ChildProcessWithoutNul
 }
 
 /**
- * Repeats the clip list (never re-downloads) until it covers the narration.
- * Without this, the looped clips plus `-shortest` silently
- * truncate the output to the clips' combined length — a plausible-looking
- * file that cuts the narration off mid-sentence rather than an error. See
- * Task 3's report for how this was discovered.
+ * The path FootageService stores section `index`'s clip at.
+ *
+ * Zero-padded to three digits so the sequence sorts lexicographically —
+ * `section-002` before `section-010` — which is what lets the clip query
+ * below order by `storagePath` and get play order for free.
  */
-function ensureCoverage(clipPaths: string[], durationSeconds: number): string[] {
-  if (clipPaths.length === 0) {
-    return clipPaths;
-  }
+function sectionClipPath(videoId: string, index: number): string {
+  return storagePath(videoId, "clips", `section-${String(index).padStart(3, "0")}.mp4`);
+}
 
-  const original = [...clipPaths];
-  let covered = [...clipPaths];
+/**
+ * Turns each section's spoken range into the length of its slot.
+ *
+ * Not simply `endSeconds - startSeconds` per window, and the difference
+ * matters. A window's end is the end time of the last character *before* the
+ * next section starts, so consecutive windows can leave a sliver of narration
+ * uncovered — and the first section may not begin at zero at all if the script
+ * opens with text no cue anchored to. Slots are therefore measured from one
+ * section's start to the *next* section's start, with the first stretched back
+ * to 0 and the last carried out to the narration's end. The result covers
+ * [0, durationSeconds] with no gaps, which is the only arrangement where the
+ * picture and the words stay together for the whole video.
+ *
+ * The floor at `MIN_CLIP_SECONDS` is the last line of defence; see its comment.
+ */
+function sectionDurations(
+  startTimes: number[],
+  durationSeconds: number,
+  minClipSeconds: number,
+): number[] {
+  const boundaries = startTimes.map((start, index) => (index === 0 ? 0 : start));
 
-  while (CLIP_SECONDS * covered.length < durationSeconds) {
-    covered = covered.concat(original);
-  }
-
-  return covered;
+  return boundaries.map((start, index) => {
+    const end = index === boundaries.length - 1 ? durationSeconds : boundaries[index + 1];
+    return Math.max(minClipSeconds, end - start);
+  });
 }
 
 /** Parses `key=value` lines from FFmpeg's `-progress pipe:1` stdout. Lines can
@@ -160,6 +199,14 @@ export class RenderService {
         title: true,
         status: true,
         voiceOver: { select: { audioUrl: true, durationSeconds: true } },
+        // Only the active version's cues mean anything: an edit that moves the
+        // section boundaries invalidates every earlier version's, and
+        // script.service.ts re-anchors the survivors onto whichever version is
+        // active. Anchoring is re-run here against the current `content`
+        // rather than trusting stored offsets, exactly as FootageService does
+        // when it collects — the two must agree on where a section starts or
+        // the clip it fetched plays under the wrong words.
+        script: { select: { activeVersion: { select: { content: true, cues: true } } } },
       },
     });
 
@@ -204,7 +251,14 @@ export class RenderService {
         deletedAt: null,
         storagePath: { startsWith: `videos/${videoId}/` },
       },
-      orderBy: { createdAt: "asc" },
+      // By path, not by `createdAt`. Section clips are named `section-NNN.mp4`
+      // and their *names* carry the play order; the order they happened to be
+      // written in does not. A section re-fetched by a resumed collection run
+      // is inserted last however early it plays, so ordering by insertion time
+      // would put its clip at the end of the video — the picture playing under
+      // someone else's sentence for the rest of the render. Path order is a
+      // property of the data rather than of the timing of the run that made it.
+      orderBy: { storagePath: "asc" },
       select: { storagePath: true },
     });
 
@@ -212,16 +266,60 @@ export class RenderService {
       throw new ConflictError("Stock footage must be collected before rendering.");
     }
 
-    // FootageService caps how many clips it *downloads*, but nothing capped how
-    // many the render *opens*, and a video collected before that cap existed
-    // still has every clip it ever gathered. FFmpeg opens all of them at once —
-    // the concat filter has to — so each one holds a live h264 decoder and a
-    // scaler, several at 2560x1440. On the operator's Mac that was merely
-    // wasteful. In the worker's 1GB container it was fatal: 38 clips, and the
-    // kernel killed FFmpeg with SIGKILL before it emitted a single frame, which
-    // surfaced as a bare "killed by signal SIGKILL" with no FFmpeg error to
-    // explain it.
-    const clipAssets = allClipAssets.slice(0, MAX_RENDER_CLIPS);
+    // A cue whose anchor no longer occurs in the current script is dropped
+    // rather than guessed at (see anchorCues), so this is the set of sections
+    // that genuinely still exist in the words being narrated.
+    const activeVersion = video.script?.activeVersion ?? null;
+    const rawCues = activeVersion?.cues;
+    const scriptCues = Array.isArray(rawCues) ? (rawCues as unknown as ScriptCue[]) : [];
+    const anchored =
+      activeVersion && scriptCues.length > 0
+        ? anchorCues(scriptCues, activeVersion.content).anchored
+        : [];
+
+    const sectionPaths = anchored.map((_cue, index) => sectionClipPath(videoId, index));
+    const collectedPaths = new Set(allClipAssets.map((asset) => asset.storagePath));
+    const presentSections = sectionPaths.filter((sectionPath) =>
+      collectedPaths.has(sectionPath),
+    );
+
+    // Cues, but not one clip of theirs on disk: this video's footage was
+    // collected before per-section collection existed, so its clips are the
+    // old topic-level pool. Treat it exactly like a video with no cues at all
+    // — the same reasoning that makes the nullable `cues` column safe to ship
+    // without a backfill.
+    const cued = presentSections.length > 0;
+
+    // Some sections present and some not is the one arrangement that must
+    // never render. FFmpeg would happily play what it was given, every later
+    // section sliding forward into the gap, and the result is a finished video
+    // whose picture is seconds ahead of its words from the middle onward —
+    // wrong in the specific way nobody notices until it is published. It also
+    // can only come from a bug or a half-finished collection, both of which
+    // are fixed by collecting again, so refusing costs nothing but a re-run.
+    if (cued && presentSections.length !== sectionPaths.length) {
+      const missing = sectionPaths
+        .map((sectionPath, index) => ({ sectionPath, index }))
+        .filter((entry) => !collectedPaths.has(entry.sectionPath))
+        .map((entry) => entry.index + 1);
+
+      throw new ConflictError(
+        `Footage is missing for section(s) ${missing.join(", ")} of ${sectionPaths.length}. ` +
+          "Collect stock footage again before rendering — rendering without them would " +
+          "play every later section against the wrong narration.",
+      );
+    }
+
+    // Cued: one clip per section, in the order the sections are spoken —
+    // there is nothing to choose, the script already decided.
+    //
+    // Uncued: whichever clips come first by path, capped. FootageService caps
+    // how many clips it *downloads*, but a video collected before that cap
+    // existed still has every clip it ever gathered — 38 of them in the case
+    // that OOM-killed the worker. See MAX_RENDER_CLIPS.
+    const clipAssets = cued
+      ? sectionPaths.map((sectionPath) => ({ storagePath: sectionPath }))
+      : allClipAssets.slice(0, MAX_RENDER_CLIPS);
 
     // The real guard against a second concurrent render: two callers can both
     // read GENERATING above, but only one's `status: "GENERATING"` clause can
@@ -283,14 +381,42 @@ export class RenderService {
       );
 
       const style = DEFAULT_STYLE;
-      const clipPaths = ensureCoverage(downloadedClipPaths, durationSeconds);
       const outputPath = path.join(tempDir, "video.mp4");
+
+      // A slot has to outlast the crossfade it gives its tail to, or the
+      // concat entry for it comes out inverted (see planRender's own guard).
+      // Derived from the style rather than hard-coded so raising the
+      // transition duration cannot quietly invalidate the floor; doubled so
+      // the slot is still something a viewer sees rather than one continuous
+      // dissolve.
+      const minClipSeconds = Math.max(
+        MIN_CLIP_SECONDS,
+        style.transitions.enabled ? style.transitions.durationSeconds * 2 : 0,
+      );
+
+      // Cued: each clip holds the screen for exactly as long as its section is
+      // spoken, read off the same alignment the captions come from.
+      //
+      // Uncued: an equal share each. There is nothing in a pre-cue script that
+      // says where one idea ends and the next begins, so an even carve-up is
+      // the most honest thing available — and unlike the fixed twelve-second
+      // slots it replaces, the clips now cover the narration exactly instead
+      // of the list repeating until it overshoots.
+      const clipSeconds = cued
+        ? sectionDurations(
+            cueWindows(anchored, alignment).map((window) => window.startSeconds),
+            durationSeconds,
+            minClipSeconds,
+          )
+        : downloadedClipPaths.map(() =>
+            Math.max(minClipSeconds, durationSeconds / downloadedClipPaths.length),
+          );
 
       // Two passes — see ffmpeg-command.ts for why a single filter graph
       // cannot do this inside the worker's memory. Pass one normalises each
       // distinct clip on its own; pass two joins the sequence with the concat
       // demuxer, which reads one file at a time.
-      const plan = planRender(clipPaths, tempDir, CLIP_SECONDS, style.transitions);
+      const plan = planRender(downloadedClipPaths, tempDir, clipSeconds, style.transitions);
 
       for (const [index, segment] of plan.segments.entries()) {
         onProgress(

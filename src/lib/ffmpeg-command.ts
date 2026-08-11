@@ -95,7 +95,9 @@ export function concatListLine(segmentPath: string, trim?: SegmentTrim): string 
 export interface SegmentInput {
   clipPath: string;
   outputPath: string;
-  /** How long a slot this clip fills. Short clips loop to fill it. */
+  /** How long a slot this clip fills — one script section's worth of
+   *  narration, so the picture cuts where the sentence does. Short clips loop
+   *  to fill it. */
   clipSeconds?: number;
   /** Position in the play order. Selects the pan direction, so an unchanged
    *  video re-rendered produces identical arguments. */
@@ -418,31 +420,73 @@ export function buildTransitionArgs(job: TransitionJob): string[] {
 /**
  * Works out what pass one must produce, and in what order pass two plays it.
  *
- * `clipPaths` is a sequence, not a set: RenderService repeats the collected
- * clips until they cover the narration, so a 7-minute video with twelve clips
- * asks for the same twelve three times over. Each distinct file is normalised
- * once; the repeats are extra lines in the concat list, costing a file open
- * rather than a decode.
+ * `durations` is the timing model, one entry per clip path: how long that clip
+ * holds the screen. RenderService derives them from where each script section
+ * falls in the narration's alignment, so a clip plays for exactly as long as
+ * its section is spoken. A video with no cues gets an equal share each — the
+ * same shape, computed differently — which is why this function knows nothing
+ * about cues at all.
+ *
+ * `clipPaths` is a sequence, not a set: the same file may legitimately fill
+ * more than one slot (a fallback pool handing one clip to two sections). Each
+ * distinct file at a given length is normalised once; the repeats are extra
+ * lines in the concat list, costing a file open rather than a decode.
+ *
+ * Both the length mismatch and the per-entry checks below are hard failures
+ * rather than clamps. A wrong duration does not look wrong — it looks like a
+ * finished video whose picture is a few seconds ahead of the words from some
+ * point onward, which nobody spots until it is published.
  */
 export function planRender(
   clipPaths: string[],
   segmentDir: string,
-  clipSeconds = DEFAULT_CLIP_SECONDS,
+  durations: number[],
   transitions?: TransitionStyle,
 ): RenderPlan {
   if (clipPaths.length === 0) {
     throw new ValidationError("Cannot render without at least one clip.");
   }
 
+  if (durations.length !== clipPaths.length) {
+    throw new ValidationError(
+      `Cannot render: ${clipPaths.length} clip(s) but ${durations.length} duration(s). ` +
+        "Every clip needs the length of the section it plays under.",
+    );
+  }
+
   const count = clipPaths.length;
   const overlap = transitions?.enabled ? transitions.durationSeconds : 0;
   const hasStubs = overlap > 0 && count > 1;
+
+  durations.forEach((seconds, index) => {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      throw new ValidationError(
+        `Cannot render: clip ${index + 1} was given a length of ${seconds}s.`,
+      );
+    }
+
+    // A crossfade eats `overlap` from the end of the section before it and the
+    // start of the section after it. A section shorter than that would be
+    // asked to give away more than it has: its outpoint (`seconds`) would land
+    // before its inpoint (`overlap`), and the concat demuxer reads that
+    // backwards range as an empty entry — every later section then plays early
+    // against the narration. Refusing is the only outcome that cannot ship a
+    // mistimed video.
+    if (hasStubs && seconds <= overlap) {
+      throw new ValidationError(
+        `Cannot render: clip ${index + 1} is ${seconds}s, shorter than the ` +
+          `${overlap}s transition it has to make room for.`,
+      );
+    }
+  });
 
   const segmentPathOf = new Map<string, string>();
   const segments: SegmentInput[] = [];
   const sourceSecondsOf: number[] = [];
 
   clipPaths.forEach((clipPath, index) => {
+    const clipSeconds = durations[index];
+
     // Every segment but the last donates its tail to an outgoing stub, so it
     // must be generated that much longer. Without this the timeline comes out
     // `overlap` short per boundary and the picture drifts off the narration.
@@ -475,7 +519,7 @@ export function planRender(
       playOrder,
       transitions: [],
       trims: playOrder.map(() => ({})),
-      trimmedSeconds: playOrder.map(() => clipSeconds),
+      trimmedSeconds: [...durations],
     };
   }
 

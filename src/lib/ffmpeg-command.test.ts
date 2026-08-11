@@ -22,10 +22,18 @@ function valueOf(args: string[], flag: string): string | undefined {
   return index === -1 ? undefined : args[index + 1];
 }
 
+/** A duration list of `count` equal slots — what a caller with no per-section
+ *  timing to offer (the tests below that are about something else entirely)
+ *  would pass. */
+function evenDurations(count: number, seconds: number): number[] {
+  return Array.from({ length: count }, () => seconds);
+}
+
 describe("planRender", () => {
   it("normalises each distinct clip exactly once", () => {
     const sequence = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"];
-    const plan = planRender([...sequence, ...sequence, ...sequence], "/tmp");
+    const paths = [...sequence, ...sequence, ...sequence];
+    const plan = planRender(paths, "/tmp", evenDurations(paths.length, 12));
 
     // The whole point: nine slots, three encodes. Opening a clip per slot is
     // what OOM-killed the worker.
@@ -34,7 +42,11 @@ describe("planRender", () => {
   });
 
   it("keeps the sequence's order, repeats pointing at the same segment", () => {
-    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/a.mp4"], "/tmp");
+    const plan = planRender(
+      ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/a.mp4"],
+      "/tmp",
+      evenDurations(3, 12),
+    );
 
     const [first, second, third] = plan.playOrder;
     expect(first).toBe(third);
@@ -42,7 +54,39 @@ describe("planRender", () => {
   });
 
   it("refuses to plan with no clips", () => {
-    expect(() => planRender([], "/tmp")).toThrow();
+    expect(() => planRender([], "/tmp", [])).toThrow();
+  });
+});
+
+describe("planRender with per-section durations", () => {
+  it("gives each segment its own duration", () => {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", [7.5, 11.25]);
+
+    expect(plan.segments.map((s) => s.clipSeconds)).toEqual([7.5, 11.25]);
+  });
+
+  it("refuses a duration list that does not match the clips", () => {
+    // A mismatch means picture and narration would drift apart silently,
+    // which is worse than refusing to render.
+    expect(() => planRender(["/tmp/a.mp4"], "/tmp", [7.5, 11.25])).toThrow();
+  });
+
+  it("refuses a duration that FFmpeg could not honour", () => {
+    // `-t 0` produces an empty segment and `-t NaN` an outright error; either
+    // way the sections after it play against the wrong words. A duration this
+    // shape can only come from a bug upstream, so it stops here.
+    expect(() => planRender(["/tmp/a.mp4"], "/tmp", [0])).toThrow();
+    expect(() => planRender(["/tmp/a.mp4"], "/tmp", [Number.NaN])).toThrow();
+    expect(() => planRender(["/tmp/a.mp4"], "/tmp", [-2])).toThrow();
+  });
+
+  it("keeps the same clip at two different lengths apart", () => {
+    // One clip, two sections of different lengths: the shorter segment must
+    // not be reused for the longer slot, which would truncate it.
+    const plan = planRender(["/tmp/a.mp4", "/tmp/a.mp4"], "/tmp", [4, 9]);
+
+    expect(plan.segments).toHaveLength(2);
+    expect(plan.playOrder[0]).not.toBe(plan.playOrder[1]);
   });
 });
 
@@ -50,14 +94,24 @@ describe("planRender with transitions", () => {
   const transitions = { enabled: true, durationSeconds: 0.5 };
 
   it("puts one stub between each adjacent pair", () => {
-    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"], "/tmp", 8, transitions);
+    const plan = planRender(
+      ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"],
+      "/tmp",
+      evenDurations(3, 8),
+      transitions,
+    );
     expect(plan.transitions).toHaveLength(2);
   });
 
   it("preserves the total duration exactly", () => {
     const clipSeconds = 8;
     const paths = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4", "/tmp/d.mp4"];
-    const plan = planRender(paths, "/tmp", clipSeconds, transitions);
+    const plan = planRender(
+      paths,
+      "/tmp",
+      evenDurations(paths.length, clipSeconds),
+      transitions,
+    );
 
     // Every crossfade consumes D seconds of overlap, so a naive version comes
     // out D x boundaries short and drifts the picture off the narration.
@@ -67,33 +121,92 @@ describe("planRender with transitions", () => {
     expect(segmentTotal + stubTotal).toBeCloseTo(paths.length * clipSeconds, 5);
   });
 
+  it("preserves the total when every section has its own length", () => {
+    // The two features together: a crossfade still costs its overlap at every
+    // boundary, but the slots it sits between are now all different sizes.
+    // What must survive is the sum — that is what keeps the picture on the
+    // narration it was cut against.
+    const durations = [3.25, 9, 4.5, 12.75];
+    const paths = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4", "/tmp/d.mp4"];
+    const plan = planRender(paths, "/tmp", durations, transitions);
+
+    const segmentTotal = plan.trimmedSeconds.reduce((sum, seconds) => sum + seconds, 0);
+    const stubTotal = plan.transitions.length * transitions.durationSeconds;
+    const expected = durations.reduce((sum, seconds) => sum + seconds, 0);
+
+    expect(segmentTotal + stubTotal).toBeCloseTo(expected, 5);
+  });
+
   it("asks for extra source on every segment but the last", () => {
-    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", 8, transitions);
+    const plan = planRender(
+      ["/tmp/a.mp4", "/tmp/b.mp4"],
+      "/tmp",
+      evenDurations(2, 8),
+      transitions,
+    );
 
     expect(plan.segments[0].clipSeconds).toBeCloseTo(8.5, 5);
     expect(plan.segments[1].clipSeconds).toBeCloseTo(8, 5);
   });
 
   it("trims the head and tail a stub already covers", () => {
-    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"], "/tmp", 8, transitions);
+    const plan = planRender(
+      ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"],
+      "/tmp",
+      evenDurations(3, 8),
+      transitions,
+    );
 
     expect(plan.trims[0]).toEqual({ inpoint: undefined, outpoint: 8 });
     expect(plan.trims[1]).toEqual({ inpoint: 0.5, outpoint: 8 });
     expect(plan.trims[2]).toEqual({ inpoint: 0.5, outpoint: undefined });
   });
 
+  it("trims each section against its own length, not a shared one", () => {
+    // The outpoint is the section's own duration, so a stub always starts
+    // where that section's words end rather than at a fixed offset.
+    const plan = planRender(
+      ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"],
+      "/tmp",
+      [6, 10, 4],
+      transitions,
+    );
+
+    expect(plan.trims[0]).toEqual({ inpoint: undefined, outpoint: 6 });
+    expect(plan.trims[1]).toEqual({ inpoint: 0.5, outpoint: 10 });
+    expect(plan.trims[2]).toEqual({ inpoint: 0.5, outpoint: undefined });
+  });
+
+  it("refuses a section too short to host the crossfade it must donate to", () => {
+    // A section shorter than the overlap would come out with an outpoint
+    // before its inpoint — a concat list the demuxer reads as a negative
+    // range, which is how a render produces a silently mistimed video rather
+    // than an error.
+    expect(() =>
+      planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", [0.25, 8], transitions),
+    ).toThrow();
+  });
+
   it("plans no transitions for a single segment", () => {
-    const plan = planRender(["/tmp/a.mp4"], "/tmp", 8, transitions);
+    const plan = planRender(["/tmp/a.mp4"], "/tmp", [8], transitions);
     expect(plan.transitions).toHaveLength(0);
   });
 
   it("plans no transitions when they are disabled", () => {
-    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", 8, {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", evenDurations(2, 8), {
       enabled: false,
       durationSeconds: 0.5,
     });
 
     expect(plan.transitions).toHaveLength(0);
+  });
+
+  it("allows a section shorter than the crossfade when transitions are off", () => {
+    // Nothing donates a tail, so the short-section rule above has nothing to
+    // protect — and refusing here would fail renders that are perfectly fine.
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4"], "/tmp", [0.25, 8]);
+
+    expect(plan.trimmedSeconds).toEqual([0.25, 8]);
   });
 });
 

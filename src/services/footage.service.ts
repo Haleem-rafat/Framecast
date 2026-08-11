@@ -182,18 +182,17 @@ const EXTRA_CLIPS = 2;
 
 // Uncapped, `ceil(duration / SECONDS_PER_CLIP) + EXTRA_CLIPS` grows without
 // limit — a real ~7-minute video needed 38 *unique* clips, which took 11m51s
-// and 218MB to fetch (see render-oom-report.md). render.service.ts's
-// `ensureCoverage` already repeats the clip list to cover any narration
-// length once the unique set runs out, so there's no need to fetch a fresh
-// clip per slot: capping the unique pool at MAX_UNIQUE_CLIPS and letting
-// render-time repetition fill the rest cuts download time and storage by
-// roughly two thirds. At the cap, a clip repeats about every
-// MAX_UNIQUE_CLIPS * SECONDS_PER_CLIP = 144s (2-3 minutes) of narration —
-// noticeable, but this is a walking skeleton whose stock clips don't match
-// the narration's content anyway, so a viewer isn't losing anything a
-// higher cap would have given them. Do not raise this back up to "unique
-// clip per slot" without also solving the unbounded fetch time/memory it
-// reintroduces.
+// and 218MB to fetch (see render-oom-report.md). A video with no cues is
+// rendered by dividing the narration equally between whatever clips it has
+// (render.service.ts), so a shorter pool means each clip simply holds the
+// screen longer rather than the render coming up short: capping the unique
+// pool at MAX_UNIQUE_CLIPS cuts download time and storage by roughly two
+// thirds and costs only screen time per clip. At the cap, a ~7-minute
+// narration gives each of the twelve about 35s — noticeably static, but this
+// path only serves scripts written before b-roll cues existed, whose clips
+// don't match the narration's content anyway. Do not raise this back up to
+// "unique clip per slot" without also solving the unbounded fetch
+// time/memory it reintroduces.
 const MAX_UNIQUE_CLIPS = 12;
 
 // Same incident, reached through a different door. `collectPerCue` searches
