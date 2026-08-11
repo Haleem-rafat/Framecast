@@ -13,6 +13,16 @@ function isRetryable(status: number): boolean {
 /** Jamendo caps `limit` at 200. */
 const MAX_LIMIT = 200;
 
+/**
+ * A ShareAlike licence, read off the track's own `license_ccurl`.
+ *
+ * The CC url is the authoritative statement of what a track is licensed
+ * under — `.../licenses/by-sa/3.0/`, `.../licenses/by-nc-sa/4.0/` — so `sa`
+ * appearing as a component of that path is the check. Hyphens are not word
+ * characters, so `\bsa\b` matches `by-sa` and `by-nc-sa` and never `salsa`.
+ */
+const SHARE_ALIKE_LICENCE = /creativecommons\.org\/licenses\/[a-z-]*\bsa\b/i;
+
 interface JamendoTrack {
   id?: string | number;
   name?: string;
@@ -61,6 +71,20 @@ export class JamendoProvider implements MusicProvider {
     // exactly the ambiguity this provider exists to stay out of. Real BY-ND
     // tracks do come back from this search, so this is not hypothetical.
     url.searchParams.set("ccnd", "false");
+    // ShareAlike goes for the same reason as no-derivatives, taken one step
+    // further. If ducking and trimming a bed under narration is plausibly an
+    // adaptation — the argument directly above — then under BY-SA that
+    // adaptation is the *whole video*, and ShareAlike would ask for the whole
+    // video to be licensed alike. On a channel intended for monetisation that
+    // is not a licence to be ambiguous about. Real BY-SA tracks come back
+    // from this query, so this is not hypothetical either.
+    //
+    // Asked for at the query level and checked again on the way out. The
+    // parameter costs nothing if Jamendo honours it and nothing if it ignores
+    // it, but a licence this consequential is not something to leave to an
+    // undocumented flag: `license_ccurl` is the track's own statement of what
+    // it is, and that is what the filter below actually trusts.
+    url.searchParams.set("ccsa", "false");
     // Instrumental beds only — a track with vocals competes with the narration
     // rather than sitting under it.
     url.searchParams.set("vocalinstrumental", "instrumental");
@@ -100,6 +124,14 @@ export class JamendoProvider implements MusicProvider {
       // Both checks matter: the flag can be false on a track that still
       // carries a url, and the url can be empty on one where the flag is true.
       if (result.audiodownload_allowed !== true || !result.audiodownload) {
+        continue;
+      }
+
+      // The backstop for `ccsa=false` above. A track that says ShareAlike on
+      // its own licence url is dropped here however it came back — a filter
+      // the API ignored, a filter that was renamed, a licence Jamendo
+      // classifies differently than the url reads.
+      if (SHARE_ALIKE_LICENCE.test(result.license_ccurl ?? "")) {
         continue;
       }
 

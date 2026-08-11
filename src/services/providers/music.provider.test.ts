@@ -65,6 +65,47 @@ describe("JamendoProvider", () => {
     expect(url.searchParams.get("ccnd")).toBe("false");
   });
 
+  it("asks Jamendo to exclude ShareAlike as well", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ results: [track] }));
+    global.fetch = fetchMock;
+
+    await provider().search("calm ambient", 3);
+
+    const url = new URL(fetchMock.mock.calls[0][0].toString());
+    expect(url.searchParams.get("ccsa")).toBe("false");
+  });
+
+  it("drops a ShareAlike track even if the query filter did not", async () => {
+    // The consequence is not "one unusable bed": under BY-SA the adaptation
+    // is the finished video, and ShareAlike would ask for the whole thing to
+    // be licensed alike on a channel meant to be monetised. The licence url
+    // is the track's own statement of what it is, so it is checked here
+    // rather than trusted to an API flag.
+    global.fetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        results: [
+          { ...track, license_ccurl: "https://creativecommons.org/licenses/by-sa/3.0/" },
+          {
+            ...track,
+            id: "2",
+            license_ccurl: "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+          },
+        ],
+      }),
+    );
+
+    expect(await provider().search("calm", 3)).toEqual([]);
+  });
+
+  it("keeps a plain BY track, which is the licence this provider exists to find", async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ results: [track] }));
+
+    const results = await provider().search("calm", 3);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].licenseUrl).toContain("/by/");
+  });
+
   it("skips a track whose artist has disabled downloads", async () => {
     global.fetch = vi
       .fn()
