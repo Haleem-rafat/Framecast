@@ -1,18 +1,49 @@
 import { ValidationError } from "@/lib/errors";
 
-export interface RenderInput {
-  clipPaths: string[];
-  audioPath: string;
-  srtPath: string;
-  outputPath: string;
-  /** Cut the result to exactly this, so video and narration cannot drift. */
-  durationSeconds: number;
-  clipSeconds?: number;
-}
-
 const WIDTH = 1920;
 const HEIGHT = 1080;
+const FPS = 30;
 const DEFAULT_CLIP_SECONDS = 12;
+
+/**
+ * Rendering happens in two passes, and the reason is memory.
+ *
+ * The single-pass version opened every clip at once and joined them with the
+ * `concat` filter, which is what a filter graph is for — but a filter graph
+ * holds all of its inputs open simultaneously. On the worker's 1GB container
+ * that was fatal: thirty-eight live h264 decoders, several of them 1440p, and
+ * the kernel killed FFmpeg before it emitted a frame.
+ *
+ * Opening each distinct file once and `split`ting it for the repeats cut the
+ * decoders to twelve and still died. `split` requires its outputs to be
+ * consumed roughly in step, and `concat` does the opposite — it finishes
+ * segment one before it touches segment thirteen, so every frame in between
+ * has to be buffered. Fewer decoders, unbounded buffering, same result.
+ *
+ * So neither pass uses a filter graph to join anything:
+ *
+ *   1. `buildSegmentArgs` normalises ONE clip into a standalone segment file.
+ *      One decoder, one encoder, nothing else held open.
+ *   2. `buildAssembleArgs` joins those segments with the concat *demuxer*,
+ *      which reads files strictly in sequence — one decoder at a time,
+ *      whatever the video's length — then burns in captions and muxes the
+ *      narration.
+ *
+ * Memory is now flat in the number of clips and in the video's duration. The
+ * cost is that the picture is encoded twice; pass one runs at a much finer CRF
+ * than the final so that what the second pass sees is visually the source.
+ */
+
+/** Segment quality. Well above the final CRF because these frames get encoded
+ *  a second time and generational loss compounds — this is the generation to
+ *  spend bytes on. They are temp files, deleted with the render directory. */
+const SEGMENT_CRF = "18";
+const FINAL_CRF = "22";
+
+/** The container has 2 vCPU. Unbounded, x264 and the filter threads size their
+ *  pools to the host's core count, which on a 15-core machine meant buffer
+ *  pools far past what this container allows. */
+const THREADS = "2";
 
 /**
  * FFmpeg's filter graph parser treats `:` and `'` as syntax, so a path inside
@@ -23,112 +54,94 @@ function escapeForFilter(path: string): string {
   return path.replace(/([\\:'[\],; ])/g, "\\$1");
 }
 
-export function buildRenderArgs(input: RenderInput): string[] {
-  if (input.clipPaths.length === 0) {
-    throw new ValidationError("Cannot render without at least one clip.");
-  }
+/**
+ * A concat-demuxer list line. That parser treats `'` as a delimiter and its
+ * escape is closing, escaping, reopening the quote — a backslash inside the
+ * quotes would be read literally.
+ */
+export function concatListLine(segmentPath: string): string {
+  return `file '${segmentPath.replace(/'/g, "'\\''")}'`;
+}
 
+export interface SegmentInput {
+  clipPath: string;
+  outputPath: string;
+  /** How long a slot this clip fills. Short clips loop to fill it. */
+  clipSeconds?: number;
+}
+
+/**
+ * Pass one: one clip in, one normalised segment out.
+ *
+ * Every segment leaves here at the same resolution, frame rate, pixel format
+ * and timebase, because the concat demuxer in pass two joins streams without
+ * re-encoding and cannot reconcile inputs that disagree.
+ *
+ * The input-level `-t` is load-bearing rather than a convenience:
+ * `-stream_loop -1` alone makes the input infinite, and FFmpeg will decode an
+ * unbounded stream until something stops it.
+ */
+export function buildSegmentArgs(input: SegmentInput): string[] {
   const clipSeconds = input.clipSeconds ?? DEFAULT_CLIP_SECONDS;
-  const args: string[] = ["-y"];
 
-  // `clipPaths` is a *sequence*, not a set: RenderService repeats the collected
-  // clips end to end until they cover the narration, so a 7-minute video with
-  // twelve clips asks for the same twelve three times over. Opening each
-  // repeat as its own `-i` is what actually drove the container out of memory
-  // — the input count follows the narration's length, not the clip cap, so
-  // capping unique clips alone still produced 36 inputs and 36 live decoders.
-  //
-  // Each distinct file therefore becomes exactly one input, decoded once, and
-  // the filter graph below `split`s that single decoded stream into as many
-  // copies as the sequence needs. The repeats were always byte-identical
-  // anyway — same file, same `-stream_loop`, same `-t` — so this changes
-  // nothing on screen and divides the decoder count by the repeat factor.
-  const uniqueClips = [...new Set(input.clipPaths)];
-  const inputIndexOf = new Map(uniqueClips.map((clip, index) => [clip, index]));
-
-  const useCounts = new Map<string, number>();
-  for (const clip of input.clipPaths) {
-    useCounts.set(clip, (useCounts.get(clip) ?? 0) + 1);
-  }
-
-  for (const clip of uniqueClips) {
-    // Loop each clip so a short one still fills its slot rather than freezing.
-    // `-stream_loop -1` alone makes the input infinite — with no input-level
-    // `-t`, FFmpeg opens and decodes every input as an unbounded stream, and
-    // with dozens of clips that grows memory until the OS kills the process
-    // (observed live: 38 clips, killed after 9.5s with no stderr at all — see
-    // render-oom-report.md). The `trim=duration=…` below only bounds each
-    // clip's *output*, which is too late to stop that growth. The input-level
-    // `-t` here is what actually caps memory; `trim` stays too, as a second,
-    // cheap guarantee that a clip never contributes more than its slot even
-    // if the input bound were ever relaxed.
-    //
-    // This does mean there are now two `-t` flags in the final arg list — one
-    // per clip input, plus the output one below. `args.indexOf("-t")` will
-    // find the wrong one; tests must use `lastIndexOf` (the output `-t`,
-    // pushed last, is always the last occurrence).
-    args.push("-stream_loop", "-1", "-t", String(clipSeconds), "-i", clip);
-  }
-
-  args.push("-i", input.audioPath);
-
-  // Trim each looped clip to its slot, then scale to fill, centre-crop the
-  // overflow, and force a constant frame rate so the concat filter does not
-  // have to reconcile mismatched timebases.
-  const perClip = uniqueClips
-    .map((clip, i) => {
-      const uses = useCounts.get(clip) ?? 1;
-      // One label per use. `split` is what lets a single decode feed several
-      // positions in the concat — a filter output can only be consumed once,
-      // so reusing `[v0]` directly would be a graph error, not a shortcut.
-      const outputs = Array.from({ length: uses }, (_, k) => `[v${i}_${k}]`).join("");
-
-      return (
-        `[${i}:v]trim=duration=${clipSeconds},setpts=PTS-STARTPTS,` +
-        `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,` +
-        `crop=${WIDTH}:${HEIGHT},fps=30,setsar=1` +
-        `${uses > 1 ? `,split=${uses}` : ""}${outputs}`
-      );
-    })
-    .join(";");
-
-  // Walk the original sequence, handing out each clip's split outputs in
-  // order, so the on-screen order still matches what RenderService asked for.
-  const taken = new Map<string, number>();
-  const concatInputs = input.clipPaths
-    .map((clip) => {
-      const i = inputIndexOf.get(clip)!;
-      const k = taken.get(clip) ?? 0;
-      taken.set(clip, k + 1);
-      return `[v${i}_${k}]`;
-    })
-    .join("");
-
-  const audioIndex = uniqueClips.length;
-
-  const filter =
-    `${perClip};${concatInputs}concat=n=${input.clipPaths.length}:v=1:a=0[vcat];` +
-    `[vcat]subtitles=${escapeForFilter(input.srtPath)}[vout]`;
-
-  args.push(
-    "-filter_complex", filter,
-    // The filter graph decodes every clip in parallel, and each worker thread
-    // carries its own frame buffers. Unbounded, FFmpeg sizes its pool to the
-    // host's core count — on the render container that meant far more memory
-    // than its 1GB allows, on top of the per-input decoders. Two threads per
-    // stage still saturates the container's 2 vCPU.
-    "-filter_threads", "2",
-    "-filter_complex_threads", "2",
-    "-map", "[vout]",
-    "-map", `${audioIndex}:a`,
+  return [
+    "-y",
+    "-stream_loop", "-1",
+    "-t", String(clipSeconds),
+    "-i", input.clipPath,
+    // A stock clip's own audio is never used — the narration is the only
+    // sound. Dropping it keeps the segments smaller and spares pass two a
+    // stream it would only have to ignore.
+    "-an",
+    "-vf",
+    `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,` +
+      `crop=${WIDTH}:${HEIGHT},fps=${FPS},setsar=1`,
     "-c:v", "libx264",
-    // `veryfast` rather than `medium`: x264's slower presets widen the
-    // lookahead and reference buffers, which is memory the container does not
-    // have. It costs perhaps 10% file size at the same CRF and roughly halves
-    // encode time — a good trade for stock footage under captions.
     "-preset", "veryfast",
-    "-threads", "2",
-    "-crf", "22",
+    "-crf", SEGMENT_CRF,
+    "-pix_fmt", "yuv420p",
+    "-threads", THREADS,
+    input.outputPath,
+  ];
+}
+
+export interface AssembleInput {
+  /** A concat-demuxer list naming the segments in playing order. The same
+   *  segment may appear repeatedly; the demuxer reopens it each time rather
+   *  than holding one copy open for the whole run. */
+  concatListPath: string;
+  audioPath: string;
+  srtPath: string;
+  outputPath: string;
+  /** Cut the result to exactly this, so video and narration cannot drift. */
+  durationSeconds: number;
+}
+
+/**
+ * Pass two: segments in, finished video out.
+ *
+ * The only filter left is `subtitles`, which needs a re-encode — there is no
+ * way to burn text into a picture without one. Everything expensive that used
+ * to live in the graph is gone.
+ */
+export function buildAssembleArgs(input: AssembleInput): string[] {
+  return [
+    "-y",
+    // `-safe 0` because the list holds absolute paths, which the demuxer
+    // rejects by default.
+    "-f", "concat",
+    "-safe", "0",
+    "-i", input.concatListPath,
+    "-i", input.audioPath,
+    "-filter_complex", `[0:v]subtitles=${escapeForFilter(input.srtPath)}[vout]`,
+    "-filter_threads", THREADS,
+    "-filter_complex_threads", THREADS,
+    "-map", "[vout]",
+    "-map", "1:a",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-threads", THREADS,
+    "-crf", FINAL_CRF,
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
     "-b:a", "128k",
@@ -139,7 +152,49 @@ export function buildRenderArgs(input: RenderInput): string[] {
     "-progress", "pipe:1",
     "-nostats",
     input.outputPath,
-  );
+  ];
+}
 
-  return args;
+export interface RenderPlan {
+  /** One entry per distinct clip — pass one runs these in turn. */
+  segments: SegmentInput[];
+  /** Segment output paths in playing order, repeats included. */
+  playOrder: string[];
+}
+
+/**
+ * Works out what pass one must produce, and in what order pass two plays it.
+ *
+ * `clipPaths` is a sequence, not a set: RenderService repeats the collected
+ * clips until they cover the narration, so a 7-minute video with twelve clips
+ * asks for the same twelve three times over. Each distinct file is normalised
+ * once; the repeats are extra lines in the concat list, costing a file open
+ * rather than a decode.
+ */
+export function planRender(
+  clipPaths: string[],
+  segmentDir: string,
+  clipSeconds = DEFAULT_CLIP_SECONDS,
+): RenderPlan {
+  if (clipPaths.length === 0) {
+    throw new ValidationError("Cannot render without at least one clip.");
+  }
+
+  const segmentPathOf = new Map<string, string>();
+  const segments: SegmentInput[] = [];
+
+  for (const clipPath of clipPaths) {
+    if (segmentPathOf.has(clipPath)) {
+      continue;
+    }
+
+    const outputPath = `${segmentDir}/segment-${segments.length}.mp4`;
+    segmentPathOf.set(clipPath, outputPath);
+    segments.push({ clipPath, outputPath, clipSeconds });
+  }
+
+  return {
+    segments,
+    playOrder: clipPaths.map((clipPath) => segmentPathOf.get(clipPath)!),
+  };
 }

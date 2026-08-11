@@ -11,7 +11,12 @@ import { writeRenderFile } from "@/lib/blob-render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
-import { buildRenderArgs } from "@/lib/ffmpeg-command";
+import {
+  buildAssembleArgs,
+  buildSegmentArgs,
+  concatListLine,
+  planRender,
+} from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
 import { getObject } from "@/lib/storage";
 import { formatElapsed } from "@/utils/format";
@@ -39,7 +44,7 @@ export type RenderProgress = (message: string) => void;
 
 const noopProgress: RenderProgress = () => {};
 
-/** Matches the default `buildRenderArgs` uses when `clipSeconds` is omitted,
+/** Matches the default the segment builder uses when `clipSeconds` is omitted,
  * but named explicitly here so the coverage guard below computes against the
  * exact value actually passed to the command builder. */
 const CLIP_SECONDS = 12;
@@ -82,7 +87,7 @@ function defaultSpawner(command: string, args: string[]): ChildProcessWithoutNul
 
 /**
  * Repeats the clip list (never re-downloads) until it covers the narration.
- * Without this, `buildRenderArgs`'s looped clips plus `-shortest` silently
+ * Without this, the looped clips plus `-shortest` silently
  * truncate the output to the clips' combined length — a plausible-looking
  * file that cuts the narration off mid-sentence rather than an error. See
  * Task 3's report for how this was discovered.
@@ -272,16 +277,52 @@ export class RenderService {
       const clipPaths = ensureCoverage(downloadedClipPaths, durationSeconds);
       const outputPath = path.join(tempDir, "video.mp4");
 
-      const args = buildRenderArgs({
-        clipPaths,
-        audioPath,
-        srtPath,
-        outputPath,
-        durationSeconds,
-        clipSeconds: CLIP_SECONDS,
-      });
+      // Two passes — see ffmpeg-command.ts for why a single filter graph
+      // cannot do this inside the worker's memory. Pass one normalises each
+      // distinct clip on its own; pass two joins the sequence with the concat
+      // demuxer, which reads one file at a time.
+      const plan = planRender(clipPaths, tempDir, CLIP_SECONDS);
 
-      await this.runFfmpeg(args, job.id, durationSeconds, onProgress, shouldCancel);
+      for (const [index, segment] of plan.segments.entries()) {
+        onProgress(
+          `normalising clip ${index + 1} of ${plan.segments.length}`,
+        );
+
+        // Segments are short and fixed-length, so a percentage of their own
+        // would fight the real render's — null tells the runner to report
+        // none. Cancellation is still honoured during and between them.
+        await this.runFfmpeg(
+          buildSegmentArgs(segment),
+          job.id,
+          null,
+          () => {},
+          shouldCancel,
+        );
+      }
+
+      const concatListPath = path.join(tempDir, "segments.txt");
+      await writeFile(
+        concatListPath,
+        `${plan.playOrder.map(concatListLine).join("\n")}\n`,
+      );
+
+      onProgress(
+        `assembling ${plan.playOrder.length} segment(s) with narration and captions`,
+      );
+
+      await this.runFfmpeg(
+        buildAssembleArgs({
+          concatListPath,
+          audioPath,
+          srtPath,
+          outputPath,
+          durationSeconds,
+        }),
+        job.id,
+        durationSeconds,
+        onProgress,
+        shouldCancel,
+      );
 
       // The finished MP4 goes to Vercel Blob, not local disk or Supabase
       // Storage — a real 1080p render (~170MB) exceeds Supabase's free-tier
@@ -369,7 +410,11 @@ export class RenderService {
   private runFfmpeg(
     args: string[],
     jobId: string,
-    durationSeconds: number,
+    /** null when this run has no meaningful percentage to report — the
+     *  segment passes, whose length is fixed and short. Passing 0 instead
+     *  would divide by zero, clamp to 100, and write a finished-looking
+     *  progress while the render had barely started. */
+    durationSeconds: number | null,
     onProgress: RenderProgress,
     shouldCancel?: () => boolean,
   ): Promise<void> {
@@ -414,6 +459,10 @@ export class RenderService {
       child.stdout.on("data", (chunk: Buffer | string) => {
         const outTimeMsValues = progressParser.push(chunk.toString());
         if (outTimeMsValues.length === 0) {
+          return;
+        }
+
+        if (durationSeconds === null) {
           return;
         }
 

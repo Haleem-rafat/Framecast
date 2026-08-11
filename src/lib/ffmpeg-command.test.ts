@@ -1,123 +1,138 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRenderArgs } from "@/lib/ffmpeg-command";
+import {
+  buildAssembleArgs,
+  buildSegmentArgs,
+  concatListLine,
+  planRender,
+} from "@/lib/ffmpeg-command";
 
-const base = {
-  clipPaths: ["/tmp/a.mp4", "/tmp/b.mp4"],
+const assembleBase = {
+  concatListPath: "/tmp/segments.txt",
   audioPath: "/tmp/narration.mp3",
   srtPath: "/tmp/captions.srt",
   outputPath: "/tmp/out.mp4",
-  durationSeconds: 30,
+  durationSeconds: 428,
 };
 
-describe("buildRenderArgs", () => {
-  it("includes every clip as an input", () => {
-    const args = buildRenderArgs(base);
-    expect(args.filter((a) => a === "-i")).toHaveLength(3); // 2 clips + audio
+/** Reads the value FFmpeg would see for a flag — the argument after it. */
+function valueOf(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
+describe("planRender", () => {
+  it("normalises each distinct clip exactly once", () => {
+    const sequence = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"];
+    const plan = planRender([...sequence, ...sequence, ...sequence], "/tmp");
+
+    // The whole point: nine slots, three encodes. Opening a clip per slot is
+    // what OOM-killed the worker.
+    expect(plan.segments.map((s) => s.clipPath)).toEqual(sequence);
+    expect(plan.playOrder).toHaveLength(9);
   });
 
-  it("cuts the output to the narration duration", () => {
-    const args = buildRenderArgs(base);
-    // There is now one `-t` per looped input plus the output's — indexOf
-    // would find a per-clip one, not the output bound this test cares about.
-    // The output `-t` is pushed last, so lastIndexOf always finds it.
-    const lastT = args.lastIndexOf("-t");
-    expect(lastT).toBeGreaterThan(-1);
-    expect(args[lastT + 1]).toBe("30");
+  it("keeps the sequence's order, repeats pointing at the same segment", () => {
+    const plan = planRender(["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/a.mp4"], "/tmp");
+
+    const [first, second, third] = plan.playOrder;
+    expect(first).toBe(third);
+    expect(second).not.toBe(first);
   });
 
-  it("bounds every looped input to clipSeconds, so an infinite -stream_loop can't grow memory without limit", () => {
-    const args = buildRenderArgs(base);
+  it("refuses to plan with no clips", () => {
+    expect(() => planRender([], "/tmp")).toThrow();
+  });
+});
 
-    // One "-t <clipSeconds>" immediately before each "-i <clip>", plus the
-    // output's own "-t <duration>" at the end: base has 2 clips, so 3 "-t"
-    // occurrences in total.
-    const tIndexes = args.reduce<number[]>((acc, arg, i) => {
-      if (arg === "-t") acc.push(i);
-      return acc;
-    }, []);
-    expect(tIndexes).toHaveLength(base.clipPaths.length + 1);
-
-    for (const clip of base.clipPaths) {
-      const clipIndex = args.indexOf(clip);
-      expect(args[clipIndex - 1]).toBe("-i");
-      expect(args[clipIndex - 2]).toBe("12"); // DEFAULT_CLIP_SECONDS
-      expect(args[clipIndex - 3]).toBe("-t");
-    }
+describe("concatListLine", () => {
+  it("quotes a path so the demuxer reads it as one token", () => {
+    expect(concatListLine("/tmp/my segment.mp4")).toBe("file '/tmp/my segment.mp4'");
   });
 
-  it("burns in the subtitle file", () => {
-    expect(buildRenderArgs(base).join(" ")).toContain("subtitles=");
+  it("escapes a quote in the path rather than ending the token early", () => {
+    // A bare `'` would close the quote and leave the rest as garbage.
+    expect(concatListLine("/tmp/it's.mp4")).toBe("file '/tmp/it'\\''s.mp4'");
+  });
+});
+
+describe("buildSegmentArgs", () => {
+  const base = { clipPath: "/tmp/a.mp4", outputPath: "/tmp/segment-0.mp4" };
+
+  it("bounds the input so an infinite loop cannot decode forever", () => {
+    const args = buildSegmentArgs({ ...base, clipSeconds: 12 });
+
+    // -stream_loop -1 makes the input endless; the input-level -t is the only
+    // thing that stops it, and it must come before -i to apply to the input.
+    expect(args.indexOf("-stream_loop")).toBeLessThan(args.indexOf("-i"));
+    expect(args.indexOf("-t")).toBeLessThan(args.indexOf("-i"));
+    expect(valueOf(args, "-t")).toBe("12");
   });
 
-  it("encodes h264 and aac", () => {
-    const args = buildRenderArgs(base).join(" ");
-    expect(args).toContain("libx264");
-    expect(args).toContain("aac");
+  it("normalises to the frame size and rate the demuxer requires", () => {
+    const filter = valueOf(buildSegmentArgs(base), "-vf") ?? "";
+
+    // The concat demuxer joins without re-encoding, so segments that disagree
+    // on any of these cannot be joined at all.
+    expect(filter).toContain("scale=1920:1080");
+    expect(filter).toContain("crop=1920:1080");
+    expect(filter).toContain("fps=30");
+    expect(filter).toContain("setsar=1");
   });
 
-  it("emits machine-readable progress", () => {
-    const args = buildRenderArgs(base);
-    expect(args).toContain("-progress");
+  it("drops the clip's own audio", () => {
+    expect(buildSegmentArgs(base)).toContain("-an");
+  });
+
+  it("encodes finer than the final pass, since these frames get re-encoded", () => {
+    const segmentCrf = Number(valueOf(buildSegmentArgs(base), "-crf"));
+    const finalCrf = Number(valueOf(buildAssembleArgs(assembleBase), "-crf"));
+
+    // Lower CRF is higher quality. Equal or worse here would compound
+    // generational loss into the delivered video.
+    expect(segmentCrf).toBeLessThan(finalCrf);
   });
 
   it("puts the output path last", () => {
-    expect(buildRenderArgs(base).at(-1)).toBe("/tmp/out.mp4");
+    expect(buildSegmentArgs(base).at(-1)).toBe("/tmp/segment-0.mp4");
+  });
+});
+
+describe("buildAssembleArgs", () => {
+  it("joins with the concat demuxer, not the concat filter", () => {
+    const args = buildAssembleArgs(assembleBase);
+
+    // The filter holds every input open at once; the demuxer reads one file at
+    // a time. That difference is the whole reason for two passes.
+    expect(valueOf(args, "-f")).toBe("concat");
+    expect(args.join(" ")).not.toContain("concat=n=");
   });
 
-  it("refuses to build with no clips", () => {
-    expect(() => buildRenderArgs({ ...base, clipPaths: [] })).toThrow();
+  it("allows the absolute paths the list actually contains", () => {
+    // Without -safe 0 the demuxer rejects absolute paths outright.
+    expect(valueOf(buildAssembleArgs(assembleBase), "-safe")).toBe("0");
+  });
+
+  it("maps the narration, not a segment, as the audio track", () => {
+    const args = buildAssembleArgs(assembleBase);
+
+    // Segments carry no audio at all, so input 1 is the only source.
+    expect(args).toContain("1:a");
+  });
+
+  it("cuts the output to the narration's length", () => {
+    const args = buildAssembleArgs(assembleBase);
+    // The only -t here is the output one, unlike the segment pass.
+    expect(valueOf(args, "-t")).toBe("428");
   });
 
   it("escapes a subtitle path containing special characters", () => {
-    const args = buildRenderArgs({ ...base, srtPath: "/tmp/my captions.srt" });
-    // The filter graph must not break on the space.
+    const args = buildAssembleArgs({ ...assembleBase, srtPath: "/tmp/my captions.srt" });
+    // The filter graph parser must not break on the space.
     expect(args.join(" ")).toContain("my\\ captions.srt");
   });
 
-  // The OOM that killed every render on the worker: RenderService repeats the
-  // clip sequence to cover the narration, and each repeat used to become its
-  // own input with its own decoder. Twelve clips over a 7-minute narration
-  // meant 36 live decoders in a 1GB container.
-  it("opens each distinct clip once however often the sequence repeats it", () => {
-    const sequence = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4"];
-    const args = buildRenderArgs({
-      ...base,
-      // The same three clips, three times over — what a long narration asks for.
-      clipPaths: [...sequence, ...sequence, ...sequence],
-    });
-
-    const videoInputs = args.filter(
-      (arg, index) => args[index - 1] === "-i" && arg !== "/tmp/narration.mp3",
-    );
-
-    expect(videoInputs).toEqual(sequence);
-  });
-
-  it("still shows every repeat, in the order asked for", () => {
-    const args = buildRenderArgs({
-      ...base,
-      clipPaths: ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/a.mp4"],
-    });
-    const filter = args[args.indexOf("-filter_complex") + 1];
-
-    // a.mp4 is input 0 and used twice, so it splits into two labels; b.mp4 is
-    // used once and needs no split.
-    expect(filter).toContain("split=2[v0_0][v0_1]");
-    expect(filter).not.toContain("split=1");
-
-    // Concat consumes them in the sequence's own order: a, b, a.
-    expect(filter).toContain("[v0_0][v1_0][v0_1]concat=n=3");
-  });
-
-  it("points the audio map at the narration, not a clip", () => {
-    const args = buildRenderArgs({
-      ...base,
-      clipPaths: ["/tmp/a.mp4", "/tmp/a.mp4", "/tmp/a.mp4"],
-    });
-
-    // One unique clip means narration is input 1 — if the audio index were
-    // still derived from the sequence length it would point at input 3.
-    expect(args).toContain("1:a");
+  it("puts the output path last", () => {
+    expect(buildAssembleArgs(assembleBase).at(-1)).toBe("/tmp/out.mp4");
   });
 });

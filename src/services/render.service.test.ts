@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -257,25 +257,41 @@ describe("renderService.render — happy path", () => {
     // narration. Coverage must be extended (12*3=36 >= 30) rather than
     // silently truncating FFmpeg's output to the clips' combined length.
     const videoId = await makeRenderableVideo({ durationSeconds: 30, clipCount: 1 });
-    const { spawner, calls } = createSucceedingSpawner();
+
+    // The concat list has to be read while FFmpeg would be running: render()
+    // deletes its temp directory on the way out, so reading afterwards finds
+    // nothing.
+    let concatList = "";
+    const { spawner, calls } = createSpawner(async (child, args) => {
+      const formatIndex = args.indexOf("-f");
+      if (formatIndex !== -1 && args[formatIndex + 1] === "concat") {
+        concatList = await readFile(args[args.indexOf("-i") + 1], "utf-8");
+      }
+      await writeFile(args[args.length - 1], "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
     const service = new RenderService(spawner);
 
     await service.render(userId, videoId);
 
-    expect(calls).toHaveLength(1);
-    const args = calls[0].args;
+    // Two passes: one segment encode for the single distinct clip, then the
+    // assemble. Coverage lives in the concat list, not in repeated inputs —
+    // opening a decoder per slot is what OOM-killed the worker.
+    expect(calls).toHaveLength(2);
 
-    // Coverage is a property of the filter graph, not the input list. The one
-    // clip is opened exactly once — opening it per slot is what OOM-killed the
-    // worker — and `split` feeds that single decode into all three slots.
-    const clipInputs = args.filter(
-      (arg, index) => args[index - 1] === "-i" && arg.endsWith("clip-0.mp4"),
+    const [segment, assemble] = calls;
+    const clipInputs = segment.args.filter(
+      (arg, index) => segment.args[index - 1] === "-i" && arg.endsWith("clip-0.mp4"),
     );
     expect(clipInputs).toHaveLength(1);
 
-    const filter = args[args.indexOf("-filter_complex") + 1];
-    expect(filter).toContain("split=3");
-    expect(filter).toContain("concat=n=3");
+    // The assemble pass opens the list, not the clips.
+    expect(assemble.args[assemble.args.indexOf("-f") + 1]).toBe("concat");
+
+    // Three slots covering the 30s narration, all naming the one segment.
+    const lines = concatList.trim().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(new Set(lines).size).toBe(1);
   });
 
   it("writes progress as parsed FFmpeg output advances, throttled to at most one write per second", async () => {
@@ -284,6 +300,16 @@ describe("renderService.render — happy path", () => {
 
     const { spawner } = createSpawner(async (child, args) => {
       const outputPath = args[args.length - 1];
+
+      // Only the assemble pass reports a percentage; the segment passes run
+      // with no duration to measure against. Emitting progress for them here
+      // would test a path production never takes.
+      if (!args.includes("-progress")) {
+        await writeFile(outputPath, "fake-segment-bytes");
+        child.emit("close", 0);
+        return;
+      }
+
       // Two lines in immediate succession: only the first should produce a
       // write, the second falls inside the same throttle window.
       child.stdout.emit("data", `out_time_ms=${Math.round(2 * 0.3 * 1_000_000)}\n`);

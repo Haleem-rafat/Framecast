@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes, formatDuration } from "@/utils/format";
 
 /** Renders always land at 1920x1080 — WIDTH/HEIGHT are hardcoded in
- * buildRenderArgs (ffmpeg-command.ts), so this is a fixed label rather than
+ * the render pipeline (ffmpeg-command.ts), so this is a fixed label rather than
  * per-video metadata pulled from a column. */
 const RENDER_RESOLUTION = "1920×1080";
 
