@@ -215,3 +215,74 @@ describe("buildAssembleArgs with caption styling", () => {
     expect(buildAssembleArgs(assembleBase).join(" ")).not.toContain("force_style");
   });
 });
+
+describe("buildAssembleArgs audio chain", () => {
+  const audio = {
+    musicGainDb: -20,
+    sfxGainDb: -8,
+    duckThreshold: 0.03,
+    duckRatio: 8,
+    duckAttackMs: 20,
+    duckReleaseMs: 300,
+  };
+
+  it("normalises the narration to the platform target", () => {
+    const graph = valueOf(buildAssembleArgs({ ...assembleBase, audio }), "-filter_complex") ?? "";
+    expect(graph).toContain("loudnorm=I=-14:TP=-1.5:LRA=11");
+  });
+
+  it("ducks the music under the narration", () => {
+    const graph =
+      valueOf(
+        buildAssembleArgs({ ...assembleBase, audio, musicPath: "/tmp/music.mp3" }),
+        "-filter_complex",
+      ) ?? "";
+
+    expect(graph).toContain("sidechaincompress");
+    // The narration feeds both the mix and the ducking key, so it must split.
+    expect(graph).toContain("asplit");
+  });
+
+  it("never lets amix renormalise the levels", () => {
+    const graph =
+      valueOf(
+        buildAssembleArgs({ ...assembleBase, audio, musicPath: "/tmp/music.mp3" }),
+        "-filter_complex",
+      ) ?? "";
+
+    // amix's default divides by input count, silently undoing the loudnorm
+    // above it. This flag is the whole reason the mix holds its level.
+    expect(graph).toContain("normalize=0");
+  });
+
+  it("loops the music and relies on -t to end the render", () => {
+    const args = buildAssembleArgs({ ...assembleBase, audio, musicPath: "/tmp/music.mp3" });
+
+    // -stream_loop makes that input infinite, so the output -t is what stops
+    // ffmpeg. It must sit immediately before the music input.
+    const loopIndex = args.indexOf("-stream_loop");
+    expect(loopIndex).toBeGreaterThan(-1);
+    expect(args[loopIndex + 2]).toBe("-i");
+    expect(args[loopIndex + 3]).toBe("/tmp/music.mp3");
+    expect(valueOf(args, "-t")).toBe("428");
+  });
+
+  it("mixes three streams when music and effects are both present", () => {
+    const graph =
+      valueOf(
+        buildAssembleArgs({
+          ...assembleBase,
+          audio,
+          musicPath: "/tmp/music.mp3",
+          sfxPath: "/tmp/sfx.m4a",
+        }),
+        "-filter_complex",
+      ) ?? "";
+
+    expect(graph).toContain("amix=inputs=3");
+  });
+
+  it("maps narration straight through when there is neither music nor effects", () => {
+    expect(buildAssembleArgs(assembleBase)).toContain("1:a");
+  });
+});

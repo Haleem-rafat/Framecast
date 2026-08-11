@@ -1,5 +1,5 @@
 import { ValidationError } from "@/lib/errors";
-import type { CaptionStyle, MotionStyle } from "@/lib/video-style";
+import type { AudioStyle, CaptionStyle, MotionStyle } from "@/lib/video-style";
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -191,16 +191,102 @@ export interface AssembleInput {
   /** Cut the result to exactly this, so video and narration cannot drift. */
   durationSeconds: number;
   captions?: CaptionStyle;
+  musicPath?: string;
+  sfxPath?: string;
+  audio?: AudioStyle;
+}
+
+/** YouTube normalises playback to about this, so it is a platform fact rather
+ *  than a style choice — see video-style.ts's doc comment. */
+const LOUDNESS_TARGET = "loudnorm=I=-14:TP=-1.5:LRA=11";
+
+interface AudioChain {
+  /** Extra input arguments, in the order they must precede the filters. */
+  inputArgs: string[];
+  /** Filter graph fragments, joined with `;` by the caller. */
+  filters: string[];
+  /** What `-map` should reference for audio. */
+  audioMap: string;
+}
+
+/**
+ * The audio half of pass two.
+ *
+ * Input indices are positional and fixed: 0 is the concat list, 1 the
+ * narration, then music, then the SFX track. Anything absent shifts everything
+ * after it down, which is why the index is tracked rather than assumed.
+ *
+ * Audio filters cost almost nothing in memory, so none of this threatens the
+ * budget that shaped the two-pass design above.
+ */
+function buildAudioChain(input: AssembleInput): AudioChain {
+  const audio = input.audio;
+
+  // No style and nothing to mix: keep the original passthrough exactly.
+  if (!audio) {
+    return { inputArgs: [], filters: [], audioMap: "1:a" };
+  }
+
+  const inputArgs: string[] = [];
+  const filters: string[] = [];
+  const mixLabels: string[] = [];
+  let nextIndex = 2;
+
+  // The narration is needed twice when music is present — once in the mix and
+  // once as the key the ducking listens to.
+  filters.push(
+    input.musicPath
+      ? `[1:a]${LOUDNESS_TARGET},asplit=2[narr][key]`
+      : `[1:a]${LOUDNESS_TARGET}[narr]`,
+  );
+  mixLabels.push("[narr]");
+
+  if (input.musicPath) {
+    // `-stream_loop -1` makes this input infinite, so the output `-t` below
+    // stops being a drift guard and becomes what terminates the render.
+    // `-shortest` cannot be relied on against an endless input.
+    inputArgs.push("-stream_loop", "-1", "-i", input.musicPath);
+    filters.push(`[${nextIndex}:a]volume=${audio.musicGainDb}dB[bed]`);
+    filters.push(
+      `[bed][key]sidechaincompress=threshold=${audio.duckThreshold}:` +
+        `ratio=${audio.duckRatio}:attack=${audio.duckAttackMs}:` +
+        `release=${audio.duckReleaseMs}[duck]`,
+    );
+    mixLabels.push("[duck]");
+    nextIndex += 1;
+  }
+
+  if (input.sfxPath) {
+    inputArgs.push("-i", input.sfxPath);
+    filters.push(`[${nextIndex}:a]volume=${audio.sfxGainDb}dB[sfx]`);
+    mixLabels.push("[sfx]");
+    nextIndex += 1;
+  }
+
+  // `normalize=0` is load-bearing: amix's default divides by input count,
+  // halving levels and silently undoing the loudnorm above.
+  filters.push(
+    mixLabels.length === 1
+      ? `[narr]alimiter=limit=0.95[aout]`
+      : `${mixLabels.join("")}amix=inputs=${mixLabels.length}:normalize=0,` +
+          `alimiter=limit=0.95[aout]`,
+  );
+
+  return { inputArgs, filters, audioMap: "[aout]" };
 }
 
 /**
  * Pass two: segments in, finished video out.
  *
- * The only filter left is `subtitles`, which needs a re-encode — there is no
- * way to burn text into a picture without one. Everything expensive that used
- * to live in the graph is gone.
+ * The picture side runs one filter, `subtitles`, which needs a re-encode —
+ * there is no way to burn text into a picture without one. Everything
+ * expensive that used to live in the graph is gone. The audio side mixes at
+ * most three streams; see `buildAudioChain`.
  */
 export function buildAssembleArgs(input: AssembleInput): string[] {
+  const chain = buildAudioChain(input);
+  const videoFilter = `[0:v]${buildSubtitleFilter(input.srtPath, input.captions)}[vout]`;
+
   return [
     "-y",
     // `-safe 0` because the list holds absolute paths, which the demuxer
@@ -209,11 +295,12 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
     "-safe", "0",
     "-i", input.concatListPath,
     "-i", input.audioPath,
-    "-filter_complex", `[0:v]${buildSubtitleFilter(input.srtPath, input.captions)}[vout]`,
+    ...chain.inputArgs,
+    "-filter_complex", [videoFilter, ...chain.filters].join(";"),
     "-filter_threads", THREADS,
     "-filter_complex_threads", THREADS,
     "-map", "[vout]",
-    "-map", "1:a",
+    "-map", chain.audioMap,
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-threads", THREADS,
