@@ -182,6 +182,19 @@ describe("buildSegmentArgs", () => {
     expect(buildSegmentArgs(base)).toContain("-an");
   });
 
+  it("bounds the decoder's thread pool, not just the encoder's", () => {
+    const args = buildSegmentArgs(base);
+    const inputIndex = args.indexOf("-i");
+
+    // Position is the whole point: after -i this caps only the encoder, and
+    // the h264 decoder then sizes its frame-buffer pool from the host's core
+    // count — hundreds of megabytes on a 4K clip, inside a 1GB container.
+    const firstThreads = args.indexOf("-threads");
+    expect(firstThreads).toBeGreaterThan(-1);
+    expect(firstThreads).toBeLessThan(inputIndex);
+    expect(args[firstThreads + 1]).toBe("1");
+  });
+
   it("encodes finer than the final pass, since these frames get re-encoded", () => {
     const segmentCrf = Number(valueOf(buildSegmentArgs(base), "-crf"));
     const finalCrf = Number(valueOf(buildAssembleArgs(assembleBase), "-crf"));

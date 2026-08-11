@@ -51,6 +51,12 @@ const FINAL_CRF = "22";
  *  pools far past what this container allows. */
 const THREADS = "2";
 
+/** Decoding, not encoding, and deliberately lower. This is the pool that was
+ *  unbounded — see the comment at its use site in `buildSegmentArgs`. One
+ *  thread is enough for a single clip and removes the frame-buffer pool
+ *  entirely as a memory variable, whatever resolution the clip arrives at. */
+const DECODER_THREADS = "1";
+
 /**
  * FFmpeg's filter graph parser treats `:` and `'` as syntax, so a path inside
  * `subtitles=` has to be escaped even though the shell never sees it — args are
@@ -157,6 +163,14 @@ export function buildSegmentArgs(input: SegmentInput): string[] {
 
   return [
     "-y",
+    // An INPUT-side thread limit, and the position matters. `-threads` below
+    // sits after `-i`, so it only ever capped the encoder — the h264 decoder
+    // was left to size its own pool from the host's core count. Frame-threaded
+    // h264 holds roughly a frame buffer per thread: ~3MB each at 1080p, ~12MB
+    // at 4K. On a many-core host that is hundreds of megabytes of decoder
+    // buffers inside a 1GB container, which is what SIGKILLed a render on a
+    // 3840x2160 clip at frame 19, before it produced a single output byte.
+    "-threads", DECODER_THREADS,
     "-stream_loop", "-1",
     "-t", String(clipSeconds),
     "-i", input.clipPath,
