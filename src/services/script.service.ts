@@ -114,6 +114,15 @@ export class ScriptService {
                 anchor: extractAnchor(section.text),
                 cue: section.cue,
               })) ?? undefined,
+            // Stored beside the narration rather than inside it. `content` is
+            // what voiceover.service.ts sends to ElevenLabs, so a citation
+            // appended to it would be narrated; publish.service.ts reads this
+            // column to build the description's SOURCES block. Same
+            // null-over-empty-array convention as `cues` above: a model that
+            // cited nothing leaves this null, which reads as "this script has
+            // no separate sources" and lets the description fall back to an
+            // inline SOURCES section if an older script carries one.
+            sources: generated.sources?.length ? generated.sources : undefined,
             prompt,
             model: generated.model,
             provider: generated.provider,
@@ -250,7 +259,7 @@ export class ScriptService {
       const previous = await tx.scriptVersion.findFirst({
         where: { scriptId },
         orderBy: { version: "desc" },
-        select: { version: true, cues: true },
+        select: { version: true, cues: true, sources: true },
       });
 
       // Cues are re-located against the edited text rather than carried over
@@ -283,6 +292,16 @@ export class ScriptService {
         cue: entry.cue,
       }));
 
+      // Carried across unchanged, unlike cues. Cues have to be re-anchored
+      // because they point *into* the text the operator just rewrote; sources
+      // point outside it — they are citations for the description, and the
+      // editor never sees or edits them. Dropping them on the first edit
+      // would silently strip a published video's citations for no reason the
+      // operator could observe beforehand.
+      const previousSources = Array.isArray(previous?.sources)
+        ? (previous.sources as string[])
+        : undefined;
+
       const version = await tx.scriptVersion.create({
         data: {
           scriptId,
@@ -293,6 +312,7 @@ export class ScriptService {
           // surviving cues reads as "this script has no cues", not "it has
           // cues, and there happen to be none".
           cues: survivingCues.length > 0 ? survivingCues : undefined,
+          sources: previousSources?.length ? previousSources : undefined,
         },
       });
 

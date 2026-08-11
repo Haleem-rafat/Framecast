@@ -309,6 +309,45 @@ describe("scriptService.generate", () => {
     ]);
   });
 
+  it("stores the model's sources beside the narration, never inside it", async () => {
+    const cited = new ScriptService({
+      generateScript: vi.fn(async () => ({
+        content: "Inflation is not prices going up. It is money losing value.",
+        model: FAKE_MODEL,
+        provider: "ANTHROPIC" as const,
+        inputTokens: 100,
+        outputTokens: 400,
+        costUsd: 0.0063,
+        latencyMs: 1200,
+        sections: [
+          { text: "Inflation is not prices going up.", cue: "supermarket shelves" },
+          { text: "It is money losing value.", cue: "printing press running" },
+        ],
+        sources: ["https://example.com/h6-release", "SEC filing, 2001"],
+      })),
+    });
+
+    const version = await cited.generate(userId, videoId, {});
+
+    expect(version.sources).toEqual([
+      "https://example.com/h6-release",
+      "SEC filing, 2001",
+    ]);
+    // `content` is what voiceover.service.ts hands to ElevenLabs verbatim. A
+    // citation that reached it would be spoken in the finished video.
+    expect(version.content).not.toContain("example.com");
+    expect(version.content).not.toContain("SEC filing");
+  });
+
+  it("stores no sources when the model cited nothing", async () => {
+    // Null, not [], for the same reason as `cues`: it means "this script has
+    // no separate sources", which is what lets publish.service.ts fall back
+    // to an older script's inline SOURCES block.
+    const version = await service.generate(userId, videoId, {});
+
+    expect(version.sources).toBeNull();
+  });
+
   it("stores no cues when the model returns no sections", async () => {
     // service (from beforeEach) uses makeFakeProvider, whose result has no
     // `sections` field at all — the shape prose-only providers, or older
@@ -539,5 +578,41 @@ describe("scriptService.saveEdit — re-anchoring cues (Task 3)", () => {
       orderBy: { version: "desc" },
     });
     expect(version.cues).toHaveLength(1);
+  });
+
+  it("keeps the citations across an edit, since the editor never shows them", async () => {
+    const cited = new ScriptService({
+      generateScript: vi.fn(async () => ({
+        content: "Inflation is not prices going up. It is money losing value.",
+        model: FAKE_MODEL,
+        provider: "ANTHROPIC" as const,
+        inputTokens: 100,
+        outputTokens: 400,
+        costUsd: 0.0063,
+        latencyMs: 1200,
+        sections: [
+          { text: "Inflation is not prices going up.", cue: "supermarket shelves" },
+          { text: "It is money losing value.", cue: "printing press running" },
+        ],
+        sources: ["https://example.com/h6-release"],
+      })),
+    });
+    await cited.generate(userId, videoId, {});
+
+    await cited.saveEdit(
+      userId,
+      videoId,
+      "Inflation is not prices going up. Money simply buys less.",
+    );
+
+    const version = await prisma.scriptVersion.findFirstOrThrow({
+      where: { script: { videoId } },
+      orderBy: { version: "desc" },
+    });
+
+    // Sources point outside the text, so an edit to the text cannot invalidate
+    // them the way it can invalidate a cue's anchor — dropping them here would
+    // silently publish the next render uncited.
+    expect(version.sources).toEqual(["https://example.com/h6-release"]);
   });
 });

@@ -26,13 +26,27 @@ function isRetryable(error: unknown): boolean {
 // delimiters) is worse than having the SDK enforce the boundary via schema.
 // `content` is then derived by joining `text` fields rather than asked for
 // separately, so it can never drift from what the sections actually say.
+//
+// `sources` is a field of its own for a reason that is not tidiness. Every
+// `text` field is spoken: they are joined into `content`, and `content` is
+// what voiceover.service.ts hands to ElevenLabs verbatim. A script prompt
+// that asks for citations (the seeded default does — see prisma/seed.ts) had
+// nowhere to put them but a section's `text`, so the narrator would read a
+// list of URLs aloud. The field descriptions below say so explicitly rather
+// than relying on the prompt: an operator's stored prompt template is
+// editable and may still ask for an inline SOURCES section, and the schema is
+// the one instruction that travels with every structured request.
 const scriptSchema = z.object({
   sections: z
     .array(
       z.object({
         text: z
           .string()
-          .describe("This section's narration. Roughly 20-25 words."),
+          .describe(
+            "This section's narration, exactly as it will be read aloud. " +
+              "Roughly 20-25 words. Spoken prose only — never a URL, a " +
+              "citation list, or a SOURCES heading.",
+          ),
         cue: z
           .string()
           .describe(
@@ -43,6 +57,14 @@ const scriptSchema = z.object({
       }),
     )
     .min(1),
+  sources: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Every source cited in the narration, one entry per source. These are " +
+        "published in the video's description and are never spoken, so they " +
+        "belong here and nowhere in any section's text.",
+    ),
 });
 
 /**
@@ -79,6 +101,7 @@ export class GatewayProvider implements TextGenerationProvider {
       // behaved before sections existed. See ScriptGenerationInput.withSections.
       let content: string;
       let sections: ScriptGenerationResult["sections"];
+      let sources: ScriptGenerationResult["sources"];
       let inputTokens: number;
       let outputTokens: number;
 
@@ -101,6 +124,12 @@ export class GatewayProvider implements TextGenerationProvider {
         // start. Normalising both from the same source keeps them
         // identical over the shared prefix.
         content = sections.map((section) => normalise(section.text)).join(" ");
+        // Deliberately not appended to `content`. `content` is the narration
+        // script and the only thing that reaches ElevenLabs; a citation
+        // joined onto it would be read out. It travels beside the narration
+        // all the way to the video description instead — see
+        // publish.service.ts's buildDescription.
+        sources = result.object.sources;
         inputTokens = result.usage.inputTokens ?? 0;
         outputTokens = result.usage.outputTokens ?? 0;
       } else {
@@ -123,6 +152,7 @@ export class GatewayProvider implements TextGenerationProvider {
         costUsd: estimateCostUsd(model, inputTokens, outputTokens),
         latencyMs: Date.now() - startedAt,
         sections,
+        sources,
       };
     } catch (cause) {
       throw new ProviderError(

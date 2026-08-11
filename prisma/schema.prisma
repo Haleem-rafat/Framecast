@@ -279,6 +279,14 @@ model ScriptVersion {
   /// before this feature render exactly as they did, drawing entirely from
   /// the topic-level fallback pool.
   cues      Json?
+  /// The citations the model was asked to gather, as a string[] — one source
+  /// per entry. Stored here rather than inside `content` because `content` is
+  /// narration and nothing else: it is sent verbatim to ElevenLabs, so a URL
+  /// left in it is a URL read aloud. publish.service.ts turns this into the
+  /// SOURCES block of the video description. Nullable with no backfill, same
+  /// as `cues`: a script written before this column exists still has its
+  /// sources inline, and `extractSourcesSection` still finds them there.
+  sources   Json?
   // The rendered prompt actually sent, retained for reproducibility.
   prompt    String?
   model     String?

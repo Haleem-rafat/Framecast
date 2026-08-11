@@ -42,21 +42,67 @@ const PIXABAY_CREDIT = "Video clips courtesy of Pixabay (https://pixabay.com).";
  * markup to key off, so this heading is the one convention available. */
 const SOURCES_HEADING = /^[ \t]*SOURCES[ \t]*:?[ \t]*$/im;
 
-/** Sources normally run to the end of the script, so everything from the
- * heading on is taken rather than trying to detect where the section ends. */
+/**
+ * Sources normally run to the end of the script, so everything from the
+ * heading on is taken rather than trying to detect where the section ends.
+ *
+ * This is the *legacy* path and stays that way. It only ever matches a script
+ * whose content has line breaks, which a generated script no longer has:
+ * gateway.provider.ts builds `content` by joining the model's sections with a
+ * single space, so the heading can never be alone on a line. Hand-written and
+ * pre-sections scripts still have their citations inline and nowhere else,
+ * which is the only reason to keep looking here at all — see
+ * `ScriptVersion.sources` for where a generated script's citations live now.
+ */
 export function extractSourcesSection(scriptContent: string): string {
   const match = SOURCES_HEADING.exec(scriptContent);
   return match ? scriptContent.slice(match.index).trim() : "";
 }
 
+/** The heading the stored-sources block is published under, so a description
+ *  built from `ScriptVersion.sources` reads the same as one lifted out of an
+ *  older script's inline section. */
+function formatSources(sources: readonly string[]): string {
+  return ["SOURCES", ...sources.map((source) => `- ${source}`)].join("\n");
+}
+
+/**
+ * Citations come from one of two places, and stored sources win.
+ *
+ * A generated script's `content` is a single line of narration with the
+ * citations deliberately kept out of it (they would otherwise be read aloud —
+ * see gateway.provider.ts's schema), so `storedSources` is the only place they
+ * exist for anything generated since that column landed. Falling back to
+ * `extractSourcesSection` is what keeps an older, hand-written script's
+ * inline SOURCES block publishable rather than quietly dropping it.
+ */
 export function buildDescription(
   scriptContent: string | null | undefined,
+  /** `ScriptVersion.sources` — the citations the model returned, held apart
+   *  from the narration. Null/absent for scripts written before the column
+   *  existed. */
+  storedSources?: readonly string[] | null,
   /** Written by MusicService at collection time. Absent when the video
    *  rendered without music — see MusicService.collect. */
   musicCredit?: string | null,
 ): string {
-  const sources = scriptContent ? extractSourcesSection(scriptContent) : "";
+  const sources = storedSources?.length
+    ? formatSources(storedSources)
+    : scriptContent
+      ? extractSourcesSection(scriptContent)
+      : "";
+
   return [sources, PIXABAY_CREDIT, musicCredit].filter(Boolean).join("\n\n");
+}
+
+/** `ScriptVersion.sources` is a JSON column, so what comes back is
+ *  `JsonValue`. Anything that is not an array of strings — a legacy row, a
+ *  hand-edited one — is treated as "no stored sources" and leaves the
+ *  inline-section fallback to run. */
+function readStoredSources(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? (value as string[])
+    : null;
 }
 
 /**
@@ -88,7 +134,9 @@ export class PublishService {
         title: true,
         status: true,
         project: { select: { channelId: true } },
-        script: { select: { activeVersion: { select: { content: true } } } },
+        script: {
+          select: { activeVersion: { select: { content: true, sources: true } } },
+        },
         renderJobs: {
           where: { status: "SUCCEEDED" },
           orderBy: { createdAt: "desc" },
@@ -137,6 +185,7 @@ export class PublishService {
 
     const description = buildDescription(
       video.script?.activeVersion?.content,
+      readStoredSources(video.script?.activeVersion?.sources),
       musicAsset?.prompt,
     );
 

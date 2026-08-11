@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 // generateScript has callers other than script generation: a
 // pronunciation-respelling prompt (voiceover.service.ts) and a bare API-key
@@ -73,5 +74,84 @@ describe("GatewayProvider.generateScript — structured output is opt-in", () =>
 
     expect(result.content).toBe("Hi.");
     expect(result.sections).toEqual([{ text: "Hi.", cue: "a wave" }]);
+  });
+});
+
+describe("GatewayProvider.generateScript — citations stay out of the narration", () => {
+  it("returns the model's sources without letting them reach content", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: {
+        sections: [
+          { text: "Inflation is not prices going up.", cue: "supermarket shelves" },
+          { text: "It is money losing value.", cue: "printing press running" },
+        ],
+        sources: ["https://example.com/h6-release", "SEC filing, 2001"],
+      },
+      usage: { inputTokens: 5, outputTokens: 5 },
+    });
+
+    const provider = new GatewayProvider();
+    const result = await provider.generateScript({
+      prompt: "Write a script about inflation.",
+      apiKey: "test-key",
+      withSections: true,
+    });
+
+    expect(result.sources).toEqual([
+      "https://example.com/h6-release",
+      "SEC filing, 2001",
+    ]);
+
+    // The whole reason the field exists. `content` is sent verbatim to
+    // ElevenLabs, so a url that leaks into it is a url read aloud in the
+    // finished video.
+    expect(result.content).toBe(
+      "Inflation is not prices going up. It is money losing value.",
+    );
+    expect(result.content).not.toContain("example.com");
+    expect(result.content).not.toContain("SEC filing");
+  });
+
+  it("leaves sources undefined when the model cited nothing", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: { sections: [{ text: "Hi.", cue: "a wave" }] },
+      usage: { inputTokens: 5, outputTokens: 5 },
+    });
+
+    const provider = new GatewayProvider();
+    const result = await provider.generateScript({
+      prompt: "Write a script about greetings.",
+      apiKey: "test-key",
+      withSections: true,
+    });
+
+    // Undefined, not an empty array: script.service.ts stores it as SQL NULL,
+    // which is what lets an older script's inline SOURCES block still be the
+    // description's fallback.
+    expect(result.sources).toBeUndefined();
+  });
+
+  it("tells the model in the schema itself that sources are never spoken", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: { sections: [{ text: "Hi.", cue: "a wave" }] },
+      usage: { inputTokens: 5, outputTokens: 5 },
+    });
+
+    const provider = new GatewayProvider();
+    await provider.generateScript({
+      prompt: "Write a script.",
+      apiKey: "test-key",
+      withSections: true,
+    });
+
+    // The operator's stored prompt template is editable and an older one may
+    // still ask for an inline SOURCES section, so the instruction that keeps
+    // urls out of the audio has to travel with the schema rather than only
+    // with the prompt.
+    // Read the way the SDK reads it — a Zod schema keeps `.describe()` text
+    // in a registry rather than on the object, so stringifying the schema
+    // itself would assert nothing.
+    const call = generateObjectMock.mock.calls[0][0] as { schema: z.ZodType };
+    expect(JSON.stringify(z.toJSONSchema(call.schema))).toContain("never spoken");
   });
 });

@@ -43,6 +43,17 @@ export interface ScriptGenerationResult {
    *  prompts, or a provider that does not support structured output. The
    *  pipeline treats that as "no cues" rather than an error. */
   sections?: ScriptSection[];
+  /**
+   * The citations behind the narration, one per entry — and deliberately not
+   * part of `content`.
+   *
+   * `content` is spoken verbatim by ElevenLabs, so anything merged into it is
+   * something a viewer hears. These are for the video's description only (see
+   * `buildDescription` in publish.service.ts). Absent when the model returned
+   * prose, or returned sections but cited nothing; the description then falls
+   * back to whatever inline SOURCES section an older script happens to carry.
+   */
+  sources?: string[];
 }
 
 export interface TextGenerationProvider {

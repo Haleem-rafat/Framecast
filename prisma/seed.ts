@@ -55,7 +55,15 @@ async function main(): Promise<void> {
         "- Never recommend buying or selling any asset, stock, or cryptocurrency.\n" +
         "- Never predict a price or promise a return.\n" +
         "- Every factual claim must name its source inline, e.g. (SEC filing, 2001).\n" +
-        "- End with a SOURCES section listing each source on its own line.\n\n" +
+        // Every word of the narration is spoken by a text-to-speech voice, so
+        // a SOURCES list written into the script is a list of URLs read aloud.
+        // The structured-output schema (see gateway.provider.ts) carries a
+        // `sources` field for exactly this, and it never reaches the audio —
+        // publish.service.ts turns it into the video description's SOURCES
+        // block instead.
+        "- Put the full reference for each source in the `sources` field, one entry each.\n" +
+        "- Never write a SOURCES list, a URL, or a citation list into the narration " +
+        "itself — every word of the narration is read aloud.\n\n" +
         "Structure: a hook in the first 5 seconds that poses the question, " +
         "then the explanation in clear beats, then a one-line close. " +
         "Write spoken prose only — no scene directions, no speaker labels.",

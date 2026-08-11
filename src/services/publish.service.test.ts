@@ -157,7 +157,13 @@ function createUploadFetch(
  * upstream fixtures.
  */
 async function makePublishableVideo(
-  opts: { scriptContent?: string | null; status?: VideoStatus } = {},
+  opts: {
+    scriptContent?: string | null;
+    status?: VideoStatus;
+    /** `ScriptVersion.sources` — what a script generated through the
+     *  structured-output schema stores instead of an inline SOURCES block. */
+    scriptSources?: string[];
+  } = {},
 ): Promise<{ videoId: string; channelId: string; outputUrl: string }> {
   const channel = await channelService.connect(userId, {
     youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
@@ -186,6 +192,7 @@ async function makePublishableVideo(
         scriptId: script.id,
         version: 1,
         content: opts.scriptContent ?? SCRIPT_WITH_SOURCES,
+        sources: opts.scriptSources,
       },
     });
     await prisma.script.update({
@@ -223,12 +230,25 @@ describe("publishService.publish — extractSourcesSection", () => {
   it("returns an empty string when there is no SOURCES heading", () => {
     expect(extractSourcesSection("Just a script with no citations.")).toBe("");
   });
+
+  it("finds nothing in a generated script, which is one line with no breaks", () => {
+    // Not a curiosity — this is the shape gateway.provider.ts now produces:
+    // sections joined with a single space. The heading regex requires the word
+    // alone on a line, so this path is dead for anything generated, which is
+    // why the citations are stored in `ScriptVersion.sources` instead.
+    expect(
+      extractSourcesSection(
+        "Inflation is not prices going up. SOURCES https://example.com/a",
+      ),
+    ).toBe("");
+  });
 });
 
 describe("publishService.publish — buildDescription", () => {
   it("credits the music alongside the Pixabay credit", () => {
     const description = buildDescription(
       SCRIPT_WITH_SOURCES,
+      null,
       'Music: "Test Track" by Artist (https://creativecommons.org/licenses/by/3.0/)',
     );
 
@@ -245,6 +265,37 @@ describe("publishService.publish — buildDescription", () => {
 
   it("still credits Pixabay when the script has no sources", () => {
     expect(buildDescription("No citations here.")).toContain("Pixabay");
+  });
+
+  it("publishes the stored sources of a generated script, whose content has none", () => {
+    // The interaction the two features created: `content` is a single line of
+    // narration with no SOURCES heading in it at all, so citations survive
+    // only because they are carried beside it.
+    const description = buildDescription(
+      "Inflation is not prices going up. It is money losing value.",
+      ["Federal Reserve, H.6 release, 2024", "https://example.com/inflation-study"],
+    );
+
+    expect(description).toContain("SOURCES");
+    expect(description).toContain("- Federal Reserve, H.6 release, 2024");
+    expect(description).toContain("- https://example.com/inflation-study");
+  });
+
+  it("still lifts an older hand-written script's inline SOURCES block", () => {
+    // The path that must keep working: a script with real line breaks and no
+    // `sources` column, which is every script written before that column.
+    const description = buildDescription(SCRIPT_WITH_SOURCES, null);
+
+    expect(description).toContain("- https://example.com/federal-reserve-report");
+  });
+
+  it("prefers the stored sources over an inline block when both exist", () => {
+    const description = buildDescription(SCRIPT_WITH_SOURCES, [
+      "https://example.com/stored",
+    ]);
+
+    expect(description).toContain("- https://example.com/stored");
+    expect(description).not.toContain("federal-reserve-report");
   });
 });
 
@@ -330,6 +381,32 @@ describe("publishService.publish — Gate 2", () => {
     expect(publication.description).toContain("SOURCES");
     expect(publication.description).toContain("https://example.com/federal-reserve-report");
     expect(publication.description).toContain("Pixabay");
+  });
+
+  it("carries a generated script's stored sources into the description and the upload", async () => {
+    // The end-to-end shape of a script generated since sections landed:
+    // `content` is one line of narration with no heading to extract, and the
+    // citations live in `ScriptVersion.sources`. Without that column being
+    // read here, every generated video would publish uncited.
+    const { videoId } = await makePublishableVideo({
+      scriptContent: "Inflation is not prices going up. It is money losing value.",
+      scriptSources: ["https://example.com/h6-release", "SEC filing, 2001"],
+    });
+    const { fetchImpl, calls } = createUploadFetch();
+    const service = new PublishService(fetchImpl);
+
+    await service.publish(userId, videoId);
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.description).toContain("SOURCES");
+    expect(publication.description).toContain("- https://example.com/h6-release");
+    expect(publication.description).toContain("- SEC filing, 2001");
+
+    // And the same text is what YouTube was actually sent, not just what was
+    // recorded locally.
+    const initCall = calls.find((c) => c.url.includes("uploadType=resumable"));
+    const body = JSON.parse(initCall!.init!.body as string);
+    expect(body.snippet.description).toContain("- https://example.com/h6-release");
   });
 
   it("still credits Pixabay even when the script has no SOURCES section", async () => {
