@@ -80,7 +80,11 @@ export class ScriptService {
     let result: ScriptGenerationResult | undefined;
 
     try {
-      const generated = await this.provider.generateScript({ prompt, apiKey });
+      const generated = await this.provider.generateScript({
+        prompt,
+        apiKey,
+        withSections: true,
+      });
       result = generated;
 
       return await prisma.$transaction(async (tx) => {

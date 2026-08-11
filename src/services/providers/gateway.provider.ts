@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createGateway, generateObject } from "ai";
+import { createGateway, generateObject, generateText } from "ai";
 import { z } from "zod";
 
 import { env } from "@/config/env";
@@ -69,17 +69,39 @@ export class GatewayProvider implements TextGenerationProvider {
       // A per-request gateway instance, rather than the shared `gateway` singleton,
       // is what lets a user-supplied `apiKey` (a stored credential from the
       // Providers page) override the env-var default without racing a global.
-      const result = await generateObject({
-        model: createGateway({ apiKey }).languageModel(model),
-        schema: scriptSchema,
-        prompt: input.prompt,
-      });
+      const languageModel = createGateway({ apiKey }).languageModel(model);
 
-      const sections = result.object.sections;
-      const content = sections.map((section) => section.text).join(" ");
+      // The schema is only ever sent when the caller asked for sections.
+      // Every other caller of this method — a pronunciation-respelling
+      // prompt, a bare API-key check — sends its own free-form prompt and
+      // must get its own free-form text back, exactly as generateScript
+      // behaved before sections existed. See ScriptGenerationInput.withSections.
+      let content: string;
+      let sections: ScriptGenerationResult["sections"];
+      let inputTokens: number;
+      let outputTokens: number;
 
-      const inputTokens = result.usage.inputTokens ?? 0;
-      const outputTokens = result.usage.outputTokens ?? 0;
+      if (input.withSections) {
+        const result = await generateObject({
+          model: languageModel,
+          schema: scriptSchema,
+          prompt: input.prompt,
+        });
+
+        sections = result.object.sections;
+        content = sections.map((section) => section.text).join(" ");
+        inputTokens = result.usage.inputTokens ?? 0;
+        outputTokens = result.usage.outputTokens ?? 0;
+      } else {
+        const result = await generateText({
+          model: languageModel,
+          prompt: input.prompt,
+        });
+
+        content = result.text;
+        inputTokens = result.usage.inputTokens ?? 0;
+        outputTokens = result.usage.outputTokens ?? 0;
+      }
 
       return {
         content,

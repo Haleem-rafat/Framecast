@@ -7,6 +7,20 @@ export interface ScriptGenerationInput {
   /** Overrides env.AI_SCRIPT_MODEL. */
   model?: string;
   apiKey?: string;
+  /**
+   * Asks for narration split into sections, each with a b-roll cue, via
+   * structured output — see `ScriptGenerationResult.sections`. Opt-in and
+   * off by default: this method has callers other than script generation
+   * proper (a pronunciation-respelling prompt, a bare API-key check) that
+   * send their own free-form prompts and parse `content` their own way.
+   * Forcing every call through the sections schema silently broke the
+   * first of those — the model was made to satisfy a schema that had
+   * nothing to do with what was asked, so `content` stopped being the
+   * prose the caller requested. Defaulting to free-form text, exactly as
+   * this method behaved before sections existed, is what keeps those
+   * callers working without having to know sections exist at all.
+   */
+  withSections?: boolean;
 }
 
 export interface ScriptSection {
