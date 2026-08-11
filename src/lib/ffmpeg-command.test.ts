@@ -180,3 +180,38 @@ describe("buildAssembleArgs", () => {
     expect(buildAssembleArgs(assembleBase).at(-1)).toBe("/tmp/out.mp4");
   });
 });
+
+describe("buildAssembleArgs with caption styling", () => {
+  const captions = {
+    fontName: "DejaVu Sans",
+    fontSize: 22,
+    primaryColour: "&H00FFFFFF",
+    outlineColour: "&H00000000",
+    outline: 2,
+    shadow: 1,
+    marginV: 60,
+  };
+
+  it("passes the chosen face and metrics to libass", () => {
+    const joined = buildAssembleArgs({ ...assembleBase, captions }).join(" ");
+
+    expect(joined).toContain("force_style=");
+    expect(joined).toContain("FontName=DejaVu Sans");
+    expect(joined).toContain("FontSize=22");
+    expect(joined).toContain("MarginV=60");
+  });
+
+  it("still escapes the subtitle path when a style is present", () => {
+    const args = buildAssembleArgs({
+      ...assembleBase,
+      srtPath: "/tmp/my captions.srt",
+      captions,
+    });
+
+    expect(args.join(" ")).toContain("my\\ captions.srt");
+  });
+
+  it("omits force_style entirely when no style is given", () => {
+    expect(buildAssembleArgs(assembleBase).join(" ")).not.toContain("force_style");
+  });
+});

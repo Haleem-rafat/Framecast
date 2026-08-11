@@ -1,5 +1,5 @@
 import { ValidationError } from "@/lib/errors";
-import type { MotionStyle } from "@/lib/video-style";
+import type { CaptionStyle, MotionStyle } from "@/lib/video-style";
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -153,6 +153,33 @@ export function buildSegmentArgs(input: SegmentInput): string[] {
   ];
 }
 
+/**
+ * libass reads `force_style` as comma-separated `Key=Value` pairs. Built here
+ * rather than by the caller so the filter-graph escaping rules stay in the one
+ * file that already knows them.
+ */
+function buildForceStyle(style: CaptionStyle): string {
+  return [
+    `FontName=${style.fontName}`,
+    `FontSize=${style.fontSize}`,
+    `PrimaryColour=${style.primaryColour}`,
+    `OutlineColour=${style.outlineColour}`,
+    `Outline=${style.outline}`,
+    `Shadow=${style.shadow}`,
+    `MarginV=${style.marginV}`,
+  ].join(",");
+}
+
+export function buildSubtitleFilter(srtPath: string, captions?: CaptionStyle): string {
+  const escaped = escapeForFilter(srtPath);
+
+  if (!captions) {
+    return `subtitles=${escaped}`;
+  }
+
+  return `subtitles=${escaped}:force_style='${buildForceStyle(captions)}'`;
+}
+
 export interface AssembleInput {
   /** A concat-demuxer list naming the segments in playing order. The same
    *  segment may appear repeatedly; the demuxer reopens it each time rather
@@ -163,6 +190,7 @@ export interface AssembleInput {
   outputPath: string;
   /** Cut the result to exactly this, so video and narration cannot drift. */
   durationSeconds: number;
+  captions?: CaptionStyle;
 }
 
 /**
@@ -181,7 +209,7 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
     "-safe", "0",
     "-i", input.concatListPath,
     "-i", input.audioPath,
-    "-filter_complex", `[0:v]subtitles=${escapeForFilter(input.srtPath)}[vout]`,
+    "-filter_complex", `[0:v]${buildSubtitleFilter(input.srtPath, input.captions)}[vout]`,
     "-filter_threads", THREADS,
     "-filter_complex_threads", THREADS,
     "-map", "[vout]",

@@ -41,8 +41,12 @@ ENV NODE_ENV=production
 
 # ffmpeg is the whole point of this container. `--no-install-recommends` keeps
 # the image from pulling in a desktop's worth of optional codecs.
+# `fonts-dejavu-core` is not optional decoration: captions are burned in with
+# libass, which resolves a font by name and falls back *silently* when it is
+# missing. Without this the styled captions would render in the default face
+# and look like the styling simply had not been applied.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -58,11 +62,14 @@ COPY . .
 RUN pnpm prisma generate
 
 # Fail fast and loudly if the image was built without the codecs the pipeline
-# needs, rather than discovering it when a render dies eight minutes in.
+# needs, rather than discovering it when a render dies eight minutes in. The
+# font is checked for the opposite reason: a missing one never fails at all,
+# it just quietly produces captions in the wrong face.
 RUN ffmpeg -hide_banner -encoders | grep -q libx264 \
     && ffmpeg -hide_banner -encoders | grep -q ' aac ' \
     && ffmpeg -hide_banner -filters  | grep -q subtitles \
-    && echo "ffmpeg has libx264, aac and subtitles"
+    && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+    && echo "ffmpeg has libx264, aac, subtitles and the caption font"
 
 # No `USER node`. The pipeline writes to a temp directory it creates itself and
 # cleans up in a `finally`; the container is ephemeral and holds no persistent
