@@ -27,8 +27,17 @@ export interface CueWindow {
 }
 
 /** Whitespace is collapsed so that a reflowed paragraph still matches: an
- *  editor that rewraps lines changes the bytes without changing the words. */
-function normalise(text: string): string {
+ *  editor that rewraps lines changes the bytes without changing the words.
+ *
+ *  Exported so `gateway.provider.ts` can apply the exact same collapsing when
+ *  it assembles `content` from `sections[].text`. `extractAnchor` below runs
+ *  a section's raw text through this before taking its first eight words —
+ *  if `content` were built from the *un*-normalised text instead, a model
+ *  that emits irregular internal whitespace (a double space, a stray tab)
+ *  inside a section's opening would produce an anchor that never literally
+ *  occurs in `content`, and `anchorCues`'s `indexOf` would orphan that cue on
+ *  the very first edit even though nothing the operator did touched it. */
+export function normalise(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 

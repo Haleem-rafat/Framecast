@@ -4,7 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
-import { extractAnchor } from "@/lib/script-cues";
+import { anchorCues, extractAnchor, type ScriptCue } from "@/lib/script-cues";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import { gatewayProvider } from "@/services/providers/gateway.provider";
@@ -250,8 +250,38 @@ export class ScriptService {
       const previous = await tx.scriptVersion.findFirst({
         where: { scriptId },
         orderBy: { version: "desc" },
-        select: { version: true },
+        select: { version: true, cues: true },
       });
+
+      // Cues are re-located against the edited text rather than carried over
+      // blindly. An anchor that no longer appears means the operator rewrote
+      // that section's opening; its cue is dropped and reported, and that
+      // stretch falls back to a topic-level clip at collection time. content
+      // is trimmed before searching because cueWindows() (see
+      // src/lib/script-cues.ts) treats character offsets as indices into
+      // whatever voiceover.service.ts actually sends to ElevenLabs, which is
+      // content.trim() — anchoring against the untrimmed string would leave
+      // every offset shifted by however much leading whitespace the operator
+      // happened to type.
+      const previousCues = (previous?.cues ?? []) as unknown as ScriptCue[];
+      const { anchored, orphaned } = anchorCues(previousCues, content.trim());
+
+      // Anchors are re-derived from the edited content rather than carried
+      // over from the previous version, so a *second* edit anchors against
+      // text the operator can actually see instead of compounding drift from
+      // a slice of a slice. Running the surviving slice back through
+      // extractAnchor keeps every anchor at most ANCHOR_WORDS words, the
+      // same invariant generate() establishes for a freshly generated
+      // script.
+      // Not typed as ScriptCue[]: Prisma's JSON input type requires a plain
+      // object shape with an implicit string index signature, which a fresh
+      // object-literal array satisfies structurally but the imported
+      // `ScriptCue` interface does not (see generate()'s identically-shaped
+      // `cues:` above, which relies on the same inference).
+      const survivingCues = anchored.map((entry) => ({
+        anchor: extractAnchor(content.trim().slice(entry.startChar, entry.endChar)),
+        cue: entry.cue,
+      }));
 
       const version = await tx.scriptVersion.create({
         data: {
@@ -259,6 +289,10 @@ export class ScriptService {
           version: (previous?.version ?? 0) + 1,
           content,
           wordCount: countWords(content),
+          // Same null-over-empty-array convention generate() uses: no
+          // surviving cues reads as "this script has no cues", not "it has
+          // cues, and there happen to be none".
+          cues: survivingCues.length > 0 ? survivingCues : undefined,
         },
       });
 
@@ -267,7 +301,7 @@ export class ScriptService {
         data: { activeVersionId: version.id },
       });
 
-      return version;
+      return { ...version, orphanedCueCount: orphaned.length };
     });
   }
 

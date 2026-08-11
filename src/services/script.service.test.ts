@@ -465,3 +465,79 @@ describe("Gate 1 — script is frozen once the video leaves DRAFT", () => {
     expect(script.versions[0].content).not.toBe("An edit nobody approved.");
   });
 });
+
+describe("scriptService.saveEdit — re-anchoring cues (Task 3)", () => {
+  // A provider whose result carries `sections`, mirroring the fake used by
+  // "stores one cue per section, anchored to that section's opening" above.
+  // The second section is nine words long — longer than script-cues.ts's
+  // eight-word ANCHOR_WORDS — specifically so an edit can land after that
+  // section's anchor without rewriting the anchor itself; a section shorter
+  // than ANCHOR_WORDS has no such room, since its anchor is the whole
+  // section and *any* edit to it changes the anchor.
+  function sectionedProvider(): ScriptService {
+    return new ScriptService({
+      generateScript: vi.fn(async () => ({
+        content:
+          "Inflation is not prices going up. It is money losing value over time and space.",
+        model: FAKE_MODEL,
+        provider: "ANTHROPIC" as const,
+        inputTokens: 100,
+        outputTokens: 400,
+        costUsd: 0.0063,
+        latencyMs: 1200,
+        sections: [
+          { text: "Inflation is not prices going up.", cue: "supermarket shelves" },
+          {
+            text: "It is money losing value over time and space.",
+            cue: "printing press running",
+          },
+        ],
+      })),
+    });
+  }
+
+  it("carries cues onto an edited version when their openings survive", async () => {
+    const sectioned = sectionedProvider();
+    await sectioned.generate(userId, videoId, {});
+
+    // Edits the tail of the second section, past its eight-word anchor;
+    // both anchors are untouched.
+    const result = await sectioned.saveEdit(
+      userId,
+      videoId,
+      "Inflation is not prices going up. It is money losing value over time and " +
+        "distance across the whole economy.",
+    );
+
+    expect(result.orphanedCueCount).toBe(0);
+
+    const version = await prisma.scriptVersion.findFirstOrThrow({
+      where: { script: { videoId } },
+      orderBy: { version: "desc" },
+    });
+    expect(version.cues).toHaveLength(2);
+  });
+
+  it("reports a cue whose opening was rewritten instead of dropping it silently", async () => {
+    const sectioned = sectionedProvider();
+    await sectioned.generate(userId, videoId, {});
+
+    // Rewrites the second section's opening outright; the first section's
+    // anchor is untouched.
+    const result = await sectioned.saveEdit(
+      userId,
+      videoId,
+      "Inflation is not prices going up. Money buys less than it used to across " +
+        "the whole economy.",
+    );
+
+    // The second cue's anchor is gone; the first still stands.
+    expect(result.orphanedCueCount).toBe(1);
+
+    const version = await prisma.scriptVersion.findFirstOrThrow({
+      where: { script: { videoId } },
+      orderBy: { version: "desc" },
+    });
+    expect(version.cues).toHaveLength(1);
+  });
+});

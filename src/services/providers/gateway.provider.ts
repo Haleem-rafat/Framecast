@@ -6,6 +6,7 @@ import { z } from "zod";
 import { env } from "@/config/env";
 import { estimateCostUsd } from "@/lib/cost";
 import { ProviderError } from "@/lib/errors";
+import { normalise } from "@/lib/script-cues";
 import type {
   ScriptGenerationInput,
   ScriptGenerationResult,
@@ -89,7 +90,17 @@ export class GatewayProvider implements TextGenerationProvider {
         });
 
         sections = result.object.sections;
-        content = sections.map((section) => section.text).join(" ");
+        // Each section is run through the same whitespace-collapsing that
+        // script.service.ts's extractAnchor() applies before deriving that
+        // section's stored anchor. Without this, a model that emits a
+        // double space or a stray tab inside a section's opening would give
+        // content a section chunk that doesn't byte-for-byte start with its
+        // own anchor, and anchorCues() would orphan that cue immediately —
+        // not because the operator edited anything, but because the two
+        // representations of "this section's text" disagreed from the
+        // start. Normalising both from the same source keeps them
+        // identical over the shared prefix.
+        content = sections.map((section) => normalise(section.text)).join(" ");
         inputTokens = result.usage.inputTokens ?? 0;
         outputTokens = result.usage.outputTokens ?? 0;
       } else {
