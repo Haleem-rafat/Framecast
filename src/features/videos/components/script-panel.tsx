@@ -71,6 +71,26 @@ export function ScriptPanel({
       }
 
       toast.success(`Saved as v${result.data.version}`);
+
+      // Editing a section's opening can move or remove the sentence a b-roll
+      // cue was anchored to (see anchorCues in src/lib/script-cues.ts and
+      // scriptService.saveEdit, which is where orphanedCueCount comes from).
+      // A cue that no longer resolves isn't a save failure — the edit still
+      // succeeded — but footage.service.ts's collectPerCue can no longer
+      // fetch matched footage for that section, so the operator needs to
+      // know their edit had that side effect rather than silently getting
+      // generic topic footage later at render time.
+      if (result.data.orphanedCueCount > 0) {
+        toast.warning(
+          `${result.data.orphanedCueCount} section(s) lost their footage cue`,
+          {
+            description:
+              "Those parts will use general footage for the topic instead. " +
+              "Regenerate the script to get matched footage back.",
+          },
+        );
+      }
+
       router.refresh();
     });
   }

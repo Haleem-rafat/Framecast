@@ -110,6 +110,38 @@ export async function getObject(path: string): Promise<Buffer> {
   return Buffer.from(await data.arrayBuffer());
 }
 
+/**
+ * Permanently deletes objects from the bucket. Every other storage-owning row
+ * in this codebase is soft-deleted (`deletedAt`) while its object is left in
+ * place *on purpose* — deleting a Video, for instance, deliberately keeps its
+ * rendered file and scene assets around so the soft delete stays reversible
+ * (see `VideoService.remove`'s own doc comment). This function is the one
+ * escape hatch from that convention: `publish.service.ts` calls it to reclaim
+ * section clips once a video is `PUBLISHED`, a state nothing downstream ever
+ * needs those clips to re-render from again. Reach for a soft delete first;
+ * only use this where the caller can prove the object is genuinely done being
+ * useful.
+ *
+ * A no-op on an empty list rather than a network round trip for nothing —
+ * callers that computed zero paths to delete (e.g. a video with no clips
+ * left) shouldn't have to guard the call themselves.
+ */
+export async function removeObjects(paths: string[]): Promise<void> {
+  if (paths.length === 0) {
+    return;
+  }
+
+  const { error } = await client.storage
+    .from(env.SUPABASE_STORAGE_BUCKET)
+    .remove(paths);
+
+  if (error) {
+    throw new InternalError(
+      `Delete failed for ${paths.length} object(s) (e.g. ${paths[0]}): ${error.message}`,
+    );
+  }
+}
+
 /** The bucket is private, so anything shown in the browser needs a signed URL. */
 export async function signedUrl(
   path: string,

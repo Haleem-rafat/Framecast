@@ -6,6 +6,7 @@ import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { VideoStatus } from "@/generated/prisma/enums";
 import { deleteRenderFile, renderBlobPathname, writeRenderFile } from "@/lib/blob-render-storage";
 import { prisma } from "@/lib/prisma";
+import { getObject, putObject, removeObjects, storagePath } from "@/lib/storage";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import type { FetchLike } from "@/services/publish.service";
@@ -53,6 +54,15 @@ let userId: string;
  * as render.service.test.ts's own list. */
 const publishedVideoIds: string[] = [];
 
+/** Storage paths the "clip storage reclaim" tests below write directly to
+ * the real bucket via `putObject`, tracked here (not just relying on
+ * `publish()` to clean up after itself) so a failed assertion that stops the
+ * test before `publish()` runs still doesn't leave a real object behind.
+ * `Asset` carries no FK back to `User`, the same gap `footage.service.test.ts`
+ * works around (see its own `afterEach` comment) — `deleteTestUser`'s cascade
+ * can't reach these rows either. */
+const clipStoragePaths: string[] = [];
+
 beforeEach(async () => {
   userId = await createTestUser("publish");
 });
@@ -64,6 +74,12 @@ afterEach(async () => {
       deleteRenderFile(renderBlobPathname(id)).catch(() => {}),
     ),
   );
+
+  const paths = clipStoragePaths.splice(0);
+  if (paths.length > 0) {
+    await removeObjects(paths).catch(() => {});
+    await prisma.asset.deleteMany({ where: { storagePath: { in: paths } } });
+  }
 });
 
 interface FetchCall {
@@ -444,5 +460,91 @@ describe("publishService.publish — concurrency", () => {
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("PUBLISHED");
+  });
+});
+
+describe("publishService.publish — clip storage reclaim", () => {
+  it("deletes the video's stock clips once it is published", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    // Two real objects in the bucket, in the exact shape
+    // footage.service.ts's collectPerCue writes for a script with b-roll
+    // cues (one Asset of kind VIDEO per section, under the video's clips/
+    // prefix) — not just DB rows, so this exercises the real
+    // `removeObjects` call against the storage client, not only Prisma.
+    const paths = await Promise.all(
+      [0, 1].map(async (index) => {
+        const path = storagePath(
+          videoId,
+          "clips",
+          `section-${String(index).padStart(3, "0")}.mp4`,
+        );
+        await putObject(path, Buffer.from(`fake-clip-${RUN}-${index}`), "video/mp4");
+        await prisma.asset.create({
+          data: {
+            kind: "VIDEO",
+            storagePath: path,
+            mimeType: "video/mp4",
+            sizeBytes: BigInt(16),
+            provider: "PEXELS",
+            externalId: `clip-${RUN}-${index}`,
+          },
+        });
+        return path;
+      }),
+    );
+    clipStoragePaths.push(...paths);
+
+    // Never the default (real `fetch`) PublishService — every publish in
+    // this file goes through the injected fake, so this never risks a real
+    // call to YouTube.
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    await service.publish(userId, videoId);
+
+    // Source clips have done their job; ~400MB per video would make storage
+    // the binding constraint at around 200 videos.
+    const clips = await prisma.asset.findMany({
+      where: {
+        kind: "VIDEO",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/clips/` },
+      },
+    });
+    expect(clips).toHaveLength(0);
+
+    // Not just soft-deleted in Postgres — the underlying bucket objects are
+    // gone too, which is the actual storage this test exists to reclaim.
+    await expect(getObject(paths[0])).rejects.toThrow();
+    await expect(getObject(paths[1])).rejects.toThrow();
+  });
+
+  it("keeps clips when publishing fails, since a FAILED video may still be retried", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const path = storagePath(videoId, "clips", "section-000.mp4");
+    await putObject(path, Buffer.from(`fake-clip-${RUN}-failed`), "video/mp4");
+    await prisma.asset.create({
+      data: {
+        kind: "VIDEO",
+        storagePath: path,
+        mimeType: "video/mp4",
+        sizeBytes: BigInt(16),
+        provider: "PEXELS",
+        externalId: `clip-${RUN}-failed`,
+      },
+    });
+    clipStoragePaths.push(path);
+
+    const service = new PublishService(createUploadFetch({ failUpload: true }).fetchImpl);
+    await expect(service.publish(userId, videoId)).rejects.toThrow();
+
+    const clips = await prisma.asset.findMany({
+      where: {
+        kind: "VIDEO",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/clips/` },
+      },
+    });
+    expect(clips).toHaveLength(1);
   });
 });

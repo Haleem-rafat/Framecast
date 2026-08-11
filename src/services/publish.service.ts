@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { removeObjects } from "@/lib/storage";
 import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. */
@@ -245,7 +246,78 @@ export class PublishService {
       });
     });
 
+    // Deliberately outside the transaction above and after it has already
+    // committed. YouTube has accepted the upload and the video is genuinely
+    // PUBLISHED at this point; a storage hiccup while reclaiming clips must
+    // never unwind that. See reclaimClipStorage's own doc comment for what
+    // happens if this fails.
+    await this.reclaimClipStorage(videoId);
+
     return { youtubeVideoId };
+  }
+
+  /**
+   * Section clips (`videos/{videoId}/clips/section-NNN.mp4`, one per script
+   * section — see `FootageService.collectPerCue`) exist only to feed a
+   * render. Once a video is `PUBLISHED` nothing ever re-renders it — there is
+   * no unpublish path (see this class's own doc comment) — so the clips have
+   * done their only job and are pure carrying cost from here on: a real
+   * ~7-minute video's clip set alone runs to roughly 400MB (see
+   * `MAX_UNIQUE_SECTION_CLIPS`'s comment in footage.service.ts for the
+   * incident that number comes from), which would make storage the binding
+   * constraint at only a couple hundred published videos.
+   *
+   * Deliberately narrower than a video-wide prefix: only the `clips/`
+   * sub-prefix is touched, so narration, alignment data, music and the
+   * finished render — every one of which shares the same `videos/{videoId}/`
+   * prefix — are left exactly alone.
+   *
+   * READY and FAILED are excluded on purpose. Both are still "this video may
+   * render again" states — a FAILED publish can be retried once the operator
+   * clears the stale Publication row, and a READY video may simply not have
+   * been published yet — and a re-render needs its clips still present
+   * rather than re-fetching them from Pexels/Pixabay from scratch.
+   *
+   * Failure here is logged and swallowed, never rethrown: this runs after
+   * the publish transaction has already committed, so by the time this
+   * method is called the operator's video is already sitting safely on
+   * YouTube. Leftover clips cost storage; propagating this failure would
+   * cost the *publish itself* looking like it failed when it plainly did
+   * not — a strictly worse outcome for a step whose only job is tidying up.
+   */
+  private async reclaimClipStorage(videoId: string): Promise<void> {
+    try {
+      const clips = await prisma.asset.findMany({
+        where: {
+          kind: "VIDEO",
+          deletedAt: null,
+          storagePath: { startsWith: `videos/${videoId}/clips/` },
+        },
+        select: { id: true, storagePath: true },
+      });
+
+      if (clips.length === 0) {
+        return;
+      }
+
+      // Storage first, DB second: if the process dies or this throws between
+      // the two calls, the worst case is a Postgres row that still thinks
+      // its clip is live while the underlying object is already gone (a
+      // no-op the next `.remove()` call would silently tolerate) — not a row
+      // that claims to be deleted while ~400MB of orphaned bytes sit in the
+      // bucket forever with nothing left pointing at them to clean up.
+      await removeObjects(clips.map((clip) => clip.storagePath));
+
+      await prisma.asset.updateMany({
+        where: { id: { in: clips.map((clip) => clip.id) } },
+        data: { deletedAt: new Date() },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `Could not reclaim clip storage for video ${videoId} after publish: ${message}`,
+      );
+    }
   }
 
   /**
