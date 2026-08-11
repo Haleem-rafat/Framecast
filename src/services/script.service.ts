@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
+import { extractAnchor } from "@/lib/script-cues";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import { gatewayProvider } from "@/services/providers/gateway.provider";
@@ -101,6 +102,14 @@ export class ScriptService {
             version: (previous?.version ?? 0) + 1,
             content: generated.content,
             wordCount: countWords(generated.content),
+            // Null rather than an empty array when the model returned prose:
+            // the column's meaning is "this script has no cues", and an empty
+            // array would read as "it has cues, and there are none".
+            cues:
+              generated.sections?.map((section) => ({
+                anchor: extractAnchor(section.text),
+                cue: section.cue,
+              })) ?? undefined,
             prompt,
             model: generated.model,
             provider: generated.provider,

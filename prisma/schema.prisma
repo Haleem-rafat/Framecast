@@ -274,6 +274,11 @@ model ScriptVersion {
   version   Int
   content   String
   wordCount Int             @default(0)
+  /// Ordered b-roll cues, one per narration section, as ScriptCue[] (see
+  /// src/lib/script-cues.ts). Nullable with no backfill: scripts written
+  /// before this feature render exactly as they did, drawing entirely from
+  /// the topic-level fallback pool.
+  cues      Json?
   // The rendered prompt actually sent, retained for reproducibility.
   prompt    String?
   model     String?

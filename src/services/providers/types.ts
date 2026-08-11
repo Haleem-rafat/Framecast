@@ -9,6 +9,14 @@ export interface ScriptGenerationInput {
   apiKey?: string;
 }
 
+export interface ScriptSection {
+  /** This section's narration, verbatim. Joined with the others to form the
+   *  script's `content` — nothing here is metadata, it is all spoken. */
+  text: string;
+  /** A stock-footage search query for what to show while `text` is read. */
+  cue: string;
+}
+
 export interface ScriptGenerationResult {
   content: string;
   model: string;
@@ -17,6 +25,10 @@ export interface ScriptGenerationResult {
   outputTokens: number;
   costUsd: number;
   latencyMs: number;
+  /** Absent when the model returned prose rather than sections — older
+   *  prompts, or a provider that does not support structured output. The
+   *  pipeline treats that as "no cues" rather than an error. */
+  sections?: ScriptSection[];
 }
 
 export interface TextGenerationProvider {

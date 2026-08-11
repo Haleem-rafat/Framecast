@@ -277,6 +277,48 @@ describe("scriptService.generate", () => {
     expect(version.prompt).toContain("inflation");
   });
 
+  it("stores one cue per section, anchored to that section's opening", async () => {
+    // A provider whose result carries `sections`, unlike makeFakeProvider's
+    // plain-prose stub — this is the shape a structured-output model
+    // returns, one cue per section it wants illustrated.
+    const sectioned = new ScriptService({
+      generateScript: vi.fn(async () => ({
+        content: "Inflation is not prices going up. It is money losing value.",
+        model: FAKE_MODEL,
+        provider: "ANTHROPIC" as const,
+        inputTokens: 100,
+        outputTokens: 400,
+        costUsd: 0.0063,
+        latencyMs: 1200,
+        sections: [
+          { text: "Inflation is not prices going up.", cue: "supermarket shelves" },
+          { text: "It is money losing value.", cue: "printing press running" },
+        ],
+      })),
+    });
+
+    const version = await sectioned.generate(userId, videoId, {});
+
+    // Narration is unchanged in shape: the sections joined, nothing else.
+    expect(version.content).toBe(
+      "Inflation is not prices going up. It is money losing value.",
+    );
+    expect(version.cues).toEqual([
+      { anchor: "Inflation is not prices going up.", cue: "supermarket shelves" },
+      { anchor: "It is money losing value.", cue: "printing press running" },
+    ]);
+  });
+
+  it("stores no cues when the model returns no sections", async () => {
+    // service (from beforeEach) uses makeFakeProvider, whose result has no
+    // `sections` field at all — the shape prose-only providers, or older
+    // prompts, produce.
+    const version = await service.generate(userId, videoId, {});
+
+    // Nothing to anchor, and nothing that would break an existing pipeline.
+    expect(version.cues).toBeNull();
+  });
+
   it(
     "converts a concurrent version collision into ConflictError rather than a raw Prisma error",
     async () => {
