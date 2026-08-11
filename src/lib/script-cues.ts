@@ -54,6 +54,17 @@ export function anchorCues(
   let searchFrom = 0;
 
   for (const cue of cues) {
+    // An empty anchor comes from extractAnchor on an empty or whitespace-only
+    // section. content.indexOf("", searchFrom) matches immediately without
+    // consuming anything, so it would sit on top of whichever cue comes next
+    // instead of claiming any text of its own. Orphan it rather than let it
+    // match nowhere in particular — the same "orphan over a loose match"
+    // stance the module already takes for anchors that aren't found at all.
+    if (cue.anchor === "") {
+      orphaned.push(cue);
+      continue;
+    }
+
     const at = content.indexOf(cue.anchor, searchFrom);
 
     if (at === -1) {
@@ -91,7 +102,16 @@ export function cueWindows(
 
   return anchored.map(({ cue, startChar, endChar }) => {
     const start = Math.min(Math.max(0, startChar), lastIndex);
-    const end = Math.min(Math.max(0, endChar - 1), lastIndex);
+    // endChar is exclusive, so the last spoken character is endChar - 1 —
+    // except when the range is zero-width (endChar === startChar, which
+    // anchorCues can produce for two cues that resolve to the same
+    // position). Without the floor at `start`, that reads back one
+    // character before the range begins, and if the alignment has a pause
+    // there, characterEndTimesSeconds at that earlier index can be less
+    // than characterStartTimesSeconds at `start` — a negative-duration
+    // window that Task 5 would hand straight to FFmpeg. Flooring at `start`
+    // guarantees end >= start, so the window is at worst zero-length.
+    const end = Math.max(start, Math.min(Math.max(0, endChar - 1), lastIndex));
 
     return {
       cue,

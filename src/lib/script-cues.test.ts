@@ -82,6 +82,23 @@ describe("anchorCues", () => {
   it("returns nothing to anchor when there are no cues", () => {
     expect(anchorCues([], content)).toEqual({ anchored: [], orphaned: [] });
   });
+
+  it("orphans a cue with an empty anchor instead of matching it in place", () => {
+    // extractAnchor on an empty or whitespace-only section returns "".
+    // content.indexOf("", searchFrom) matches immediately without consuming
+    // anything, so an empty anchor would otherwise land on the same
+    // position as the cue after it rather than claiming any text of its own.
+    const { anchored, orphaned } = anchorCues(
+      [
+        { anchor: "", cue: "blank" },
+        { anchor: "It is money losing value over", cue: "printing press" },
+      ],
+      content,
+    );
+
+    expect(anchored.map((a) => a.cue)).toEqual(["printing press"]);
+    expect(orphaned.map((o) => o.cue)).toEqual(["blank"]);
+  });
 });
 
 describe("cueWindows", () => {
@@ -110,5 +127,21 @@ describe("cueWindows", () => {
 
     expect(windows[0].endSeconds).toBe(0.5);
     expect(Number.isFinite(windows[0].startSeconds)).toBe(true);
+  });
+
+  it("does not invert the window for a zero-width character range", () => {
+    // A pause between characters 4 and 5: char 4 ends at 0.4s but char 5
+    // doesn't start until 0.9s. A zero-width range sitting at that boundary
+    // (startChar === endChar === 5, which anchorCues can produce for an
+    // empty anchor) must not read back through the pause to char 4's end
+    // time and report a window that ends before it starts.
+    const alignment: Alignment = {
+      characters: [..."abcdefghij"],
+      characterStartTimesSeconds: [0, 0.1, 0.2, 0.3, 0.4, 0.9, 1.0, 1.1, 1.2, 1.3],
+      characterEndTimesSeconds: [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 1.1, 1.2, 1.3, 1.4],
+    };
+    const windows = cueWindows([{ cue: "empty", startChar: 5, endChar: 5 }], alignment);
+
+    expect(windows[0].endSeconds).toBeGreaterThanOrEqual(windows[0].startSeconds);
   });
 });
