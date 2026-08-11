@@ -52,3 +52,19 @@ export interface StockClip {
 export interface StockFootageProvider {
   search(query: string, count: number): Promise<StockClip[]>;
 }
+
+export interface MusicTrack {
+  externalId: string;
+  /** Jamendo's `audiodownload` url, only ever set when the artist permits it. */
+  url: string;
+  title: string;
+  artistName: string;
+  /** Recorded so the video's description can credit the track — see
+   *  publish.service.ts's PIXABAY_CREDIT for why that is not optional. */
+  licenseUrl: string;
+  durationSeconds: number;
+}
+
+export interface MusicProvider {
+  search(query: string, count: number): Promise<MusicTrack[]>;
+}

@@ -89,6 +89,11 @@ const serverEnvSchema = z.object({
   PEXELS_API_KEY: z.string().min(1).optional(),
   PIXABAY_API_KEY: z.string().min(1).optional(),
 
+  /** Jamendo background music. Platform-level, like the stock footage keys —
+   *  AiProviderType has no per-operator credential for it either. Absent means
+   *  videos render without music, not that the render fails. */
+  JAMENDO_CLIENT_ID: z.string().min(1).optional(),
+
   /** ElevenLabs voice. Default is Roger — American, conversational. */
   ELEVENLABS_VOICE_ID: z.string().min(1).default("CwhRBWXzGAHq8TQ4Fs17"),
   ELEVENLABS_MODEL_ID: z.string().min(1).default("eleven_turbo_v2_5"),
