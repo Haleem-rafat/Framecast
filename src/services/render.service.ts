@@ -77,23 +77,32 @@ const MAX_RENDER_CLIPS = 12;
 /**
  * The shortest slot any clip may hold the screen for.
  *
- * Two different things can ask for an impossibly short one. A degenerate cue
- * window — two cues resolving to the same character, which `cueWindows`
- * deliberately floors at zero-length rather than inverting — and a legacy
- * video with twelve clips over a very short narration. Either way FFmpeg is
- * handed `-t 0`, produces an empty segment, and the sections after it play
- * against the wrong words.
+ * Two different things can ask for an impossibly short one, and the two pay
+ * for the floor differently.
  *
- * What the floor costs is paid by the *neighbouring* slot, never by the
- * timeline: `sectionDurations` widens the short section by moving the boundary
- * after it, which shortens exactly one following slot and leaves every
- * boundary beyond that untouched. Simply clamping each length instead would
- * have added the shortfall to the total, and since the assemble pass cuts the
- * output at the narration's length regardless, that surplus does not extend
- * the video — it pushes every later section late against its own words, one
- * floored slot at a time, and the last section loses the accumulated
- * difference off its end. Drift, not truncation, is the hazard here, and `-t`
- * cannot undo drift.
+ * A cued video asks through a degenerate cue window — two cues resolving to
+ * the same character, which `cueWindows` deliberately floors at zero-length
+ * rather than inverting. There the floor is paid out of a *neighbouring slot*,
+ * not out of the total: `sectionDurations` moves boundaries rather than
+ * clamping lengths, so widening a short section shortens the sections after it
+ * by the same amount and the slots still sum to the narration exactly. That
+ * matters because the assemble pass cuts the output at the narration's length
+ * regardless — a total that came out long would not become a longer video, it
+ * would become sections playing late against their own words with the last one
+ * losing the difference off its end. Drift, not truncation, is the hazard, and
+ * `-t` cannot undo drift. See `sectionDurations` for how far a floored slot can
+ * push its neighbours and where that stops.
+ *
+ * An uncued video asks through the plain clamp on its equal shares (twelve
+ * clips over an eight-second narration wants 0.67s each). That one *does* pay
+ * out of the timeline: the slots sum past the narration and `-t` trims the
+ * tail, so the last clip or two are cut short or never seen. Acceptable
+ * precisely because the video has no cues — its clips stand in no relation to
+ * the words, so there is no sync to drift out of, only a backdrop that ends
+ * sooner than planned.
+ *
+ * Either way, what the floor is protecting against is FFmpeg being handed
+ * `-t 0` and producing an empty segment.
  */
 const MIN_CLIP_SECONDS = 1;
 
@@ -148,8 +157,21 @@ function sectionClipPath(videoId: string, index: number): string {
  *
  * The repairs enforce `minClipSeconds` (see its comment for why a slot cannot
  * be arbitrarily short). Forwards, each boundary is pushed late enough to give
- * the section before it room — which borrows that time from the section after,
- * and only from that one, so nothing further down the timeline moves.
+ * the section before it room, which takes that time from the section after.
+ *
+ * A single short section therefore costs only its immediate neighbour. A *run*
+ * of them cascades — each push feeds the next — and the run's total error is
+ * what the section after the run pays: starts of [0, 5, 5.1, 5.2, 5.3] across
+ * a 30s narration give slots of [5, 1, 1, 1, 22], so the fifth section begins
+ * at 8.0 rather than 5.3. The precise guarantee is that the displacement is
+ * bounded by (k x minClipSeconds) minus however long the run of k short
+ * sections is actually spoken, and that it *terminates*: the first section
+ * long enough to satisfy the floor on its own absorbs the whole cascade, and
+ * every section after it is back on the second its own words start. Error
+ * concentrates around a run of near-empty sections instead of accumulating
+ * down the video, which is the property that matters — nothing a viewer sees
+ * in the second half depends on a degenerate cue in the first.
+ *
  * Backwards then pulls boundaries in from the end, which is what stops the
  * final section being squeezed to nothing by the pushing, and also handles an
  * alignment whose last characters are timed past the narration's stored
@@ -450,8 +472,12 @@ export class RenderService {
       // Uncued: an equal share each. There is nothing in a pre-cue script that
       // says where one idea ends and the next begins, so an even carve-up is
       // the most honest thing available — and unlike the fixed twelve-second
-      // slots it replaces, the clips now cover the narration exactly instead
-      // of the list repeating until it overshoots.
+      // slots it replaces, the clips cover the narration exactly rather than
+      // the list repeating until it overshoots. The one exception is the clamp
+      // below: a narration too short to give every clip `minClipSeconds`
+      // overshoots again, and the assemble pass's `-t` trims the tail. Nothing
+      // here is anchored to the words, so a clip lost off the end costs a
+      // backdrop rather than sync — see MIN_CLIP_SECONDS.
       const clipSeconds = cued
         ? sectionDurations(
             cueWindows(anchored, alignment).map((window) => window.startSeconds),
