@@ -48,9 +48,14 @@ export function extractSourcesSection(scriptContent: string): string {
   return match ? scriptContent.slice(match.index).trim() : "";
 }
 
-function buildDescription(scriptContent: string | null | undefined): string {
+export function buildDescription(
+  scriptContent: string | null | undefined,
+  /** Written by MusicService at collection time. Absent when the video
+   *  rendered without music — see MusicService.collect. */
+  musicCredit?: string | null,
+): string {
   const sources = scriptContent ? extractSourcesSection(scriptContent) : "";
-  return [sources, PIXABAY_CREDIT].filter(Boolean).join("\n\n");
+  return [sources, PIXABAY_CREDIT, musicCredit].filter(Boolean).join("\n\n");
 }
 
 /**
@@ -116,7 +121,23 @@ export class PublishService {
       );
     }
 
-    const description = buildDescription(video.script?.activeVersion?.content);
+    // Unconditional, exactly like PIXABAY_CREDIT: the credit is derived from
+    // what the render actually used, not from the operator remembering. Found
+    // by storage prefix, the same scoping key render.service.ts queries by.
+    const musicAsset = await prisma.asset.findFirst({
+      where: {
+        kind: "MUSIC",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/` },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { prompt: true },
+    });
+
+    const description = buildDescription(
+      video.script?.activeVersion?.content,
+      musicAsset?.prompt,
+    );
 
     // The gate itself, and it happens *before* the upload — not after, the
     // way the first draft of this method had it. `Publication.videoId` is

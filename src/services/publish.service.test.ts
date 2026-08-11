@@ -9,7 +9,11 @@ import { prisma } from "@/lib/prisma";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import type { FetchLike } from "@/services/publish.service";
-import { extractSourcesSection, PublishService } from "@/services/publish.service";
+import {
+  buildDescription,
+  extractSourcesSection,
+  PublishService,
+} from "@/services/publish.service";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -196,6 +200,29 @@ describe("publishService.publish — extractSourcesSection", () => {
 
   it("returns an empty string when there is no SOURCES heading", () => {
     expect(extractSourcesSection("Just a script with no citations.")).toBe("");
+  });
+});
+
+describe("publishService.publish — buildDescription", () => {
+  it("credits the music alongside the Pixabay credit", () => {
+    const description = buildDescription(
+      SCRIPT_WITH_SOURCES,
+      'Music: "Test Track" by Artist (https://creativecommons.org/licenses/by/3.0/)',
+    );
+
+    expect(description).toContain("Pixabay");
+    expect(description).toContain('Music: "Test Track" by Artist');
+  });
+
+  it("omits the music line when the video rendered without music", () => {
+    const description = buildDescription(SCRIPT_WITH_SOURCES);
+
+    expect(description).toContain("Pixabay");
+    expect(description).not.toContain("Music:");
+  });
+
+  it("still credits Pixabay when the script has no sources", () => {
+    expect(buildDescription("No citations here.")).toContain("Pixabay");
   });
 });
 
