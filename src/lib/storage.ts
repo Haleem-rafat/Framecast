@@ -28,14 +28,25 @@ export function storagePath(
   return `videos/${videoId}/${kind}/${filename}`;
 }
 
-/** Supabase's default per-object cap on this plan — set explicitly at bucket
- * creation (below) so an oversized upload fails at a documented boundary
- * instead of whatever the plan default happens to be. Discovered live: a
- * 70.9MB clip failed upload with "the object exceeded the maximum allowed
- * size" before this was ever set anywhere in this codebase. Stock footage is
- * now filtered well under this (see stock-footage.provider.ts's
- * MAX_CLIP_SIZE_BYTES) — this is the backstop, not the primary defense. */
+/** The per-object cap this codebase holds itself to. Discovered live: a 70.9MB
+ * clip failed upload with "the object exceeded the maximum allowed size"
+ * before any limit was set anywhere here. Stock footage is filtered well under
+ * this (see stock-footage.provider.ts's MAX_CLIP_SIZE_BYTES) — this is the
+ * backstop, not the primary defense.
+ *
+ * `ensureBucket` only applies it when it creates the bucket, and the dev
+ * bucket predates that code: its `file_size_limit` reads back as null, meaning
+ * the real ceiling there is whatever the Supabase project's global upload limit
+ * happens to be, not this number. That is why `putObject` checks the size
+ * itself below rather than trusting the bucket to reject an oversized body —
+ * a limit that only exists on freshly created buckets is not a guarantee. */
 const BUCKET_FILE_SIZE_LIMIT_BYTES = 50 * 1024 * 1024;
+
+/** One decimal place, so a refusal reads "51.2MB exceeds the 50.0MB limit"
+ * rather than two numbers that both round to 50 and look like a bug. */
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
 
 /** Idempotent. Safe to call on every render. Only applies `fileSizeLimit` at
  * creation time — an already-existing bucket is left alone rather than
@@ -64,6 +75,18 @@ export async function putObject(
   body: Buffer,
   contentType: string,
 ): Promise<string> {
+  // Checked here, before the network, for two reasons. The bucket's own limit
+  // is unreliable (see BUCKET_FILE_SIZE_LIMIT_BYTES), and Supabase's rejection
+  // — "The object exceeded the maximum allowed size" — names neither the size
+  // that was sent nor the ceiling it broke, which cost real time to diagnose
+  // from a pipeline log. Failing here costs one comparison and says both.
+  if (body.byteLength > BUCKET_FILE_SIZE_LIMIT_BYTES) {
+    throw new InternalError(
+      `Refusing to upload ${path}: ${formatMegabytes(body.byteLength)} exceeds ` +
+        `the ${formatMegabytes(BUCKET_FILE_SIZE_LIMIT_BYTES)} per-object limit.`,
+    );
+  }
+
   const { error } = await client.storage
     .from(env.SUPABASE_STORAGE_BUCKET)
     .upload(path, body, { contentType, upsert: true });
