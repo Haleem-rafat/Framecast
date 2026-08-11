@@ -98,6 +98,50 @@ describe("buildSegmentArgs", () => {
   });
 });
 
+describe("buildSegmentArgs with motion", () => {
+  const base = { clipPath: "/tmp/a.mp4", outputPath: "/tmp/segment-0.mp4", clipSeconds: 8 };
+  const motion = { enabled: true, scale: 1.15 };
+
+  it("scales past the frame so the crop window has room to travel", () => {
+    const filter = valueOf(buildSegmentArgs({ ...base, index: 0, motion }), "-vf") ?? "";
+
+    // 1920 * 1.15 = 2208, 1080 * 1.15 = 1242.
+    expect(filter).toContain("scale=2208:1242");
+    expect(filter).toContain("crop=2208:1242");
+  });
+
+  it("ends on a full-frame crop that moves with t", () => {
+    const filter = valueOf(buildSegmentArgs({ ...base, index: 0, motion }), "-vf") ?? "";
+
+    expect(filter).toContain("crop=w=1920:h=1080");
+    expect(filter).toContain("t/8");
+  });
+
+  it("cycles direction by index so neighbours never move alike", () => {
+    const filters = [0, 1, 2, 3, 4].map(
+      (index) => valueOf(buildSegmentArgs({ ...base, index, motion }), "-vf") ?? "",
+    );
+
+    expect(filters[0]).not.toBe(filters[1]);
+    expect(filters[1]).not.toBe(filters[2]);
+    expect(filters[2]).not.toBe(filters[3]);
+    // Four directions, so index 4 repeats index 0 — and a re-render of an
+    // unchanged video must produce identical arguments.
+    expect(filters[4]).toBe(filters[0]);
+  });
+
+  it("falls back to the plain normalising chain when motion is off", () => {
+    const filter =
+      valueOf(
+        buildSegmentArgs({ ...base, index: 0, motion: { enabled: false, scale: 1.15 } }),
+        "-vf",
+      ) ?? "";
+
+    expect(filter).toContain("scale=1920:1080");
+    expect(filter).not.toContain("t/8");
+  });
+});
+
 describe("buildAssembleArgs", () => {
   it("joins with the concat demuxer, not the concat filter", () => {
     const args = buildAssembleArgs(assembleBase);

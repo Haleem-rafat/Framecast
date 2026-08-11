@@ -1,4 +1,5 @@
 import { ValidationError } from "@/lib/errors";
+import type { MotionStyle } from "@/lib/video-style";
 
 const WIDTH = 1920;
 const HEIGHT = 1080;
@@ -68,6 +69,54 @@ export interface SegmentInput {
   outputPath: string;
   /** How long a slot this clip fills. Short clips loop to fill it. */
   clipSeconds?: number;
+  /** Position in the play order. Selects the pan direction, so an unchanged
+   *  video re-rendered produces identical arguments. */
+  index?: number;
+  motion?: MotionStyle;
+}
+
+/**
+ * Four directions, cycled by segment index.
+ *
+ * These are pans, not zooms. A `crop` filter's output size must be constant, so
+ * an animated crop can translate its window but cannot resize it — zoom needs
+ * `zoompan`, which computes per-frame scaling against integer pixel positions
+ * and judders visibly unless the input is pre-upscaled far past the output.
+ * That is memory this worker does not have (see the two-pass rationale above).
+ *
+ * `T` is substituted with `t/<seconds>`, which runs 0 to 1 across the segment,
+ * so each expression traverses exactly the margin the upscale created.
+ */
+const PAN_EXPRESSIONS = [
+  { x: "(in_w-out_w)*T", y: "(in_h-out_h)/2" },
+  { x: "(in_w-out_w)*(1-T)", y: "(in_h-out_h)/2" },
+  { x: "(in_w-out_w)/2", y: "(in_h-out_h)*T" },
+  { x: "(in_w-out_w)/2", y: "(in_h-out_h)*(1-T)" },
+];
+
+function buildVideoFilter(input: SegmentInput, clipSeconds: number): string {
+  const motion = input.motion;
+
+  if (!motion?.enabled) {
+    return (
+      `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,` +
+      `crop=${WIDTH}:${HEIGHT},fps=${FPS},setsar=1`
+    );
+  }
+
+  const scaledWidth = Math.round(WIDTH * motion.scale);
+  const scaledHeight = Math.round(HEIGHT * motion.scale);
+  const pan = PAN_EXPRESSIONS[(input.index ?? 0) % PAN_EXPRESSIONS.length];
+  const progress = `t/${clipSeconds}`;
+
+  return (
+    `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase,` +
+    `crop=${scaledWidth}:${scaledHeight},fps=${FPS},` +
+    `crop=w=${WIDTH}:h=${HEIGHT}:` +
+    `x='${pan.x.replaceAll("T", progress)}':` +
+    `y='${pan.y.replaceAll("T", progress)}',` +
+    `setsar=1`
+  );
 }
 
 /**
@@ -94,8 +143,7 @@ export function buildSegmentArgs(input: SegmentInput): string[] {
     // stream it would only have to ignore.
     "-an",
     "-vf",
-    `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,` +
-      `crop=${WIDTH}:${HEIGHT},fps=${FPS},setsar=1`,
+    buildVideoFilter(input, clipSeconds),
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", SEGMENT_CRF,
