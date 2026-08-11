@@ -83,6 +83,47 @@ describe("ElevenLabsProvider error reporting", () => {
     expect((error as Error).message).not.toContain("secret script content");
   });
 
+  it("still finds the status in a body far past any truncation point", async () => {
+    // The regression this covers: the body used to be sliced to 2000 bytes
+    // before parsing, which turned a long-but-valid JSON error into invalid
+    // JSON and lost the status entirely — precisely when the response was
+    // large, and precisely for the one condition (an exhausted allowance)
+    // that no amount of retrying can fix.
+    global.fetch = vi.fn().mockResolvedValue(
+      errorResponse(
+        401,
+        JSON.stringify({
+          detail: {
+            status: "quota_exceeded",
+            message: `x`.repeat(5000),
+          },
+        }),
+      ),
+    ) as unknown as typeof fetch;
+
+    const error = await new ElevenLabsProvider()
+      .synthesize({ text: "Hi", voiceId: "v1", apiKey: "k" })
+      .catch((caught: Error) => caught);
+
+    expect((error as Error).message).toContain("quota_exceeded");
+    // And the long message itself still never leaves this module.
+    expect((error as Error).message).not.toContain("xxxx");
+  });
+
+  it("repeats nothing when the status field is not a short token", async () => {
+    // The length bound moved from the body onto the token, so a body that
+    // puts something long where the status belongs still gets nowhere.
+    global.fetch = vi.fn().mockResolvedValue(
+      errorResponse(401, JSON.stringify({ detail: { status: "y".repeat(500) } })),
+    ) as unknown as typeof fetch;
+
+    const error = await new ElevenLabsProvider()
+      .synthesize({ text: "Hi", voiceId: "v1", apiKey: "k" })
+      .catch((caught: Error) => caught);
+
+    expect((error as Error).message).not.toContain("yyyy");
+  });
+
   it("still reports a status when the body is not JSON at all", async () => {
     global.fetch = vi
       .fn()

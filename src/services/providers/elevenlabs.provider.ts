@@ -48,8 +48,16 @@ function isRetryable(status: number): boolean {
  */
 async function readErrorStatus(response: Response): Promise<string> {
   try {
-    const body = (await response.text()).slice(0, MAX_ERROR_BODY_BYTES);
-    const parsed = JSON.parse(body) as { detail?: { status?: unknown } };
+    // Parsed whole, then narrowed. Truncating the body first read as a memory
+    // bound but was not one — `response.text()` has already materialised the
+    // whole body by then — and it broke the one case it mattered in: an
+    // error body over the cap came back as invalid JSON, `JSON.parse` threw,
+    // and the `quota_exceeded` token was lost exactly when the body was
+    // large. Nothing is repeated on the strength of having been parsed: the
+    // shape check below is what decides that, and it caps the length itself.
+    const parsed = JSON.parse(await response.text()) as {
+      detail?: { status?: unknown };
+    };
     const status = parsed.detail?.status;
 
     return typeof status === "string" && ERROR_STATUS_SHAPE.test(status)
@@ -62,12 +70,10 @@ async function readErrorStatus(response: Response): Promise<string> {
   }
 }
 
-/** A short snake_case token. Anything else is not a status code and is not
- *  repeated, however the body is shaped. */
+/** A short snake_case token, and the only thing from the body that is ever
+ *  repeated. The length bound lives here rather than on the body, so a long
+ *  body cannot smuggle anything out and cannot suppress the token either. */
 const ERROR_STATUS_SHAPE = /^[a-z_]{1,40}$/;
-
-/** Enough for a status field; never enough to carry a script back. */
-const MAX_ERROR_BODY_BYTES = 2000;
 
 /**
  * Text-to-speech with character-level timestamps. Maps ElevenLabs' snake_case
