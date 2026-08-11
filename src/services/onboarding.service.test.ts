@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { channelService } from "@/services/channel.service";
 import { onboardingService } from "@/services/onboarding.service";
 import { projectService } from "@/services/project.service";
+import { providerCredentialService } from "@/services/provider-credential.service";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { videoService } from "@/services/video.service";
 
@@ -73,6 +74,7 @@ describe("onboardingService.getChecklist", () => {
     expect(checklist.isComplete).toBe(false);
     expect(checklist.steps.map((s) => s.id)).toEqual([
       "connect-channel",
+      "add-narration-key",
       "check-prompt-template",
       "create-project",
       "create-video",
@@ -152,6 +154,12 @@ describe("onboardingService.getChecklist", () => {
       refreshToken: "1//test",
       expiresInSeconds: 3600,
       scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+    });
+    // A throwaway key on a throwaway user — never the operator's real one.
+    await providerCredentialService.upsert(userId, {
+      provider: "ELEVENLABS",
+      apiKey: `sk-onboarding-${RUN}`,
+      label: RUN,
     });
     await promptTemplateService.create(userId, {
       name: `Default script prompt full ${RUN}`,

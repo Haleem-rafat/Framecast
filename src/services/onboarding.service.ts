@@ -19,6 +19,7 @@ export class OnboardingService implements OnboardingReader {
 
     const [
       hasChannel,
+      hasNarrationKey,
       hasDefaultScriptPrompt,
       hasProject,
       hasVideo,
@@ -26,6 +27,13 @@ export class OnboardingService implements OnboardingReader {
       hasQueuedVideo,
     ] = await Promise.all([
       prisma.channel.findFirst({ where: notDeleted, select: { id: true } }),
+      // Same predicate ProviderCredentialService.resolveKey uses at narration
+      // time — an inactive or soft-deleted credential resolves to null there,
+      // so counting one here would tick a box the pipeline then fails on.
+      prisma.providerCredential.findFirst({
+        where: { userId, provider: "ELEVENLABS", deletedAt: null, isActive: true },
+        select: { id: true },
+      }),
       prisma.promptTemplate.findFirst({
         where: { ...notDeleted, category: "SCRIPT", isDefault: true },
         select: { id: true },
@@ -51,6 +59,13 @@ export class OnboardingService implements OnboardingReader {
         description: "Link the channel videos will eventually publish to.",
         href: "/channels",
         complete: hasChannel !== null,
+      },
+      {
+        id: "add-narration-key",
+        title: "Add your ElevenLabs API key",
+        description: "Narration needs it — a run without one fails partway.",
+        href: "/providers",
+        complete: hasNarrationKey !== null,
       },
       {
         id: "check-prompt-template",
