@@ -324,3 +324,184 @@ describe("footageService.collect", () => {
     expect(assets).toHaveLength(0);
   });
 });
+
+describe("footageService.collect with anchored cues", () => {
+  // Cue-aware stock footage double: every query except the sentinel
+  // "__no_results__" returns a fixed pair of candidates — one clip whose id
+  // is the same no matter which cue asked for it, followed by one clip whose
+  // id is unique to that exact query. The shared first candidate is what
+  // lets "never uses the same stock clip for two different cues" prove a
+  // second cue walks past an already-claimed top result instead of taking it
+  // anyway; the sentinel is what "falls back to the topic pool" uses to
+  // force a cue past both per-cue tiers without needing a real "no results"
+  // response from either provider.
+  function cueAwareSearch(source: "PEXELS" | "PIXABAY") {
+    return vi.fn(async (query: string): Promise<StockClip[]> => {
+      if (query === "__no_results__") {
+        return [];
+      }
+      return [makeClip(source, `${source}-shared`), makeClip(source, `${source}-${query}`)];
+    });
+  }
+
+  let footageService: FootageService;
+  let pexelsSearch: ReturnType<typeof cueAwareSearch>;
+  let pixabaySearch: ReturnType<typeof cueAwareSearch>;
+  let cueVideoIds: string[];
+
+  beforeEach(() => {
+    pexelsSearch = cueAwareSearch("PEXELS");
+    pixabaySearch = cueAwareSearch("PIXABAY");
+    footageService = new FootageService(
+      { PEXELS: { search: pexelsSearch }, PIXABAY: { search: pixabaySearch } },
+      makeDownloader(),
+    );
+    cueVideoIds = [];
+  });
+
+  afterEach(async () => {
+    // Each test below builds its own Video (so its cues can differ from the
+    // narration-only fixture the outer beforeEach sets up on the module-level
+    // `videoId`), under the same throwaway user, so the outer afterEach's
+    // user cascade removes the Video/Script/ScriptVersion/VoiceOver rows.
+    // Asset rows still need sweeping by hand, same as findClipAssets()'s own
+    // comment explains: Asset carries no FK back to Video.
+    for (const id of cueVideoIds) {
+      await prisma.asset.deleteMany({ where: { storagePath: { startsWith: `videos/${id}/` } } });
+    }
+  });
+
+  /**
+   * Builds a video whose active script version carries the given cues,
+   * anchored against narration `content` assembled from those same cues —
+   * each cue becomes its own section, `${anchor} <filler>`, joined in the
+   * given order, so `content.indexOf` finds every anchor after the previous
+   * one the way `anchorCues` requires. A voiceOver is created too, since
+   * `collect` refuses a video with no narration regardless of cues.
+   */
+  async function makeVideoWithCues(cues: { anchor: string; cue: string }[]): Promise<string> {
+    const video = await videoService.create(userId, {
+      projectId,
+      title: "Cue-anchored test video",
+      topic: "inflation",
+    });
+    cueVideoIds.push(video.id);
+
+    const content = cues
+      .map((c) => `${c.anchor} — the rest of this section's narration follows here.`)
+      .join(" ");
+
+    const script = await prisma.script.create({ data: { videoId: video.id } });
+    const version = await prisma.scriptVersion.create({
+      data: { scriptId: script.id, version: 1, content, cues },
+    });
+    await prisma.script.update({
+      where: { id: script.id },
+      data: { activeVersionId: version.id },
+    });
+
+    await prisma.voiceOver.create({
+      data: {
+        videoId: video.id,
+        provider: "ELEVENLABS",
+        voiceId: "test-voice",
+        durationSeconds: cues.length * 12,
+      },
+    });
+
+    return video.id;
+  }
+
+  /** Exposes the two providers' recorded calls so a test can assert Pixabay
+   * was never reached, without caring what either provider returned. */
+  function trackProviderCalls() {
+    return {
+      pexelsCalls: () => pexelsSearch.mock.calls,
+      pixabayCalls: () => pixabaySearch.mock.calls,
+    };
+  }
+
+  it("stores one clip per cue, named in play order", async () => {
+    const videoId = await makeVideoWithCues([
+      { anchor: "Inflation is not prices going", cue: "supermarket shelves" },
+      { anchor: "It is money losing value", cue: "printing press" },
+    ]);
+
+    await footageService.collect(userId, videoId);
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+      orderBy: { storagePath: "asc" },
+    });
+
+    expect(assets.map((a) => a.storagePath)).toEqual([
+      `videos/${videoId}/clips/section-000.mp4`,
+      `videos/${videoId}/clips/section-001.mp4`,
+    ]);
+  });
+
+  it("never uses the same stock clip for two different cues", async () => {
+    // Both cues' searches return the SAME clip first. The second must take
+    // its next-best result rather than repeating the picture.
+    const videoId = await makeVideoWithCues([
+      { anchor: "first section opening words here", cue: "money" },
+      { anchor: "second section opening words here", cue: "cash" },
+    ]);
+
+    await footageService.collect(userId, videoId);
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+    const externalIds = assets.map((a) => a.externalId);
+
+    expect(new Set(externalIds).size).toBe(externalIds.length);
+  });
+
+  it("falls back to the topic pool for a cue that finds nothing", async () => {
+    const videoId = await makeVideoWithCues([
+      { anchor: "first section opening words here", cue: "__no_results__" },
+    ]);
+
+    await footageService.collect(userId, videoId);
+
+    // A section with no match still gets a picture; a black screen is worse
+    // than a loosely-related clip.
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+    expect(assets).toHaveLength(1);
+  });
+
+  it("searches Pixabay only when Pexels returns nothing for a cue", async () => {
+    const { pexelsCalls, pixabayCalls } = trackProviderCalls();
+    const videoId = await makeVideoWithCues([
+      { anchor: "first section opening words here", cue: "money" },
+    ]);
+
+    await footageService.collect(userId, videoId);
+
+    // Pexels allows 200 searches an hour; querying both per cue would
+    // exhaust it in two videos.
+    expect(pexelsCalls().length).toBeGreaterThan(0);
+    expect(pixabayCalls()).toHaveLength(0);
+  });
+
+  it("still collects the topic-level pool for a video with no cues at all", async () => {
+    // Guards the other direction: a video whose script predates this feature
+    // (cues === null) must not accidentally fall into the per-cue path and
+    // come away with zero clips.
+    await createVoiceOverFixture(25); // ceil(25/12) + 2 = 5
+    const providers: FootageProviders = {
+      PEXELS: fakeProvider([1, 2, 3, 4, 5].map((n) => makeClip("PEXELS", `pex-${n}`))),
+      PIXABAY: fakeProvider([1, 2, 3, 4, 5].map((n) => makeClip("PIXABAY", `pix-${n}`))),
+    };
+    const service = new FootageService(providers, makeDownloader());
+
+    const result = await service.collect(userId, videoId);
+
+    expect(result.clipCount).toBe(5);
+    const assets = await findClipAssets();
+    expect(assets).toHaveLength(5);
+  });
+});

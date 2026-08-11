@@ -2,6 +2,7 @@ import "server-only";
 
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { anchorCues, type AnchoredCue, type ScriptCue } from "@/lib/script-cues";
 import { putObject, storagePath } from "@/lib/storage";
 import {
   pexelsProvider,
@@ -54,6 +55,39 @@ function reportSearch(
       throw error;
     },
   );
+}
+
+/** Runs a per-cue search and treats a failure as "no results" for that cue
+ * rather than aborting the whole video: with one search per section instead
+ * of one per video (see `collectPerCue`), a single transient error from one
+ * provider on one section must not cost every other section its clip. This
+ * does not hide a genuine outage — if a provider is truly unreachable or
+ * unconfigured, every cue's search fails the same way, and the first cue
+ * that has to fall all the way through to `getTopicPool` surfaces it there,
+ * because that fallback still throws when both sources fail (see its own
+ * comment). It just takes one extra tier to come up. */
+async function searchOrEmpty(
+  label: string,
+  search: Promise<StockClip[]>,
+  onProgress: FootageProgress,
+): Promise<StockClip[]> {
+  try {
+    return await reportSearch(label, search, onProgress);
+  } catch {
+    return [];
+  }
+}
+
+/** The first candidate not already spent on an earlier section of this same
+ * video — walking the list rather than only ever looking at index 0 is what
+ * stops two cues whose searches both surface the same top result from
+ * silently repeating a picture (see the "never uses the same stock clip for
+ * two different cues" test). */
+function firstUnused(
+  clips: StockClip[],
+  usedExternalIds: ReadonlySet<string>,
+): StockClip | undefined {
+  return clips.find((clip) => !usedExternalIds.has(clip.externalId));
 }
 
 export interface FootageProviders {
@@ -119,6 +153,12 @@ const MAX_UNIQUE_CLIPS = 12;
  * share, so Pexels' (uncapped) search stays consistent with Pixabay's. */
 const QUERY_MAX_LENGTH = 100;
 
+/** Candidates requested per cue search, not per-video like `MAX_UNIQUE_CLIPS`
+ * — one section only ever needs one clip. This just has to be wide enough
+ * that a top result already claimed by an earlier section still leaves
+ * something for `firstUnused` to fall through to. */
+const CUE_CANDIDATE_COUNT = 8;
+
 function computeClipCount(durationSeconds: number): number {
   const target = Math.ceil(durationSeconds / SECONDS_PER_CLIP) + EXTRA_CLIPS;
   return Math.min(target, MAX_UNIQUE_CLIPS);
@@ -156,6 +196,13 @@ export class FootageService {
         topic: true,
         title: true,
         voiceOver: { select: { durationSeconds: true } },
+        // Only the active version matters: an edit that changes the section
+        // boundaries makes the previous version's cues meaningless, and
+        // script.service.ts already keeps the surviving ones (re-anchored)
+        // on whichever version is active. See anchorCues' own doc comment
+        // for why a cue that no longer matches is orphaned rather than
+        // guessed at.
+        script: { select: { activeVersion: { select: { content: true, cues: true } } } },
       },
     });
 
@@ -171,8 +218,6 @@ export class FootageService {
       );
     }
 
-    const clipCount = computeClipCount(video.voiceOver.durationSeconds);
-
     // Assets carry no direct videoId column — every object (and therefore
     // every Asset that references one) lives under `videos/{videoId}/...`,
     // so the storage prefix is the scoping key. Matches render.service.ts's
@@ -184,7 +229,7 @@ export class FootageService {
         deletedAt: null,
         storagePath: { startsWith: `videos/${videoId}/` },
       },
-      select: { provider: true, externalId: true },
+      select: { provider: true, externalId: true, storagePath: true },
     });
 
     const usedExternalIds = new Set(
@@ -192,6 +237,7 @@ export class FootageService {
         .map((asset) => asset.externalId)
         .filter((externalId): externalId is string => externalId !== null),
     );
+    const existingPaths = new Set(existing.map((asset) => asset.storagePath));
 
     const bySource: Record<string, number> = {};
     for (const asset of existing) {
@@ -200,6 +246,40 @@ export class FootageService {
       }
     }
 
+    const query = (video.topic ?? video.title).trim().slice(0, QUERY_MAX_LENGTH);
+
+    // A script with sections (Tasks 1-3) gets one clip per section instead
+    // of a shared topic pool, so the picture can later be cut to match the
+    // words it plays under (Task 5/6). Anchoring re-derives each cue's
+    // position from the *current* content on every call rather than trusting
+    // stored offsets, so an edit made since the cues were written can't
+    // silently point a clip at the wrong sentence. A video with no script,
+    // no cues (predates this feature), or whose anchors no longer resolve
+    // falls straight through to the original topic-level behaviour below —
+    // that is what makes the nullable `cues` column safe to ship without a
+    // backfill.
+    const activeVersion = video.script?.activeVersion ?? null;
+    const rawCues = activeVersion?.cues;
+    const scriptCues = Array.isArray(rawCues) ? (rawCues as unknown as ScriptCue[]) : [];
+    const anchored =
+      activeVersion && scriptCues.length > 0
+        ? anchorCues(scriptCues, activeVersion.content).anchored
+        : [];
+
+    if (anchored.length > 0) {
+      return this.collectPerCue({
+        videoId,
+        anchored,
+        query,
+        existingCount: existing.length,
+        existingPaths,
+        usedExternalIds,
+        bySource,
+        onProgress,
+      });
+    }
+
+    const clipCount = computeClipCount(video.voiceOver.durationSeconds);
     let total = existing.length;
 
     // Idempotent: a prior run already reached the target, so re-running
@@ -208,7 +288,6 @@ export class FootageService {
       return { clipCount: total, bySource, bytesDownloaded: 0 };
     }
 
-    const query = (video.topic ?? video.title).trim().slice(0, QUERY_MAX_LENGTH);
     const need = clipCount - total;
 
     // Ask each source for the full target count as a candidate pool, not
@@ -280,6 +359,149 @@ export class FootageService {
 
       onProgress(
         `[${picked}/${need}] ${filename.replace(/\.[^.]+$/, "")}  ` +
+          `${clip.width}x${clip.height}  ${Math.round(clip.durationSeconds)}s  ` +
+          `${formatBytes(buffer.byteLength)} … stored (${formatElapsed(Date.now() - stepStartedAt)})`,
+      );
+    }
+
+    return { clipCount: total, bySource, bytesDownloaded };
+  }
+
+  /**
+   * One clip per anchored cue, stored at `clips/section-{NNN}.mp4` so play
+   * order is lexicographic and render.service.ts (Task 6) can sort by path
+   * instead of relying on `createdAt`, which is only an accident of
+   * insertion timing.
+   *
+   * Each section searches independently — Pexels first, then, only if
+   * Pexels found nothing usable, Pixabay for that section alone — because
+   * Pexels' 200-searches-an-hour quota means querying both sources for
+   * every section would exhaust it in two videos. A section that still has
+   * nothing after both tiers draws from a topic-level pool shared by every
+   * section that reaches it, searched at most once per `collect()` call
+   * (see `getTopicPool`), rather than nothing at all: a loosely-related
+   * clip beats a black screen.
+   */
+  private async collectPerCue(args: {
+    videoId: string;
+    anchored: AnchoredCue[];
+    query: string;
+    existingCount: number;
+    existingPaths: ReadonlySet<string>;
+    usedExternalIds: Set<string>;
+    bySource: Record<string, number>;
+    onProgress: FootageProgress;
+  }): Promise<CollectFootageResult> {
+    const { videoId, anchored, query, existingPaths, usedExternalIds, bySource, onProgress } = args;
+
+    let total = args.existingCount;
+    let bytesDownloaded = 0;
+
+    // Lazy and memoised: only fetched the first time some section actually
+    // needs it, and shared by every section after that, so a video whose
+    // cues all resolve cleanly against Pexels never pays for this search at
+    // all (see the "searches Pixabay only when Pexels returns nothing"
+    // test). Unlike the per-section tiers above, a total outage here is not
+    // swallowed — if both sources fail, there is genuinely nothing left to
+    // offer the section that asked for it, and that failure is the first
+    // real signal (e.g. a missing API key) that per-section `searchOrEmpty`
+    // was deliberately absorbing until now.
+    let topicPool: StockClip[] | null = null;
+    const getTopicPool = async (): Promise<StockClip[]> => {
+      if (topicPool) {
+        return topicPool;
+      }
+
+      const [pexelsResult, pixabayResult] = await Promise.allSettled([
+        reportSearch(
+          `Pexels "${query}" (topic fallback)`,
+          this.providers.PEXELS.search(query, anchored.length),
+          onProgress,
+        ),
+        reportSearch(
+          `Pixabay "${query}" (topic fallback)`,
+          this.providers.PIXABAY.search(query, anchored.length),
+          onProgress,
+        ),
+      ]);
+
+      if (pexelsResult.status === "rejected" && pixabayResult.status === "rejected") {
+        throw pexelsResult.reason;
+      }
+
+      topicPool = [
+        ...(pexelsResult.status === "fulfilled" ? pexelsResult.value : []),
+        ...(pixabayResult.status === "fulfilled" ? pixabayResult.value : []),
+      ];
+      return topicPool;
+    };
+
+    for (let index = 0; index < anchored.length; index++) {
+      const path = storagePath(videoId, "clips", `section-${String(index).padStart(3, "0")}.mp4`);
+
+      // Idempotent per section, not just per video: a re-run must not
+      // re-download a clip a previous run already stored at this exact
+      // path, even though this call's cues may cover a different total
+      // count than that previous run's did.
+      if (existingPaths.has(path)) {
+        continue;
+      }
+
+      const { cue } = anchored[index];
+      const label = `section ${index}`;
+
+      const pexelsClips = await searchOrEmpty(
+        `Pexels "${cue}" (${label})`,
+        this.providers.PEXELS.search(cue, CUE_CANDIDATE_COUNT),
+        onProgress,
+      );
+      let clip = firstUnused(pexelsClips, usedExternalIds);
+
+      if (!clip) {
+        const pixabayClips = await searchOrEmpty(
+          `Pixabay "${cue}" (${label})`,
+          this.providers.PIXABAY.search(cue, CUE_CANDIDATE_COUNT),
+          onProgress,
+        );
+        clip = firstUnused(pixabayClips, usedExternalIds);
+      }
+
+      if (!clip) {
+        clip = firstUnused(await getTopicPool(), usedExternalIds);
+      }
+
+      if (!clip) {
+        // Nothing usable anywhere for this section. A gap in the footage is
+        // worse than nothing to fill it with here, but there is nothing
+        // left to try — render.service.ts (Task 6) has to cope with a
+        // missing section rather than this call failing the whole video
+        // over one cue.
+        onProgress(`[${label}] no usable clip found for "${cue}" — skipped`);
+        continue;
+      }
+
+      const stepStartedAt = Date.now();
+      const buffer = await this.downloadClip(clip);
+      await putObject(path, buffer, "video/mp4");
+
+      await prisma.asset.create({
+        data: {
+          kind: "VIDEO",
+          storagePath: path,
+          mimeType: "video/mp4",
+          sizeBytes: BigInt(buffer.byteLength),
+          provider: clip.source,
+          externalId: clip.externalId,
+        },
+      });
+
+      usedExternalIds.add(clip.externalId);
+      bySource[clip.source] = (bySource[clip.source] ?? 0) + 1;
+      total++;
+      bytesDownloaded += buffer.byteLength;
+
+      onProgress(
+        `[${label}] ${clip.source.toLowerCase()}-${clip.externalId}  ` +
           `${clip.width}x${clip.height}  ${Math.round(clip.durationSeconds)}s  ` +
           `${formatBytes(buffer.byteLength)} … stored (${formatElapsed(Date.now() - stepStartedAt)})`,
       );
