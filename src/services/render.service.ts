@@ -521,14 +521,38 @@ export class RenderService {
 
       // Where each surviving stub lands on the finished timeline — the sum of
       // everything played before it, stubs included.
+      //
+      // The overlap is added at every boundary the plan has, not only at the
+      // ones a stub was built for, and that is the whole subtlety here. A
+      // segment whose stub failed keeps the tail it would have donated (see
+      // the `outpoint: undefined` above), so half a second is played at that
+      // boundary either way — as a crossfade if the stub exists, as more of
+      // the outgoing clip if it does not. Advancing only for surviving stubs
+      // put every later whoosh half a second early per failed stub, drifting
+      // further the more of them failed. The timeline's total was never
+      // affected; only where the effects land on it, which is the kind of
+      // wrongness nobody spots and everybody feels.
       const boundarySeconds: number[] = [];
       let elapsedSeconds = 0;
       plan.playOrder.forEach((_segmentPath, index) => {
         elapsedSeconds += plan.trimmedSeconds[index];
+
+        // Undefined for the final segment, which donates no tail and has no
+        // boundary after it. Read off the plan rather than the style so this
+        // cannot disagree with what was actually encoded.
+        const boundaryOverlap = plan.transitions[index]?.durationSeconds;
+        if (boundaryOverlap === undefined) {
+          return;
+        }
+
+        // A boundary with no stub is a hard cut, and it happens at the end of
+        // the retained tail rather than here — but a whoosh is an accent on a
+        // dissolve, not a fallback for one, so a failed stub gets no cue at
+        // all rather than a cue at a different time.
         if (stubPathByIndex.has(index)) {
           boundarySeconds.push(elapsedSeconds);
-          elapsedSeconds += style.transitions.durationSeconds;
         }
+        elapsedSeconds += boundaryOverlap;
       });
 
       let sfxPath: string | undefined;

@@ -691,6 +691,50 @@ describe("renderService.render — cut on the sentence", () => {
     expect(slots[2]).toBeCloseTo(durationSeconds - boundary - 1, 5);
   });
 
+  it("keeps later sound effects on their cuts when a transition stub fails", async () => {
+    // A stub that cannot be built becomes a hard cut, and the segment keeps
+    // the tail it would have donated — so half a second is played at that
+    // boundary either way. Counting it only when the stub survived put every
+    // later whoosh half a second early, once per failed stub. Sections are
+    // deliberately long here (~30s) because planSfxCues thins cues that fall
+    // too close together, so a short fixture would have no later whoosh left
+    // to measure.
+    const { videoId } = await makeRenderableVideoWithCues(
+      [
+        { anchor: "opening section words appear right here", cue: "sunrise" },
+        { anchor: "middle section words appear right here", cue: "traffic" },
+        { anchor: "closing section words appear right here", cue: "sunset" },
+      ],
+      { fillerWords: [45, 45, 45] },
+    );
+
+    // Fails only the first crossfade — the second still builds, so its whoosh
+    // is the one whose position the drift would have moved.
+    const { spawner, calls } = createSpawner(async (child, args) => {
+      const outputPath = args[args.length - 1];
+      if (outputPath.endsWith("stub-0.mp4")) {
+        child.emit("close", 1);
+        return;
+      }
+      await writeFile(outputPath, "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
+    await new RenderService(spawner).render(userId, videoId);
+
+    // Each segment is generated a crossfade longer than its slot; the played
+    // length of the first two, plus the half second at the boundary between
+    // them, is where the second boundary lands.
+    const sources = segmentSeconds(calls);
+    const secondBoundary = sources[0] + sources[1] - 1;
+
+    const sfxCall = calls.find((call) =>
+      call.args.some((arg) => arg.includes("adelay")),
+    );
+    const graph = sfxCall!.args[sfxCall!.args.indexOf("-filter_complex") + 1];
+
+    expect(graph).toContain(`adelay=${Math.round(secondBoundary * 1000)}:all=1`);
+  });
+
   it("blames the script, not the crossfade, when there are more sections than seconds", async () => {
     // Six sections over two seconds of narration. No arrangement gives them
     // all the floor, so the slots come out as equal shares of a third of a
