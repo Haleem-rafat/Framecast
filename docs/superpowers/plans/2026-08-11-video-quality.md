@@ -667,11 +667,20 @@ git commit -m "feat: master the narration and mix music beneath it"
 **Interfaces:**
 - Consumes: `TransitionStyle` from Task 1.
 - Produces: `planRender(clipPaths, segmentDir, clipSeconds, transitions?)`
-  returning `RenderPlan` with `segments`, `playOrder`, and
-  `transitions: TransitionJob[]` where
+  returning `RenderPlan` with `segments`, `playOrder`,
+  `trims: SegmentTrim[]` (index-aligned with `playOrder`, where
+  `SegmentTrim = { inpoint?: number; outpoint?: number }`), `trimmedSeconds`,
+  and `transitions: TransitionJob[]` where
   `TransitionJob = { fromPath: string; toPath: string; outputPath: string; durationSeconds: number; startSeconds: number }`.
-  `buildTransitionArgs(job): string[]`. Task 7 runs the jobs between the
+  Also `buildTransitionArgs(job): string[]` and a widened
+  `concatListLine(segmentPath, trim?)`. Task 7 runs the jobs between the
   segment pass and the assemble pass.
+
+**How the trim is actually applied.** The concat demuxer plays whole files, so
+a trim cannot be expressed by listing segments alone — it needs the demuxer's
+own `inpoint` / `outpoint` directives, which follow their `file` line. Pass two
+re-encodes, so the frame-accuracy caveat that applies to `-c copy` does not
+bite here.
 
 **The arithmetic, stated once.** With `D` the transition length and segment `i`
 owing an outgoing boundary, each segment except the last is generated `D`
@@ -729,6 +738,20 @@ describe("planRender with transitions", () => {
   });
 });
 
+describe("concatListLine with a trim", () => {
+  it("emits the demuxer's own in/out directives after the file line", () => {
+    const line = concatListLine("/tmp/segment-1.mp4", { inpoint: 0.5, outpoint: 8 });
+
+    // The demuxer plays whole files unless told otherwise; these directives
+    // are the only way to drop the half-second a stub already covers.
+    expect(line).toBe("file '/tmp/segment-1.mp4'\ninpoint 0.5\noutpoint 8");
+  });
+
+  it("emits a bare file line when nothing is trimmed", () => {
+    expect(concatListLine("/tmp/segment-0.mp4")).toBe("file '/tmp/segment-0.mp4'");
+  });
+});
+
 describe("buildTransitionArgs", () => {
   it("crossfades exactly two inputs and nothing else", () => {
     const args = buildTransitionArgs({
@@ -768,13 +791,38 @@ export interface TransitionJob {
   startSeconds: number;
 }
 
+export interface SegmentTrim {
+  inpoint?: number;
+  outpoint?: number;
+}
+
 export interface RenderPlan {
   segments: SegmentInput[];
   playOrder: string[];
   transitions: TransitionJob[];
+  /** Index-aligned with `playOrder`. What the concat demuxer must skip at each
+   *  end because a stub already covers it. */
+  trims: SegmentTrim[];
   /** How much of each play-order entry survives after the stubs take their
    *  share. Index-aligned with `playOrder`. */
   trimmedSeconds: number[];
+}
+
+/**
+ * A concat-demuxer list entry. That parser treats `'` as a delimiter and its
+ * escape is closing, escaping, reopening the quote — a backslash inside the
+ * quotes would be read literally. `inpoint`/`outpoint` are directives that
+ * apply to the `file` line above them.
+ */
+export function concatListLine(segmentPath: string, trim?: SegmentTrim): string {
+  const lines = [`file '${segmentPath.replace(/'/g, "'\\''")}'`];
+  if (trim?.inpoint !== undefined) {
+    lines.push(`inpoint ${trim.inpoint}`);
+  }
+  if (trim?.outpoint !== undefined) {
+    lines.push(`outpoint ${trim.outpoint}`);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -807,12 +855,98 @@ export function buildTransitionArgs(job: TransitionJob): string[] {
 ```
 
 Rewrite `planRender` to accept a fourth `transitions?: TransitionStyle`
-argument. When transitions are disabled or fewer than two play-order entries
-exist, it returns `transitions: []` and `trimmedSeconds` equal to the slot
-length for every entry — identical behaviour to today. Otherwise, for `D` and
-`k` entries: segment `i < k − 1` is generated at `slot + D`; the trimmed length
-is `slot` for the first entry, `slot − D` for the rest; and stub `i` is built
-from segment `i` starting at `(that segment's source length) − D`.
+argument:
+
+```typescript
+export function planRender(
+  clipPaths: string[],
+  segmentDir: string,
+  clipSeconds = DEFAULT_CLIP_SECONDS,
+  transitions?: TransitionStyle,
+): RenderPlan {
+  if (clipPaths.length === 0) {
+    throw new ValidationError("Cannot render without at least one clip.");
+  }
+
+  const count = clipPaths.length;
+  const D = transitions?.enabled ? transitions.durationSeconds : 0;
+  const hasStubs = D > 0 && count > 1;
+
+  const segmentPathOf = new Map<string, string>();
+  const segments: SegmentInput[] = [];
+  const sourceSecondsOf: number[] = [];
+
+  clipPaths.forEach((clipPath, index) => {
+    // Every segment but the last donates its tail to the outgoing stub, so it
+    // must be generated that much longer. Without this the timeline shrinks by
+    // D per boundary and the picture drifts off the narration.
+    const sourceSeconds = hasStubs && index < count - 1 ? clipSeconds + D : clipSeconds;
+    sourceSecondsOf.push(sourceSeconds);
+
+    // A repeated clip is normalised once. The first slot to claim it fixes its
+    // source length, so a repeat that needs a different length gets its own
+    // segment rather than silently reusing a shorter one.
+    const key = `${clipPath}@${sourceSeconds}`;
+    if (!segmentPathOf.has(key)) {
+      const outputPath = `${segmentDir}/segment-${segments.length}.mp4`;
+      segmentPathOf.set(key, outputPath);
+      segments.push({
+        clipPath,
+        outputPath,
+        clipSeconds: sourceSeconds,
+        index: segments.length,
+      });
+    }
+  });
+
+  const playOrder = clipPaths.map(
+    (clipPath, index) => segmentPathOf.get(`${clipPath}@${sourceSecondsOf[index]}`)!,
+  );
+
+  if (!hasStubs) {
+    return {
+      segments,
+      playOrder,
+      transitions: [],
+      trims: playOrder.map(() => ({})),
+      trimmedSeconds: playOrder.map(() => clipSeconds),
+    };
+  }
+
+  const trims: SegmentTrim[] = [];
+  const trimmedSeconds: number[] = [];
+  const jobs: TransitionJob[] = [];
+
+  playOrder.forEach((segmentPath, index) => {
+    const source = sourceSecondsOf[index];
+    const dropsHead = index > 0;
+    const dropsTail = index < count - 1;
+
+    trims.push({
+      inpoint: dropsHead ? D : undefined,
+      outpoint: dropsTail ? source - D : undefined,
+    });
+    trimmedSeconds.push(source - (dropsHead ? D : 0) - (dropsTail ? D : 0));
+
+    if (dropsTail) {
+      jobs.push({
+        fromPath: segmentPath,
+        toPath: playOrder[index + 1],
+        outputPath: `${segmentDir}/stub-${index}.mp4`,
+        durationSeconds: D,
+        startSeconds: source - D,
+      });
+    }
+  });
+
+  return { segments, playOrder, transitions: jobs, trims, trimmedSeconds };
+}
+```
+
+Note what the dedup key change fixes: the original keyed on `clipPath` alone,
+but a clip used both mid-timeline and last now needs two different source
+lengths. Keying on both keeps "normalise each distinct clip once" true for
+every case where it still applies.
 
 Note the existing dedup: `planRender` normalises each *distinct* clip once, so
 two play-order entries can share a segment file. A stub references segment
@@ -1003,7 +1137,47 @@ git commit -m "feat: find commercially usable music on Jamendo"
 
 - [ ] **Step 1: Write the failing test**
 
+Create `src/services/music.service.test.ts`:
+
 ```typescript
+import { randomUUID } from "node:crypto";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ProviderError } from "@/lib/errors";
+import { prisma } from "@/lib/prisma";
+import { MusicService } from "@/services/music.service";
+import type { MusicTrack } from "@/services/providers/types";
+
+// Tests run against a real, shared Supabase database and storage bucket (see
+// src/test/setup.ts). Assets carry no videoId column — they are scoped by
+// their `videos/{videoId}/` storage prefix — so a throwaway uuid is a
+// sufficient tenant here and no Video row is needed. Jamendo is never called:
+// the provider is injected, matching VoiceOverService's own injection shape.
+vi.setConfig({ testTimeout: 15_000 });
+
+const track: MusicTrack = {
+  externalId: "1",
+  url: "https://example.test/1.mp3",
+  title: "Test",
+  artistName: "Artist",
+  licenseUrl: "https://creativecommons.org/licenses/by/3.0/",
+  durationSeconds: 180,
+};
+
+let videoId: string;
+
+beforeEach(() => {
+  videoId = randomUUID();
+});
+
+afterEach(async () => {
+  await prisma.asset.deleteMany({
+    where: { storagePath: { startsWith: `videos/${videoId}/` } },
+  });
+  vi.restoreAllMocks();
+});
+
 describe("MusicService.collect", () => {
   it("returns null rather than throwing when the provider fails", async () => {
     const service = new MusicService({
@@ -1017,31 +1191,51 @@ describe("MusicService.collect", () => {
     expect(await service.collect(videoId, "calm ambient")).toBeNull();
   });
 
-  it("returns null when every candidate is unusable", async () => {
+  it("returns null when the search finds nothing usable", async () => {
     const service = new MusicService({ search: async () => [] });
     expect(await service.collect(videoId, "calm ambient")).toBeNull();
   });
 
+  it("returns null when the download fails, leaving no asset behind", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
+    const service = new MusicService({ search: async () => [track] });
+
+    expect(await service.collect(videoId, "calm ambient")).toBeNull();
+    expect(
+      await prisma.asset.count({
+        where: { storagePath: { startsWith: `videos/${videoId}/` } },
+      }),
+    ).toBe(0);
+  });
+
+  it("stores the credit so publishing needs no second Jamendo call", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(Buffer.from("audio"))));
+    const service = new MusicService({ search: async () => [track] });
+
+    await service.collect(videoId, "calm ambient");
+    const asset = await prisma.asset.findFirst({
+      where: { kind: "MUSIC", storagePath: { startsWith: `videos/${videoId}/` } },
+      select: { prompt: true, provider: true, externalId: true },
+    });
+
+    expect(asset?.provider).toBe("JAMENDO");
+    expect(asset?.externalId).toBe("1");
+    expect(asset?.prompt).toContain("Artist");
+  });
+
   it("reuses the stored track instead of fetching twice", async () => {
-    const search = vi.fn().mockResolvedValue([sampleTrack]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(Buffer.from("audio"))));
+    const search = vi.fn().mockResolvedValue([track]);
     const service = new MusicService({ search });
 
     const first = await service.collect(videoId, "calm ambient");
     const second = await service.collect(videoId, "calm ambient");
 
+    // A re-render must not silently swap the music under a video the operator
+    // has already reviewed.
     expect(second).toBe(first);
     expect(search).toHaveBeenCalledTimes(1);
   });
-});
-```
-
-Add to `src/services/render.service.test.ts`:
-
-```typescript
-it("renders without music when none was collected", async () => {
-  // The assemble args must carry no -stream_loop and no music input.
-  const args = capturedArgs.at(-1) ?? [];
-  expect(args).not.toContain("-stream_loop");
 });
 ```
 
@@ -1068,34 +1262,209 @@ export type StorageKind = "audio" | "clips" | "captions" | "music" | "output";
 
 - [ ] **Step 4: Write the service**
 
-Create `src/services/music.service.ts` with a `MusicService` class taking a
-`MusicProvider` in its constructor (default `jamendoProvider`), exporting a
-`musicService` singleton. `collect` must:
+Create `src/services/music.service.ts`:
 
-1. Look for an existing non-deleted `MUSIC` asset under
-   `videos/{videoId}/` and return its `storagePath` if found.
-2. Call `search`, wrapped in try/catch that returns `null` on any error.
-3. Take the first track, download it, `putObject` it at
-   `storagePath(videoId, "music", "bed.mp3")`.
-4. Create the `Asset` with `kind: "MUSIC"`, `provider: "JAMENDO"`,
-   `externalId`, and the artist/title/licence recorded in `prompt` so Task 9
-   can build the credit without a second API call.
-5. Return the storage path.
+```typescript
+import "server-only";
+
+import { prisma } from "@/lib/prisma";
+import { putObject, storagePath } from "@/lib/storage";
+import { jamendoProvider } from "@/services/providers/music.provider";
+import type { MusicProvider, MusicTrack } from "@/services/providers/types";
+
+/** Overfetch so a track whose download 404s is not the end of the attempt. */
+const SEARCH_COUNT = 5;
+
+/**
+ * Recorded on the Asset at collection time so `publish.service.ts` can credit
+ * the track from stored state — the same reasoning as `PIXABAY_CREDIT`, which
+ * exists because attribution that depends on the operator remembering is not
+ * attribution.
+ */
+export function musicCredit(track: Pick<MusicTrack, "title" | "artistName" | "licenseUrl">): string {
+  return `Music: "${track.title}" by ${track.artistName} (${track.licenseUrl})`;
+}
+
+export class MusicService {
+  constructor(private readonly provider: MusicProvider = jamendoProvider) {}
+
+  /**
+   * Returns the storage path of this video's music bed, or `null` when it will
+   * render without one.
+   *
+   * Never throws. Music is an enhancement to a video that is already
+   * publishable, and a Jamendo outage must not turn a renderable video into a
+   * failed one.
+   */
+  async collect(videoId: string, query: string): Promise<string | null> {
+    // Assets carry no videoId column — the storage prefix is the scoping key,
+    // the same convention render.service.ts already queries by.
+    const existing = await prisma.asset.findFirst({
+      where: {
+        kind: "MUSIC",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/` },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { storagePath: true },
+    });
+
+    if (existing) {
+      return existing.storagePath;
+    }
+
+    let tracks: MusicTrack[];
+    try {
+      tracks = await this.provider.search(query, SEARCH_COUNT);
+    } catch {
+      return null;
+    }
+
+    for (const track of tracks) {
+      let audio: Buffer;
+
+      try {
+        const response = await fetch(track.url);
+        if (!response.ok) {
+          continue;
+        }
+        audio = Buffer.from(await response.arrayBuffer());
+      } catch {
+        continue;
+      }
+
+      const path = storagePath(videoId, "music", "bed.mp3");
+      await putObject(path, audio, "audio/mpeg");
+
+      await prisma.asset.create({
+        data: {
+          kind: "MUSIC",
+          storagePath: path,
+          mimeType: "audio/mpeg",
+          provider: "JAMENDO",
+          externalId: track.externalId,
+          prompt: musicCredit(track),
+        },
+      });
+
+      return path;
+    }
+
+    return null;
+  }
+}
+
+export const musicService = new MusicService();
+```
 
 - [ ] **Step 5: Wire the render**
 
-In `src/services/render.service.ts`:
+In `src/services/render.service.ts`, add the imports:
 
-- Import `DEFAULT_STYLE` and pass `style.motion` plus each segment's `index`
-  into `buildSegmentArgs`.
-- Pass `style.transitions` as `planRender`'s fourth argument.
-- After the segment loop, run each `plan.transitions` job through
-  `this.runFfmpeg(buildTransitionArgs(job), job.id, null, () => {}, shouldCancel)`,
-  wrapped so a failure logs and drops that stub rather than failing the render —
-  a dropped stub is a hard cut, which is the documented degradation.
-- Build the concat list from segments and surviving stubs interleaved.
-- Fetch the `MUSIC` asset (if any) to a temp file and pass `musicPath`,
-  `style.audio` and `style.captions` into `buildAssembleArgs`.
+```typescript
+import { buildTransitionArgs, planRender } from "@/lib/ffmpeg-command";
+import { DEFAULT_STYLE } from "@/lib/video-style";
+import { musicService } from "@/services/music.service";
+```
+
+Add `title: true` to the `prisma.video.findFirst` select — it is the music
+search query. Then replace the segment/assemble block:
+
+```typescript
+      const style = DEFAULT_STYLE;
+      const clipPaths = ensureCoverage(downloadedClipPaths, durationSeconds);
+      const outputPath = path.join(tempDir, "video.mp4");
+
+      const plan = planRender(clipPaths, tempDir, CLIP_SECONDS, style.transitions);
+
+      for (const [index, segment] of plan.segments.entries()) {
+        onProgress(`normalising clip ${index + 1} of ${plan.segments.length}`);
+
+        await this.runFfmpeg(
+          buildSegmentArgs({ ...segment, motion: style.motion }),
+          job.id,
+          null,
+          () => {},
+          shouldCancel,
+        );
+      }
+
+      // A stub that fails to build becomes a hard cut. Half a second of
+      // dissolve is never worth failing a finished render for — but a
+      // cancellation arrives through the same rejection, and swallowing that
+      // would keep encoding after the operator asked to stop.
+      const stubPathByIndex = new Map<number, string>();
+      for (const [index, transition] of plan.transitions.entries()) {
+        onProgress(`building transition ${index + 1} of ${plan.transitions.length}`);
+
+        try {
+          await this.runFfmpeg(
+            buildTransitionArgs(transition),
+            job.id,
+            null,
+            () => {},
+            shouldCancel,
+          );
+          stubPathByIndex.set(index, transition.outputPath);
+        } catch (error) {
+          if (shouldCancel?.()) {
+            throw error;
+          }
+          onProgress(`transition ${index + 1} could not be built; using a hard cut`);
+        }
+      }
+
+      const concatEntries: string[] = [];
+      plan.playOrder.forEach((segmentPath, index) => {
+        const stubPath = stubPathByIndex.get(index);
+        // A dropped stub means nothing covers this boundary, so the segment
+        // must keep the tail it would otherwise have donated.
+        const trim = stubPath ? plan.trims[index] : { ...plan.trims[index], outpoint: undefined };
+        concatEntries.push(concatListLine(segmentPath, trim));
+        if (stubPath) {
+          concatEntries.push(concatListLine(stubPath));
+        }
+      });
+
+      const concatListPath = path.join(tempDir, "segments.txt");
+      await writeFile(concatListPath, `${concatEntries.join("\n")}\n`);
+
+      // Music is fetched, never generated, and a video that has none simply
+      // renders without it — see MusicService.collect's doc comment.
+      let musicPath: string | undefined;
+      const musicStoragePath = await musicService.collect(videoId, video.title);
+      if (musicStoragePath) {
+        musicPath = path.join(tempDir, "music.mp3");
+        await writeFile(musicPath, await getObject(musicStoragePath));
+      }
+
+      onProgress(
+        `assembling ${plan.playOrder.length} segment(s) with narration, ` +
+          `captions${musicPath ? " and music" : ""}`,
+      );
+
+      await this.runFfmpeg(
+        buildAssembleArgs({
+          concatListPath,
+          audioPath,
+          srtPath,
+          outputPath,
+          durationSeconds,
+          musicPath,
+          audio: style.audio,
+          captions: style.captions,
+        }),
+        job.id,
+        durationSeconds,
+        onProgress,
+        shouldCancel,
+      );
+```
+
+Using the video's title as the music query is a first approximation — it is
+the same signal footage collection started from. A mood field on `VideoStyle`
+would be better and is the natural follow-on once real videos have been
+scored.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -1179,17 +1548,90 @@ Expected: FAIL — cannot resolve `@/lib/sfx-track`
 
 - [ ] **Step 3: Write the implementation**
 
-Create `src/lib/sfx-track.ts`. `planSfxCues` emits a stinger at 0, one whoosh
-per boundary chosen by `index % WHOOSHES.length` (so rotation is deterministic
-and no two adjacent boundaries share a sound), and a swell placed so it ends at
-`durationSeconds`. `buildSfxTrackArgs` takes one `-i` per cue, builds
-`[n]adelay=<ms>:all=1[dn]` fragments, and mixes them with
-`amix=inputs=<n>:normalize=0`, encoding to AAC.
+Create `src/lib/sfx-track.ts`:
 
-A one-line doc comment must record why this is a separate pass: fifty
-boundaries would otherwise mean fifty extra inputs to pass two, and while audio
-decoders are far cheaper than video ones, adding pressure to this worker
-without needing to is how the original OOM happened.
+```typescript
+import path from "node:path";
+
+/**
+ * The effects are mixed into one full-length track here rather than passed to
+ * the assemble pass as separate inputs. Fifty boundaries would otherwise mean
+ * fifty extra inputs to pass two — audio decoders are far cheaper than video
+ * ones, but adding pressure to this particular worker without needing to is
+ * how the original OOM happened.
+ */
+
+export interface SfxCue {
+  path: string;
+  atSeconds: number;
+}
+
+export interface SfxTrackInput {
+  cues: SfxCue[];
+  durationSeconds: number;
+  outputPath: string;
+}
+
+/** Three whooshes is enough that rotation never repeats on adjacent cuts. */
+const WHOOSHES = ["whoosh-1.mp3", "whoosh-2.mp3", "whoosh-3.mp3"];
+const STINGER = "stinger.mp3";
+const SWELL = "swell.mp3";
+
+/** How long before the end the closing swell starts. */
+const SWELL_LEAD_SECONDS = 3;
+
+/** Bundled, not fetched — a sound reused across a thousand videos is a licence
+ *  settled once. See public/sfx/README.md for provenance. */
+export function sfxPackDir(): string {
+  return path.join(process.cwd(), "public", "sfx");
+}
+
+export function planSfxCues(boundarySeconds: number[], durationSeconds: number): SfxCue[] {
+  const dir = sfxPackDir();
+
+  const cues: SfxCue[] = [{ path: path.join(dir, STINGER), atSeconds: 0 }];
+
+  // Selection is by index, never random: the same video re-rendered must
+  // produce the same track.
+  boundarySeconds.forEach((atSeconds, index) => {
+    cues.push({ path: path.join(dir, WHOOSHES[index % WHOOSHES.length]), atSeconds });
+  });
+
+  cues.push({
+    path: path.join(dir, SWELL),
+    atSeconds: Math.max(0, durationSeconds - SWELL_LEAD_SECONDS),
+  });
+
+  return cues;
+}
+
+export function buildSfxTrackArgs(input: SfxTrackInput): string[] {
+  const args = ["-y"];
+
+  for (const cue of input.cues) {
+    args.push("-i", cue.path);
+  }
+
+  // adelay takes milliseconds; `all=1` applies the delay to every channel
+  // rather than only the first, which would otherwise skew a stereo effect.
+  const delays = input.cues
+    .map((cue, index) => `[${index}:a]adelay=${Math.round(cue.atSeconds * 1000)}:all=1[d${index}]`)
+    .join(";");
+  const labels = input.cues.map((_cue, index) => `[d${index}]`).join("");
+
+  args.push(
+    "-filter_complex",
+    `${delays};${labels}amix=inputs=${input.cues.length}:normalize=0[aout]`,
+    "-map", "[aout]",
+    "-t", String(Math.round(input.durationSeconds)),
+    "-c:a", "aac",
+    "-b:a", "128k",
+    input.outputPath,
+  );
+
+  return args;
+}
+```
 
 - [ ] **Step 4: Add the pack**
 
@@ -1199,10 +1641,48 @@ rather than per render.
 
 - [ ] **Step 5: Wire the render**
 
-In `render.service.ts`, after the transition jobs run, derive boundary times
-from the cumulative trimmed durations, call `planSfxCues`, build the track with
-`runFfmpeg(buildSfxTrackArgs(...))`, and pass `sfxPath` to `buildAssembleArgs`.
-A failure here logs and continues with no SFX.
+In `render.service.ts`, after the concat list is written and before the
+assemble pass:
+
+```typescript
+      // Where each surviving stub lands on the finished timeline — the sum of
+      // everything played before it, stubs included.
+      const boundarySeconds: number[] = [];
+      let elapsedSeconds = 0;
+      plan.playOrder.forEach((_segmentPath, index) => {
+        elapsedSeconds += plan.trimmedSeconds[index];
+        if (stubPathByIndex.has(index)) {
+          boundarySeconds.push(elapsedSeconds);
+          elapsedSeconds += style.transitions.durationSeconds;
+        }
+      });
+
+      let sfxPath: string | undefined;
+      try {
+        const candidate = path.join(tempDir, "sfx.m4a");
+        await this.runFfmpeg(
+          buildSfxTrackArgs({
+            cues: planSfxCues(boundarySeconds, durationSeconds),
+            durationSeconds,
+            outputPath: candidate,
+          }),
+          job.id,
+          null,
+          () => {},
+          shouldCancel,
+        );
+        sfxPath = candidate;
+      } catch (error) {
+        // Same rule as a failed stub: an enhancement never fails a render, but
+        // a cancellation must still propagate.
+        if (shouldCancel?.()) {
+          throw error;
+        }
+        onProgress("sound effects could not be built; continuing without them");
+      }
+```
+
+Then add `sfxPath` to the `buildAssembleArgs` call.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -1253,11 +1733,41 @@ Expected: FAIL — `buildDescription` takes one argument
 - [ ] **Step 3: Write the implementation**
 
 `buildDescription` is currently module-private — export it, the way
-`extractSourcesSection` beside it already is, so the test can reach it. Give it
-a second optional parameter and include it in the joined output. In `publish()`, load the video's `MUSIC` asset the same way the
-render does — by `storagePath` prefix — and pass its recorded credit. The
-reasoning in `PIXABAY_CREDIT`'s comment applies unchanged: attribution that
-depends on the operator remembering is not attribution.
+`extractSourcesSection` beside it already is, so the test can reach it:
+
+```typescript
+export function buildDescription(
+  scriptContent: string | null | undefined,
+  /** Written by MusicService at collection time. Absent when the video
+   *  rendered without music. */
+  musicCredit?: string | null,
+): string {
+  const sources = scriptContent ? extractSourcesSection(scriptContent) : "";
+  return [sources, PIXABAY_CREDIT, musicCredit].filter(Boolean).join("\n\n");
+}
+```
+
+In `publish()`, load the video's `MUSIC` asset by storage prefix — the same
+scoping key `render.service.ts` already queries by — and pass its stored credit:
+
+```typescript
+    // Unconditional, like PIXABAY_CREDIT above it: the credit is derived from
+    // what the render actually used, not from the operator remembering.
+    const musicAsset = await prisma.asset.findFirst({
+      where: {
+        kind: "MUSIC",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/` },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { prompt: true },
+    });
+
+    const description = buildDescription(
+      video.script?.activeVersion?.content,
+      musicAsset?.prompt,
+    );
+```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1381,15 +1891,157 @@ only when supplied, so existing callers send an unchanged request.
 
 - [ ] **Step 5: Write the pronunciation service**
 
-Create `src/services/pronunciation.service.ts`. `ensureDictionary` must:
+Create `src/services/pronunciation.service.ts`:
 
-1. Extract candidate terms from the script — capitalised words not at sentence
-   start, and any token containing a digit-letter mix — and ask the text
-   provider for an **alias** spelling for each.
-2. Create or update the channel's dictionary via ElevenLabs'
-   pronunciation-dictionary API, storing the returned id and version on
-   `Channel`.
-3. Return the locator, or `null` on any failure.
+```typescript
+import "server-only";
+
+import { prisma } from "@/lib/prisma";
+import { ELEVENLABS_API_BASE } from "@/services/providers/elevenlabs.provider";
+
+export interface DictionaryLocator {
+  id: string;
+  versionId: string;
+}
+
+interface AliasRule {
+  string_to_replace: string;
+  type: "alias";
+  alias: string;
+}
+
+/** Sentence-initial capitals are ordinary words, so only capitalised tokens
+ *  that follow another word are candidates. */
+const CANDIDATE = /(?<=[a-z,;:]\s)([A-Z][a-zA-Z'’-]{2,})/g;
+
+/**
+ * Pronunciation is fixed with a server-side dictionary rather than SSML in the
+ * text. `SpeechProvider.synthesize` calls the with-timestamps endpoint and
+ * `lib/captions.ts` turns the returned character alignment straight into SRT —
+ * markup injected into `text` would land in the very stream that alignment
+ * describes, corrupting the captions to fix the audio.
+ *
+ * Rules are aliases, never phonemes. Phoneme support is model-dependent (Flash
+ * v2 takes SSML phonemes, v3 takes IPA, Multilingual v2 supports only aliases)
+ * and `ELEVENLABS_MODEL_ID` is environment-configured, so a model change must
+ * not be able to silently degrade pronunciation.
+ */
+export class PronunciationService {
+  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+
+  /**
+   * Returns the channel's dictionary locator, or `null` when narration should
+   * be synthesised without one. Never throws: a missing dictionary costs
+   * pronunciation quality, and that must not block a video.
+   */
+  async ensureDictionary(
+    apiKey: string,
+    channelId: string,
+    scriptText: string,
+    proposeAliases: (terms: string[]) => Promise<AliasRule[]>,
+  ): Promise<DictionaryLocator | null> {
+    try {
+      const channel = await prisma.channel.findFirst({
+        where: { id: channelId, deletedAt: null },
+        select: {
+          pronunciationDictionaryId: true,
+          pronunciationDictionaryVersionId: true,
+        },
+      });
+
+      if (!channel) {
+        return null;
+      }
+
+      const terms = [...new Set(scriptText.match(CANDIDATE) ?? [])];
+      const rules = terms.length > 0 ? await proposeAliases(terms) : [];
+
+      // Nothing new to teach it — reuse whatever the channel already has.
+      if (rules.length === 0) {
+        return channel.pronunciationDictionaryId && channel.pronunciationDictionaryVersionId
+          ? {
+              id: channel.pronunciationDictionaryId,
+              versionId: channel.pronunciationDictionaryVersionId,
+            }
+          : null;
+      }
+
+      const locator = channel.pronunciationDictionaryId
+        ? await this.addRules(apiKey, channel.pronunciationDictionaryId, rules)
+        : await this.createDictionary(apiKey, channelId, rules);
+
+      if (!locator) {
+        return null;
+      }
+
+      await prisma.channel.update({
+        where: { id: channelId },
+        data: {
+          pronunciationDictionaryId: locator.id,
+          pronunciationDictionaryVersionId: locator.versionId,
+        },
+      });
+
+      return locator;
+    } catch {
+      return null;
+    }
+  }
+
+  private async createDictionary(
+    apiKey: string,
+    channelId: string,
+    rules: AliasRule[],
+  ): Promise<DictionaryLocator | null> {
+    const response = await this.fetchImpl(
+      `${ELEVENLABS_API_BASE}/pronunciation-dictionaries/add-from-rules`,
+      {
+        method: "POST",
+        headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: `framecast-${channelId}`, rules }),
+      },
+    );
+
+    return this.readLocator(response);
+  }
+
+  private async addRules(
+    apiKey: string,
+    dictionaryId: string,
+    rules: AliasRule[],
+  ): Promise<DictionaryLocator | null> {
+    const response = await this.fetchImpl(
+      `${ELEVENLABS_API_BASE}/pronunciation-dictionaries/${dictionaryId}/add-rules`,
+      {
+        method: "POST",
+        headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ rules }),
+      },
+    );
+
+    return this.readLocator(response, dictionaryId);
+  }
+
+  private async readLocator(
+    response: Response,
+    knownId?: string,
+  ): Promise<DictionaryLocator | null> {
+    if (!response.ok) {
+      return null;
+    }
+
+    const body = (await response.json()) as { id?: string; version_id?: string };
+    const id = body.id ?? knownId;
+
+    return id && body.version_id ? { id, versionId: body.version_id } : null;
+  }
+}
+
+export const pronunciationService = new PronunciationService();
+```
+
+`proposeAliases` is injected rather than called directly so the LLM round trip
+is substitutable in tests. `voiceover.service.ts` supplies the real one below.
 
 Rules are aliases, never phonemes. `ELEVENLABS_MODEL_ID` is environment-
 configured and can change without touching this code; phoneme support is
@@ -1399,8 +2051,70 @@ change therefore cannot silently degrade pronunciation.
 
 - [ ] **Step 6: Wire the voiceover service**
 
-In `voiceover.service.ts`, call `ensureDictionary` before `synthesize` and pass
-the locator plus `DEFAULT_STYLE.voice`. A `null` locator is not an error.
+In `voiceover.service.ts`, add `project: { select: { channelId: true } }` to the
+video select, then before the `synthesize` call:
+
+```typescript
+      // A null locator is not an error — it means this narration is
+      // synthesised without pronunciation help, which is exactly what happens
+      // today. Nothing here may prevent the narration being generated.
+      const channelId = video.project?.channelId;
+      const locator = channelId
+        ? await pronunciationService.ensureDictionary(
+            apiKey,
+            channelId,
+            content,
+            (terms) => proposeAliases(terms, userId),
+          )
+        : null;
+```
+
+And extend the call itself:
+
+```typescript
+      const synthesized = await this.provider.synthesize({
+        text: content,
+        voiceId,
+        apiKey,
+        voice: DEFAULT_STYLE.voice,
+        dictionaryLocators: locator ? [{ id: locator.id, versionId: locator.versionId }] : undefined,
+      });
+```
+
+`proposeAliases` asks the existing text provider for a respelling of each term
+and parses its JSON reply, returning `[]` on anything unexpected:
+
+```typescript
+/** Aliases only — see PronunciationService's doc comment for why phonemes are
+ *  deliberately not used. */
+async function proposeAliases(
+  terms: string[],
+  userId: string,
+): Promise<{ string_to_replace: string; type: "alias"; alias: string }[]> {
+  const result = await gatewayProvider.generateScript({
+    prompt:
+      "For each term, give a plain-English respelling that a text-to-speech " +
+      "engine will pronounce correctly. Reply with JSON only: " +
+      `[{"term":"...","respelling":"..."}]. Terms: ${terms.join(", ")}`,
+    apiKey: (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ?? undefined,
+  });
+
+  try {
+    const parsed = JSON.parse(result.content) as { term?: string; respelling?: string }[];
+    return parsed
+      .filter((entry) => entry.term && entry.respelling && entry.term !== entry.respelling)
+      .map((entry) => ({
+        string_to_replace: entry.term!,
+        type: "alias" as const,
+        alias: entry.respelling!,
+      }));
+  } catch {
+    // A model that answered with prose instead of JSON costs pronunciation
+    // quality, never the narration itself.
+    return [];
+  }
+}
+```
 
 - [ ] **Step 7: Run the full suite**
 
