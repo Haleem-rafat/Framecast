@@ -4,6 +4,7 @@ import { env } from "@/config/env";
 import { ProviderError } from "@/lib/errors";
 import type {
   SpeechProvider,
+  SpeechQuota,
   SpeechSynthesisInput,
   SpeechSynthesisResult,
 } from "@/services/providers/types";
@@ -32,11 +33,84 @@ function isRetryable(status: number): boolean {
 }
 
 /**
+ * ElevenLabs' machine-readable reason for a rejection, and only that.
+ *
+ * The whole body used to be dropped, because `detail.message` can quote the
+ * request back and must never reach a log or an operator-facing error. But an
+ * exhausted allowance is reported as **401, not 429**, so a bare status code
+ * is indistinguishable from a bad key — and an operator with a valid key can
+ * spend a long time retrying something no retry can fix.
+ *
+ * `detail.status` is a short machine token (`quota_exceeded`,
+ * `invalid_api_key`, …) with no request content in it, so it is the one part
+ * of the body that is safe to repeat. The message field is deliberately never
+ * read.
+ */
+async function readErrorStatus(response: Response): Promise<string> {
+  try {
+    const body = (await response.text()).slice(0, MAX_ERROR_BODY_BYTES);
+    const parsed = JSON.parse(body) as { detail?: { status?: unknown } };
+    const status = parsed.detail?.status;
+
+    return typeof status === "string" && ERROR_STATUS_SHAPE.test(status)
+      ? ` (${status})`
+      : "";
+  } catch {
+    // A non-JSON body (an HTML gateway page, an empty response) leaves the
+    // status line to speak for itself, exactly as before.
+    return "";
+  }
+}
+
+/** A short snake_case token. Anything else is not a status code and is not
+ *  repeated, however the body is shaped. */
+const ERROR_STATUS_SHAPE = /^[a-z_]{1,40}$/;
+
+/** Enough for a status field; never enough to carry a script back. */
+const MAX_ERROR_BODY_BYTES = 2000;
+
+/**
  * Text-to-speech with character-level timestamps. Maps ElevenLabs' snake_case
  * alignment to the camelCase `Alignment` shape at this boundary so nothing
  * downstream (captions, the render pipeline) deals with two conventions.
  */
 export class ElevenLabsProvider implements SpeechProvider {
+  /**
+   * What the account has spent this period, or `null` when that cannot be
+   * determined.
+   *
+   * Free to call — it costs no characters — which is what makes it usable as
+   * a pre-flight check before spending quota on a synthesis that cannot fit.
+   * Null on any failure: a quota check that fails must never be the reason
+   * narration does not happen.
+   */
+  async getQuota(apiKey: string): Promise<SpeechQuota | null> {
+    try {
+      const response = await fetch(`${ELEVENLABS_API_BASE}/user/subscription`, {
+        headers: { "xi-api-key": apiKey },
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const body = (await response.json()) as {
+        character_count?: unknown;
+        character_limit?: unknown;
+      };
+
+      return typeof body.character_count === "number" &&
+        typeof body.character_limit === "number"
+        ? {
+            usedCharacters: body.character_count,
+            limitCharacters: body.character_limit,
+          }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   async synthesize(input: SpeechSynthesisInput): Promise<SpeechSynthesisResult> {
     let response: Response;
 
@@ -91,12 +165,10 @@ export class ElevenLabsProvider implements SpeechProvider {
     }
 
     if (!response.ok) {
-      // Deliberately no response body in the message: it could echo back
-      // request content, and never the API key either way — the status line
-      // alone is enough to act on.
       throw new ProviderError(
         "ELEVENLABS",
-        `ElevenLabs request failed with status ${response.status} ${response.statusText}.`,
+        `ElevenLabs request failed with status ${response.status} ${response.statusText}` +
+          `${await readErrorStatus(response)}.`,
         isRetryable(response.status),
       );
     }

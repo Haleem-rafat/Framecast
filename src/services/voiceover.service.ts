@@ -162,6 +162,27 @@ export class VoiceOverService {
       );
     }
 
+    // Pre-flight, before a single character is spent. ElevenLabs reports an
+    // exhausted allowance as a 401, which is indistinguishable from a bad key
+    // at the call site — an operator with a perfectly good key can retry for
+    // half an hour against something no retry can fix. The check itself costs
+    // no quota, and a provider that cannot answer simply omits it.
+    const quota = await this.provider.getQuota?.(apiKey);
+
+    if (quota) {
+      const remaining = quota.limitCharacters - quota.usedCharacters;
+
+      if (content.length > remaining) {
+        throw new ProviderError(
+          "ELEVENLABS",
+          `This script needs ${content.length.toLocaleString()} characters but only ` +
+            `${remaining.toLocaleString()} remain of the ${quota.limitCharacters.toLocaleString()}-character ` +
+            "allowance. Upgrade the ElevenLabs plan or wait for the allowance to reset.",
+          false,
+        );
+      }
+    }
+
     const voiceId = env.ELEVENLABS_VOICE_ID;
 
     // Declared outside the try so the catch block can report real spend if

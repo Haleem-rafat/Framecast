@@ -34,6 +34,91 @@ function bodyOf(mock: ReturnType<typeof vi.fn>): Record<string, unknown> {
   return JSON.parse(mock.mock.calls[0][1].body);
 }
 
+describe("ElevenLabsProvider error reporting", () => {
+  function errorResponse(status: number, body: string): Response {
+    return {
+      ok: false,
+      status,
+      statusText: "Unauthorized",
+      text: async () => body,
+    } as Response;
+  }
+
+  it("names quota_exceeded rather than leaving a bare 401", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      errorResponse(
+        401,
+        JSON.stringify({
+          detail: { status: "quota_exceeded", message: "You have 12 characters left" },
+        }),
+      ),
+    ) as unknown as typeof fetch;
+
+    // ElevenLabs reports an exhausted allowance as 401, not 429, so a bare
+    // status code is indistinguishable from a bad key — which is exactly the
+    // dead end this exists to remove.
+    await expect(
+      new ElevenLabsProvider().synthesize({ text: "Hi", voiceId: "v1", apiKey: "k" }),
+    ).rejects.toThrow(/quota_exceeded/);
+  });
+
+  it("never echoes the provider's message text back", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      errorResponse(
+        401,
+        JSON.stringify({
+          detail: { status: "quota_exceeded", message: "secret script content here" },
+        }),
+      ),
+    ) as unknown as typeof fetch;
+
+    // Only the machine-readable status is safe to repeat: the message field
+    // can quote back the request, which is why the body was dropped entirely
+    // before this.
+    const error = await new ElevenLabsProvider()
+      .synthesize({ text: "Hi", voiceId: "v1", apiKey: "k" })
+      .catch((caught: Error) => caught);
+
+    expect((error as Error).message).toContain("quota_exceeded");
+    expect((error as Error).message).not.toContain("secret script content");
+  });
+
+  it("still reports a status when the body is not JSON at all", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(errorResponse(500, "<html>gateway error</html>")) as unknown as typeof fetch;
+
+    await expect(
+      new ElevenLabsProvider().synthesize({ text: "Hi", voiceId: "v1", apiKey: "k" }),
+    ).rejects.toThrow(/500/);
+  });
+});
+
+describe("ElevenLabsProvider.getQuota", () => {
+  it("reports what is used and what is allowed", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ character_count: 8958, character_limit: 10000, tier: "free" }),
+    } as Response) as unknown as typeof fetch;
+
+    expect(await new ElevenLabsProvider().getQuota("k")).toEqual({
+      usedCharacters: 8958,
+      limitCharacters: 10000,
+    });
+  });
+
+  it("returns null rather than throwing when the check itself fails", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500 } as Response) as unknown as typeof fetch;
+
+    // A failed quota check must never be the reason narration does not happen.
+    expect(await new ElevenLabsProvider().getQuota("k")).toBeNull();
+  });
+});
+
 describe("ElevenLabsProvider request body", () => {
   it("sends voice settings and a fixed seed", async () => {
     const fetchMock = vi.fn().mockResolvedValue(timestampedResponse());

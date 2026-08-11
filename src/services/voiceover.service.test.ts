@@ -151,6 +151,48 @@ describe("voiceOverService.generate", () => {
     expect(fakeProvider.synthesize).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses before spending anything when the script cannot fit in the remaining quota", async () => {
+    // 2,000 characters against the 1,042 that remain of a 10,000 allowance —
+    // roughly the shape of a real script against an exhausted free tier.
+    await approveScriptFixture("a".repeat(2000));
+    fakeProvider.getQuota = vi.fn(async () => ({
+      usedCharacters: 8958,
+      limitCharacters: 10000,
+    }));
+
+    // ElevenLabs reports an exhausted allowance as a 401, which reads as a bad
+    // key. Refusing up front says what is actually wrong, and says it before
+    // the request rather than after it has already failed.
+    const error = await service
+      .generate(userId, videoId)
+      .catch((caught: Error) => caught);
+
+    expect((error as Error).message).toContain("2,000");
+    expect((error as Error).message).toContain("1,042");
+    expect(fakeProvider.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("proceeds when the remaining quota is enough", async () => {
+    await approveScriptFixture("a".repeat(100));
+    fakeProvider.getQuota = vi.fn(async () => ({
+      usedCharacters: 0,
+      limitCharacters: 10000,
+    }));
+
+    await expect(service.generate(userId, videoId)).resolves.toBeTruthy();
+    expect(fakeProvider.synthesize).toHaveBeenCalledTimes(1);
+  });
+
+  it("proceeds when the quota cannot be determined", async () => {
+    await approveScriptFixture();
+    fakeProvider.getQuota = vi.fn(async () => null);
+
+    // A failed quota check must never become a new reason narration does not
+    // happen — it only ever turns a later failure into an earlier refusal.
+    await expect(service.generate(userId, videoId)).resolves.toBeTruthy();
+    expect(fakeProvider.synthesize).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses when the video has no approved script", async () => {
     // No script created at all — but the video is still pushed to QUEUED
     // directly, bypassing videoService.approveScript's own guard, so this

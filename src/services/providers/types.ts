@@ -48,8 +48,20 @@ export interface SpeechSynthesisResult {
   characterCount: number;
 }
 
+export interface SpeechQuota {
+  usedCharacters: number;
+  limitCharacters: number;
+}
+
 export interface SpeechProvider {
   synthesize(input: SpeechSynthesisInput): Promise<SpeechSynthesisResult>;
+  /**
+   * Optional pre-flight check. A provider that cannot report an allowance
+   * simply omits it, and callers proceed as they always did — the check exists
+   * to turn a failure after the spend into a refusal before it, never to add a
+   * new way for narration to be blocked.
+   */
+  getQuota?(apiKey: string): Promise<SpeechQuota | null>;
 }
 
 export type StockFootageSource = "PEXELS" | "PIXABAY";
