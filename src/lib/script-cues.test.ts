@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { Alignment } from "@/lib/captions";
-import { anchorCues, cueWindows, extractAnchor } from "@/lib/script-cues";
+import {
+  anchorCues,
+  cueWindows,
+  extractAnchor,
+  sectionDurations,
+} from "@/lib/script-cues";
 
 /** Every character takes exactly 0.1s, mirroring captions.test.ts's fixture. */
 function evenAlignment(text: string): Alignment {
@@ -143,5 +148,95 @@ describe("cueWindows", () => {
     const windows = cueWindows([{ cue: "empty", startChar: 5, endChar: 5 }], alignment);
 
     expect(windows[0].endSeconds).toBeGreaterThanOrEqual(windows[0].startSeconds);
+  });
+});
+
+describe("sectionDurations", () => {
+  /** What the slots must always add up to: the assemble pass cuts the output
+   *  at the narration's length regardless, so a total that came out long is
+   *  not a longer video, it is sections playing late against their own words. */
+  function total(slots: number[]): number {
+    return slots.reduce((sum, seconds) => sum + seconds, 0);
+  }
+
+  it("gives each section the time its own words take when nothing is short", () => {
+    expect(sectionDurations([0, 10, 20], 30, 1)).toEqual([10, 10, 10]);
+  });
+
+  it("pays for one short section out of the section after it", () => {
+    // The middle section is spoken in 0.2s. Widening it to the floor takes
+    // that time from its neighbour, never from the timeline.
+    const slots = sectionDurations([0, 10, 10.2], 30, 1);
+
+    expect(slots[0]).toBeCloseTo(10, 10);
+    expect(slots[1]).toBeCloseTo(1, 10);
+    expect(slots[2]).toBeCloseTo(19, 10);
+    expect(total(slots)).toBeCloseTo(30, 10);
+  });
+
+  it("cascades a run of short sections and then stops", () => {
+    // Three near-empty sections back to back — each push feeds the next, and
+    // the section after the run absorbs the whole accumulated error. The
+    // property that matters is that it terminates there: the fifth section is
+    // the last one displaced, and a sixth would start on its own words again.
+    const slots = sectionDurations([0, 5, 5.1, 5.2, 5.3], 30, 1);
+
+    expect(slots.map((seconds) => Number(seconds.toFixed(6)))).toEqual([
+      5, 1, 1, 1, 22,
+    ]);
+    expect(total(slots)).toBeCloseTo(30, 10);
+  });
+
+  it("keeps the last section from being squeezed to nothing by the cascade", () => {
+    // The pushing alone would leave the final boundary past the narration's
+    // end and the last slot negative; the backwards pass pulls the boundaries
+    // in so every slot still clears the floor.
+    const slots = sectionDurations([0, 9.7, 9.8, 9.9], 10, 1);
+
+    for (const seconds of slots) {
+      expect(seconds).toBeGreaterThanOrEqual(1);
+    }
+    expect(total(slots)).toBeCloseTo(10, 10);
+  });
+
+  it("handles an alignment whose last section starts past the stored duration", () => {
+    // VoiceOver.durationSeconds is an integer column, so the alignment can
+    // legitimately run a fraction of a second past the number the render
+    // treats as the end.
+    const slots = sectionDurations([0, 5, 10.4], 10, 1);
+
+    expect(total(slots)).toBeCloseTo(10, 10);
+    for (const seconds of slots) {
+      expect(seconds).toBeGreaterThan(0);
+    }
+  });
+
+  it("falls back to equal shares when no arrangement can give every section the floor", () => {
+    // Twelve sections over ten seconds: the floor is unsatisfiable, so the
+    // boundary repairs are abandoned for an even carve-up. It still sums to
+    // the narration exactly — RenderService is what refuses a share too short
+    // to carry a transition, and it says so in terms of the script.
+    const slots = sectionDurations([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9.5, 9.7], 10, 1);
+
+    expect(slots).toHaveLength(12);
+    expect(new Set(slots).size).toBe(1);
+    expect(total(slots)).toBeCloseTo(10, 10);
+  });
+
+  it("still covers the narration exactly in the degenerate branch, whatever the starts were", () => {
+    // Deliberately pathological input: every section anchored to the same
+    // character. The equal-shares branch ignores the starts entirely, which
+    // is the only reason this produces anything usable at all.
+    const slots = sectionDurations([4, 4, 4, 4], 6, 2);
+
+    expect(slots).toEqual([1.5, 1.5, 1.5, 1.5]);
+    expect(total(slots)).toBeCloseTo(6, 10);
+  });
+
+  it("gives a single section the whole narration", () => {
+    expect(sectionDurations([0], 30, 1)).toEqual([30]);
+    // Even one section can land in the degenerate branch, on a narration
+    // shorter than the floor.
+    expect(sectionDurations([0], 0.5, 1)).toEqual([0.5]);
   });
 });

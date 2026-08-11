@@ -691,6 +691,33 @@ describe("renderService.render — cut on the sentence", () => {
     expect(slots[2]).toBeCloseTo(durationSeconds - boundary - 1, 5);
   });
 
+  it("blames the script, not the crossfade, when there are more sections than seconds", async () => {
+    // Six sections over two seconds of narration. No arrangement gives them
+    // all the floor, so the slots come out as equal shares of a third of a
+    // second — shorter than the half-second transition each has to make room
+    // for. planRender would refuse this too, but only in terms of what it was
+    // handed ("clip 3 is 0.33s, shorter than the 0.5s transition"), which
+    // tells the operator nothing about the script that caused it.
+    const { videoId } = await makeRenderableVideoWithCues(
+      [
+        { anchor: "aa", cue: "one" },
+        { anchor: "bb", cue: "two" },
+        { anchor: "cc", cue: "three" },
+        { anchor: "dd", cue: "four" },
+        { anchor: "ee", cue: "five" },
+        { anchor: "ff", cue: "six" },
+      ],
+      { fillerWords: [0, 0, 0, 0, 0, 0] },
+    );
+
+    const { spawner } = recordingSpawner();
+    const attempt = new RenderService(spawner).render(userId, videoId);
+
+    await expect(attempt).rejects.toThrow(ConflictError);
+    await expect(attempt).rejects.toThrow(/6 sections/);
+    await expect(attempt).rejects.toThrow(/Edit the script/);
+  });
+
   it("refuses to render when a section in the middle has no footage", async () => {
     // The defect this whole feature exists to prevent: FFmpeg would happily
     // play two clips over three sections, every later section sliding forward

@@ -19,7 +19,12 @@ import {
   planRender,
 } from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
-import { anchorCues, cueWindows, type ScriptCue } from "@/lib/script-cues";
+import {
+  anchorCues,
+  cueWindows,
+  type ScriptCue,
+  sectionDurations,
+} from "@/lib/script-cues";
 import { buildSfxTrackArgs, planSfxCues } from "@/lib/sfx-track";
 import { getObject, storagePath } from "@/lib/storage";
 import { DEFAULT_STYLE } from "@/lib/video-style";
@@ -134,77 +139,6 @@ function defaultSpawner(command: string, args: string[]): ChildProcessWithoutNul
  */
 function sectionClipPath(videoId: string, index: number): string {
   return storagePath(videoId, "clips", `section-${String(index).padStart(3, "0")}.mp4`);
-}
-
-/**
- * Turns each section's spoken range into the length of its slot.
- *
- * Not simply `endSeconds - startSeconds` per window, and the difference
- * matters. A window's end is the end time of the last character *before* the
- * next section starts, so consecutive windows can leave a sliver of narration
- * uncovered — and the first section may not begin at zero at all if the script
- * opens with text no cue anchored to. Slots are therefore measured from one
- * section's start to the *next* section's start, with the first stretched back
- * to 0 and the last carried out to the narration's end. The result covers
- * [0, durationSeconds] with no gaps, which is the only arrangement where the
- * picture and the words stay together for the whole video.
- *
- * Slots are derived as the differences between those boundaries, and every
- * repair below moves a boundary rather than a length. That is what makes the
- * sum exactly `durationSeconds` no matter what the alignment hands over: the
- * two ends are pinned, and moving anything between them takes from one slot
- * exactly what it gives to another.
- *
- * The repairs enforce `minClipSeconds` (see its comment for why a slot cannot
- * be arbitrarily short). Forwards, each boundary is pushed late enough to give
- * the section before it room, which takes that time from the section after.
- *
- * A single short section therefore costs only its immediate neighbour. A *run*
- * of them cascades — each push feeds the next — and the run's total error is
- * what the section after the run pays: starts of [0, 5, 5.1, 5.2, 5.3] across
- * a 30s narration give slots of [5, 1, 1, 1, 22], so the fifth section begins
- * at 8.0 rather than 5.3. The precise guarantee is that the displacement is
- * bounded by (k x minClipSeconds) minus however long the run of k short
- * sections is actually spoken, and that it *terminates*: the first section
- * long enough to satisfy the floor on its own absorbs the whole cascade, and
- * every section after it is back on the second its own words start. Error
- * concentrates around a run of near-empty sections instead of accumulating
- * down the video, which is the property that matters — nothing a viewer sees
- * in the second half depends on a degenerate cue in the first.
- *
- * Backwards then pulls boundaries in from the end, which is what stops the
- * final section being squeezed to nothing by the pushing, and also handles an
- * alignment whose last characters are timed past the narration's stored
- * (integer) length.
- */
-function sectionDurations(
-  startTimes: number[],
-  durationSeconds: number,
-  minClipSeconds: number,
-): number[] {
-  const count = startTimes.length;
-
-  // More sections than there is narration to divide between them: no
-  // arrangement gives all of them the floor, so give them equal shares
-  // instead. Still sums to the narration exactly; a script this shape (a
-  // section per second) is a bug upstream, and planRender refuses outright if
-  // the shares come out too short to carry a transition.
-  if (count * minClipSeconds > durationSeconds) {
-    return Array.from({ length: count }, () => durationSeconds / count);
-  }
-
-  // Section starts, with the two fixed ends: the video begins at 0 whatever
-  // the first cue anchored to, and ends where the narration does.
-  const boundaries = [0, ...startTimes.slice(1), durationSeconds];
-
-  for (let i = 1; i < count; i++) {
-    boundaries[i] = Math.max(boundaries[i], boundaries[i - 1] + minClipSeconds);
-  }
-  for (let i = count - 1; i >= 1; i--) {
-    boundaries[i] = Math.min(boundaries[i], boundaries[i + 1] - minClipSeconds);
-  }
-
-  return boundaries.slice(1).map((end, index) => end - boundaries[index]);
 }
 
 /** Parses `key=value` lines from FFmpeg's `-progress pipe:1` stdout. Lines can
@@ -495,6 +429,28 @@ export class RenderService {
         : downloadedClipPaths.map(() =>
             Math.max(minClipSeconds, durationSeconds / downloadedClipPaths.length),
           );
+
+      // The one arrangement `sectionDurations` cannot repair: more sections
+      // than the narration can give the floor to, so it falls back to equal
+      // shares — and if the narration is short enough, those shares are
+      // shorter than the crossfade each one has to make room for. planRender
+      // refuses that, correctly, but it can only describe what it was handed:
+      // "clip 3 is 0.4s, shorter than the 0.5s transition". That names the
+      // symptom. The cause is a script with more sections than there are
+      // seconds to spend on them, which is what the operator can actually do
+      // something about, so it is named here — before fifty clips are
+      // downloaded and encoded against a plan that cannot be built.
+      const overlap = style.transitions.enabled ? style.transitions.durationSeconds : 0;
+      if (cued && overlap > 0 && clipSeconds.some((seconds) => seconds <= overlap)) {
+        const shortest = Math.min(...clipSeconds);
+        throw new ConflictError(
+          `This script has ${clipSeconds.length} sections across ${durationSeconds}s of ` +
+            `narration — about ${shortest.toFixed(1)}s of picture each, too short to hold ` +
+            "the screen or carry a transition. Edit the script so it has fewer, longer " +
+            `sections (at least ${minClipSeconds}s of narration each), then collect ` +
+            "footage and render again.",
+        );
+      }
 
       // Two passes — see ffmpeg-command.ts for why a single filter graph
       // cannot do this inside the worker's memory. Pass one normalises each
