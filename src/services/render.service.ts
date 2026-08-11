@@ -19,6 +19,7 @@ import {
   planRender,
 } from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
+import { buildSfxTrackArgs, planSfxCues } from "@/lib/sfx-track";
 import { getObject } from "@/lib/storage";
 import { DEFAULT_STYLE } from "@/lib/video-style";
 import { musicService } from "@/services/music.service";
@@ -352,6 +353,42 @@ export class RenderService {
       const concatListPath = path.join(tempDir, "segments.txt");
       await writeFile(concatListPath, `${concatEntries.join("\n")}\n`);
 
+      // Where each surviving stub lands on the finished timeline — the sum of
+      // everything played before it, stubs included.
+      const boundarySeconds: number[] = [];
+      let elapsedSeconds = 0;
+      plan.playOrder.forEach((_segmentPath, index) => {
+        elapsedSeconds += plan.trimmedSeconds[index];
+        if (stubPathByIndex.has(index)) {
+          boundarySeconds.push(elapsedSeconds);
+          elapsedSeconds += style.transitions.durationSeconds;
+        }
+      });
+
+      let sfxPath: string | undefined;
+      try {
+        const candidate = path.join(tempDir, "sfx.m4a");
+        await this.runFfmpeg(
+          buildSfxTrackArgs({
+            cues: planSfxCues(boundarySeconds, durationSeconds),
+            durationSeconds,
+            outputPath: candidate,
+          }),
+          job.id,
+          null,
+          () => {},
+          shouldCancel,
+        );
+        sfxPath = candidate;
+      } catch (error) {
+        // Same rule as a failed stub: an enhancement never fails a render, but
+        // a cancellation must still propagate.
+        if (shouldCancel?.()) {
+          throw error;
+        }
+        onProgress("sound effects could not be built; continuing without them");
+      }
+
       // Fetched, never generated, and a video that has none simply renders
       // without it — see MusicService.collect's doc comment.
       let musicPath: string | undefined;
@@ -374,6 +411,7 @@ export class RenderService {
           outputPath,
           durationSeconds,
           musicPath,
+          sfxPath,
           audio: style.audio,
           captions: style.captions,
         }),
