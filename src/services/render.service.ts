@@ -334,9 +334,17 @@ export class RenderService {
     const activeVersion = video.script?.activeVersion ?? null;
     const rawCues = activeVersion?.cues;
     const scriptCues = Array.isArray(rawCues) ? (rawCues as unknown as ScriptCue[]) : [];
+    // `.trim()`, and it is the invariant the whole timing model rests on.
+    // Character offsets only convert to times because the alignment indexes
+    // exactly the string ElevenLabs was sent, which voiceover.service.ts
+    // trims (see cueWindows' doc comment, and script.service.ts's own
+    // trimmed anchoring). Anchoring against the untrimmed content shifts
+    // every offset by however much leading whitespace the content happens to
+    // carry, and each shifted character is a tenth of a second of picture
+    // playing against the wrong words.
     const anchored =
       activeVersion && scriptCues.length > 0
-        ? anchorCues(scriptCues, activeVersion.content).anchored
+        ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
         : [];
 
     const sectionPaths = anchored.map((_cue, index) => sectionClipPath(videoId, index));

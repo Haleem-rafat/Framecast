@@ -323,9 +323,16 @@ export class FootageService {
     const activeVersion = video.script?.activeVersion ?? null;
     const rawCues = activeVersion?.cues;
     const scriptCues = Array.isArray(rawCues) ? (rawCues as unknown as ScriptCue[]) : [];
+    // Trimmed for the same reason script.service.ts and voiceover.service.ts
+    // trim: the offsets these anchors produce are only meaningful against
+    // the string ElevenLabs is actually sent, which is `content.trim()`.
+    // Collection and render must agree on where a section starts, so this
+    // has to match render.service.ts's anchoring exactly — a clip fetched
+    // for one set of offsets and played against another is a picture that
+    // does not match its words.
     const anchored =
       activeVersion && scriptCues.length > 0
-        ? anchorCues(scriptCues, activeVersion.content).anchored
+        ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
         : [];
 
     if (anchored.length > 0) {

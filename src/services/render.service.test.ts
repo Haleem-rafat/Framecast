@@ -253,6 +253,10 @@ async function makeRenderableVideoWithCues(
      *  that section its anchor alone — spoken in well under a second, which is
      *  what puts `MIN_CLIP_SECONDS` in play. */
     fillerWords?: number[];
+    /** Whitespace stored in front of `ScriptVersion.content` but absent from
+     *  the narration, exactly as an operator's stray leading newline is: the
+     *  alignment indexes what ElevenLabs was sent, which is `content.trim()`. */
+    leadingWhitespace?: string;
   } = {},
 ): Promise<CuedVideo> {
   const project = await projectService.create(userId, {
@@ -282,9 +286,13 @@ async function makeRenderableVideoWithCues(
   const content = padding === 0 ? sections : `${sections} ${"z".repeat(padding - 1)}`;
   const durationSeconds = Math.round(content.length * SECONDS_PER_CHAR);
 
+  // What the column holds; `content` is what is spoken, and the two differ by
+  // exactly the leading whitespace a real operator's edit can leave behind.
+  const storedContent = `${options.leadingWhitespace ?? ""}${content}`;
+
   const script = await prisma.script.create({ data: { videoId: video.id } });
   const version = await prisma.scriptVersion.create({
-    data: { scriptId: script.id, version: 1, content, cues },
+    data: { scriptId: script.id, version: 1, content: storedContent, cues },
   });
   await prisma.script.update({
     where: { id: script.id },
@@ -599,6 +607,30 @@ describe("renderService.render — cut on the sentence", () => {
     // Two sections, two segments, and their lengths differ because the
     // sections take different times to say.
     expect(new Set(slots).size).toBe(2);
+  });
+
+  it("cuts on the same second whether or not the stored script has leading whitespace", async () => {
+    // The single invariant the timing model rests on: character offsets are
+    // only convertible to times because the alignment indexes exactly what
+    // ElevenLabs was sent, and voiceover.service.ts sends `content.trim()`.
+    // Anchoring against the untrimmed column shifts every offset by the
+    // leading whitespace — a tenth of a second of picture per character,
+    // playing against the wrong words for the rest of the video.
+    const { videoId, content } = await makeRenderableVideoWithCues(
+      [
+        { anchor: "first section opening words here", cue: "money" },
+        { anchor: "second section opening words here", cue: "cash" },
+      ],
+      { leadingWhitespace: "\n\n  " },
+    );
+
+    const { spawner, calls } = recordingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    const boundary = content.indexOf("second section opening words here") * SECONDS_PER_CHAR;
+    const slots = segmentSeconds(calls);
+
+    expect(slots[0]).toBeCloseTo(boundary + 0.5, 5);
   });
 
   it("covers the narration exactly, no matter how the sections divide it", async () => {
