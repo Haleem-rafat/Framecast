@@ -1,5 +1,6 @@
 import type { AiProviderType } from "@/generated/prisma/enums";
 import type { Alignment } from "@/lib/captions";
+import type { VoiceStyle } from "@/lib/video-style";
 
 export interface ScriptGenerationInput {
   prompt: string;
@@ -22,10 +23,23 @@ export interface TextGenerationProvider {
   generateScript(input: ScriptGenerationInput): Promise<ScriptGenerationResult>;
 }
 
+export interface DictionaryLocator {
+  id: string;
+  versionId: string;
+}
+
 export interface SpeechSynthesisInput {
   text: string;
   voiceId: string;
   apiKey: string;
+  voice?: VoiceStyle;
+  /**
+   * Server-side pronunciation dictionaries, applied without touching `text`.
+   * SSML in the text would land in the very stream the returned alignment
+   * describes, and lib/captions.ts turns that alignment straight into SRT —
+   * so markup would corrupt the captions in order to fix the audio.
+   */
+  dictionaryLocators?: DictionaryLocator[];
 }
 
 export interface SpeechSynthesisResult {

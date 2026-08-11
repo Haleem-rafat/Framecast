@@ -4,8 +4,12 @@ import { env } from "@/config/env";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
+import { DEFAULT_STYLE } from "@/lib/video-style";
 import { providerCredentialService } from "@/services/provider-credential.service";
+import type { AliasRule } from "@/services/pronunciation.service";
+import { pronunciationService } from "@/services/pronunciation.service";
 import { elevenLabsProvider } from "@/services/providers/elevenlabs.provider";
+import { gatewayProvider } from "@/services/providers/gateway.provider";
 import type {
   SpeechProvider,
   SpeechSynthesisResult,
@@ -40,6 +44,42 @@ const KNOWN_VOICE_NAMES: Record<string, string> = {
   CwhRBWXzGAHq8TQ4Fs17: "Roger",
 };
 
+/**
+ * Asks the script model for a respelling of each term the narration is likely
+ * to mangle, and turns the reply into alias rules.
+ *
+ * Applied without review, per the operator's decision. Two things make that
+ * cheap to live with: the rules are aliases rather than phonemes, so a bad
+ * entry produces a mispronunciation rather than invalid markup; and entries
+ * persist on the channel, so a wrong guess is corrected once and never recurs.
+ */
+async function proposeAliases(terms: string[], userId: string): Promise<AliasRule[]> {
+  try {
+    const result = await gatewayProvider.generateScript({
+      prompt:
+        "For each term below, give a plain-English respelling that a " +
+        "text-to-speech engine will pronounce correctly. Omit any term that " +
+        "is already pronounced correctly. Reply with JSON only, no prose: " +
+        `[{"term":"...","respelling":"..."}]. Terms: ${terms.join(", ")}`,
+      apiKey: (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ?? undefined,
+    });
+
+    const parsed = JSON.parse(result.content) as { term?: string; respelling?: string }[];
+
+    return parsed
+      .filter((entry) => entry.term && entry.respelling && entry.term !== entry.respelling)
+      .map((entry) => ({
+        string_to_replace: entry.term!,
+        type: "alias" as const,
+        alias: entry.respelling!,
+      }));
+  } catch {
+    // A model that answered with prose instead of JSON, or a provider that was
+    // down, costs pronunciation quality — never the narration itself.
+    return [];
+  }
+}
+
 export class VoiceOverService {
   constructor(private readonly provider: SpeechProvider = elevenLabsProvider) {}
 
@@ -56,6 +96,9 @@ export class VoiceOverService {
         status: true,
         script: { select: { activeVersion: { select: { content: true } } } },
         voiceOver: { select: { id: true } },
+        // The pronunciation dictionary is per channel, so terms learned on one
+        // video carry to the next on the same channel.
+        project: { select: { channelId: true } },
       },
     });
 
@@ -130,10 +173,23 @@ export class VoiceOverService {
     onProgress(`sending ${content.length.toLocaleString()} characters to ElevenLabs …`);
 
     try {
+      // A null locator is not an error — it means this narration is
+      // synthesised without pronunciation help, which is exactly what every
+      // video did before this existed. Nothing here may stop a video being
+      // narrated at all.
+      const channelId = video.project?.channelId;
+      const locator = channelId
+        ? await pronunciationService.ensureDictionary(apiKey, channelId, content, (terms) =>
+            proposeAliases(terms, userId),
+          )
+        : null;
+
       const synthesized = await this.provider.synthesize({
         text: content,
         voiceId,
         apiKey,
+        voice: DEFAULT_STYLE.voice,
+        dictionaryLocators: locator ? [locator] : undefined,
       });
       result = synthesized;
 

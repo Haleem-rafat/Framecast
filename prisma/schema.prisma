@@ -96,22 +96,27 @@ model Verification {
 // ---------------------------------------------------------------------------
 
 model Channel {
-  id               String    @id @default(uuid()) @db.Uuid
-  youtubeChannelId String
-  title            String
-  handle           String?
-  description      String?
-  thumbnailUrl     String?
+  id                               String    @id @default(uuid()) @db.Uuid
+  youtubeChannelId                 String
+  title                            String
+  handle                           String?
+  description                      String?
+  thumbnailUrl                     String?
   // OAuth tokens are written by the server only and never selected into client payloads.
-  accessToken      String
-  refreshToken     String
-  tokenExpiresAt   DateTime
-  scopes           String[]
-  isActive         Boolean   @default(true)
-  connectedAt      DateTime  @default(now())
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  deletedAt        DateTime?
+  accessToken                      String
+  refreshToken                     String
+  tokenExpiresAt                   DateTime
+  scopes                           String[]
+  isActive                         Boolean   @default(true)
+  /// ElevenLabs pronunciation dictionary for this channel. Entries accumulate
+  /// as scripts introduce new proper nouns, so a correction made once never
+  /// recurs on this channel. Null until the first script needs one.
+  pronunciationDictionaryId        String?
+  pronunciationDictionaryVersionId String?
+  connectedAt                      DateTime  @default(now())
+  createdAt                        DateTime  @default(now())
+  updatedAt                        DateTime  @updatedAt
+  deletedAt                        DateTime?
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -188,26 +193,26 @@ enum VideoStatus {
 }
 
 model Video {
-  id          String      @id @default(uuid()) @db.Uuid
-  title       String
-  description String?
-  topic       String?
-  status      VideoStatus @default(DRAFT)
+  id                String      @id @default(uuid()) @db.Uuid
+  title             String
+  description       String?
+  topic             String?
+  status            VideoStatus @default(DRAFT)
   // Denormalised only as a UI hint; the durable record lives in VideoStatusEvent.
-  failureReason   String?
-  durationSeconds Int?
+  failureReason     String?
+  durationSeconds   Int?
   /// Worker lease. Null when unclaimed; a value in the past means the holder
   /// died and the video is claimable again. A lock would strand it forever.
   leaseExpiresAt    DateTime?
   /// Guards a deterministically-failing video against retrying until the end of
   /// time, spending real provider money each round.
-  attempts          Int       @default(0)
+  attempts          Int         @default(0)
   /// Cooperative cancellation. The worker owns the FFmpeg child process, so
   /// only it can stop one; it checks this on every heartbeat.
   cancelRequestedAt DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  deletedAt       DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  deletedAt         DateTime?
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -265,15 +270,15 @@ model Script {
 }
 
 model ScriptVersion {
-  id        String   @id @default(uuid()) @db.Uuid
+  id        String          @id @default(uuid()) @db.Uuid
   version   Int
   content   String
-  wordCount Int      @default(0)
+  wordCount Int             @default(0)
   // The rendered prompt actually sent, retained for reproducibility.
   prompt    String?
   model     String?
   provider  AiProviderType?
-  createdAt DateTime @default(now())
+  createdAt DateTime        @default(now())
 
   scriptId String @db.Uuid
   script   Script @relation("ScriptVersions", fields: [scriptId], references: [id], onDelete: Cascade)
@@ -657,9 +662,9 @@ enum LogLevel {
 }
 
 model ActivityLog {
-  id     String   @id @default(uuid()) @db.Uuid
-  level  LogLevel @default(INFO)
-  action String
+  id         String   @id @default(uuid()) @db.Uuid
+  level      LogLevel @default(INFO)
+  action     String
   /// Entity type + id the action targeted, for filtering without a polymorphic FK.
   entityType String?
   entityId   String?  @db.Uuid

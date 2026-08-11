@@ -23,6 +23,9 @@ interface ElevenLabsTimestampedResponse {
   alignment: ElevenLabsAlignment;
 }
 
+/** The endpoint accepts at most three; more is a 422 rather than a truncation. */
+const MAX_DICTIONARY_LOCATORS = 3;
+
 /** 429 and 5xx are transient; everything else means the request itself is wrong. */
 function isRetryable(status: number): boolean {
   return status === 429 || status >= 500;
@@ -46,9 +49,32 @@ export class ElevenLabsProvider implements SpeechProvider {
             "xi-api-key": input.apiKey,
             "Content-Type": "application/json",
           },
+          // Every optional field is omitted rather than sent as undefined, so
+          // a caller that passes neither produces exactly the request this
+          // made before they existed.
           body: JSON.stringify({
             text: input.text,
             model_id: env.ELEVENLABS_MODEL_ID,
+            ...(input.voice
+              ? {
+                  voice_settings: {
+                    stability: input.voice.stability,
+                    style: input.voice.style,
+                    speed: input.voice.speed,
+                  },
+                  seed: input.voice.seed,
+                }
+              : {}),
+            ...(input.dictionaryLocators?.length
+              ? {
+                  pronunciation_dictionary_locators: input.dictionaryLocators
+                    .slice(0, MAX_DICTIONARY_LOCATORS)
+                    .map((locator) => ({
+                      pronunciation_dictionary_id: locator.id,
+                      version_id: locator.versionId,
+                    })),
+                }
+              : {}),
           }),
         },
       );

@@ -53,6 +53,18 @@ describe("JamendoProvider", () => {
     expect(url.searchParams.get("ccnc")).toBe("false");
   });
 
+  it("excludes no-derivatives licences too", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ results: [track] }));
+    global.fetch = fetchMock;
+
+    await provider().search("calm ambient", 3);
+
+    // The bed is trimmed, gain-staged and ducked under narration, which is
+    // plausibly an adaptation. A real search does return BY-ND tracks.
+    const url = new URL(fetchMock.mock.calls[0][0].toString());
+    expect(url.searchParams.get("ccnd")).toBe("false");
+  });
+
   it("skips a track whose artist has disabled downloads", async () => {
     global.fetch = vi
       .fn()
@@ -90,7 +102,12 @@ describe("JamendoProvider", () => {
   });
 
   it("refuses to search when no client id is configured", async () => {
-    await expect(new JamendoProvider(undefined).search("calm", 3)).rejects.toMatchObject({
+    // An empty string rather than `undefined`: the constructor defaults an
+    // omitted argument to env.JAMENDO_CLIENT_ID, so passing undefined would
+    // pick up a real key wherever one is configured and make this test pass or
+    // fail depending on the machine. Both values are equally unconfigured to
+    // the guard; only this one is independent of the environment.
+    await expect(new JamendoProvider("").search("calm", 3)).rejects.toMatchObject({
       retryable: false,
     });
   });

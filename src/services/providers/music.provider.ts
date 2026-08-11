@@ -55,6 +55,12 @@ export class JamendoProvider implements MusicProvider {
     url.searchParams.set("search", query);
     url.searchParams.set("audioformat", "mp32");
     url.searchParams.set("ccnc", "false");
+    // No-derivatives is excluded for a subtler reason than non-commercial.
+    // The bed is trimmed to length, gain-staged and ducked under narration,
+    // and synchronising audio to picture that way is plausibly an adaptation —
+    // exactly the ambiguity this provider exists to stay out of. Real BY-ND
+    // tracks do come back from this search, so this is not hypothetical.
+    url.searchParams.set("ccnd", "false");
     // Instrumental beds only — a track with vocals competes with the narration
     // rather than sitting under it.
     url.searchParams.set("vocalinstrumental", "instrumental");
