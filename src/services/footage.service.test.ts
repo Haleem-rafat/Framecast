@@ -347,14 +347,16 @@ describe("footageService.collect with anchored cues", () => {
   let footageService: FootageService;
   let pexelsSearch: ReturnType<typeof cueAwareSearch>;
   let pixabaySearch: ReturnType<typeof cueAwareSearch>;
+  let downloadClip: ClipDownloader;
   let cueVideoIds: string[];
 
   beforeEach(() => {
     pexelsSearch = cueAwareSearch("PEXELS");
     pixabaySearch = cueAwareSearch("PIXABAY");
+    downloadClip = makeDownloader();
     footageService = new FootageService(
       { PEXELS: { search: pexelsSearch }, PIXABAY: { search: pixabaySearch } },
-      makeDownloader(),
+      downloadClip,
     );
     cueVideoIds = [];
   });
@@ -378,12 +380,20 @@ describe("footageService.collect with anchored cues", () => {
    * given order, so `content.indexOf` finds every anchor after the previous
    * one the way `anchorCues` requires. A voiceOver is created too, since
    * `collect` refuses a video with no narration regardless of cues.
+   *
+   * `topic` defaults to "inflation", which `cueAwareSearch` treats as any
+   * other non-sentinel query (two real candidates back) — override it to
+   * "__no_results__" when a test needs the topic-level fallback pool itself
+   * to come up empty.
    */
-  async function makeVideoWithCues(cues: { anchor: string; cue: string }[]): Promise<string> {
+  async function makeVideoWithCues(
+    cues: { anchor: string; cue: string }[],
+    options?: { topic?: string },
+  ): Promise<string> {
     const video = await videoService.create(userId, {
       projectId,
       title: "Cue-anchored test video",
-      topic: "inflation",
+      topic: options?.topic ?? "inflation",
     });
     cueVideoIds.push(video.id);
 
@@ -503,5 +513,150 @@ describe("footageService.collect with anchored cues", () => {
     expect(result.clipCount).toBe(5);
     const assets = await findClipAssets();
     expect(assets).toHaveLength(5);
+  });
+
+  it(
+    "caps unique downloads per video and reuses the nearest section's clip beyond the cap",
+    async () => {
+      // 25 cues, each with a distinct query, comfortably clears
+      // footage.service.ts's MAX_UNIQUE_SECTION_CLIPS (20) — the same
+      // incident MAX_UNIQUE_CLIPS already guards on the topic-level path
+      // (see that constant's comment), reachable here too because a real
+      // script produces roughly one cue every 20-25 words.
+      const cueCount = 25;
+      const cap = 20;
+      const cues = Array.from({ length: cueCount }, (_, i) => ({
+        anchor: `Section number ${i} opens with these exact words`,
+        cue: `topic-${i}`,
+      }));
+      const videoId = await makeVideoWithCues(cues);
+
+      await footageService.collect(userId, videoId);
+
+      const assets = await prisma.asset.findMany({
+        where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+        orderBy: { storagePath: "asc" },
+      });
+
+      // Every section still gets a clip — numbering stays dense past the cap.
+      expect(assets.map((a) => a.storagePath)).toEqual(
+        Array.from(
+          { length: cueCount },
+          (_, i) => `videos/${videoId}/clips/section-${String(i).padStart(3, "0")}.mp4`,
+        ),
+      );
+
+      // But only `cap` of those are genuinely distinct clips...
+      const uniqueExternalIds = new Set(assets.map((a) => a.externalId));
+      expect(uniqueExternalIds.size).toBe(cap);
+
+      // ...because collection stopped downloading new ones once the cap was
+      // hit, reusing an already-collected section's clip for the rest
+      // instead of the unbounded per-section fetch this cap exists to
+      // prevent.
+      expect(downloadClip).toHaveBeenCalledTimes(cap);
+    },
+    30_000,
+  );
+
+  it("searches the topic pool once and shares it across every section that needs it", async () => {
+    const videoId = await makeVideoWithCues([
+      { anchor: "first section opening words here", cue: "__no_results__" },
+      { anchor: "second section opening words here", cue: "__no_results__" },
+    ]);
+
+    await footageService.collect(userId, videoId);
+
+    // Both sections fall through their own search and Pixabay to the
+    // shared topic pool (query = the video's topic, "inflation"), but that
+    // pool must be searched only once, not once per needy section.
+    const topicSearches = pexelsSearch.mock.calls.filter(([q]) => q === "inflation");
+    expect(topicSearches).toHaveLength(1);
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+    expect(assets).toHaveLength(2);
+
+    // The pool has more than one candidate, so the two sections that shared
+    // it still don't end up with the same picture.
+    const externalIds = assets.map((a) => a.externalId);
+    expect(new Set(externalIds).size).toBe(2);
+  });
+
+  it("reuses a sibling section's clip, keeping numbering dense, when the topic pool itself is dry", async () => {
+    const videoId = await makeVideoWithCues(
+      [
+        { anchor: "first section opening words here", cue: "money" },
+        { anchor: "second section opening words here", cue: "__no_results__" },
+      ],
+      { topic: "__no_results__" },
+    );
+
+    await footageService.collect(userId, videoId);
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+      orderBy: { storagePath: "asc" },
+    });
+
+    // Section 1's own search, Pixabay, and the (dry) topic pool all come up
+    // empty, but section 0 already has a clip — dense numbering wins over a
+    // gap, so section 1 reuses it rather than being skipped.
+    expect(assets.map((a) => a.storagePath)).toEqual([
+      `videos/${videoId}/clips/section-000.mp4`,
+      `videos/${videoId}/clips/section-001.mp4`,
+    ]);
+    expect(assets[1].externalId).toBe(assets[0].externalId);
+  });
+
+  it("leaves a genuine gap, without crashing, when nothing is available anywhere for a section", async () => {
+    // Nothing to reuse either: this is the one video-wide case where every
+    // tier — the cue's own search, Pixabay, and the topic pool — comes back
+    // empty for every section, so there is no sibling clip to borrow from.
+    const videoId = await makeVideoWithCues(
+      [{ anchor: "first section opening words here", cue: "__no_results__" }],
+      { topic: "__no_results__" },
+    );
+
+    await expect(footageService.collect(userId, videoId)).resolves.toBeDefined();
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+    expect(assets).toHaveLength(0);
+  });
+
+  it("degrades to the next tier, rather than aborting the video, when a per-cue provider throws", async () => {
+    const videoId = await makeVideoWithCues([
+      { anchor: "first section opening words here", cue: "money" },
+    ]);
+
+    // Pexels fails outright for this cue (a transient 503, say) instead of
+    // just returning no results — searchOrEmpty must absorb that the same
+    // way it absorbs an empty result, falling through to Pixabay rather
+    // than failing the whole collect() call over one section's bad luck.
+    const throwingPexels: StockFootageProvider = {
+      search: vi.fn(async () => {
+        throw new ProviderError("PEXELS", "Pexels request failed with status 503.", true);
+      }),
+    };
+    const rescueClip = makeClip("PIXABAY", "pix-rescue");
+    const workingPixabay: StockFootageProvider = {
+      search: vi.fn(async () => [rescueClip]),
+    };
+    const service = new FootageService(
+      { PEXELS: throwingPexels, PIXABAY: workingPixabay },
+      makeDownloader(),
+    );
+
+    await expect(service.collect(userId, videoId)).resolves.toBeDefined();
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+    expect(assets).toHaveLength(1);
+    expect(assets[0].externalId).toBe("pix-rescue");
+    expect(assets[0].provider).toBe("PIXABAY");
   });
 });
