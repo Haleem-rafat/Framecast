@@ -268,10 +268,14 @@ describe("concatListLine", () => {
 });
 
 describe("buildSegmentArgs", () => {
-  const base = { clipPath: "/tmp/a.mp4", outputPath: "/tmp/segment-0.mp4" };
+  // `clipSeconds` is part of the base rather than added per test: it is
+  // required, because every slot length now comes from where its section
+  // falls in the narration and there is no sane length to invent for a caller
+  // that forgot to say.
+  const base = { clipPath: "/tmp/a.mp4", outputPath: "/tmp/segment-0.mp4", clipSeconds: 12 };
 
   it("bounds the input so an infinite loop cannot decode forever", () => {
-    const args = buildSegmentArgs({ ...base, clipSeconds: 12 });
+    const args = buildSegmentArgs(base);
 
     // -stream_loop -1 makes the input endless; the input-level -t is the only
     // thing that stops it, and it must come before -i to apply to the input.

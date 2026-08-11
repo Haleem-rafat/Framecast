@@ -9,7 +9,6 @@ import type {
 const WIDTH = 1920;
 const HEIGHT = 1080;
 const FPS = 30;
-const DEFAULT_CLIP_SECONDS = 12;
 
 /**
  * Rendering happens in two passes, and the reason is memory.
@@ -97,8 +96,16 @@ export interface SegmentInput {
   outputPath: string;
   /** How long a slot this clip fills — one script section's worth of
    *  narration, so the picture cuts where the sentence does. Short clips loop
-   *  to fill it. */
-  clipSeconds?: number;
+   *  to fill it.
+   *
+   *  Required, and it used to default to a flat twelve seconds. That default
+   *  is what the per-section timing model replaced: `planRender` demands a
+   *  duration per clip and is the only thing that constructs a SegmentInput,
+   *  so nothing could reach the fallback any more — and a silent twelve
+   *  seconds is the worst possible value to fall back to, since a slot of the
+   *  wrong length does not look wrong, it looks like a finished video whose
+   *  picture runs ahead of its words. */
+  clipSeconds: number;
   /** Position in the play order. Selects the pan direction, so an unchanged
    *  video re-rendered produces identical arguments. */
   index?: number;
@@ -161,7 +168,7 @@ function buildVideoFilter(input: SegmentInput, clipSeconds: number): string {
  * unbounded stream until something stops it.
  */
 export function buildSegmentArgs(input: SegmentInput): string[] {
-  const clipSeconds = input.clipSeconds ?? DEFAULT_CLIP_SECONDS;
+  const clipSeconds = input.clipSeconds;
 
   return [
     "-y",
