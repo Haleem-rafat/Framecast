@@ -97,26 +97,27 @@ of that and does not change pacing.
 
 ## 1. Motion
 
-Each segment gets a slow Ken Burns move — a push in, a pull out, or a drift
-left or right — applied in `buildSegmentArgs`, where that clip's decoder is
-already open.
+Each segment gets a slow drift — left, right, up or down — applied in
+`buildSegmentArgs`, where that clip's decoder is already open.
 
-### Animated crop, not `zoompan`
+### Pan, not zoom
 
-`zoompan` is the obvious filter and the wrong one here. It computes zoom per
-frame against integer pixel positions and visibly judders on 1080p sources
-unless the input is pre-upscaled far past the output, which costs memory this
-worker does not have.
+A `crop` filter's output size must stay constant, so an animated crop can
+translate its window but cannot resize it. That rules out push-in and pull-out
+here: zoom needs `zoompan`, which computes per-frame scaling against integer
+pixel positions and visibly judders unless the input is pre-upscaled far past
+the output — memory this worker does not have.
 
-Instead pass one scales the clip to 1.15× the frame and animates a `crop`
-window across `t`. The motion is continuous rather than quantised, the scale
-filter was already in the chain, and nothing new is held open. Cost is roughly
-a fifth more CPU on a pass that is already the cheap one.
+So pass one scales the clip to 1.15× the frame and animates a `crop` window
+across `t`, giving a pan. The scale filter was already in the chain and nothing
+new is held open; cost is roughly a fifth more CPU on the cheaper of the two
+passes. Pan alone removes the slideshow feel, which is the actual complaint.
+Zoom is deferred rather than faked.
 
 ### Direction and rate
 
-Direction is chosen from the segment's index, cycling through push in, pull
-out, drift left, drift right. Two consequences, both wanted: adjacent shots
+Direction is chosen from the segment's index, cycling through left, right, up
+and down. Two consequences, both wanted: adjacent shots
 never move the same way, and a re-render of an unchanged video produces an
 identical file.
 
@@ -347,6 +348,10 @@ Tests use throwaway users via `src/test/fixtures.ts`, never
 `prisma.user.findFirstOrThrow`.
 
 ## Out of scope
+
+Zoom (push in, pull out), for the reason given in section 1: it needs
+`zoompan` and a pre-upscale the worker cannot afford. Worth revisiting if the
+render ever moves to a larger container.
 
 Content-triggered sound effects — rain, crowds, keyboards anchored to what the
 narration is describing — need cue anchoring of their own and are their own
