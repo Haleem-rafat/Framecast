@@ -414,6 +414,31 @@ describe("pipelineService.getState — stage derivation", () => {
     expect(footageStage?.detail).not.toContain("MB");
   });
 
+  it("still shows footage as done, with its original detail, after publish reclaims its clips", async () => {
+    // Mirrors what publish.service.ts's reclaimClipStorage actually leaves
+    // behind: the clip Assets soft-deleted (deletedAt set), not removed —
+    // it's the only writer of Asset.deletedAt in the codebase. Without the
+    // read model tolerating that, a published video's footage stage would
+    // regress from "done" back to "pending" the moment its clips are
+    // reclaimed, even though the video finished the pipeline and is live on
+    // YouTube.
+    await addVoiceOver();
+    await addSubtitleAsset();
+    await addClipAssets(2, 1, 10 * 1024 * 1024);
+    await prisma.asset.updateMany({
+      where: { storagePath: { startsWith: `videos/${videoId}/clips/` } },
+      data: { deletedAt: new Date() },
+    });
+    await setVideoStatus("PUBLISHED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "footage")).toBe("done");
+    const footageStage = state.stages.find((s) => s.key === "footage");
+    expect(footageStage?.detail).toContain("3 clips");
+    expect(footageStage?.detail).toContain("30.0MB");
+  });
+
   it("includes the approved script's character count in the narration detail", async () => {
     await addApprovedScript("x".repeat(1234));
     await addVoiceOver(45);

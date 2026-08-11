@@ -251,7 +251,7 @@ export class PublishService {
     // PUBLISHED at this point; a storage hiccup while reclaiming clips must
     // never unwind that. See reclaimClipStorage's own doc comment for what
     // happens if this fails.
-    await this.reclaimClipStorage(videoId);
+    await this.reclaimClipStorage(userId, videoId);
 
     return { youtubeVideoId };
   }
@@ -284,9 +284,26 @@ export class PublishService {
    * YouTube. Leftover clips cost storage; propagating this failure would
    * cost the *publish itself* looking like it failed when it plainly did
    * not — a strictly worse outcome for a step whose only job is tidying up.
+   *
+   * A `console.error` alone would be invisible to the operator — nothing in
+   * this app surfaces server logs to them. `ActivityLog` is this codebase's
+   * existing channel for exactly that (see `ScriptService.generate` and
+   * `VoiceOverService`'s own writes to it), so a failed reclaim also gets a
+   * `WARN` row there: several hundred MB left behind is worth a visible
+   * signal somewhere the operator actually looks, even though — unlike a
+   * failed publish — it's not worth blocking or retrying automatically over.
+   * That write is itself best-effort: this method's only hard promise is
+   * that it never throws back into `publish()`.
    */
-  private async reclaimClipStorage(videoId: string): Promise<void> {
+  private async reclaimClipStorage(userId: string, videoId: string): Promise<void> {
     try {
+      // kind: "VIDEO" *and* the `clips/` sub-prefix, not just one or the
+      // other — narrower than either alone is what keeps this from ever
+      // reaching narration (AUDIO), music (MUSIC) or alignment (SUBTITLE)
+      // data that happens to share the same `videos/{videoId}/` prefix.
+      // Losing any of those to a widened query here would be unrecoverable,
+      // which is exactly what the "clips only" test in
+      // publish.service.test.ts exists to catch.
       const clips = await prisma.asset.findMany({
         where: {
           kind: "VIDEO",
@@ -306,6 +323,11 @@ export class PublishService {
       // no-op the next `.remove()` call would silently tolerate) — not a row
       // that claims to be deleted while ~400MB of orphaned bytes sit in the
       // bucket forever with nothing left pointing at them to clean up.
+      // `removeObjects` itself throws if it can only account for *some* of
+      // the requested paths (see its own doc comment), so a partial storage
+      // failure lands in the catch below with every row still `deletedAt:
+      // null` — never the "some objects gone, all rows marked deleted"
+      // combination that ordering exists to prevent.
       await removeObjects(clips.map((clip) => clip.storagePath));
 
       await prisma.asset.updateMany({
@@ -317,6 +339,23 @@ export class PublishService {
       console.error(
         `Could not reclaim clip storage for video ${videoId} after publish: ${message}`,
       );
+
+      try {
+        await prisma.activityLog.create({
+          data: {
+            userId,
+            level: "WARN",
+            action: "publish.reclaimClipStorage",
+            entityType: "Video",
+            entityId: videoId,
+            message: `Could not reclaim clip storage after publish: ${message}`,
+          },
+        });
+      } catch {
+        // The console.error above already recorded this run's failure;
+        // losing the operator-visible copy too isn't worth a second
+        // failure path here.
+      }
     }
   }
 

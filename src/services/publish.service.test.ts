@@ -68,18 +68,24 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Swept first, and ahead of `deleteTestUser` specifically: this is the one
+  // cleanup step that touches the real, shared bucket rather than only this
+  // test's own throwaway rows, so it must run even if something later in
+  // this function throws. If `deleteTestUser` ran first and rejected, an
+  // `await` sequence with the bucket sweep after it would never reach that
+  // sweep at all, leaking a real object into the operator's storage.
+  const paths = clipStoragePaths.splice(0);
+  if (paths.length > 0) {
+    await removeObjects(paths).catch(() => {});
+    await prisma.asset.deleteMany({ where: { storagePath: { in: paths } } }).catch(() => {});
+  }
+
   await deleteTestUser(userId);
   await Promise.all(
     publishedVideoIds.splice(0).map((id) =>
       deleteRenderFile(renderBlobPathname(id)).catch(() => {}),
     ),
   );
-
-  const paths = clipStoragePaths.splice(0);
-  if (paths.length > 0) {
-    await removeObjects(paths).catch(() => {});
-    await prisma.asset.deleteMany({ where: { storagePath: { in: paths } } });
-  }
 });
 
 interface FetchCall {
@@ -463,37 +469,46 @@ describe("publishService.publish — concurrency", () => {
   });
 });
 
+/**
+ * Writes one real clip: a bucket object plus its matching `Asset` row, in
+ * the exact shape `footage.service.ts`'s `collectPerCue` produces for a
+ * script with b-roll cues. Pushes the path onto `clipStoragePaths`
+ * immediately after the `putObject` that actually created it succeeds —
+ * *before* the `asset.create` that follows — so a failure in the DB write
+ * still leaves the object tracked for `afterEach` to sweep. A `Promise.all`
+ * over several of these calls would push nothing until every call settles,
+ * which is exactly what let a first clip's real object go untracked if a
+ * later one's `putObject` rejected.
+ */
+async function createClipAsset(
+  videoId: string,
+  index: number,
+): Promise<string> {
+  const path = storagePath(videoId, "clips", `section-${String(index).padStart(3, "0")}.mp4`);
+  await putObject(path, Buffer.from(`fake-clip-${RUN}-${index}`), "video/mp4");
+  clipStoragePaths.push(path);
+  await prisma.asset.create({
+    data: {
+      kind: "VIDEO",
+      storagePath: path,
+      mimeType: "video/mp4",
+      sizeBytes: BigInt(16),
+      provider: "PEXELS",
+      externalId: `clip-${RUN}-${index}`,
+    },
+  });
+  return path;
+}
+
 describe("publishService.publish — clip storage reclaim", () => {
   it("deletes the video's stock clips once it is published", async () => {
     const { videoId } = await makePublishableVideo();
 
-    // Two real objects in the bucket, in the exact shape
-    // footage.service.ts's collectPerCue writes for a script with b-roll
-    // cues (one Asset of kind VIDEO per section, under the video's clips/
-    // prefix) — not just DB rows, so this exercises the real
-    // `removeObjects` call against the storage client, not only Prisma.
-    const paths = await Promise.all(
-      [0, 1].map(async (index) => {
-        const path = storagePath(
-          videoId,
-          "clips",
-          `section-${String(index).padStart(3, "0")}.mp4`,
-        );
-        await putObject(path, Buffer.from(`fake-clip-${RUN}-${index}`), "video/mp4");
-        await prisma.asset.create({
-          data: {
-            kind: "VIDEO",
-            storagePath: path,
-            mimeType: "video/mp4",
-            sizeBytes: BigInt(16),
-            provider: "PEXELS",
-            externalId: `clip-${RUN}-${index}`,
-          },
-        });
-        return path;
-      }),
-    );
-    clipStoragePaths.push(...paths);
+    // Sequential, not Promise.all: see createClipAsset's own doc comment —
+    // each path is tracked for cleanup the moment its object exists, not
+    // only once every clip in the batch has finished.
+    const path0 = await createClipAsset(videoId, 0);
+    const path1 = await createClipAsset(videoId, 1);
 
     // Never the default (real `fetch`) PublishService — every publish in
     // this file goes through the injected fake, so this never risks a real
@@ -514,26 +529,14 @@ describe("publishService.publish — clip storage reclaim", () => {
 
     // Not just soft-deleted in Postgres — the underlying bucket objects are
     // gone too, which is the actual storage this test exists to reclaim.
-    await expect(getObject(paths[0])).rejects.toThrow();
-    await expect(getObject(paths[1])).rejects.toThrow();
+    await expect(getObject(path0)).rejects.toThrow();
+    await expect(getObject(path1)).rejects.toThrow();
   });
 
   it("keeps clips when publishing fails, since a FAILED video may still be retried", async () => {
     const { videoId } = await makePublishableVideo();
 
-    const path = storagePath(videoId, "clips", "section-000.mp4");
-    await putObject(path, Buffer.from(`fake-clip-${RUN}-failed`), "video/mp4");
-    await prisma.asset.create({
-      data: {
-        kind: "VIDEO",
-        storagePath: path,
-        mimeType: "video/mp4",
-        sizeBytes: BigInt(16),
-        provider: "PEXELS",
-        externalId: `clip-${RUN}-failed`,
-      },
-    });
-    clipStoragePaths.push(path);
+    const path = await createClipAsset(videoId, 0);
 
     const service = new PublishService(createUploadFetch({ failUpload: true }).fetchImpl);
     await expect(service.publish(userId, videoId)).rejects.toThrow();
@@ -546,5 +549,84 @@ describe("publishService.publish — clip storage reclaim", () => {
       },
     });
     expect(clips).toHaveLength(1);
+
+    // Asymmetric on purpose: this test's whole point is that a *failed*
+    // publish must leave the clip alone completely — not just the Asset
+    // row (see the "deletes the video's stock clips" test above for the
+    // successful-publish, both-are-gone half of this behaviour). An
+    // implementation that deleted the bucket object unconditionally, before
+    // ever checking whether the publish itself succeeded, would still pass
+    // the row-only assertion above; this is what actually catches that.
+    await expect(getObject(path)).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it("never touches sibling assets outside clips/ — narration, captions or music", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    await createClipAsset(videoId, 0);
+
+    // One sibling per kind that shares the video's `videos/{videoId}/`
+    // prefix but lives outside `clips/` — exactly what a reclaim query
+    // widened to the video-wide prefix, or one that dropped its `kind:
+    // "VIDEO"` filter, would start deleting. Every one of these tests
+    // create only clip assets, so a regression that broadened the scope
+    // would still pass them all; this is the test the global "never delete
+    // or modify rows you did not create" constraint is really about, since
+    // narration and alignment cost a paid ElevenLabs call to regenerate and
+    // a render's exact music track can't be regenerated to match at all.
+    const narrationPath = storagePath(videoId, "audio", "narration.mp3");
+    const captionsPath = storagePath(videoId, "captions", "alignment.json");
+    const musicPath = storagePath(videoId, "music", "track.mp3");
+
+    await putObject(narrationPath, Buffer.from(`fake-narration-${RUN}`), "audio/mpeg");
+    clipStoragePaths.push(narrationPath);
+    await putObject(captionsPath, Buffer.from(`fake-captions-${RUN}`), "application/json");
+    clipStoragePaths.push(captionsPath);
+    await putObject(musicPath, Buffer.from(`fake-music-${RUN}`), "audio/mpeg");
+    clipStoragePaths.push(musicPath);
+
+    const narrationAsset = await prisma.asset.create({
+      data: { kind: "AUDIO", storagePath: narrationPath, mimeType: "audio/mpeg", provider: "ELEVENLABS" },
+    });
+    const captionsAsset = await prisma.asset.create({
+      data: { kind: "SUBTITLE", storagePath: captionsPath, mimeType: "application/json", provider: "ELEVENLABS" },
+    });
+    const musicAsset = await prisma.asset.create({
+      data: {
+        kind: "MUSIC",
+        storagePath: musicPath,
+        mimeType: "audio/mpeg",
+        provider: "PIXABAY",
+        prompt: 'Music: "Test Track" by Artist (https://creativecommons.org/licenses/by/3.0/)',
+      },
+    });
+
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    await service.publish(userId, videoId);
+
+    // The sibling rows are untouched — not deleted, not soft-deleted.
+    const survivors = await prisma.asset.findMany({
+      where: { id: { in: [narrationAsset.id, captionsAsset.id, musicAsset.id] } },
+    });
+    expect(survivors).toHaveLength(3);
+    for (const asset of survivors) {
+      expect(asset.deletedAt).toBeNull();
+    }
+
+    // Not just the rows — the actual bucket objects too.
+    await expect(getObject(narrationPath)).resolves.toBeInstanceOf(Buffer);
+    await expect(getObject(captionsPath)).resolves.toBeInstanceOf(Buffer);
+    await expect(getObject(musicPath)).resolves.toBeInstanceOf(Buffer);
+
+    // And the clip itself was still reclaimed — this isn't just testing
+    // that reclaim silently does nothing.
+    const clips = await prisma.asset.findMany({
+      where: {
+        kind: "VIDEO",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/clips/` },
+      },
+    });
+    expect(clips).toHaveLength(0);
   });
 });

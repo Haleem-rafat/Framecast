@@ -125,19 +125,40 @@ export async function getObject(path: string): Promise<Buffer> {
  * A no-op on an empty list rather than a network round trip for nothing —
  * callers that computed zero paths to delete (e.g. a video with no clips
  * left) shouldn't have to guard the call themselves.
+ *
+ * A caller relying on this to have actually deleted everything it asked for
+ * (`publish.service.ts`'s reclaim runs the storage delete *before* soft-
+ * deleting the matching rows, specifically so a failure here leaves the rows
+ * live rather than orphaning the bytes — see its own comment) needs more
+ * than "the call didn't throw": Supabase's `.remove()` can come back with no
+ * `error` at all while still only having deleted some of the requested
+ * paths — one bad object doesn't necessarily fail the whole batch the way a
+ * network error would. Its response's `data` is the list it actually
+ * removed, so that count is checked against what was asked for rather than
+ * trusting `error`'s absence to mean "all of them."
  */
 export async function removeObjects(paths: string[]): Promise<void> {
   if (paths.length === 0) {
     return;
   }
 
-  const { error } = await client.storage
+  const { data, error } = await client.storage
     .from(env.SUPABASE_STORAGE_BUCKET)
     .remove(paths);
 
   if (error) {
     throw new InternalError(
       `Delete failed for ${paths.length} object(s) (e.g. ${paths[0]}): ${error.message}`,
+    );
+  }
+
+  const deletedCount = data?.length ?? 0;
+  if (deletedCount !== paths.length) {
+    const deletedNames = new Set((data ?? []).map((object) => object.name));
+    const missing = paths.filter((path) => !deletedNames.has(path));
+    throw new InternalError(
+      `Delete reported success but only removed ${deletedCount}/${paths.length} ` +
+        `object(s) — missing e.g. ${missing[0]}.`,
     );
   }
 }

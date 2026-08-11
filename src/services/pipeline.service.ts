@@ -232,9 +232,21 @@ export class PipelineService {
     // render.service.ts and footage.service.ts already established. There's
     // no relation to walk here, so this can't be folded into the `select`
     // above the way voiceOver/publication/renderJobs are.
+    //
+    // Deliberately no `deletedAt: null` filter. `Asset.deletedAt` has
+    // exactly one writer in this codebase: publish.service.ts's
+    // reclaimClipStorage, which soft-deletes a video's clip rows once it's
+    // PUBLISHED (their bucket objects are gone by then, but the rows — and
+    // their `provider`/`sizeBytes` — are left as-is). Excluding those rows
+    // here would make a published video's footage stage regress from "done"
+    // back to "pending" the moment its clips are reclaimed, reading as an
+    // unfinished video that is, in fact, live on YouTube. This read model
+    // never returns a storage path (see the class doc comment above), so
+    // surfacing a reclaimed clip's kind/provider/sizeBytes here — the same
+    // "N clips · Pexels 4 · 312MB" line it would have shown before
+    // reclaim — leaks nothing; it's just history the row still remembers.
     const assets = await prisma.asset.findMany({
       where: {
-        deletedAt: null,
         storagePath: { startsWith: `videos/${videoId}/` },
         kind: { in: ["VIDEO", "SUBTITLE"] },
       },
