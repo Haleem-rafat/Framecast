@@ -16,6 +16,7 @@ import {
   OnboardingChecklistCard,
   OnboardingChecklistCardSkeleton,
 } from "@/features/onboarding/components/onboarding-checklist-card";
+import { ProductTour } from "@/features/onboarding/components/product-tour";
 import { dashboardService } from "@/services/dashboard.service";
 import { onboardingService } from "@/services/onboarding.service";
 import { requireUser } from "@/server/session";
@@ -32,7 +33,14 @@ async function DashboardContent() {
 
   return (
     <>
-      <OnboardingChecklistCard checklist={checklist} />
+      {/* The tour runs only for an operator who still has setup left. Someone
+       * already producing videos has answered every question it asks, and
+       * interrupting them to explain their own app is worse than silence. */}
+      <ProductTour autoStart={!checklist.isComplete} />
+
+      <div data-tour="tour-checklist">
+        <OnboardingChecklistCard checklist={checklist} />
+      </div>
       <DashboardStats stats={stats} />
       <div className="grid gap-4 lg:grid-cols-3">
         <RecentVideosCard videos={recentVideos} />
@@ -58,21 +66,26 @@ function DashboardContentSkeleton() {
 export default function DashboardPage() {
   return (
     <>
-      <PageHeader
-        title="Dashboard"
-        description="Everything moving through your production pipeline."
-        actions={
-          // /automation isn't built yet — disabled here for the same reason
-          // it's disabled in the sidebar: don't link to a page that 404s.
-          <Button disabled>
-            <Sparkles />
-            One-click generate
-            <Badge variant="secondary" className="ml-1">
-              Soon
-            </Badge>
-          </Button>
-        }
-      />
+      {/* The tour opens here — the one place on screen that isn't a specific
+       * feature, so the first card can say what the app is before pointing at
+       * any part of it. */}
+      <div data-tour="tour-welcome">
+        <PageHeader
+          title="Dashboard"
+          description="Everything moving through your production pipeline."
+          actions={
+            // /automation isn't built yet — disabled here for the same reason
+            // it's disabled in the sidebar: don't link to a page that 404s.
+            <Button disabled>
+              <Sparkles />
+              One-click generate
+              <Badge variant="secondary" className="ml-1">
+                Soon
+              </Badge>
+            </Button>
+          }
+        />
+      </div>
 
       {/* The shell paints immediately; the data-dependent region streams in. */}
       <Suspense fallback={<DashboardContentSkeleton />}>

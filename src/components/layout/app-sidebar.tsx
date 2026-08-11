@@ -65,7 +65,10 @@ export function AppSidebar({ user }: AppSidebarProps) {
               <SidebarMenu>
                 {group.items.map((item) =>
                   item.built ? (
-                    <SidebarMenuItem key={item.href}>
+                    // `data-tour` is how the product tour finds this item to
+                    // point at. Keyed on href rather than title so renaming a
+                    // nav label doesn't silently break the tour.
+                    <SidebarMenuItem key={item.href} data-tour={item.href}>
                       <SidebarMenuButton
                         asChild
                         isActive={isActive(pathname, item.href)}
