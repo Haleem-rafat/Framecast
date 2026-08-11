@@ -254,12 +254,16 @@ function buildAudioChain(input: AssembleInput): AudioChain {
   const mixLabels: string[] = [];
   let nextIndex = 2;
 
+  // `aformat` is not cosmetic. `amix` adopts the channel layout of its first
+  // input, and ElevenLabs returns mono narration — so without this the whole
+  // video came out mono, silently downmixing the stereo music bed and effects
+  // that the mix exists to add.
+  const narration = `[1:a]${LOUDNESS_TARGET},aformat=channel_layouts=stereo`;
+
   // The narration is needed twice when music is present — once in the mix and
   // once as the key the ducking listens to.
   filters.push(
-    input.musicPath
-      ? `[1:a]${LOUDNESS_TARGET},asplit=2[narr][key]`
-      : `[1:a]${LOUDNESS_TARGET}[narr]`,
+    input.musicPath ? `${narration},asplit=2[narr][key]` : `${narration}[narr]`,
   );
   mixLabels.push("[narr]");
 

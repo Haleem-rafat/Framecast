@@ -258,6 +258,40 @@ interface PixabaySearchResponse {
 /** Pixabay's search term is capped at 100 characters; longer queries 400. */
 const PIXABAY_QUERY_MAX_LENGTH = 100;
 
+/**
+ * The smallest rendition that still fills a 1080p frame — the same rule
+ * `pickPexelsFile` applies, and for the same two reasons plus a third.
+ *
+ * Too small and the render upscales it, which is the softness `4f7a697` set
+ * out to fix. Too large and it is wasted bytes, because nothing above
+ * `OUTPUT_WIDTH` survives the scale in pass one.
+ *
+ * The third reason is memory, and it is why this stopped simply preferring
+ * `large`. Pixabay's `large` is often 3840x2160, and a 4K h264 decoder on the
+ * worker's 1GB container — alongside the pan filter and the encoder — is
+ * enough to get FFmpeg OOM-killed mid-render. Pexels never caused this
+ * because it has always picked the smallest rendition at or above the output
+ * width; Pixabay now matches it.
+ *
+ * A hit with nothing both wide enough and under the size cap is skipped
+ * entirely rather than falling back to a 640-wide clip that would only be
+ * blown up to fill the frame.
+ */
+function pickPixabayRendition(videos: PixabayHit["videos"]): PixabayRendition | null {
+  return (
+    [videos.large, videos.medium, videos.small, videos.tiny]
+      .filter(
+        (candidate): candidate is PixabayRendition =>
+          Boolean(candidate?.url) &&
+          typeof candidate?.size === "number" &&
+          candidate.size <= MAX_CLIP_SIZE_BYTES &&
+          typeof candidate?.width === "number" &&
+          candidate.width >= OUTPUT_WIDTH,
+      )
+      .sort((a, b) => a.width - b.width)[0] ?? null
+  );
+}
+
 export class PixabayProvider implements StockFootageProvider {
   async search(query: string, count: number): Promise<StockClip[]> {
     const apiKey = env.PIXABAY_API_KEY;
@@ -312,24 +346,12 @@ export class PixabayProvider implements StockFootageProvider {
         continue;
       }
 
-      // `large` first — it is Pixabay's 1920-wide rendition and the only one
-      // that fills a 1080p frame without upscaling. This previously started at
-      // `medium` (1280 wide), so every Pixabay clip in a render was blown up
-      // by 50% and looked noticeably softer than the Pexels ones beside it.
-      // The size cap below is what keeps `large` from blowing the 40MB budget;
-      // when it does, the smaller renditions are still there to fall back on.
-      const rendition =
-        [hit.videos.large, hit.videos.medium, hit.videos.small].find(
-          (candidate) =>
-            candidate?.url &&
-            typeof candidate.size === "number" &&
-            candidate.size <= MAX_CLIP_SIZE_BYTES,
-        ) ?? null;
+      const rendition = pickPixabayRendition(hit.videos);
 
-      // Every rendition failed the size check above — Pixabay reports size
-      // directly, so unlike Pexels this needs no HEAD request, and a missing
-      // or non-numeric value is treated as "known to be too big" rather than
-      // gambling on it.
+      // No rendition is both wide enough and small enough. Pixabay reports
+      // size directly, so unlike Pexels this needs no HEAD request, and a
+      // missing or non-numeric value is treated as "known to be too big"
+      // rather than gambling on it.
       if (!rendition) {
         continue;
       }

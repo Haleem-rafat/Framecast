@@ -383,4 +383,17 @@ describe("buildAssembleArgs audio chain", () => {
   it("maps narration straight through when there is neither music nor effects", () => {
     expect(buildAssembleArgs(assembleBase)).toContain("1:a");
   });
+
+  it("forces the narration to stereo before it reaches the mix", () => {
+    const graph =
+      valueOf(
+        buildAssembleArgs({ ...assembleBase, audio, sfxPath: "/tmp/sfx.m4a" }),
+        "-filter_complex",
+      ) ?? "";
+
+    // amix adopts its first input's layout and ElevenLabs returns mono, so
+    // without this the finished video is mono and the stereo music and
+    // effects are silently downmixed into it.
+    expect(graph).toContain("aformat=channel_layouts=stereo");
+  });
 });
