@@ -274,24 +274,34 @@ describe("renderService.render — happy path", () => {
 
     await service.render(userId, videoId);
 
-    // Two passes: one segment encode for the single distinct clip, then the
-    // assemble. Coverage lives in the concat list, not in repeated inputs —
-    // opening a decoder per slot is what OOM-killed the worker.
-    expect(calls).toHaveLength(2);
-
-    const [segment, assemble] = calls;
-    const clipInputs = segment.args.filter(
-      (arg, index) => segment.args[index - 1] === "-i" && arg.endsWith("clip-0.mp4"),
-    );
-    expect(clipInputs).toHaveLength(1);
+    // Coverage lives in the concat list, not in repeated inputs — opening a
+    // decoder per slot is what OOM-killed the worker. Every segment pass must
+    // therefore open the one clip exactly once, however many slots it fills.
+    const segmentCalls = calls.filter((call) => call.args.includes("-vf"));
+    for (const segment of segmentCalls) {
+      const clipInputs = segment.args.filter(
+        (arg, index) => segment.args[index - 1] === "-i" && arg.endsWith("clip-0.mp4"),
+      );
+      expect(clipInputs).toHaveLength(1);
+    }
 
     // The assemble pass opens the list, not the clips.
+    const assemble = calls.at(-1)!;
     expect(assemble.args[assemble.args.indexOf("-f") + 1]).toBe("concat");
 
-    // Three slots covering the 30s narration, all naming the one segment.
-    const lines = concatList.trim().split("\n");
-    expect(lines).toHaveLength(3);
-    expect(new Set(lines).size).toBe(1);
+    // Three slots cover the 30s narration. Each `file` line may be followed by
+    // inpoint/outpoint directives, and the stubs between them add their own,
+    // so count the file lines rather than every line.
+    const fileLines = concatList
+      .trim()
+      .split("\n")
+      .filter((line) => line.startsWith("file "));
+    const segmentLines = fileLines.filter((line) => line.includes("segment-"));
+    const stubLines = fileLines.filter((line) => line.includes("stub-"));
+
+    expect(segmentLines).toHaveLength(3);
+    // One stub per boundary between the three slots.
+    expect(stubLines).toHaveLength(2);
   });
 
   it("writes progress as parsed FFmpeg output advances, throttled to at most one write per second", async () => {

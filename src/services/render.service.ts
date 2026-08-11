@@ -14,11 +14,14 @@ import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import {
   buildAssembleArgs,
   buildSegmentArgs,
+  buildTransitionArgs,
   concatListLine,
   planRender,
 } from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
 import { getObject } from "@/lib/storage";
+import { DEFAULT_STYLE } from "@/lib/video-style";
+import { musicService } from "@/services/music.service";
 import { formatElapsed } from "@/utils/format";
 
 /** Injectable so tests never spawn a real `ffmpeg` process. */
@@ -150,6 +153,10 @@ export class RenderService {
       where: { id: videoId, userId, deletedAt: null },
       select: {
         id: true,
+        // The music search query — the same signal footage collection starts
+        // from. A mood field on VideoStyle would be better and is the natural
+        // follow-on once real videos have been scored.
+        title: true,
         status: true,
         voiceOver: { select: { audioUrl: true, durationSeconds: true } },
       },
@@ -274,6 +281,7 @@ export class RenderService {
         `fetched narration + ${clipAssets.length} clip(s) + captions from storage (${formatElapsed(Date.now() - setupStartedAt)})`,
       );
 
+      const style = DEFAULT_STYLE;
       const clipPaths = ensureCoverage(downloadedClipPaths, durationSeconds);
       const outputPath = path.join(tempDir, "video.mp4");
 
@@ -281,7 +289,7 @@ export class RenderService {
       // cannot do this inside the worker's memory. Pass one normalises each
       // distinct clip on its own; pass two joins the sequence with the concat
       // demuxer, which reads one file at a time.
-      const plan = planRender(clipPaths, tempDir, CLIP_SECONDS);
+      const plan = planRender(clipPaths, tempDir, CLIP_SECONDS, style.transitions);
 
       for (const [index, segment] of plan.segments.entries()) {
         onProgress(
@@ -292,7 +300,7 @@ export class RenderService {
         // would fight the real render's — null tells the runner to report
         // none. Cancellation is still honoured during and between them.
         await this.runFfmpeg(
-          buildSegmentArgs(segment),
+          buildSegmentArgs({ ...segment, motion: style.motion }),
           job.id,
           null,
           () => {},
@@ -300,14 +308,62 @@ export class RenderService {
         );
       }
 
+      // A stub that fails to build becomes a hard cut. Half a second of
+      // dissolve is never worth failing a finished render for — but a
+      // cancellation arrives through the same rejection, and swallowing that
+      // would keep encoding after the operator asked to stop.
+      const stubPathByIndex = new Map<number, string>();
+      for (const [index, transition] of plan.transitions.entries()) {
+        onProgress(`building transition ${index + 1} of ${plan.transitions.length}`);
+
+        try {
+          await this.runFfmpeg(
+            buildTransitionArgs(transition),
+            job.id,
+            null,
+            () => {},
+            shouldCancel,
+          );
+          stubPathByIndex.set(index, transition.outputPath);
+        } catch (error) {
+          if (shouldCancel?.()) {
+            throw error;
+          }
+          onProgress(`transition ${index + 1} could not be built; using a hard cut`);
+        }
+      }
+
+      const concatEntries: string[] = [];
+      plan.playOrder.forEach((segmentPath, index) => {
+        const stubPath = stubPathByIndex.get(index);
+        // With no stub covering this boundary, the segment has to keep the
+        // tail it would otherwise have donated — dropping it anyway would
+        // leave a half-second hole in the timeline.
+        const trim = stubPath
+          ? plan.trims[index]
+          : { ...plan.trims[index], outpoint: undefined };
+
+        concatEntries.push(concatListLine(segmentPath, trim));
+        if (stubPath) {
+          concatEntries.push(concatListLine(stubPath));
+        }
+      });
+
       const concatListPath = path.join(tempDir, "segments.txt");
-      await writeFile(
-        concatListPath,
-        `${plan.playOrder.map((segmentPath) => concatListLine(segmentPath)).join("\n")}\n`,
-      );
+      await writeFile(concatListPath, `${concatEntries.join("\n")}\n`);
+
+      // Fetched, never generated, and a video that has none simply renders
+      // without it — see MusicService.collect's doc comment.
+      let musicPath: string | undefined;
+      const musicStoragePath = await musicService.collect(videoId, video.title);
+      if (musicStoragePath) {
+        musicPath = path.join(tempDir, "music.mp3");
+        await writeFile(musicPath, await getObject(musicStoragePath));
+      }
 
       onProgress(
-        `assembling ${plan.playOrder.length} segment(s) with narration and captions`,
+        `assembling ${plan.playOrder.length} segment(s) with narration, ` +
+          `captions${musicPath ? " and music" : ""}`,
       );
 
       await this.runFfmpeg(
@@ -317,6 +373,9 @@ export class RenderService {
           srtPath,
           outputPath,
           durationSeconds,
+          musicPath,
+          audio: style.audio,
+          captions: style.captions,
         }),
         job.id,
         durationSeconds,

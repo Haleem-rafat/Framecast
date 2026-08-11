@@ -596,6 +596,8 @@ enum AiProviderType {
   /// ProviderCredential row — used only to tag Asset.provider.
   PEXELS
   PIXABAY
+  /// Background music, same platform-level arrangement as the two above.
+  JAMENDO
 }
 
 model ProviderCredential {
