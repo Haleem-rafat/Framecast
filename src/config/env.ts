@@ -42,9 +42,12 @@ const serverEnvSchema = z.object({
   /** Comma-separated additional addresses permitted to hold an account. */
   AUTH_ALLOWED_EMAILS: z.string().optional(),
 
-  SUPABASE_URL: z.string().url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  SUPABASE_STORAGE_BUCKET: z.string().min(1).default("framecast"),
+  /**
+   * Where objects live on disk. Absolute in every deployed environment
+   * (`/srv/framecast/<env>/storage`); defaults to a git-ignored directory so
+   * `pnpm dev` and the test suite work with no configuration.
+   */
+  STORAGE_ROOT: z.string().min(1).default(".framecast/storage"),
 
   /**
    * Vercel Blob (`framecast-renders`, private access). Finished renders live
