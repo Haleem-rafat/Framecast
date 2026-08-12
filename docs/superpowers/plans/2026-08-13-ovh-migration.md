@@ -243,7 +243,22 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: unchanged signatures for `storagePath`, `ensureBucket`, `putObject`, `getObject`, `removeObjects`, `objectSizeBytes`, `objectContentType`. **`signedUrl` is removed** — Task 3 replaces its only caller.
+- Produces: unchanged signatures for `storagePath`, `ensureBucket`, `putObject`, `getObject`, `removeObjects`, `objectSizeBytes`, `objectContentType`.
+
+**`signedUrl` stays in place for this task**, reimplemented against the filesystem only as far as its one caller needs. Task 3 deletes it together with that caller, in one commit. Deleting it here would leave a commit that does not typecheck, and a commit that does not build is indistinguishable from a broken migration when something has to be bisected later.
+
+Its filesystem stand-in returns the narration route's URL shape, which Task 3 then inlines at the call site:
+
+```typescript
+/** @deprecated Task 3 replaces this with `/api/videos/[id]/narration` and
+ * deletes it. A filesystem has no signed URLs; this exists only so this
+ * commit typechecks. */
+export async function signedUrl(path: string): Promise<string> {
+  throw new InternalError(
+    `signedUrl is not available on filesystem storage (${path}); use the narration route.`,
+  );
+}
+```
 
 **Why a content-type sidecar rather than inferring from the extension:** `objectContentType()` is load-bearing. `publish.service.ts` reads it to set the `Content-Type` on YouTube's `thumbnails.set`, and `thumbnail.service.ts`'s composite-failure path can legitimately store PNG bytes under a name chosen before the format was known. Inference would work today and fail silently the first time it did not.
 
@@ -624,9 +639,13 @@ echo ".framecast/" >> .gitignore
 
 Skip if `.framecast/` is already ignored.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Verify and commit**
 
-`pnpm typecheck` will still fail on `signedUrl`'s caller — that is Task 3's job. Commit only if typecheck's sole remaining errors are that caller; otherwise fix what else broke first.
+```bash
+pnpm typecheck && pnpm lint
+```
+
+Expected: both clean. The deprecated `signedUrl` stub above is what keeps them clean; Task 3 removes it and its caller together.
 
 ```bash
 git add src/lib/storage.ts src/lib/storage.test.ts src/config/env.ts .gitignore
@@ -659,7 +678,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `src/app/api/videos/[id]/narration/route.ts`
 - Modify: `src/app/(dashboard)/videos/[id]/page.tsx` — `resolvePreviewAsset` and its imports
-- Modify: `src/lib/storage.ts` — remove `signedUrl` if Task 2 left it
+- Modify: `src/lib/storage.ts` — delete the deprecated `signedUrl` stub Task 2 left behind
 
 **Interfaces:**
 - Consumes: `getObject`, `objectSizeBytes`, `storagePath` from Task 2.
