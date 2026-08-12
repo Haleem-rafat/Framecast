@@ -5,19 +5,35 @@ import { createClient } from "@supabase/supabase-js";
 import { env } from "@/config/env";
 import { InternalError, ValidationError } from "@/lib/errors";
 
-export type StorageKind = "audio" | "clips" | "captions" | "music" | "output" | "thumbnails";
+export type StorageKind =
+  | "audio"
+  | "clips"
+  | "captions"
+  | "music"
+  | "output"
+  | "thumbnails"
+  | "logos";
 
 const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
 /**
- * Every object lives under its video's prefix so deleting a video's assets is a
- * prefix delete. Filenames are validated rather than sanitised: a name that
- * would escape the prefix is a bug in the caller, not something to quietly fix.
+ * Every object lives under an owner's prefix so deleting everything that
+ * owner owns is a prefix delete. `ownerId` is a video id for every
+ * per-render `StorageKind` (audio, clips, captions, music, output,
+ * thumbnails) — the original, narrower meaning this parameter carried when
+ * it was named `videoId`. `logos` widens that: a channel's logo is
+ * generated once and reused across every video that channel ever renders,
+ * so it is filed under the channel id instead. The `videos/` segment of the
+ * returned path is a historical name for "prefix", not a claim about what
+ * `ownerId` actually identifies — kept as-is because every existing object
+ * already lives under it and changing it would orphan them. Filenames are
+ * validated rather than sanitised: a name that would escape the prefix is a
+ * bug in the caller, not something to quietly fix.
  */
 export function storagePath(
-  videoId: string,
+  ownerId: string,
   kind: StorageKind,
   filename: string,
 ): string {
@@ -25,7 +41,7 @@ export function storagePath(
     throw new ValidationError(`Unsafe storage filename: "${filename}"`);
   }
 
-  return `videos/${videoId}/${kind}/${filename}`;
+  return `videos/${ownerId}/${kind}/${filename}`;
 }
 
 /** The per-object cap this codebase holds itself to. Discovered live: a 70.9MB

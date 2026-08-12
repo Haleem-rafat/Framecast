@@ -3,18 +3,27 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { ensureBucket } from "@/lib/storage";
 import { footageService } from "@/services/footage.service";
+import { metadataService } from "@/services/metadata.service";
 import { renderService } from "@/services/render.service";
+import { thumbnailService } from "@/services/thumbnail.service";
 import { voiceOverService } from "@/services/voiceover.service";
 import { formatBytes } from "@/utils/format";
 
 /**
  * The one place the pipeline's stage order — bucket, narration, footage,
- * render — is defined. `scripts/render.ts` (the debugging CLI) and the
- * render worker both call `runPipeline` rather than each owning their own
- * copy of this sequence; two copies would drift, and the CLI is only useful
- * for diagnosing worker problems if it exercises the identical path.
+ * render, metadata, thumbnail — is defined. `scripts/render.ts` (the
+ * debugging CLI) and the render worker both call `runPipeline` rather than
+ * each owning their own copy of this sequence; two copies would drift, and
+ * the CLI is only useful for diagnosing worker problems if it exercises the
+ * identical path.
  */
-export type PipelineStageName = "bucket" | "narration" | "footage" | "render";
+export type PipelineStageName =
+  | "bucket"
+  | "narration"
+  | "footage"
+  | "render"
+  | "metadata"
+  | "thumbnail";
 
 /**
  * One event per stage-lifecycle transition, plus every inner progress line
@@ -76,12 +85,71 @@ async function runStage(
 }
 
 /**
+ * The same stage-lifecycle events as `runStage`, but a failure is reported
+ * and swallowed rather than rethrown.
+ *
+ * `metadata` and `thumbnail` run after `render` has already committed a
+ * playable, `READY` video — see `renderService.render`'s own transaction,
+ * which sets that status the moment the encode succeeds, well before either
+ * of these stages runs. Both `metadataService.generate` and
+ * `thumbnailService.generate` already catch everything internally and
+ * resolve to `null` on failure rather than throwing (see their own doc
+ * comments); `fn` returning `null` here is that "nothing was produced"
+ * outcome, reported as a failed stage so the operator can see it happened.
+ * The extra `try`/`catch` around `fn` itself is a second line of defence, not
+ * duplicated trust in a contract already kept elsewhere: if a future change
+ * to either service ever reintroduced a throw, letting it escape `runPipeline`
+ * would fail the whole pipeline promise, and the worker's only response to a
+ * failed pipeline is `jobService.release(videoId, "failed")` — which would
+ * overwrite the `READY` status `renderService.render` already committed with
+ * `FAILED`, turning a finished, publishable video into one that reads as
+ * broken over what is, by design, a cosmetic enhancement.
+ */
+async function runOptionalStage(
+  stage: PipelineStageName,
+  onProgress: PipelineProgress,
+  fn: () => Promise<string | null>,
+): Promise<void> {
+  onProgress({ type: "stage-start", stage });
+  const startedAt = Date.now();
+
+  let detail: string | null;
+  try {
+    detail = await fn();
+  } catch (error) {
+    console.error(
+      `Pipeline stage "${stage}" threw despite being documented never to — ` +
+        "treating it as a failed stage rather than failing the pipeline: " +
+        (error instanceof Error ? error.message : String(error)),
+    );
+    detail = null;
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  if (detail === null) {
+    onProgress({ type: "stage-failed", stage, elapsedMs });
+    return;
+  }
+  onProgress({ type: "stage-done", stage, detail, elapsedMs });
+}
+
+/**
  * Runs the render pipeline for one video: storage bucket, narration,
- * footage, render — in that order, skipping any stage already complete
- * rather than redoing it. Narration in particular is only ever
- * re-synthesised when `force` is explicitly true; the operator has 10,000
- * ElevenLabs characters a month and a real script is roughly 7,000, so a
- * silent re-synthesis is a direct cost regression, not just wasted work.
+ * footage, render, metadata, thumbnail — in that order, skipping any of the
+ * first four stages already complete rather than redoing it. Narration in
+ * particular is only ever re-synthesised when `force` is explicitly true;
+ * the operator has 10,000 ElevenLabs characters a month and a real script is
+ * roughly 7,000, so a silent re-synthesis is a direct cost regression, not
+ * just wasted work.
+ *
+ * `metadata` and `thumbnail` are different in kind from the four stages
+ * before them, not just in ordering. They run unconditionally rather than
+ * being skipped when already done — this pipeline has no operator-facing
+ * "regenerate" flow yet, so there's no `force`-style flag to gate on — and,
+ * per `runOptionalStage`, a failure in either is reported but never fails
+ * `runPipeline` itself: the video is already rendered and `READY` by the
+ * time they run, and nothing past that point may turn a renderable video
+ * into a failed one.
  */
 export async function runPipeline(input: RunPipelineInput): Promise<void> {
   const { userId, videoId, force = false, onProgress = noopProgress, shouldCancel } = input;
@@ -187,5 +255,31 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
 
     const result = await renderService.render(userId, videoId, report, shouldCancel);
     return `rendered ${result.durationSeconds}s to ${result.outputUrl}`;
+  });
+
+  // No `checkCancelled` guarding either stage below, unlike every stage
+  // above: by this point the video is already `READY` (renderService.render
+  // set it inside its own transaction), so there is no longer a render to
+  // save time by skipping. Throwing `PipelineCancelledError` here would
+  // reject `runPipeline` itself, and the worker's cancellation path
+  // (`jobService.release(videoId, "cancelled")`) turns that into `FAILED` —
+  // exactly the "renderable video becomes a failed one" outcome
+  // `runOptionalStage` exists to prevent, just via cancellation instead of a
+  // thrown error. A cancel requested this late is left to take effect on
+  // whatever runs next for this video, not retroactively on the one that
+  // already finished.
+  await runOptionalStage("metadata", onProgress, async () => {
+    const metadata = await metadataService.generate(userId, videoId);
+    return metadata ? `generated title "${metadata.title}"` : null;
+  });
+
+  await runOptionalStage("thumbnail", onProgress, async () => {
+    // Runs after metadata, not just after render: ThumbnailService reads
+    // `video.generatedTitle ?? video.title` for the headline it draws on the
+    // image (see thumbnail.service.ts), so generating it first is what lets
+    // the thumbnail show the AI-generated title instead of the operator's
+    // placeholder whenever metadata succeeded.
+    const path = await thumbnailService.generate(userId, videoId);
+    return path ? `stored ${path}` : null;
   });
 }

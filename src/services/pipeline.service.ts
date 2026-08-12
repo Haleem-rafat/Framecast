@@ -11,6 +11,8 @@ export type PipelineStageKey =
   | "footage"
   | "captions"
   | "render"
+  | "metadata"
+  | "thumbnail"
   | "upload";
 
 export type PipelineStageStatus = "pending" | "running" | "done" | "failed";
@@ -133,17 +135,27 @@ const STAGE_LABELS: Record<PipelineStageKey, string> = {
   footage: "Footage",
   captions: "Captions",
   render: "Render",
+  metadata: "Metadata",
+  thumbnail: "Thumbnail",
   upload: "Upload",
 };
 
 /** The order the pipeline actually runs in. Also doubles as the search order
  * for "which stage is active/failed" below, since the CLI runs these stages
- * one at a time rather than fanning them out. */
+ * one at a time rather than fanning them out. `metadata` and `thumbnail` sit
+ * between `render` and `upload` because that is the order `runPipeline`
+ * (pipeline-runner.ts) actually runs them in — after the render succeeds,
+ * before the operator's manual publish — and specifically in that relative
+ * order to each other: `thumbnail` reads `Video.generatedTitle` for its
+ * headline text, so `metadata` must have already run for the thumbnail to
+ * draw the generated title rather than the operator's placeholder one. */
 const STAGE_ORDER: readonly PipelineStageKey[] = [
   "narration",
   "footage",
   "captions",
   "render",
+  "metadata",
+  "thumbnail",
   "upload",
 ];
 
@@ -207,6 +219,18 @@ export class PipelineService {
         // onto VoiceOver as a new column.
         script: { select: { activeVersion: { select: { content: true } } } },
         voiceOver: { select: { audioUrl: true, durationSeconds: true } },
+        // MetadataService.generate's one durable side effect worth reading
+        // back here: a non-null generatedTitle is proof the stage actually
+        // wrote something, the same way voiceOver.audioUrl proves narration
+        // did. generatedDescription/tags are written alongside it in the same
+        // call, so title alone is enough to tell "done" from "pending".
+        generatedTitle: true,
+        // Mirrors ThumbnailService.storeVersion: a Thumbnail row can exist
+        // with no activeVersionId (created but never successfully composited
+        // — see storeVersion's own comment on why version rows are never
+        // overwritten), so the presence of the row alone isn't "done"; the
+        // active pointer is.
+        thumbnail: { select: { activeVersionId: true } },
         publication: { select: { id: true } },
         renderJobs: {
           orderBy: { createdAt: "desc" },
@@ -338,6 +362,12 @@ export class PipelineService {
               : undefined,
         };
       })(),
+      metadata: {
+        status: video.generatedTitle ? "done" : "pending",
+      },
+      thumbnail: {
+        status: video.thumbnail?.activeVersionId ? "done" : "pending",
+      },
       upload: {
         status: video.publication ? "done" : "pending",
       },

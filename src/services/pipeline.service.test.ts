@@ -213,6 +213,40 @@ function stageStatus(stages: { key: string; status: string }[], key: string) {
   return stages.find((stage) => stage.key === key)?.status;
 }
 
+/** Mirrors what metadata.service.ts's `generate` writes on success — only the
+ * one column pipelineService actually reads (see its comment on why title
+ * alone is enough) needs setting here. */
+function addGeneratedTitle(title = "A generated title") {
+  return prisma.video.update({ where: { id: videoId }, data: { generatedTitle: title } });
+}
+
+/** Mirrors what thumbnail.service.ts's `storeVersion` leaves behind on
+ * success: a `Thumbnail` row whose `activeVersionId` points at a
+ * `ThumbnailVersion`. Creating the row with no active version first, the same
+ * two-step `storeVersion` itself does, is what makes "has a Thumbnail with no
+ * active version yet" a distinct, testable state from "has none at all". */
+async function addThumbnail(withActiveVersion = true) {
+  const thumbnail = await prisma.thumbnail.create({ data: { videoId } });
+
+  if (!withActiveVersion) {
+    return thumbnail;
+  }
+
+  const version = await prisma.thumbnailVersion.create({
+    data: {
+      thumbnailId: thumbnail.id,
+      version: 1,
+      imageUrl: `videos/${videoId}/thumbnails/thumbnail-001.jpg`,
+      prompt: "test prompt",
+    },
+  });
+
+  return prisma.thumbnail.update({
+    where: { id: thumbnail.id },
+    data: { activeVersionId: version.id },
+  });
+}
+
 describe("pipelineService.getState — access", () => {
   it("throws NotFoundError for a video that does not belong to the caller", async () => {
     await expect(service.getState(userId, randomUUID())).rejects.toThrow(NotFoundError);
@@ -340,6 +374,8 @@ describe("pipelineService.getState — stage derivation", () => {
     const state = await service.getState(userId, videoId);
 
     expect(state.stages.map((s) => s.status)).toEqual([
+      "pending",
+      "pending",
       "pending",
       "pending",
       "pending",
@@ -503,6 +539,12 @@ describe("pipelineService.getState — stage derivation", () => {
       startedAt: new Date(Date.now() - 60_000),
       finishedAt: new Date(),
     });
+    // A published video has already been all the way through the automatic
+    // pipeline — metadata and thumbnail included — before an operator could
+    // ever have clicked Publish, so a realistic "fully done" fixture sets
+    // both rather than leaving them at their default pending state.
+    await addGeneratedTitle();
+    await addThumbnail();
     await addPublication();
     await setVideoStatus("PUBLISHED");
 
@@ -514,9 +556,59 @@ describe("pipelineService.getState — stage derivation", () => {
       "done",
       "done",
       "done",
+      "done",
+      "done",
     ]);
     expect(state.isTerminal).toBe(true);
     expect(state.progress).toBe(100);
+  });
+});
+
+describe("pipelineService.getState — metadata and thumbnail stages", () => {
+  it("reports metadata and thumbnail as stages after render", async () => {
+    const state = await service.getState(userId, videoId);
+
+    expect(state.stages.map((s) => s.key)).toEqual([
+      "narration",
+      "footage",
+      "captions",
+      "render",
+      "metadata",
+      "thumbnail",
+      "upload",
+    ]);
+    // Both start pending, same as every other stage, until the rows they're
+    // derived from exist.
+    expect(stageStatus(state.stages, "metadata")).toBe("pending");
+    expect(stageStatus(state.stages, "thumbnail")).toBe("pending");
+  });
+
+  it("shows metadata done once the video has a generated title", async () => {
+    await addGeneratedTitle();
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "metadata")).toBe("done");
+  });
+
+  it("shows thumbnail done once a thumbnail version exists", async () => {
+    await addThumbnail();
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "thumbnail")).toBe("done");
+  });
+
+  it("does not show thumbnail done from a Thumbnail row with no active version", async () => {
+    // storeVersion (thumbnail.service.ts) creates the Thumbnail row and the
+    // ThumbnailVersion row before it points activeVersionId at the new
+    // version — a Thumbnail that exists but never finished compositing must
+    // not read as done.
+    await addThumbnail(false);
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "thumbnail")).toBe("pending");
   });
 });
 
@@ -545,7 +637,11 @@ describe("pipelineService.getState — failure attribution", () => {
   it("marks upload failed when the render succeeded but no Publication was created", async () => {
     // Mirrors publish.service.ts's error path: it deliberately never creates
     // a Publication row when the YouTube upload itself fails, so upload's
-    // only failure signal is the video-wide FAILED fallback.
+    // only failure signal is the video-wide FAILED fallback. Metadata and
+    // thumbnail are set up as already done, matching what a real video in
+    // this state looks like — both run automatically, well before an
+    // operator ever gets a Publish button to fail — so the "first incomplete
+    // stage" fallback correctly lands on upload rather than on one of them.
     await addVoiceOver();
     await addSubtitleAsset();
     await addClipAssets(2, 0);
@@ -555,11 +651,15 @@ describe("pipelineService.getState — failure attribution", () => {
       startedAt: new Date(Date.now() - 60_000),
       finishedAt: new Date(),
     });
+    await addGeneratedTitle();
+    await addThumbnail();
     await setVideoStatus("FAILED");
 
     const state = await service.getState(userId, videoId);
 
     expect(stageStatus(state.stages, "render")).toBe("done");
+    expect(stageStatus(state.stages, "metadata")).toBe("done");
+    expect(stageStatus(state.stages, "thumbnail")).toBe("done");
     expect(stageStatus(state.stages, "upload")).toBe("failed");
   });
 });
