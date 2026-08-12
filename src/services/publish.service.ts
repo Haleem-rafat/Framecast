@@ -245,12 +245,14 @@ export class PublishService {
     // proof they have already had their single automatic chance.
     //
     // Enforced here rather than in `publish-video-button.tsx` on purpose. The
-    // button is one of three ways in (the server action, the button, and the
-    // CLI in scripts/), the client cannot see `leaseExpiresAt` at all, and a
-    // client-side gate would in any case be racing the same 30-60 second
-    // window it is supposed to close. Nothing else re-derives this: the panel
-    // reads `isFinalizing` off `PipelineState` for its own purposes, and this
-    // is the enforcement copy.
+    // button is today's only way in, but it is not the only one this class is
+    // built for — a CLI publish and a scheduled one are both anticipated by
+    // `PublishOptions` — and a client-side gate would fail on its own terms
+    // anyway: the client never sees `leaseExpiresAt`, and any check it could
+    // make would be racing the same 30-60 second window it is supposed to
+    // close. Nothing else re-derives this: the panel reads `isFinalizing` off
+    // `PipelineState` for its own display purposes, and this is the
+    // enforcement copy.
     if (video.leaseExpiresAt !== null && video.leaseExpiresAt.getTime() > Date.now()) {
       throw new ConflictError(
         "This video is still being finished off — its title, tags and thumbnail " +
