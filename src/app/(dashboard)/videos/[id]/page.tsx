@@ -14,7 +14,7 @@ import { VideoHeader } from "@/features/videos/components/video-header";
 import { VideoPreview } from "@/features/videos/components/video-preview";
 import { statRenderFile } from "@/lib/blob-render-storage";
 import { isAppError } from "@/lib/errors";
-import { objectSizeBytes, signedUrl } from "@/lib/storage";
+import { objectSizeBytes } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
 import { videoService } from "@/services/video.service";
@@ -25,30 +25,19 @@ interface VideoDetailPageProps {
   params: Promise<{ id: string }>;
 }
 
-/** Long enough that an operator reviewing a video doesn't hit expiry
- * mid-watch; short enough that a leaked link to unpublished, unapproved work
- * goes stale on its own. A page left open past this needs a reload — the
- * player and download link will 403 until then. */
-const SIGNED_URL_TTL_SECONDS = 60 * 60;
-
 /**
- * Turns a private-bucket path into something the browser can play — a signed
- * URL plus (best-effort) its size. Never throws: this page's narration is
- * worth showing even if the storage round trip fails, so a failure here just
- * means that section falls back to its "couldn't load" state instead of
- * taking the whole page down.
+ * The narration's counterpart to `resolveRenderPreview` below: a URL the browser
+ * can play, plus (best-effort) its size. No signed URL to mint — the browser
+ * is pointed at this app's own route, which resolves the object from the video
+ * id behind a session check. Never throws: this page's narration is worth
+ * showing even if the size lookup fails.
  */
 async function resolvePreviewAsset(
+  videoId: string,
   storagePath: string,
-): Promise<{ url: string; sizeBytes: number | null } | null> {
-  const url = await signedUrl(storagePath, SIGNED_URL_TTL_SECONDS).catch(() => null);
-
-  if (!url) {
-    return null;
-  }
-
+): Promise<{ url: string; sizeBytes: number | null }> {
   const sizeBytes = await objectSizeBytes(storagePath).catch(() => null);
-  return { url, sizeBytes };
+  return { url: `/api/videos/${videoId}/narration`, sizeBytes };
 }
 
 /**
@@ -96,14 +85,14 @@ async function PipelineSection({ userId, videoId }: { userId: string; videoId: s
 }
 
 /**
- * The player. Its two sources resolve over the network — a Vercel Blob HEAD
- * for the render and a Supabase signed URL for the narration — which is why
- * this is behind its own boundary rather than holding up the page.
+ * The player. Its render source resolves over the network — a Vercel Blob
+ * HEAD — which is why this is behind its own boundary rather than holding up
+ * the page.
  *
  * Both paths stay on the server: the browser is handed this app's own
- * streaming route for the render and a short-lived signed URL for the audio,
- * never a raw storage path. Passing a bucket path to the client is how a
- * private bucket ends up de facto public.
+ * streaming route for the render and this app's own narration route for the
+ * audio, never a raw storage path. Passing a storage path to the client is
+ * how private storage ends up de facto public.
  */
 async function PreviewSection({
   videoId,
@@ -118,7 +107,7 @@ async function PreviewSection({
 }) {
   const [render, audio] = await Promise.all([
     renderOutputUrl ? resolveRenderPreview(videoId, renderOutputUrl) : Promise.resolve(null),
-    audioPath ? resolvePreviewAsset(audioPath) : Promise.resolve(null),
+    audioPath ? resolvePreviewAsset(videoId, audioPath) : Promise.resolve(null),
   ]);
 
   return <VideoPreview render={render} audio={audio} durationSeconds={durationSeconds} />;

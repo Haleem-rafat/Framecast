@@ -183,21 +183,6 @@ export async function removeObjects(paths: string[]): Promise<void> {
   }
 }
 
-/** @deprecated Task 3 replaces this with `/api/videos/[id]/narration` and
- * deletes it, together with its one caller. A filesystem has no signed URLs;
- * this exists only so this commit typechecks. The unused second parameter
- * mirrors the Supabase original's `expiresInSeconds` so that caller — which
- * Task 3 owns removing, not this task — keeps compiling unchanged. */
-export async function signedUrl(
-  path: string,
-  expiresInSeconds?: number,
-): Promise<string> {
-  void expiresInSeconds; // unused: kept only so the existing call site still typechecks
-  throw new InternalError(
-    `signedUrl is not available on filesystem storage (${path}); use the narration route.`,
-  );
-}
-
 export async function objectSizeBytes(path: string): Promise<number | null> {
   try {
     return (await stat(resolveObject(path))).size;
