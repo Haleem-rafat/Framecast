@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { ValidationError } from "@/lib/errors";
 import type { RenderFileContent } from "@/lib/render-storage";
 
 const VIDEO_ID = "11111111-2222-3333-4444-555555555555";
@@ -55,8 +56,43 @@ describe("renderPath", () => {
 
   it("refuses anything that is not a bare uuid", async () => {
     const { renderPath } = await renderStorage();
-    expect(() => renderPath("../escape")).toThrow();
-    expect(() => renderPath("not-a-uuid")).toThrow();
+    expect(() => renderPath("../escape")).toThrow(ValidationError);
+    expect(() => renderPath("not-a-uuid")).toThrow(ValidationError);
+    expect(() => renderPath("")).toThrow(ValidationError);
+  });
+});
+
+describe("path traversal — resolveRender, not renderPath", () => {
+  // `outputUrl` is database-supplied, not the output of `renderPath` — the
+  // route never calls `renderPath` at all (see file/route.ts), so a suite
+  // that only exercises `renderPath`'s own UUID check says nothing about the
+  // guard that actually stands between a stored `outputUrl` and an arbitrary
+  // filesystem read: `resolveRender`, exercised here through every function
+  // that takes a `location` directly.
+  it("refuses a traversing location passed to getRenderFile", async () => {
+    const { getRenderFile } = await renderStorage();
+    await expect(getRenderFile(VIDEO_ID, "../escape.mp4")).rejects.toThrow(ValidationError);
+  });
+
+  it("refuses a traversing location passed to statRenderFile", async () => {
+    const { statRenderFile } = await renderStorage();
+    await expect(statRenderFile("../escape.mp4")).rejects.toThrow(ValidationError);
+  });
+
+  it("refuses a traversing location passed to deleteRenderFile", async () => {
+    const { deleteRenderFile } = await renderStorage();
+    await expect(deleteRenderFile("../escape.mp4")).rejects.toThrow(ValidationError);
+  });
+
+  it("refuses a prefix-trap location — a sibling directory that merely shares ROOT's string prefix", async () => {
+    const { getRenderFile } = await renderStorage();
+    // If resolveRender checked `absolute.startsWith(ROOT)` instead of
+    // `absolute.startsWith(ROOT + sep)`, this would slip through undetected:
+    // `join(ROOT, trap)` resolves to `<dirname(ROOT)>/<basename(ROOT)>-evil/x.mp4`,
+    // which starts with the exact string ROOT while living in a sibling
+    // directory entirely outside it.
+    const trap = `../${basename(root)}-evil/x.mp4`;
+    await expect(getRenderFile(VIDEO_ID, trap)).rejects.toThrow(ValidationError);
   });
 });
 
@@ -118,6 +154,57 @@ describe("writeRenderFile / getRenderFile", () => {
   it("returns null for a render that is not there", async () => {
     const { getRenderFile } = await renderStorage();
     expect(await getRenderFile(VIDEO_ID, "renders/does-not-exist.mp4")).toBeNull();
+  });
+});
+
+/** A stream that emits a few bytes, then errors — standing in for a
+ * mid-write failure (a real one would be e.g. ENOSPC on a full 40GB disk). */
+function failingStream(): Readable {
+  return new Readable({
+    read() {
+      this.push(Buffer.from("partial-bytes-that-must-never-land"));
+      queueMicrotask(() => this.destroy(new Error("boom")));
+    },
+  });
+}
+
+describe("writeRenderFile — atomicity and fd safety", () => {
+  it("leaves the previous complete render untouched when a re-render fails mid-write", async () => {
+    const { writeRenderFile, getRenderFile } = await renderStorage();
+    const original = Buffer.from("original-complete-render");
+    const location = await writeRenderFile(VIDEO_ID, original);
+
+    // Writing in place (this module's behaviour before the fix) would
+    // truncate `location` the instant the second write started, so
+    // `getRenderFile` would see a corrupt, partial file here — or nothing at
+    // all, if the failure landed before any bytes were flushed. The
+    // temp-file-then-rename write means a failed re-render never touches the
+    // file `location` already points at.
+    await expect(writeRenderFile(VIDEO_ID, failingStream())).rejects.toThrow();
+
+    const content = expectContent(await getRenderFile(VIDEO_ID, location));
+    expect(await readAll(content.stream)).toEqual(original);
+  });
+
+  it("cleans up its temp file when a write fails, rather than leaving it under RENDER_ROOT forever", async () => {
+    const { writeRenderFile } = await renderStorage();
+
+    await expect(writeRenderFile(VIDEO_ID, failingStream())).rejects.toThrow();
+
+    const entries = await readdir(join(root, "renders"));
+    expect(entries.some((name) => name.includes(".tmp-"))).toBe(false);
+  });
+
+  it("destroys a stream source when the write is refused before ever reaching pipeline", async () => {
+    const { writeRenderFile } = await renderStorage();
+    const source = Readable.from(Buffer.from("would-leak-its-fd-without-destroy"));
+
+    // An invalid video id makes `renderPath` throw before `source` is ever
+    // piped — exactly the window pipeline's own cleanup can't reach, since
+    // pipeline never got to run.
+    await expect(writeRenderFile("not-a-uuid", source)).rejects.toThrow(ValidationError);
+
+    expect(source.destroyed).toBe(true);
   });
 });
 

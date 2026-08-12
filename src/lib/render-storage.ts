@@ -1,7 +1,8 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -39,6 +40,13 @@ export function renderPath(videoId: string): string {
   return `${RENDER_PREFIX}/${videoId}.mp4`;
 }
 
+/** Confines `location` to `ROOT`, the only thing standing between a
+ * database-supplied `RenderJob.outputUrl` and an arbitrary filesystem read.
+ * Checks `ROOT + sep`, not just `ROOT`, so a sibling directory that merely
+ * shares `ROOT`'s string prefix (e.g. `${ROOT}-evil/x.mp4`) is refused, not
+ * just a literal `..`. Does not `realpath` the result, so a symlink planted
+ * under `ROOT` pointing outside it would still resolve and be served — not
+ * defended against here because only this app ever writes under `ROOT`. */
 function resolveRender(location: string): string {
   const absolute = resolve(join(ROOT, location));
 
@@ -83,30 +91,65 @@ export type RenderFileSource = Buffer | Readable;
  * `Buffer` is written directly; a stream is piped straight to disk via
  * `pipeline` so a large render is never held in memory whole (see
  * `RenderFileSource`'s doc comment).
+ *
+ * Writes to a temp file in the same directory and `rename()`s it into place
+ * rather than writing `absolute` directly. `renderPath` is deterministic, so
+ * a re-render targets the exact path the previous *succeeded* `RenderJob`
+ * still points at — writing in place would truncate that file the instant
+ * the write started, and for however long a ~170MB write takes,
+ * `getRenderFile` would stat and serve the partial result as a normal 200/206
+ * with no error anywhere. Worse, a process death mid-write (plausible on a
+ * 4GB box) would leave that truncation permanent. A same-directory rename is
+ * atomic on the same filesystem, so a reader always sees either the complete
+ * previous file or the complete new one, never a partial — this is the
+ * property Vercel Blob's `put()` gave for free that writing in place lost.
  */
 export async function writeRenderFile(
   videoId: string,
   source: RenderFileSource,
 ): Promise<string> {
-  const location = renderPath(videoId);
-  const absolute = resolveRender(location);
-
   try {
-    await mkdir(dirname(absolute), { recursive: true });
+    const location = renderPath(videoId);
+    const absolute = resolveRender(location);
+    const tempPath = `${absolute}.tmp-${randomUUID()}`;
 
-    if (Buffer.isBuffer(source)) {
-      await writeFile(absolute, source);
-    } else {
-      await pipeline(source, createWriteStream(absolute));
+    try {
+      await mkdir(dirname(absolute), { recursive: true });
+
+      if (Buffer.isBuffer(source)) {
+        await writeFile(tempPath, source);
+      } else {
+        // pipeline destroys both ends of the pipe on failure, so a mid-write
+        // error (e.g. ENOSPC) cannot leak `source`'s fd on its own — only a
+        // throw *before* this line can, which the outer catch below covers.
+        await pipeline(source, createWriteStream(tempPath));
+      }
+
+      await rename(tempPath, absolute);
+    } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => {
+        // Best-effort: the write error below is what the caller needs to see.
+      });
+      throw new InternalError(
+        `Could not write the render for video ${videoId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-  } catch (error) {
-    throw new InternalError(
-      `Could not write the render for video ${videoId}: ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
 
-  return location;
+    return location;
+  } catch (error) {
+    // `source` is constructed by the caller (render.service.ts's
+    // `createReadStream`) before this function is ever called, so its fd is
+    // already open. If `renderPath`/`resolveRender` reject the id/location,
+    // or `mkdir` fails (an ENOSPC-full 40GB disk is exactly this), `source`
+    // would otherwise never be piped and never destroyed — an fd leaked on
+    // every failed attempt. Safe to call even when `pipeline` already
+    // destroyed it; `Readable#destroy()` is idempotent.
+    if (!Buffer.isBuffer(source) && !source.destroyed) {
+      source.destroy();
+    }
+    throw error;
+  }
 }
 
 export interface RenderFileStat {
