@@ -731,24 +731,28 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     const { id: videoId } = await params;
 
     // A video that belongs to someone else must look exactly like one that
-    // does not exist.
-    const asset = await prisma.videoAsset.findFirst({
+    // does not exist, so ownership is part of the query rather than a
+    // separate check that could be forgotten.
+    //
+    // `VoiceOver.videoId` is unique — one narration per video — and
+    // `audioUrl` holds a storage path despite its name. This is the same
+    // row the video page reads as `video.voiceOver?.audioUrl` to decide
+    // whether to render the narration card at all.
+    const voiceOver = await prisma.voiceOver.findFirst({
       where: {
-        video: { id: videoId, userId: session.user.id, deletedAt: null },
-        kind: "NARRATION",
-        deletedAt: null,
+        videoId,
+        video: { userId: session.user.id, deletedAt: null },
       },
-      orderBy: { createdAt: "desc" },
-      select: { storagePath: true },
+      select: { audioUrl: true },
     });
 
-    if (!asset) {
+    if (!voiceOver?.audioUrl) {
       throw new NotFoundError("This video has no narration.");
     }
 
     const [body, contentType] = await Promise.all([
-      getObject(asset.storagePath),
-      objectContentType(asset.storagePath),
+      getObject(voiceOver.audioUrl),
+      objectContentType(voiceOver.audioUrl),
     ]);
 
     return new NextResponse(new Uint8Array(body), {
@@ -768,7 +772,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 }
 ```
 
-**Before writing this, confirm the asset model.** Read `prisma/schema.prisma` for the model holding narration and the exact enum member — the query above assumes `VideoAsset` with `kind: "NARRATION"` and a `storagePath` column. If the names differ, use the real ones; do not adapt the schema to the plan.
+**The schema was checked while writing this plan**, and an earlier draft of this task was wrong: there is no `VideoAsset` model and `AssetKind` has no `NARRATION` member. Narration is a `VoiceOver` row — `videoId` is `@unique`, and `audioUrl` holds a storage path rather than a URL. The query above is against the real schema. Read the model yourself before trusting this paragraph; the plan has been wrong here once already.
 
 - [ ] **Step 3: Point the page at the route**
 
