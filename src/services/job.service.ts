@@ -134,7 +134,18 @@ export class JobService {
     if (outcome === "succeeded") {
       const { count } = await prisma.video.updateMany({
         where: { id: videoId, deletedAt: null, status: from },
-        data: { status: "READY", leaseExpiresAt: null },
+        // `cancelRequestedAt` is cleared here too, matching the `failed` and
+        // cancelled branches below: a video that finished successfully has
+        // nothing left running to cancel, so a flag left over from a cancel
+        // request that lost the race with the render finishing (see
+        // pipeline-runner.ts's own comment on that race) must not survive
+        // into a READY video. Nothing currently reads a stray
+        // `cancelRequestedAt` on a READY video as meaningful — this was
+        // inert, resting on `requestCancel`'s own GENERATING/RENDERING guard
+        // rather than on this write actually clearing it — but leaving a
+        // "please cancel me" flag permanently set on a finished video is a
+        // latent trap for the next thing that reads it.
+        data: { status: "READY", leaseExpiresAt: null, cancelRequestedAt: null },
       });
 
       if (count === 0) {

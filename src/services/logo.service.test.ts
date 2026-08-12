@@ -102,6 +102,11 @@ describe("LogoService.choose", () => {
   it("stores the chosen logo, creating the brand row when there is none", async () => {
     const images = fakeImageProvider();
     const [first] = await new LogoService(images).generateOptions(userId, channelId, 1);
+    // Fails loudly here, with vitest's own assertion message, rather than
+    // pushing `undefined` into `storedPaths` and letting a real bug (a
+    // generation that silently produced zero options) surface as a much
+    // more confusing failure a few lines down at `choose`.
+    expect(first).toBeDefined();
     storedPaths.push(first);
 
     // A channel may have no brand row yet — choosing a logo is often the first
@@ -119,6 +124,7 @@ describe("LogoService.choose", () => {
 
     const images = fakeImageProvider();
     const [chosen] = await new LogoService(images).generateOptions(userId, channelId, 1);
+    expect(chosen).toBeDefined();
     storedPaths.push(chosen);
     await new LogoService(images).choose(userId, channelId, chosen);
 

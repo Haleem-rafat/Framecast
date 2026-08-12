@@ -262,6 +262,26 @@ describe("jobService.release", () => {
     expect(events).toBe(1);
   });
 
+  it("clears a stray cancel flag on success too — nothing left running to cancel", async () => {
+    // Mirrors the exact race pipeline-runner.ts's comment describes: an
+    // operator cancels while the video is RENDERING, but the render happens
+    // to finish (and metadata/thumbnail happen to complete) before the
+    // worker's next heartbeat acts on it — so this video reaches "succeeded"
+    // release with cancelRequestedAt still set from that lost race. It must
+    // not survive onto a READY video.
+    const videoId = await createVideo({
+      status: "RENDERING",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      cancelRequestedAt: new Date(),
+    });
+
+    await jobService.release(videoId, "succeeded");
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("READY");
+    expect(video.cancelRequestedAt).toBeNull();
+  });
+
   it("clears the lease so a failed video can be retried", async () => {
     const videoId = await createVideo({
       status: "GENERATING",

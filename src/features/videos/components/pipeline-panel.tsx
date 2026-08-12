@@ -7,6 +7,7 @@ import {
   Ban,
   Circle,
   CircleCheck,
+  CircleDashed,
   CircleX,
   Clock,
   Hourglass,
@@ -86,7 +87,16 @@ export function usePipelineState(videoId: string, initialState: PipelineState) {
     refetchInterval: (query) => {
       const latest = query.state.data;
       if (!latest || latest.isTerminal) return false;
-      return latest.isActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+      // `isFinalizing` polls at the same fast cadence as `isActive`: it's the
+      // window where `metadata`/`thumbnail` are still generating behind an
+      // already-`READY` status (see `PipelineState.isFinalizing`'s own
+      // comment), and that's exactly the kind of "something is genuinely
+      // moving, worth watching tick from pending to done" case
+      // `POLL_INTERVAL_ACTIVE_MS` exists for — same reasoning as a running
+      // render, just without a `RenderJob` row to poll a percentage off of.
+      return latest.isActive || latest.isFinalizing
+        ? POLL_INTERVAL_ACTIVE_MS
+        : POLL_INTERVAL_IDLE_MS;
     },
   });
 }
@@ -96,6 +106,11 @@ const STATUS_ICON: Record<PipelineStage["status"], typeof Circle> = {
   running: Loader2,
   done: CircleCheck,
   failed: CircleX,
+  // A stage that will never automatically complete (see
+  // `PipelineStageStatus`'s own comment on `skipped`) — visually distinct
+  // from both `pending` (implies more is coming) and `failed` (implies an
+  // error worth investigating), since it's neither.
+  skipped: CircleDashed,
 };
 
 const STATUS_ICON_CLASS: Record<PipelineStage["status"], string> = {
@@ -103,6 +118,7 @@ const STATUS_ICON_CLASS: Record<PipelineStage["status"], string> = {
   running: "text-sky-600 dark:text-sky-400",
   done: "text-emerald-600 dark:text-emerald-400",
   failed: "text-destructive",
+  skipped: "text-muted-foreground",
 };
 
 function StageRow({
@@ -236,10 +252,23 @@ function PipelineControls({ videoId, state }: { videoId: string; state: Pipeline
     );
   }
 
+  if (state.isFinalizing) {
+    // The video already reads READY, but `metadata`/`thumbnail` are still
+    // generating behind it (see `PipelineState.isFinalizing`'s own comment on
+    // `pipeline.service.ts`). There is nothing for the operator to do here:
+    // `startPipelineAction`/`jobService.requeue` only accept a `QUEUED` or
+    // retryable-`FAILED` video and would reject a `READY` one, and
+    // `cancelPipelineAction`/`jobService.requestCancel` only accept
+    // `GENERATING`/`RENDERING`. Publish becomes available once this finishes
+    // — the panel keeps polling through `isFinalizing` and re-renders on its
+    // own the moment it does.
+    return null;
+  }
+
   if (!state.isTerminal) {
     // This panel never mounts for a DRAFT video (see the video detail page),
-    // and not-terminal-and-not-active leaves only QUEUED — approved and
-    // waiting on a worker.
+    // and not-terminal-and-not-active-and-not-finalizing leaves only QUEUED —
+    // approved and waiting on a worker.
     return (
       <Button size="sm" onClick={onRun} disabled={isPending}>
         {isPending ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
@@ -262,7 +291,13 @@ export function PipelinePanel({
   const { data } = usePipelineState(videoId, initialState);
 
   const state = data ?? initialState;
-  const isIdleQueued = !state.isTerminal && !state.isActive;
+  // Excludes `isFinalizing` deliberately: that window has the same
+  // `!isTerminal && !isActive` shape as an idle `QUEUED` video, but showing
+  // "waiting for the render service" would be actively wrong — a worker
+  // already picked this video up and is finishing metadata/thumbnail, not
+  // waiting to start. The stage list itself (below) is what should render
+  // for it, same as any other in-flight state.
+  const isIdleQueued = !state.isTerminal && !state.isActive && !state.isFinalizing;
 
   return (
     <Card>

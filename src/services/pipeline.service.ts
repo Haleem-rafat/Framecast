@@ -15,7 +15,18 @@ export type PipelineStageKey =
   | "thumbnail"
   | "upload";
 
-export type PipelineStageStatus = "pending" | "running" | "done" | "failed";
+/** `skipped` exists only for the two optional stages (`metadata`,
+ * `thumbnail`, see `OPTIONAL_STAGE_KEYS`) — the video is finished (or will
+ * never automatically try again) and the stage never completed. It is
+ * deliberately not `failed`: neither stage has a persisted "this attempt
+ * threw" signal to read back (both are documented to swallow their own
+ * errors — see metadata.service.ts / thumbnail.service.ts), so this state
+ * covers "generation ran and quietly produced nothing" and "this video
+ * predates the feature entirely" identically, without guessing which one
+ * happened. See the "first incomplete stage" fallback in `getState` for why
+ * conflating either of those with an actual pipeline failure would be worse
+ * than not distinguishing them. */
+export type PipelineStageStatus = "pending" | "running" | "done" | "failed" | "skipped";
 
 export interface PipelineStage {
   key: PipelineStageKey;
@@ -43,15 +54,42 @@ export interface PipelineState {
   /** True once nothing here can change on its own again. `READY` is included
    * even though the video isn't fully done — the pipeline stops there and
    * waits on an operator to click Publish, so there is nothing left to poll
-   * for. The single definition of "finished", so the panel never re-derives
-   * it and risks disagreeing with the service about when to stop polling. */
+   * for — *except* while `isFinalizing` is also true (see its own comment):
+   * `metadata` and `thumbnail` can still be running behind an
+   * already-`READY` status, and that is exactly the case this flips to
+   * `false` for, so `isTerminal` stays true to its name — nothing left to
+   * happen — rather than being true merely because `VideoStatus` looks
+   * finished. The single definition of "finished", so the panel never
+   * re-derives it and risks disagreeing with the service about when to stop
+   * polling. */
   isTerminal: boolean;
+  /** True exactly during the window where `render.service.ts` has already
+   * committed `READY` (inside its own transaction, the moment the encode
+   * succeeds) but `runPipeline` (pipeline-runner.ts) has not yet finished
+   * running the `metadata` and `thumbnail` stages that come after it. The
+   * signal is `Video.leaseExpiresAt`: the worker (or the CLI's direct lease)
+   * holds and renews that lease for the *entire* duration of `runPipeline`,
+   * from claim to its own `release()` call, which only runs after every
+   * stage — metadata and thumbnail included — has resolved. So a live lease
+   * on a `READY` video is proof those two stages are still in flight, not
+   * proof of anything wrong; a `READY` video with no live lease has already
+   * had its one automatic chance at both. Exists so the panel can keep
+   * polling and show the right stage as `running` during that window instead
+   * of reading `isTerminal` and freezing on "Render done, Metadata pending"
+   * until the operator reloads the page. */
+  isFinalizing: boolean;
   /** True while something is genuinely in flight — the latest `RenderJob` is
    * `RUNNING`, or the video itself is `GENERATING`/`RENDERING`. `false` for
    * `QUEUED` with no running job (nothing will change until a render worker
-   * claims it) and for every terminal status. The single definition of
-   * "actually moving", so the panel picks its poll interval from this
-   * instead of re-deriving it from `VideoStatus`/`RenderStatus` itself. */
+   * claims it) and for every terminal status — deliberately *not* widened to
+   * include `isFinalizing`: unlike a running render, there is nothing an
+   * operator can do about metadata/thumbnail generation (no cancel endpoint
+   * accepts a `READY` video — see pipeline-runner.ts's own comment on why —
+   * and no manual re-run), so this stays the specific signal the Cancel
+   * button gates on, not a general "is anything happening" flag. The single
+   * definition of "actually moving" for that purpose, so the panel picks its
+   * poll interval from this instead of re-deriving it from
+   * `VideoStatus`/`RenderStatus` itself. */
   isActive: boolean;
   /** True precisely when `VideoStatus` is `FAILED` — the one discriminator
    * `isTerminal` alone can't give the Run/Cancel/Retry controls, since
@@ -159,6 +197,29 @@ const STAGE_ORDER: readonly PipelineStageKey[] = [
   "upload",
 ];
 
+/**
+ * `metadata` and `thumbnail` — the two stages `runOptionalStage`
+ * (pipeline-runner.ts) runs, both documented to swallow their own errors
+ * rather than fail the pipeline. Marked out from the rest of `STAGE_ORDER`
+ * for two unrelated reasons below, both stemming from the same fact: unlike
+ * every other stage, one of these being incomplete is an expected, silent
+ * outcome rather than evidence of anything having gone wrong.
+ *
+ * 1. The "first incomplete stage" fallback that attributes a video-wide
+ *    `FAILED` status to a specific row must skip both. `publish()` creates
+ *    its `Publication` row *before* the upload as its concurrency claim (see
+ *    publish.service.ts), so `upload` already reads "done" the moment a
+ *    publish attempt starts — meaning a failed publish, with metadata or
+ *    thumbnail sitting incomplete for entirely unrelated reasons, would
+ *    otherwise have the fallback land on one of them and hide the real
+ *    failure (upload) from the panel entirely.
+ * 2. `promoteNextPendingStage` must not promote past them into `upload`
+ *    while `isFinalizing` (see that field's own comment): the video is
+ *    `READY`, `upload` only ever moves via an operator's own manual publish
+ *    click, and nothing here is doing that automatically.
+ */
+const OPTIONAL_STAGE_KEYS: ReadonlySet<PipelineStageKey> = new Set(["metadata", "thumbnail"]);
+
 /** Unlike the other stages, `RenderJob` carries its own row-level status, so
  * render never needs the video-wide "first incomplete stage" fallback below
  * to know it failed. */
@@ -213,6 +274,12 @@ export class PipelineService {
         id: true,
         status: true,
         attempts: true,
+        // Read purely to detect `isFinalizing` (see that field's own doc
+        // comment): a live lease on an otherwise-`READY` video is what tells
+        // this apart from a video that has already had its one chance at
+        // `metadata`/`thumbnail`. Never surfaced to the client directly —
+        // `PipelineState` only ever exposes the derived boolean.
+        leaseExpiresAt: true,
         // Narration's detail reports "characters sent" alongside its
         // duration — the same character count voiceover.service.ts actually
         // sent to ElevenLabs, already stored here rather than duplicated
@@ -280,7 +347,17 @@ export class PipelineService {
     const clips = assets.filter((asset) => asset.kind === "VIDEO");
     const hasCaptions = assets.some((asset) => asset.kind === "SUBTITLE");
     const renderJob = video.renderJobs[0] ?? null;
-    const isTerminal = TERMINAL_STATUSES.has(video.status);
+
+    // See `isFinalizing`'s own doc comment on `PipelineState` for the full
+    // reasoning: a lease that is still live proves the worker (or the CLI's
+    // direct lease) has not yet called `release()`, which only happens after
+    // `runPipeline` — metadata/thumbnail included — has fully resolved.
+    const isFinalizing =
+      video.status === "READY" &&
+      video.leaseExpiresAt != null &&
+      video.leaseExpiresAt.getTime() > Date.now();
+    const isTerminal = TERMINAL_STATUSES.has(video.status) && !isFinalizing;
+
     // Only one stage is ever actually in flight — the CLI calls these
     // services one after another rather than fanning them out — so "the
     // first stage that isn't done yet" doubles as "what's running now" even
@@ -295,9 +372,13 @@ export class PipelineService {
     // actually running, or the video actively mid-stage. `QUEUED` with no
     // `RUNNING` RenderJob is deliberately excluded — there is no render
     // worker yet, so that state can sit forever and the panel must poll it
-    // slowly rather than as if progress were imminent.
+    // slowly rather than as if progress were imminent. `isFinalizing` is
+    // also deliberately excluded — see its field comment on `PipelineState`
+    // for why this stays the Cancel button's own signal rather than a
+    // general "something is happening" flag.
     const isActive =
       !isTerminal &&
+      !isFinalizing &&
       (video.status === "GENERATING" ||
         video.status === "RENDERING" ||
         renderJob?.status === "RUNNING");
@@ -380,7 +461,16 @@ export class PipelineService {
     }));
 
     if (promoteNextPendingStage) {
-      const runningIndex = stages.findIndex((stage) => stage.status === "pending");
+      // While `isFinalizing`, `isTerminal` is already `false` (see its own
+      // comment), so this block runs even though the video reads `READY` —
+      // but only `metadata`/`thumbnail` may be promoted in that case.
+      // `upload` moves solely on an operator's own manual publish click, and
+      // without this restriction it would be the next "pending" stage the
+      // instant both optional stages happen to already be done, reading as
+      // an upload that is running when nothing is touching it.
+      const isPromotable = (stage: PipelineStage): boolean =>
+        stage.status === "pending" && (!isFinalizing || OPTIONAL_STAGE_KEYS.has(stage.key));
+      const runningIndex = stages.findIndex(isPromotable);
       if (runningIndex !== -1) {
         stages[runningIndex] = { ...stages[runningIndex], status: "running" };
       }
@@ -397,10 +487,39 @@ export class PipelineService {
       // failure to the first stage that never finished — in practice almost
       // always Upload, since publish.service.ts's error path deliberately
       // never creates a Publication row on a failed upload, leaving nothing
-      // else to distinguish "hasn't started" from "failed here".
-      const failedIndex = stages.findIndex((stage) => stage.status !== "done");
+      // else to distinguish "hasn't started" from "failed here". `metadata`
+      // and `thumbnail` are excluded from this scan (see
+      // `OPTIONAL_STAGE_KEYS`): either can legitimately still be `pending`
+      // on a `FAILED` video for reasons that have nothing to do with why it
+      // failed, and attributing the failure to one of them would bury the
+      // real cause.
+      const failedIndex = stages.findIndex(
+        (stage) => stage.status !== "done" && !OPTIONAL_STAGE_KEYS.has(stage.key),
+      );
       if (failedIndex !== -1) {
         stages[failedIndex] = { ...stages[failedIndex], status: "failed" };
+      }
+    }
+
+    // A terminal video (per the original, status-only sense — `isTerminal`
+    // itself is `false` while `isFinalizing`, so this deliberately re-checks
+    // the status directly rather than reading `isTerminal`) has had its one
+    // automatic chance at every optional stage. One still `pending` here
+    // means either it ran and produced nothing (both services swallow their
+    // own errors) or this video predates the feature — `skipped` covers both
+    // without claiming to know which, and reads as "this isn't coming"
+    // rather than "still waiting", which `pending` would otherwise imply
+    // forever.
+    if (TERMINAL_STATUSES.has(video.status) && !isFinalizing) {
+      for (const key of OPTIONAL_STAGE_KEYS) {
+        const index = stages.findIndex((stage) => stage.key === key);
+        if (index !== -1 && stages[index].status === "pending") {
+          stages[index] = {
+            ...stages[index],
+            status: "skipped",
+            detail: key === "metadata" ? "no metadata was generated" : "no thumbnail was generated",
+          };
+        }
       }
     }
 
@@ -410,6 +529,7 @@ export class PipelineService {
       progress: renderJob?.progress ?? null,
       elapsedSeconds,
       isTerminal,
+      isFinalizing,
       isActive,
       isFailed: video.status === "FAILED",
       attempts: video.attempts,

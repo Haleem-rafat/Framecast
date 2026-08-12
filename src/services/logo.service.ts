@@ -1,5 +1,7 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
+
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
@@ -52,10 +54,27 @@ export class LogoService {
 
     const paths: string[] = [];
 
+    // One token per call, shared across this batch's `count` logos rather
+    // than one per logo: distinguishing option 0 of this call from option 0
+    // of the next is the whole point (see below), but the three options
+    // within a single call already have no reason to collide with each
+    // other — `index` alone already does that job for them.
+    //
+    // Without this, a second `generateOptions` call for the same channel
+    // would write back to the exact same `logo-0.png`/`logo-1.png`/
+    // `logo-2.png` paths as the first — `putObject` uploads with
+    // `upsert: true` — silently swapping the bytes behind whichever of
+    // those paths the operator had already chosen via `choose()`.
+    // `ChannelBrand.logoPath` would still read the same string, so nothing
+    // in the database would show that the image it now resolves to is a
+    // different generation entirely. Same failure mode `thumbnail.service.ts`
+    // documents on its own randomised version keys, for the same reason.
+    const batchToken = randomUUID().slice(0, 8);
+
     for (let index = 0; index < count; index += 1) {
       try {
         const image = await this.images.generate({ prompt, aspectRatio: "1:1" });
-        const objectPath = storagePath(channelId, "logos", `logo-${index}.png`);
+        const objectPath = storagePath(channelId, "logos", `logo-${batchToken}-${index}.png`);
         await putObject(objectPath, image.data, "image/png");
         paths.push(objectPath);
       } catch (error) {

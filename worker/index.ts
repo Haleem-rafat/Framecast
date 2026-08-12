@@ -31,6 +31,8 @@ const STAGE_LABELS: Record<string, string> = {
   narration: "Narration",
   footage: "Footage",
   render: "Render",
+  metadata: "Metadata",
+  thumbnail: "Thumbnail",
 };
 
 function log(message: string): void {

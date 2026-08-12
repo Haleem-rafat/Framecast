@@ -257,21 +257,43 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
     return `rendered ${result.durationSeconds}s to ${result.outputUrl}`;
   });
 
-  // No `checkCancelled` guarding either stage below, unlike every stage
-  // above: by this point the video is already `READY` (renderService.render
-  // set it inside its own transaction), so there is no longer a render to
-  // save time by skipping. Throwing `PipelineCancelledError` here would
-  // reject `runPipeline` itself, and the worker's cancellation path
-  // (`jobService.release(videoId, "cancelled")`) turns that into `FAILED` —
-  // exactly the "renderable video becomes a failed one" outcome
-  // `runOptionalStage` exists to prevent, just via cancellation instead of a
-  // thrown error. A cancel requested this late is left to take effect on
-  // whatever runs next for this video, not retroactively on the one that
-  // already finished.
+  // `shouldCancel?.()` checked directly here, not `checkCancelled`, and
+  // deliberately not for the same reason `checkCancelled` guards every stage
+  // above. By this point the video is already `READY` — renderService.render
+  // set that inside its own transaction — so `checkCancelled`'s throw
+  // (`PipelineCancelledError`) would reject `runPipeline` itself, and the
+  // worker's cancellation path (`jobService.release(videoId, "cancelled")`)
+  // turns any rejection into `FAILED`, overwriting the `READY` status that
+  // already exists. That is exactly the "renderable video becomes a failed
+  // one" outcome `runOptionalStage` exists to prevent, just reached via
+  // cancellation instead of a thrown error.
+  //
+  // A plain early `return` honours the same cancel request without ever
+  // rejecting: `runPipeline` resolves normally, the worker releases the
+  // video as `"succeeded"`, and `READY` is written again exactly as it would
+  // without a cancel in play (see job.service.ts's `release`, which now also
+  // clears `cancelRequestedAt` on that path). What changes is real spend —
+  // an operator who cancelled while the video was still `RENDERING`, but
+  // whose request lost the race with FFmpeg finishing (the render can
+  // complete, and `renderService.render` can commit `READY`, in the gap
+  // between the worker's last heartbeat and its next one), no longer pays for
+  // an Anthropic call and an image generation for a video they explicitly
+  // asked to stop. There is no way to request a *fresh* cancellation once the
+  // video reads `READY` — `jobService.requestCancel` only accepts a video
+  // that is `GENERATING`/`RENDERING` — so `shouldCancel` here can only ever
+  // be honouring a request that was already in flight before render finished.
+  if (shouldCancel?.()) {
+    return;
+  }
+
   await runOptionalStage("metadata", onProgress, async () => {
     const metadata = await metadataService.generate(userId, videoId);
     return metadata ? `generated title "${metadata.title}"` : null;
   });
+
+  if (shouldCancel?.()) {
+    return;
+  }
 
   await runOptionalStage("thumbnail", onProgress, async () => {
     // Runs after metadata, not just after render: ThumbnailService reads

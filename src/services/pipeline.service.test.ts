@@ -637,11 +637,41 @@ describe("pipelineService.getState — failure attribution", () => {
   it("marks upload failed when the render succeeded but no Publication was created", async () => {
     // Mirrors publish.service.ts's error path: it deliberately never creates
     // a Publication row when the YouTube upload itself fails, so upload's
-    // only failure signal is the video-wide FAILED fallback. Metadata and
-    // thumbnail are set up as already done, matching what a real video in
-    // this state looks like — both run automatically, well before an
-    // operator ever gets a Publish button to fail — so the "first incomplete
-    // stage" fallback correctly lands on upload rather than on one of them.
+    // only failure signal is the video-wide FAILED fallback. Deliberately
+    // does NOT set up metadata/thumbnail — the realistic case is that a
+    // publish failure can land on a video where one or both never completed
+    // for reasons unrelated to why the upload failed, and the fallback must
+    // still land on upload, not on metadata/thumbnail (see
+    // OPTIONAL_STAGE_KEYS's own comment for why they're excluded from this
+    // scan). This is the regression case: without that exclusion, the first
+    // stage the generic "first incomplete stage" scan would find here is
+    // metadata, and it would misattribute the failure to it instead.
+    await addVoiceOver();
+    await addSubtitleAsset();
+    await addClipAssets(2, 0);
+    await addRenderJob({
+      status: "SUCCEEDED",
+      progress: 100,
+      startedAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(),
+    });
+    await setVideoStatus("FAILED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "render")).toBe("done");
+    // Neither ran (or, indistinguishably, ran and produced nothing) — that's
+    // a normal outcome for this stage, not evidence of what actually failed.
+    expect(stageStatus(state.stages, "metadata")).toBe("skipped");
+    expect(stageStatus(state.stages, "thumbnail")).toBe("skipped");
+    expect(stageStatus(state.stages, "upload")).toBe("failed");
+  });
+
+  it("still attributes failure to upload when metadata/thumbnail did complete", async () => {
+    // The other half of the scenario above: a video that *did* finish
+    // metadata/thumbnail before a later publish attempt failed. Same
+    // attribution either way — upload — since neither stage's completion
+    // state has anything to do with why upload failed.
     await addVoiceOver();
     await addSubtitleAsset();
     await addClipAssets(2, 0);
@@ -657,10 +687,127 @@ describe("pipelineService.getState — failure attribution", () => {
 
     const state = await service.getState(userId, videoId);
 
-    expect(stageStatus(state.stages, "render")).toBe("done");
     expect(stageStatus(state.stages, "metadata")).toBe("done");
     expect(stageStatus(state.stages, "thumbnail")).toBe("done");
     expect(stageStatus(state.stages, "upload")).toBe("failed");
+  });
+});
+
+describe("pipelineService.getState — isFinalizing", () => {
+  it("is not terminal, and is finalizing, when READY with a live worker lease", async () => {
+    // Mirrors the real race exactly: renderService.render already committed
+    // READY inside its own transaction, but the worker (or the CLI's direct
+    // lease) hasn't called release() yet because runPipeline still has
+    // metadata/thumbnail left to run — and it holds the lease for that
+    // entire span.
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "READY", leaseExpiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isFinalizing).toBe(true);
+    expect(state.isTerminal).toBe(false);
+  });
+
+  it("is terminal, and not finalizing, once the lease is gone", async () => {
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "READY", leaseExpiresAt: null },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isFinalizing).toBe(false);
+    expect(state.isTerminal).toBe(true);
+  });
+
+  it("is not finalizing from an expired lease (a dead worker, not a live one)", async () => {
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "READY", leaseExpiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.isFinalizing).toBe(false);
+    expect(state.isTerminal).toBe(true);
+  });
+
+  it("promotes the first pending optional stage to running while finalizing, never upload", async () => {
+    await addVoiceOver();
+    await addSubtitleAsset();
+    await addClipAssets(2, 0);
+    await addRenderJob({
+      status: "SUCCEEDED",
+      progress: 100,
+      startedAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(),
+    });
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "READY", leaseExpiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "metadata")).toBe("running");
+    expect(stageStatus(state.stages, "thumbnail")).toBe("pending");
+    // upload never auto-promotes — it only ever moves on an operator's own
+    // manual publish click, finalizing or not.
+    expect(stageStatus(state.stages, "upload")).toBe("pending");
+  });
+
+  it("does not mark metadata/thumbnail skipped while still finalizing", async () => {
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "READY", leaseExpiresAt: new Date(Date.now() + 60_000) },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    // Promoted to "running" (the first pending optional stage), not
+    // "skipped" — skipped means "this will never automatically complete",
+    // which is false while a worker still holds the lease.
+    expect(stageStatus(state.stages, "metadata")).toBe("running");
+    expect(stageStatus(state.stages, "thumbnail")).not.toBe("skipped");
+  });
+});
+
+describe("pipelineService.getState — metadata/thumbnail skipped state", () => {
+  it("marks metadata and thumbnail skipped, not pending, on a terminal video that never generated either", async () => {
+    // The legacy case: a video that reached PUBLISHED before this feature
+    // existed (or a READY video whose lease has long since cleared) has had
+    // its one automatic chance at both, and none is coming — "pending" would
+    // read as "still waiting", which is no longer true.
+    await addVoiceOver();
+    await addSubtitleAsset();
+    await addClipAssets(2, 0);
+    await addRenderJob({
+      status: "SUCCEEDED",
+      progress: 100,
+      startedAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(),
+    });
+    await addPublication();
+    await setVideoStatus("PUBLISHED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "metadata")).toBe("skipped");
+    expect(stageStatus(state.stages, "thumbnail")).toBe("skipped");
+    const metadataStage = state.stages.find((s) => s.key === "metadata");
+    expect(metadataStage?.detail).toBeTruthy();
+  });
+
+  it("does not mark metadata/thumbnail skipped while the video is still mid-pipeline", async () => {
+    await setVideoStatus("QUEUED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "metadata")).not.toBe("skipped");
+    expect(stageStatus(state.stages, "thumbnail")).not.toBe("skipped");
   });
 });
 

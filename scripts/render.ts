@@ -25,6 +25,8 @@ const STAGE_LABELS: Record<string, string> = {
   narration: "Narration",
   footage: "Footage",
   render: "Render",
+  metadata: "Metadata",
+  thumbnail: "Thumbnail",
 };
 
 /** Every sub-step a stage reports gets its own indented, timed line — this is
