@@ -1677,28 +1677,101 @@ git commit -m "feat: give each video a thumbnail somebody might click"
 - [ ] **Step 1: Write the failing tests**
 
 ```typescript
+/**
+ * Attaches an active thumbnail to a video, writing a real object to the bucket
+ * so `publish()` has something to download and send.
+ */
+async function giveVideoAThumbnail(videoId: string): Promise<string> {
+  const objectPath = storagePath(videoId, "thumbnails", "thumbnail-001.jpg");
+  await putObject(objectPath, Buffer.from(`thumb-${RUN}`), "image/jpeg");
+  clipStoragePaths.push(objectPath);
+
+  const thumbnail = await prisma.thumbnail.create({ data: { videoId } });
+  const version = await prisma.thumbnailVersion.create({
+    data: {
+      thumbnailId: thumbnail.id,
+      version: 1,
+      imageUrl: objectPath,
+      prompt: "a city at night",
+    },
+  });
+  await prisma.thumbnail.update({
+    where: { id: thumbnail.id },
+    data: { activeVersionId: version.id },
+  });
+
+  return objectPath;
+}
+
 describe("publishService.publish — thumbnail", () => {
   it("uploads the thumbnail after the video insert, not with it", async () => {
-    // thumbnails.set is a separate endpoint; it cannot ride along with
-    // videos.insert.
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    // thumbnails.set is a separate endpoint — it cannot ride along with
+    // videos.insert — so it must come after the video exists to attach to.
+    const thumbnailCall = calls.findIndex((call) => call.url.includes("thumbnails/set"));
+    const insertCall = calls.findIndex((call) => call.url.includes("uploadType=resumable"));
+
+    expect(thumbnailCall).toBeGreaterThan(-1);
+    expect(thumbnailCall).toBeGreaterThan(insertCall);
+    expect(calls[thumbnailCall].url).toContain("videoId=");
   });
 
   it("leaves the video published when the channel is unverified (403)", async () => {
-    // Custom thumbnails require a verified YouTube channel. That is a property
-    // of the operator's account, not something this code can satisfy — and
-    // failing an otherwise-successful upload over a thumbnail is the wrong
-    // trade.
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl } = createUploadFetch({ failThumbnail: 403 });
+
+    // Custom thumbnails require a verified YouTube channel — a property of the
+    // operator's account, not something this code can satisfy. Failing an
+    // upload that already succeeded, over a thumbnail, is the wrong trade.
+    await expect(new PublishService(fetchImpl).publish(userId, videoId)).resolves
+      .toMatchObject({ youtubeVideoId: expect.any(String) });
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("PUBLISHED");
+  });
+
+  it("survives any other thumbnail failure just as completely", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl } = createUploadFetch({ failThumbnail: 500 });
+
+    await expect(new PublishService(fetchImpl).publish(userId, videoId)).resolves
+      .toMatchObject({ youtubeVideoId: expect.any(String) });
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
   });
 
   it("skips the thumbnail call entirely when the video has none", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
     // 50 quota units, against the same daily allowance as the 1,600 the upload
-    // itself costs.
+    // itself costs — not free, and not worth spending on nothing.
+    expect(calls.some((call) => call.url.includes("thumbnails/set"))).toBe(false);
   });
 });
 ```
 
-Write these fully, extending `createUploadFetch` to recognise the
-`thumbnails/set` URL and to be able to fail it with a 403.
+Extend `createUploadFetch`'s options with `failThumbnail?: number` and add a
+branch that recognises a `thumbnails/set` URL, returning either
+`{ ok: true, status: 200, json: async () => ({}) }` or a failure with the given
+status. The existing `uploadType=resumable` and PUT branches are unchanged —
+match the thumbnail URL **before** the PUT branch, since the PUT branch is the
+current catch-all.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1707,12 +1780,99 @@ Expected: FAIL — no request is made to `thumbnails/set`
 
 - [ ] **Step 3: Implement**
 
-After the successful video insert and inside the same `try`, load the active
-`ThumbnailVersion`, download its object, and `POST` it to
-`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={id}`.
-Wrap the whole thumbnail attempt so **no** failure — 403 or otherwise — can
-reach the publish's failure branch: the video is already on YouTube and must
-not be marked FAILED. Record the outcome on the `Publication`.
+Add to `publish.service.ts`, and call it **after** the video insert has
+returned an id and **outside** the `try` whose catch marks the video FAILED:
+
+```typescript
+/**
+ * Attaches the video's thumbnail on YouTube.
+ *
+ * Never throws, and deliberately runs outside the try/catch that marks a video
+ * FAILED. By the time this is called the video is already on YouTube: rolling
+ * that back is impossible and failing the publish over a thumbnail would be
+ * the wrong trade.
+ *
+ * The most likely failure is not a bug. `thumbnails.set` returns 403 for a
+ * channel that has not been verified, which is a property of the operator's
+ * YouTube account that no amount of code here can satisfy — so it is reported,
+ * not retried.
+ */
+private async applyThumbnail(
+  accessToken: string,
+  videoId: string,
+  youtubeVideoId: string,
+): Promise<boolean> {
+  try {
+    const thumbnail = await prisma.thumbnail.findUnique({
+      where: { videoId },
+      select: { activeVersion: { select: { imageUrl: true } } },
+    });
+
+    const objectPath = thumbnail?.activeVersion?.imageUrl;
+    if (!objectPath) {
+      // 50 quota units against the same daily allowance as the upload's 1,600.
+      return false;
+    }
+
+    const bytes = await getObject(objectPath);
+
+    const response = await this.fetchImpl(
+      `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${youtubeVideoId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "image/jpeg",
+        },
+        body: bytes as unknown as BodyInit,
+      },
+    );
+
+    if (!response.ok) {
+      console.error(
+        `Could not set the thumbnail for video ${videoId} ` +
+          `(${response.status})` +
+          (response.status === 403
+            ? ": the YouTube channel is not verified, which custom thumbnails require."
+            : "."),
+      );
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error(
+      `Could not set the thumbnail for video ${videoId}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+    return false;
+  }
+}
+```
+
+Call it after the transaction that marks the video `PUBLISHED` has committed.
+Import `getObject` from `@/lib/storage`.
+
+Recording the outcome needs a column — `Publication` has nowhere to put it
+today, and a `console.error` the operator never sees is not a report:
+
+```prisma
+  /// False when the video published but its thumbnail did not attach — most
+  /// often because the YouTube channel is not verified, which custom
+  /// thumbnails require. Not a publish failure; a thing the operator can fix
+  /// and retry.
+  thumbnailApplied Boolean @default(false)
+```
+
+```bash
+pnpm db:migrate --name add_publication_thumbnail_applied
+pnpm db:generate
+```
+
+Update the `Publication` after `applyThumbnail` returns, in its own
+`prisma.publication.update` guarded by `.catch(() => {})` — the same
+best-effort shape `publish()` already uses for its failure-path writes. A
+failed bookkeeping write must not throw past a successful publish either.
 
 - [ ] **Step 4: Run the full file**
 
@@ -1749,24 +1909,235 @@ git commit -m "feat: put the thumbnail on the video after it lands"
 - [ ] **Step 1: Write the failing logo tests**
 
 ```typescript
-describe("LogoService", () => {
-  it("generates the requested number of options and stores each", async () => {});
+import { randomUUID } from "node:crypto";
 
-  it("stores the chosen logo on the channel's brand, creating the row if needed", async () => {
-    // A channel may have no brand row yet; choosing a logo is often the first
-    // branding action an operator takes.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { prisma } from "@/lib/prisma";
+import { removeObjects } from "@/lib/storage";
+import { channelService } from "@/services/channel.service";
+import { LogoService } from "@/services/logo.service";
+import { createTestUser, deleteTestUser } from "@/test/fixtures";
+
+vi.setConfig({ testTimeout: 20_000 });
+
+const RUN = randomUUID().slice(0, 8);
+
+let userId: string;
+let channelId: string;
+const storedPaths: string[] = [];
+
+function fakeImageProvider() {
+  return {
+    generate: vi.fn().mockResolvedValue({
+      data: Buffer.from(`logo-${RUN}`),
+      model: "test/image-model",
+    }),
+  };
+}
+
+beforeEach(async () => {
+  userId = await createTestUser("logo");
+  const channel = await channelService.connect(userId, {
+    youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
+    title: "Money Mechanics",
+    accessToken: "ya29.test",
+    refreshToken: "1//test",
+    expiresInSeconds: 3600,
+    scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+  });
+  channelId = channel.id;
+});
+
+afterEach(async () => {
+  const paths = storedPaths.splice(0);
+  if (paths.length > 0) {
+    await removeObjects(paths).catch(() => {});
+  }
+  await deleteTestUser(userId);
+});
+
+describe("LogoService.generateOptions", () => {
+  it("generates the requested number of options and stores each", async () => {
+    const images = fakeImageProvider();
+
+    const paths = await new LogoService(images).generateOptions(userId, channelId, 3);
+    storedPaths.push(...paths);
+
+    expect(paths).toHaveLength(3);
+    expect(new Set(paths).size).toBe(3);
+    expect(images.generate).toHaveBeenCalledTimes(3);
+    // A logo is square; a 16:9 logo is a banner.
+    expect(images.generate.mock.calls[0][0].aspectRatio).toBe("1:1");
   });
 
-  it("returns an empty list rather than throwing when generation fails", async () => {});
+  it("returns the options it did manage when one generation fails", async () => {
+    const images = {
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({ data: Buffer.from("a"), model: "m" })
+        .mockRejectedValueOnce(new Error("gateway down"))
+        .mockResolvedValueOnce({ data: Buffer.from("c"), model: "m" }),
+    };
+
+    // Two usable logos to choose between beats an exception because the
+    // middle one failed.
+    const paths = await new LogoService(images).generateOptions(userId, channelId, 3);
+    storedPaths.push(...paths);
+
+    expect(paths).toHaveLength(2);
+  });
+
+  it("returns an empty list rather than throwing when every generation fails", async () => {
+    const images = { generate: vi.fn().mockRejectedValue(new Error("down")) };
+
+    expect(await new LogoService(images).generateOptions(userId, channelId, 2)).toEqual([]);
+  });
+
+  it("refuses a channel the caller does not own", async () => {
+    const otherUserId = await createTestUser("logo-other");
+
+    try {
+      const images = fakeImageProvider();
+      await expect(
+        new LogoService(images).generateOptions(otherUserId, channelId, 1),
+      ).rejects.toThrow();
+      expect(images.generate).not.toHaveBeenCalled();
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+});
+
+describe("LogoService.choose", () => {
+  it("stores the chosen logo, creating the brand row when there is none", async () => {
+    const images = fakeImageProvider();
+    const [first] = await new LogoService(images).generateOptions(userId, channelId, 1);
+    storedPaths.push(first);
+
+    // A channel may have no brand row yet — choosing a logo is often the first
+    // branding action an operator takes.
+    await new LogoService(images).choose(userId, channelId, first);
+
+    const brand = await prisma.channelBrand.findUniqueOrThrow({ where: { channelId } });
+    expect(brand.logoPath).toBe(first);
+  });
+
+  it("replaces a previously chosen logo without disturbing the rest of the brand", async () => {
+    await prisma.channelBrand.create({
+      data: { channelId, tone: "dry and factual", logoPath: "videos/old/logo.png" },
+    });
+
+    const images = fakeImageProvider();
+    const [chosen] = await new LogoService(images).generateOptions(userId, channelId, 1);
+    storedPaths.push(chosen);
+    await new LogoService(images).choose(userId, channelId, chosen);
+
+    const brand = await prisma.channelBrand.findUniqueOrThrow({ where: { channelId } });
+    expect(brand.logoPath).toBe(chosen);
+    expect(brand.tone).toBe("dry and factual");
+  });
 });
 ```
 
 - [ ] **Step 2: Run to verify they fail, then implement `logo.service.ts`**
 
-`generateOptions` builds a square prompt from the channel's title, tone and
-niche, calls the image provider `count` times (default 3), stores each at
-`storagePath(channelId, "logos", "logo-N.png")` and returns the paths.
-`choose` upserts `ChannelBrand` with the path.
+Create `src/services/logo.service.ts`:
+
+```typescript
+import "server-only";
+
+import { NotFoundError } from "@/lib/errors";
+import { prisma } from "@/lib/prisma";
+import { putObject, storagePath } from "@/lib/storage";
+import { brandService } from "@/services/brand.service";
+import { gatewayImageProvider } from "@/services/providers/image.provider";
+import type { ImageProvider } from "@/services/providers/types";
+
+const DEFAULT_OPTION_COUNT = 3;
+
+/**
+ * A channel's logo, generated once rather than per video.
+ *
+ * The channel avatar cannot be set from here — the YouTube Data API has no
+ * endpoint for it, only for the banner. The logo is stored so thumbnails can
+ * be watermarked with it and so the operator can download it and set the
+ * avatar by hand, once.
+ */
+export class LogoService {
+  constructor(private readonly images: ImageProvider = gatewayImageProvider) {}
+
+  /**
+   * Generates several options for the operator to choose between.
+   *
+   * Returns the options it managed rather than failing on the first error: two
+   * usable logos to pick from beats an exception because the third generation
+   * timed out. An empty list means every attempt failed, which the caller
+   * reports rather than treating as a crash.
+   *
+   * Ownership is checked before a single image is generated — these cost money.
+   */
+  async generateOptions(
+    userId: string,
+    channelId: string,
+    count = DEFAULT_OPTION_COUNT,
+  ): Promise<string[]> {
+    const channel = await prisma.channel.findFirst({
+      where: { id: channelId, userId, deletedAt: null },
+      select: { title: true },
+    });
+
+    if (!channel) {
+      throw new NotFoundError("Channel");
+    }
+
+    const brand = await brandService.resolve(channelId);
+    const prompt =
+      `A simple, bold logo mark for a channel called "${channel.title}" about ` +
+      `${brand.niche}. Tone: ${brand.tone}. Flat vector style, one strong ` +
+      `shape, high contrast, centred, plain background. No text, no letters.`;
+
+    const paths: string[] = [];
+
+    for (let index = 0; index < count; index += 1) {
+      try {
+        const image = await this.images.generate({ prompt, aspectRatio: "1:1" });
+        const objectPath = storagePath(channelId, "logos", `logo-${index}.png`);
+        await putObject(objectPath, image.data, "image/png");
+        paths.push(objectPath);
+      } catch (error) {
+        console.error(
+          `Could not generate logo option ${index} for channel ${channelId}: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+
+    return paths;
+  }
+
+  /** Upserts rather than updates: choosing a logo is often the first branding
+   *  action an operator takes, so the brand row frequently does not exist yet. */
+  async choose(userId: string, channelId: string, logoPath: string): Promise<void> {
+    const channel = await prisma.channel.findFirst({
+      where: { id: channelId, userId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!channel) {
+      throw new NotFoundError("Channel");
+    }
+
+    await prisma.channelBrand.upsert({
+      where: { channelId },
+      create: { channelId, logoPath },
+      update: { logoPath },
+    });
+  }
+}
+
+export const logoService = new LogoService();
+```
 
 Note: `storagePath`'s first argument is named `videoId` but is only ever a
 prefix segment; passing a channel id is a widening of meaning, so rename the
