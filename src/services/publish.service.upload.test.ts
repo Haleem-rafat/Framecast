@@ -20,26 +20,24 @@ import { createTestUser, deleteTestUser } from "@/test/fixtures";
  * is a property of the `videos.insert` request body, and the body is built
  * from the `Video` row — the render's bytes are a `Buffer` parameter handed
  * to `uploadToYouTube` and are never read, measured or inspected on the way
- * to any assertion below. Round-tripping ~26 bytes through Vercel Blob to
- * reach them would test Blob, not this.
+ * to any assertion below. Round-tripping ~26 bytes through the local render
+ * store to reach them would test render-storage.ts, not this.
  *
  * The seam is a real one: `getRenderFile` returns a `RenderFileContent` whose
  * `stream` is a Web `ReadableStream`, which is exactly what the stub returns.
  * `writeRenderFile` and `deleteRenderFile` are stubbed only so the fixture
  * and cleanup below don't have to reach a store they never needed. The real
- * Blob path — a real write, a real read, and the RenderFileMissingError a
- * genuinely absent blob produces — stays covered by publish.service.test.ts,
+ * disk path — a real write, a real read, and the RenderFileMissingError a
+ * genuinely absent file produces — stays covered by publish.service.test.ts,
  * which is where it belongs.
  *
  * YouTube itself is never called: `fetch` is injected, same as in that file.
  */
-vi.mock("@/lib/blob-render-storage", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/blob-render-storage")>();
+vi.mock("@/lib/render-storage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/render-storage")>();
   return {
     ...actual,
-    writeRenderFile: vi.fn(
-      async (videoId: string) => `https://blob.invalid/renders/${videoId}.mp4`,
-    ),
+    writeRenderFile: vi.fn(async (videoId: string) => `renders/${videoId}.mp4`),
     deleteRenderFile: vi.fn(async () => {}),
     getRenderFile: vi.fn(async () => ({
       stream: new Blob([Buffer.from("fake-rendered-mp4")]).stream(),
@@ -129,7 +127,7 @@ async function makePublishableVideo(title: string): Promise<string> {
       videoId: video.id,
       status: "SUCCEEDED",
       progress: 100,
-      outputUrl: `https://blob.invalid/renders/${video.id}.mp4`,
+      outputUrl: `renders/${video.id}.mp4`,
     },
   });
 

@@ -2,8 +2,8 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import type { PublishStatus, PublishVisibility } from "@/generated/prisma/enums";
-import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage";
-import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
+import { getRenderFile, RenderFileMissingError } from "@/lib/render-storage";
+import { ConflictError, InternalError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getObject, objectContentType, removeObjects } from "@/lib/storage";
 import { clampDescription, clampTitle } from "@/lib/youtube-limits";
@@ -376,15 +376,21 @@ export class PublishService {
     let accessToken: string;
     try {
       accessToken = await channelService.resolveAccessToken(userId, channelId);
-      // Reads from Vercel Blob, not local disk — see blob-render-storage.ts.
-      // `getRenderFile` returns `null` rather than throwing for a missing
-      // blob (see its doc comment); this is the one call site that turns
-      // that `null` into the typed `RenderFileMissingError` the operator
-      // sees, the same "recognisable, non-fatal" condition the local-disk
-      // version of this code used to throw directly.
+      // Reads off local disk — see render-storage.ts. `getRenderFile`
+      // returns `null` rather than throwing for a missing file (see its doc
+      // comment); this is the one call site that turns that `null` into the
+      // typed `RenderFileMissingError` the operator sees.
       const file = await getRenderFile(video.id, outputUrl);
-      if (!file) {
+      if (file === null) {
         throw new RenderFileMissingError(video.id);
+      }
+      // No Range header was sent above, so `parseRangeHeader` can never
+      // return "unsatisfiable" here — this branch only exists to satisfy the
+      // type checker that `file` below is genuinely `RenderFileContent`.
+      if (file === "unsatisfiable") {
+        throw new InternalError(
+          `Unexpected unsatisfiable range reading the render for video ${video.id}.`,
+        );
       }
       // YouTube's resumable upload needs the full byte length up front (see
       // uploadToYouTube's X-Upload-Content-Length below), so the stream is

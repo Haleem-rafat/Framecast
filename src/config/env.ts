@@ -50,13 +50,13 @@ const serverEnvSchema = z.object({
   STORAGE_ROOT: z.string().min(1).default(".framecast/storage"),
 
   /**
-   * Vercel Blob (`framecast-renders`, private access). Finished renders live
-   * here, not local disk or Supabase Storage — see blob-render-storage.ts's
-   * doc comment for why. Required, not optional: every environment that
-   * renders a video (the worker) or serves one (the web app) needs it, and
-   * there is no fallback storage left for a finished render to land in.
+   * Where finished renders live. Separate from STORAGE_ROOT because renders
+   * are ~170MB each and are deleted once YouTube confirms the upload, while
+   * objects under STORAGE_ROOT have their own lifecycles. Keeping them apart
+   * makes "how much disk are renders using" answerable with `du` on one
+   * directory.
    */
-  BLOB_READ_WRITE_TOKEN: z.string().min(1),
+  RENDER_ROOT: z.string().min(1).default(".framecast/renders"),
 
   /**
    * Supabase's PEM root certificate. Supabase signs Postgres with its own CA,

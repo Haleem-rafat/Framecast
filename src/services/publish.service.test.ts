@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { VideoStatus } from "@/generated/prisma/enums";
-import { deleteRenderFile, renderBlobPathname, writeRenderFile } from "@/lib/blob-render-storage";
+import { deleteRenderFile, renderPath, writeRenderFile } from "@/lib/render-storage";
 import { prisma } from "@/lib/prisma";
 import { getObject, putObject, removeObjects, storagePath } from "@/lib/storage";
 import { DESCRIPTION_MAX } from "@/lib/youtube-limits";
@@ -50,9 +50,9 @@ let userId: string;
 
 /** Mirrors render.service.test.ts's own cleanup list — every video id this
  * file writes a render fixture for (see `writeRenderFile` in
- * `makePublishableVideo`), so the Blob object doesn't outlive the test. Keyed
- * on video id (via `renderBlobPathname`), not a captured url, same rationale
- * as render.service.test.ts's own list. */
+ * `makePublishableVideo`), so the file doesn't outlive the test under
+ * RENDER_ROOT. Keyed on video id (via `renderPath`), not a captured
+ * outputUrl, same rationale as render.service.test.ts's own list. */
 const publishedVideoIds: string[] = [];
 
 /** Storage paths the "clip storage reclaim" tests below write directly to
@@ -83,9 +83,7 @@ afterEach(async () => {
 
   await deleteTestUser(userId);
   await Promise.all(
-    publishedVideoIds.splice(0).map((id) =>
-      deleteRenderFile(renderBlobPathname(id)).catch(() => {}),
-    ),
+    publishedVideoIds.splice(0).map((id) => deleteRenderFile(renderPath(id)).catch(() => {})),
   );
 });
 
@@ -192,17 +190,17 @@ async function makePublishableVideo(
     /** `ScriptVersion.sources` — what a script generated through the
      *  structured-output schema stores instead of an inline SOURCES block. */
     scriptSources?: string[];
-    /** Skips the `writeRenderFile` upload and points `RenderJob.outputUrl` at
-     *  a URL no blob was ever written to.
+    /** Skips the `writeRenderFile` write and points `RenderJob.outputUrl` at
+     *  a path nothing was ever written to.
      *
      *  Only for tests of a refusal that happens *before* `publish()` ever
      *  reads the render — the finalizing gate and the scheduling gate below.
      *  Both refuse while validating the video row, several steps ahead of the
-     *  `getRenderFile` call, so uploading ~26 bytes to Vercel Blob and
+     *  `getRenderFile` call, so writing ~26 bytes under RENDER_ROOT and
      *  deleting them again in `afterEach` would prove nothing about either
      *  one. A test that gets this wrong fails loudly (the publish reaches
-     *  `getRenderFile` and errors on a URL with nothing behind it) rather than
-     *  passing for the wrong reason. */
+     *  `getRenderFile` and errors on a path with nothing behind it) rather
+     *  than passing for the wrong reason. */
     withoutRenderFile?: boolean;
   } = {},
 ): Promise<{ videoId: string; channelId: string; outputUrl: string }> {
@@ -242,12 +240,12 @@ async function makePublishableVideo(
     });
   }
 
-  // The render itself lives in Vercel Blob, not Supabase — see
-  // blob-render-storage.ts. `outputUrl` is the same value
-  // `RenderService.render` would have written to `RenderJob.outputUrl`.
+  // The render itself lives on local disk, not Supabase — see
+  // render-storage.ts. `outputUrl` is the same value `RenderService.render`
+  // would have written to `RenderJob.outputUrl`.
   let outputUrl: string;
   if (opts.withoutRenderFile) {
-    outputUrl = `https://blob.invalid/renders/${video.id}.mp4`;
+    outputUrl = renderPath(video.id); // never written
   } else {
     outputUrl = await writeRenderFile(video.id, Buffer.from(`fake-rendered-mp4-${RUN}`));
     publishedVideoIds.push(video.id);
@@ -381,12 +379,11 @@ describe("publishService.publish — Gate 2", () => {
     await expect(service.publish(userId, videoId)).rejects.toThrow(ConflictError);
   });
 
-  it("refuses to publish, with a clear typed error (not a raw fetch failure), when the render is on the DB but no longer in Blob", async () => {
+  it("refuses to publish, with a clear typed error (not a raw fetch failure), when the render is on the DB but no longer on disk", async () => {
     const { videoId, outputUrl } = await makePublishableVideo();
-    // A RenderJob row with an outputUrl exists, but the blob it points at is
-    // gone — deleted from the store, or (before this module existed) a
-    // render that only ever lived on a since-wiped local disk. This is
-    // exactly the failure mode blob-render-storage.ts's
+    // A RenderJob row with an outputUrl exists, but the file it points at is
+    // gone — deleted from disk, reclaimed, or a machine that no longer
+    // exists. This is exactly the failure mode render-storage.ts's
     // RenderFileMissingError exists for.
     await deleteRenderFile(outputUrl);
 
@@ -615,7 +612,8 @@ describe("publishService.publish — the finalizing window", () => {
     // A lapsed lease means runPipeline has already had its single automatic
     // chance at metadata and thumbnail — waiting longer would achieve nothing,
     // so this must not be refused. Reaching getRenderFile is what proves the
-    // gate let it through; the URL points at no blob, so it fails *there*.
+    // gate let it through; the path points at nothing on disk, so it fails
+    // *there*.
     await setLease(videoId, new Date(Date.now() - 60_000));
 
     await expect(

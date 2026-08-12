@@ -5,7 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { deleteRenderFile, getRenderFile, renderBlobPathname } from "@/lib/blob-render-storage";
+import { deleteRenderFile, getRenderFile, renderPath } from "@/lib/render-storage";
 import type { Alignment } from "@/lib/captions";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -31,15 +31,11 @@ const RUN = randomUUID().slice(0, 8);
 const PROJECT_NAME = `test-render-${RUN}`;
 
 // Several tests wait out the real 1s progress-write throttle and/or make
-// several sequential storage round trips against a live bucket. On top of
-// that, every "happy path" test now makes a real multipart upload to Blob
-// (see blob-render-storage.ts's writeRenderFile) — a few seconds in
-// isolation, but this file's tests run back-to-back against the same live
-// store, and the concurrency test at the bottom (which does its own real
-// Blob write, right after eight others already have) was observed taking
-// 47s under that cumulative load despite running in well under 15s alone.
-// 60s leaves real margin rather than pinning this to whatever the store's
-// latency happened to be during one measurement.
+// several sequential storage round trips against a live bucket, on top of a
+// real write to the local render store (see render-storage.ts's
+// writeRenderFile) each "happy path" test now makes. 60s leaves real margin
+// over Vitest's 5s default for tests this file's own network-bound fixtures
+// already needed a bumped timeout for.
 vi.setConfig({ testTimeout: 60_000 });
 
 function sleep(ms: number): Promise<void> {
@@ -115,13 +111,13 @@ function segmentSeconds(calls: SpawnCall[]): number[] {
 
 let userId: string;
 
-/** Every video id `makeRenderableVideo` hands out, so the Blob object a
- * successful render leaves behind (see blob-render-storage.ts) is cleaned up
- * alongside the test user rather than accumulating in the real store across
- * test runs. Deleted by the deterministic pathname (`renderBlobPathname`),
- * not a captured `url` — every test id lands here regardless of whether its
- * render actually got as far as `writeRenderFile`, and `del()` on a pathname
- * that was never written is nothing to clean up, hence the `.catch`. */
+/** Every video id `makeRenderableVideo` hands out, so the file a successful
+ * render leaves behind (see render-storage.ts) is cleaned up alongside the
+ * test user rather than accumulating under RENDER_ROOT across test runs.
+ * Deleted by the deterministic path (`renderPath`), not a captured
+ * `outputUrl` — every test id lands here regardless of whether its render
+ * actually got as far as `writeRenderFile`, and deleting a path that was
+ * never written is nothing to clean up, hence the `.catch`. */
 const renderedVideoIds: string[] = [];
 
 beforeEach(async () => {
@@ -147,7 +143,7 @@ afterEach(async () => {
   }
 
   await Promise.all(
-    videoIds.map((id) => deleteRenderFile(renderBlobPathname(id)).catch(() => {})),
+    videoIds.map((id) => deleteRenderFile(renderPath(id)).catch(() => {})),
   );
 });
 
@@ -436,13 +432,16 @@ describe("renderService.render — happy path", () => {
     const result = await service.render(userId, videoId);
 
     expect(result.durationSeconds).toBe(2);
-    // The finished MP4 now lands in Vercel Blob (see blob-render-storage.ts),
-    // not local disk — outputUrl is the same value RenderJob.outputUrl stores.
-    expect(result.outputUrl).toContain(renderBlobPathname(videoId));
+    // The finished MP4 lands on local disk under RENDER_ROOT (see
+    // render-storage.ts) — outputUrl is the same value RenderJob.outputUrl
+    // stores, now a path rather than a URL.
+    expect(result.outputUrl).toBe(renderPath(videoId));
 
     const written = await getRenderFile(videoId, result.outputUrl);
-    expect(written).not.toBeNull();
-    const writtenBytes = await new Response(written!.stream).text();
+    if (written === null || written === "unsatisfiable") {
+      throw new Error(`Expected render file content, got ${JSON.stringify(written)}`);
+    }
+    const writtenBytes = await new Response(written.stream).text();
     expect(writtenBytes).toBe("fake-rendered-mp4-bytes");
 
     // The job passed through RUNNING on its way to SUCCEEDED — RenderJob's

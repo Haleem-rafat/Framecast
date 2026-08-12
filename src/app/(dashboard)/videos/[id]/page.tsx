@@ -12,7 +12,7 @@ import { StatusEventsList } from "@/features/videos/components/status-events-lis
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
 import { VideoPreview } from "@/features/videos/components/video-preview";
-import { statRenderFile } from "@/lib/blob-render-storage";
+import { statRenderFile } from "@/lib/render-storage";
 import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
 import { requireUser } from "@/server/session";
@@ -41,13 +41,13 @@ async function resolvePreviewAsset(
 }
 
 /**
- * The rendered video's Vercel Blob counterpart to `resolvePreviewAsset`
+ * The rendered video's local-disk counterpart to `resolvePreviewAsset`
  * above. No signed URL to mint — the browser is pointed at this app's own
- * streaming route (`/api/videos/[id]/file`, see blob-render-storage.ts),
- * which resolves the render from the video id server-side. `statRenderFile`
- * already returns `null` (not a throw) for a missing blob, but this still
+ * streaming route (`/api/videos/[id]/file`, see render-storage.ts), which
+ * resolves the render from the video id server-side. `statRenderFile`
+ * already returns `null` (not a throw) for a missing render, but this still
  * wraps it in `.catch` — the *page's* contract is "never throw", regardless
- * of which failure (missing blob vs. a real network error) produced it.
+ * of which failure (missing render vs. a real disk error) produced it.
  * Either way this section falls back to "couldn't load" rather than taking
  * the page down; the operator's next move either way is to re-render.
  */
@@ -85,9 +85,9 @@ async function PipelineSection({ userId, videoId }: { userId: string; videoId: s
 }
 
 /**
- * The player. Its render source resolves over the network — a Vercel Blob
- * HEAD — which is why this is behind its own boundary rather than holding up
- * the page.
+ * The player. Its render source resolves via a disk `stat` (`statRenderFile`
+ * above), which is why this is behind its own boundary rather than holding
+ * up the page.
  *
  * Both paths stay on the server: the browser is handed this app's own
  * streaming route for the render and this app's own narration route for the

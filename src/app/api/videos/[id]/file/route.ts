@@ -1,29 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { getRenderFile } from "@/lib/blob-render-storage";
+import { getRenderFile, RenderFileMissingError, statRenderFile } from "@/lib/render-storage";
 import { isAppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/server/session";
 
 /**
- * Streams a video's finished render out of Vercel Blob (see
- * blob-render-storage.ts) so `video-preview.tsx` can play it and the
- * download link can save it.
+ * Streams a video's finished render off local disk (see render-storage.ts)
+ * so `video-preview.tsx` can play it and the download link can save it.
  *
- * This route takes a video **id**, never a Blob url or pathname directly —
- * the url is always resolved server-side from `RenderJob.outputUrl`. A
- * route that accepted a Blob url straight from the client would let anyone
- * who obtained one (a leaked link, a browser devtools peek) read the store
- * with this route's own credentials, bypassing the ownership check below.
+ * This route takes a video **id**, never a render location directly — the
+ * location is always resolved server-side from `RenderJob.outputUrl`. A
+ * route that accepted a render location straight from the client would let
+ * anyone who obtained one (a leaked link, a browser devtools peek) read
+ * arbitrary files under RENDER_ROOT, bypassing the ownership check below.
  *
- * Range handling is Blob's, not this route's own: the incoming `Range`
- * header is forwarded to `getRenderFile` untouched (see its doc comment for
- * why partial vs. full is detected via `content-range`, not `statusCode`).
- * This route used to hand-parse RFC 7233 itself against local disk; that
- * parsing no longer exists.
+ * Range handling is this route's again, via render-storage.ts, not Blob's:
+ * a filesystem doesn't implement RFC 7233 the way Blob's `get()` did, so
+ * `getRenderFile` parses the incoming `Range` header itself (see
+ * `parseRangeHeader`) and this route must handle all three outcomes it can
+ * return — content, `null` (missing), and `"unsatisfiable"` (416).
  *
- * Still Node, not Edge — not because of `fs` (this route no longer touches
- * it) but because Prisma's query engine requires the Node runtime.
+ * Still Node, not Edge — not because of `fs` alone but because Prisma's
+ * query engine requires the Node runtime.
  */
 export const runtime = "nodejs";
 
@@ -53,9 +52,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   // (`findFirst({ where: { id, userId, deletedAt: null } })`) — a video id
   // that exists but belongs to someone else must look identical to one that
   // doesn't exist at all. The latest successful RenderJob's outputUrl is
-  // fetched in the same query rather than derived from videoId — unlike the
-  // local-disk pathname this route used to use, a Blob url is not
-  // reconstructable from the video id alone (see blob-render-storage.ts).
+  // fetched in the same query rather than derived from videoId — a render's
+  // location is stored, not reconstructed, so a video that was never
+  // rendered has none to derive.
   const video = await prisma.video.findFirst({
     where: { id: videoId, userId: session.user.id, deletedAt: null },
     select: {
@@ -90,12 +89,25 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     return errorResponse(error);
   }
 
-  if (!file) {
-    // The RenderJob row says a render exists; the blob it points at doesn't
-    // (deleted from the store, wrong environment's token, ...). Same 404 as
-    // "never rendered" above — from this route's caller's point of view,
-    // both mean "there is nothing to play right now."
-    return errorResponse(new NotFoundError("Video render"));
+  if (file === null) {
+    // The RenderJob row says a render exists; the file it points at doesn't
+    // (deleted from disk, reclaimed, a machine that no longer exists, ...).
+    // A named, non-fatal condition — "this needs re-rendering" — not the
+    // plain 404 "never rendered" gets above, so it's surfaced the same way
+    // publish.service.ts and the video detail page already surface it.
+    return errorResponse(new RenderFileMissingError(video.id));
+  }
+
+  // A seek past the end of a file that was re-rendered shorter. RFC 7233
+  // requires 416 with the real size so the player can recover, rather than
+  // a 200 carrying bytes nobody asked for. Blob used to answer this itself;
+  // a filesystem can't, so `statRenderFile` is what supplies the size here.
+  if (file === "unsatisfiable") {
+    const stat = await statRenderFile(outputUrl);
+    return new NextResponse(null, {
+      status: 416,
+      headers: { "Content-Range": `bytes */${stat?.sizeBytes ?? 0}` },
+    });
   }
 
   const headers: Record<string, string> = {

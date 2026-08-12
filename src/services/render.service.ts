@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { writeRenderFile } from "@/lib/blob-render-storage";
+import { writeRenderFile } from "@/lib/render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
@@ -38,8 +38,8 @@ export type ProcessSpawner = (
 ) => ChildProcessWithoutNullStreams;
 
 export interface RenderResult {
-  /** The Vercel Blob URL of the finished render (see blob-render-storage.ts)
-   * — the same value written to `RenderJob.outputUrl`. */
+  /** The path (relative to RENDER_ROOT) of the finished render on local disk
+   * (see render-storage.ts) — the same value written to `RenderJob.outputUrl`. */
   outputUrl: string;
   durationSeconds: number;
 }
@@ -647,15 +647,13 @@ export class RenderService {
         shouldCancel,
       );
 
-      // The finished MP4 goes to Vercel Blob, not local disk or Supabase
-      // Storage — a real 1080p render (~170MB) exceeds Supabase's free-tier
-      // 50MB object cap, and unlike local disk, Blob is reachable both from
-      // this app (on Vercel) and from the render worker (on Railway). See
-      // blob-render-storage.ts's doc comment. Streamed straight from the
-      // temp file rather than buffered into memory first — `put()`'s
-      // `multipart: true` handles chunking a file this large on its own; a
-      // ~170MB Buffer held in this process's memory just to hand it off
-      // again would be wasted risk. Narration, clips and captions above are
+      // The finished MP4 lands on this machine's own disk — the app and the
+      // worker both run here now, so there's no other machine that needs to
+      // read it (see render-storage.ts's doc comment). Streamed straight
+      // from the temp file rather than buffered into memory first:
+      // `writeRenderFile` pipes a stream source to disk directly, so a
+      // ~170MB render is never held whole in this process's memory just to
+      // hand it off again. Narration, clips and captions above are
       // unaffected; only this final output's destination changed.
       const outputUrl = await writeRenderFile(videoId, createReadStream(outputPath));
 
