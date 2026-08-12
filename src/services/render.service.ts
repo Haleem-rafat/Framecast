@@ -27,8 +27,8 @@ import {
 } from "@/lib/script-cues";
 import { buildSfxTrackArgs, planSfxCues } from "@/lib/sfx-track";
 import { getObject, storagePath } from "@/lib/storage";
-import { DEFAULT_STYLE } from "@/lib/video-style";
-import { musicService } from "@/services/music.service";
+import { brandService } from "@/services/brand.service";
+import { MusicService, musicService } from "@/services/music.service";
 import { formatElapsed } from "@/utils/format";
 
 /** Injectable so tests never spawn a real `ffmpeg` process. */
@@ -173,7 +173,15 @@ class ProgressParser {
 }
 
 export class RenderService {
-  constructor(private readonly spawnProcess: ProcessSpawner = defaultSpawner) {}
+  constructor(
+    private readonly spawnProcess: ProcessSpawner = defaultSpawner,
+    /** Same injection shape as `spawnProcess`: the default is the real
+     * `musicService` singleton (real Jamendo search, real storage writes),
+     * and a test wanting to observe *what query it was asked to search for*
+     * — without a live Jamendo account or a live bucket — builds its own
+     * `MusicService` over a fake `MusicProvider` and hands it in here. */
+    private readonly music: MusicService = musicService,
+  ) {}
 
   async render(
     userId: string,
@@ -190,11 +198,15 @@ export class RenderService {
       where: { id: videoId, userId, deletedAt: null },
       select: {
         id: true,
-        // The music search query — the same signal footage collection starts
-        // from. A mood field on VideoStyle would be better and is the natural
-        // follow-on once real videos have been scored.
-        title: true,
         status: true,
+        // The one thing this render needs to know about the channel it
+        // belongs to: which one. `null` when the video's project has no
+        // channel assigned, which brandService.resolve treats exactly like a
+        // channel with no brand row — both fall back to DEFAULT_STYLE and the
+        // generic music query below. Same field, same select shape,
+        // metadata.service.ts / thumbnail.service.ts / voiceover.service.ts /
+        // publish.service.ts already read for their own per-channel choices.
+        project: { select: { channelId: true } },
         voiceOver: { select: { audioUrl: true, durationSeconds: true } },
         // Only the active version's cues mean anything: an edit that moves the
         // section boundaries invalidates every earlier version's, and
@@ -400,7 +412,15 @@ export class RenderService {
         `fetched narration + ${clipAssets.length} clip(s) + captions from storage (${formatElapsed(Date.now() - setupStartedAt)})`,
       );
 
-      const style = DEFAULT_STYLE;
+      // The channel's own look, sound and music query — never the video's own
+      // fields. `resolve` never throws and falls back to DEFAULT_STYLE and a
+      // generic music query for a channel with no brand row, a video whose
+      // project has no channel at all, or a `videoStyle` column that failed
+      // to parse (see brand.service.ts), so every one of those still renders
+      // exactly as it did before this brand lookup existed — this call adds
+      // a per-channel choice on top of that fallback, it does not remove it.
+      const brand = await brandService.resolve(video.project?.channelId ?? null);
+      const style = brand.videoStyle;
       const outputPath = path.join(tempDir, "video.mp4");
 
       // A slot has to outlast the crossfade it gives its tail to, or the
@@ -587,8 +607,18 @@ export class RenderService {
 
       // Fetched, never generated, and a video that has none simply renders
       // without it — see MusicService.collect's doc comment.
+      //
+      // Searched by the channel's `musicQuery`, not the video's title. A
+      // title describes what the video is about, not what it should sound
+      // like — "Ada Lovelace wrote the first program" returned nothing
+      // usable from Jamendo, because it is not a musical description. A
+      // channel's music should also sound consistent from video to video,
+      // which argues for a channel-level setting over a per-video guess
+      // either way. brandService.resolve's fallback ("calm ambient
+      // instrumental") stands in for every channel that has not chosen one,
+      // branded or not — nothing here special-cases an unbranded channel.
       let musicPath: string | undefined;
-      const musicStoragePath = await musicService.collect(videoId, video.title);
+      const musicStoragePath = await this.music.collect(videoId, brand.musicQuery);
       if (musicStoragePath) {
         musicPath = path.join(tempDir, "music.mp3");
         await writeFile(musicPath, await getObject(musicStoragePath));

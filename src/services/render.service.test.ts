@@ -10,6 +10,10 @@ import type { Alignment } from "@/lib/captions";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
+import { DEFAULT_STYLE } from "@/lib/video-style";
+import type { Prisma } from "@/generated/prisma/client";
+import { MusicService } from "@/services/music.service";
+import type { MusicProvider } from "@/services/providers/types";
 import { projectService } from "@/services/project.service";
 import type { ProcessSpawner } from "@/services/render.service";
 import { RenderService } from "@/services/render.service";
@@ -213,6 +217,56 @@ async function makeRenderableVideo(
 
   renderedVideoIds.push(video.id);
   return video.id;
+}
+
+/**
+ * Connects a fresh `Channel` to `videoId`'s project and gives that channel a
+ * `ChannelBrand` row — the arrangement `render()` reads its style and music
+ * query from once Task 10 wires `brandService.resolve` in, in place of
+ * `DEFAULT_STYLE` and the video's own title.
+ *
+ * The channel is created under the test's own `userId` (not a
+ * `findFirstOrThrow` against whatever channel exists — see fixtures.ts's
+ * warning) and both it and its brand cascade-delete with the test user, so
+ * nothing extra needs cleaning up in `afterEach` beyond what already runs.
+ */
+async function assignChannelWithBrand(
+  videoId: string,
+  brand: {
+    videoStyle?: Prisma.InputJsonValue;
+    musicQuery?: string;
+    tone?: string;
+    niche?: string;
+    primaryColour?: string;
+    secondaryColour?: string;
+    headlineFont?: string;
+    logoPath?: string;
+  } = {},
+): Promise<string> {
+  const video = await prisma.video.findUniqueOrThrow({
+    where: { id: videoId },
+    select: { projectId: true },
+  });
+
+  const channel = await prisma.channel.create({
+    data: {
+      userId,
+      youtubeChannelId: `UC-brand-${randomUUID()}`,
+      title: "Test brand channel",
+      accessToken: "fake-access-token",
+      refreshToken: "fake-refresh-token",
+      tokenExpiresAt: new Date(Date.now() + 3600_000),
+    },
+  });
+
+  await prisma.project.update({
+    where: { id: video.projectId },
+    data: { channelId: channel.id },
+  });
+
+  await prisma.channelBrand.create({ data: { channelId: channel.id, ...brand } });
+
+  return channel.id;
 }
 
 interface CuedVideo {
@@ -572,6 +626,70 @@ describe("renderService.render — happy path", () => {
 
     const job = await prisma.renderJob.findFirstOrThrow({ where: { videoId } });
     expect(job.progress).toBe(100);
+  });
+});
+
+describe("renderService.render — channel brand", () => {
+  it("renders with the channel's own style, not the default", async () => {
+    // Two clips so there is a crossfade to inspect at all — a single-clip
+    // render (see the "stretches the clips" test above) never calls
+    // buildTransitionArgs.
+    const videoId = await makeRenderableVideo();
+    await assignChannelWithBrand(videoId, {
+      videoStyle: { transitions: { durationSeconds: 0.25 } },
+    });
+
+    const { spawner, calls } = createSpawner(async (child, args) => {
+      await writeFile(args[args.length - 1], "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
+    await new RenderService(spawner).render(userId, videoId);
+
+    // A stub is built at the brand's crossfade length (0.25s), not
+    // DEFAULT_STYLE's (0.5s, asserted distinctly below).
+    expect(DEFAULT_STYLE.transitions.durationSeconds).not.toBe(0.25);
+    const stub = calls.find((call) => call.args.join(" ").includes("xfade"));
+    expect(stub!.args.join(" ")).toContain("duration=0.25");
+  });
+
+  it("searches for music the channel chose, not the video's title", async () => {
+    // A title is not a musical description — searching Jamendo for "Render
+    // fixture video" (makeRenderableVideo's title) is the same class of bug
+    // that searching "Ada Lovelace wrote the first program" was: a real
+    // render that found no usable bed. MusicService is injected into
+    // RenderService here so this test can see the query without a live
+    // Jamendo account or a live bucket.
+    const videoId = await makeRenderableVideo();
+    await assignChannelWithBrand(videoId, { musicQuery: "calm ambient documentary" });
+
+    const search = vi.fn().mockResolvedValue([]);
+    const music = new MusicService({ search } as MusicProvider);
+    const { spawner } = createSucceedingSpawner();
+
+    await new RenderService(spawner, music).render(userId, videoId);
+
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search.mock.calls[0][0]).toBe("calm ambient documentary");
+  });
+
+  it("falls back to defaults for a video whose project has no channel", async () => {
+    // Every existing video — no `assignChannelWithBrand` call at all here —
+    // must keep rendering exactly as it does today: brandService.resolve
+    // sees `channelId: null` and returns DEFAULT_STYLE untouched, so the
+    // crossfade stub still builds at DEFAULT_STYLE's own duration rather
+    // than something a stray brand lookup invented.
+    const videoId = await makeRenderableVideo();
+
+    const { spawner, calls } = createSpawner(async (child, args) => {
+      await writeFile(args[args.length - 1], "fake-rendered-mp4-bytes");
+      child.emit("close", 0);
+    });
+    await new RenderService(spawner).render(userId, videoId);
+
+    const stub = calls.find((call) => call.args.join(" ").includes("xfade"));
+    expect(stub!.args.join(" ")).toContain(
+      `duration=${DEFAULT_STYLE.transitions.durationSeconds}`,
+    );
   });
 });
 
