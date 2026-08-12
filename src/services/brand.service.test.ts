@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_STYLE } from "@/lib/video-style";
@@ -107,6 +107,39 @@ describe("brandService.resolve", () => {
 
     const brand = await brandService.resolve(channelId);
     expect(brand.videoStyle).toEqual(DEFAULT_STYLE);
+  });
+
+  it("says which field it discarded the whole style over", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await prisma.channelBrand.create({
+      data: { channelId, videoStyle: { transitions: { durationSeconds: "fast" } } },
+    });
+    await brandService.resolve(channelId);
+
+    // A discarded style is invisible from the outside: the render, the voice
+    // and the captions all come out looking like a channel nobody ever
+    // styled, and resolve() cannot throw by design. Without this line "my
+    // style isn't applying" is a report with no error, no status and no
+    // wrong-looking row behind it.
+    const logged = consoleError.mock.calls.flat().join("\n");
+    expect(logged).toContain(channelId);
+    expect(logged).toContain("transitions.durationSeconds");
+
+    consoleError.mockRestore();
+  });
+
+  it("stays quiet for a channel that simply has no style, which is most of them", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // No brand row at all — `undefined` fails the schema exactly like real
+    // garbage does, so logging it would put a line in the render output for
+    // every unbranded channel and bury the case worth reading.
+    await brandService.resolve(channelId);
+
+    expect(consoleError).not.toHaveBeenCalled();
+
+    consoleError.mockRestore();
   });
 
   it("strips an unknown key inside an otherwise-valid section", async () => {

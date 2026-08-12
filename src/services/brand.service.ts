@@ -110,9 +110,36 @@ type ParsedVideoStyle = z.infer<typeof videoStyleSchema>;
  * Always returns a fresh, deep copy — including on the all-defaults path —
  * so a caller that mutates a resolved style in place can never corrupt
  * `DEFAULT_STYLE` for every other channel for the rest of the process.
+ *
+ * Discarding is loud, though the policy stays all-or-nothing. Everything an
+ * operator would notice about a rejected column — the render, the voice, the
+ * captions — comes out looking exactly like a channel that was never styled
+ * at all, and `resolve()` is by design incapable of throwing, so a bad
+ * `videoStyle` has no other way to announce itself. "My style isn't
+ * applying" would otherwise be a report with nothing behind it: no error, no
+ * status, no row that looks wrong. Zod's issues name the offending path and
+ * value, which is the difference between a thread to pull and a shrug.
+ * `channelId` is carried in for the log line alone.
  */
-function mergeVideoStyle(stored: unknown): VideoStyle {
+function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle {
   const result = videoStyleSchema.safeParse(stored);
+
+  // Absent is not malformed. A channel with no brand row at all, or a brand
+  // row whose `videoStyle` column was never written, arrives here as
+  // `undefined`/`null` — which `videoStyleSchema` rejects the same way it
+  // rejects genuine garbage, and which describes most channels. Logging those
+  // would bury the one case worth reading in a line per unbranded channel per
+  // render.
+  if (!result.success && stored != null) {
+    console.error(
+      `brandService.resolve: discarding the stored videoStyle for channel ` +
+        `${channelId ?? "(none)"} and using defaults — ` +
+        result.error.issues
+          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+          .join("; "),
+    );
+  }
+
   const parsed: ParsedVideoStyle = result.success ? result.data : {};
 
   const merged = structuredClone(DEFAULT_STYLE);
@@ -142,7 +169,7 @@ export class BrandService {
     const brand = channelId ? await this.findBrand(channelId) : null;
 
     return {
-      videoStyle: mergeVideoStyle(brand?.videoStyle),
+      videoStyle: mergeVideoStyle(brand?.videoStyle, channelId),
       logoPath: brand?.logoPath ?? null,
       primaryColour: brand?.primaryColour ?? FALLBACK.primaryColour,
       secondaryColour: brand?.secondaryColour ?? FALLBACK.secondaryColour,
