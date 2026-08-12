@@ -30,7 +30,69 @@ describe("GatewayImageProvider", () => {
     expect(generate.mock.calls[0][0].aspectRatio).toBe("1:1");
   });
 
-  it("raises a retryable ProviderError when the gateway is unreachable", async () => {
+  it("reports the model the response says actually ran, not the one requested", async () => {
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+      responses: [{ modelId: "openai/gpt-image-1-mini", timestamp: new Date() }],
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a logo",
+      aspectRatio: "1:1",
+    });
+
+    expect(result.model).toBe("openai/gpt-image-1-mini");
+  });
+
+  it("falls back to the configured model when the response reports none", async () => {
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+      responses: [],
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a logo",
+      aspectRatio: "1:1",
+    });
+
+    expect(result.model).toBeTruthy();
+    expect(result.model).not.toBe("openai/gpt-image-1-mini");
+  });
+
+  it("marks a 429 or 5xx failure as retryable and everything else as not", async () => {
+    const rateLimited = Object.assign(new Error("Too many requests"), {
+      statusCode: 429,
+    });
+    const serverError = Object.assign(new Error("Server error"), {
+      statusCode: 503,
+    });
+    const badRequest = Object.assign(new Error("Bad request"), {
+      statusCode: 400,
+    });
+
+    await expect(
+      new GatewayImageProvider(vi.fn().mockRejectedValue(rateLimited)).generate({
+        prompt: "x",
+        aspectRatio: "16:9",
+      }),
+    ).rejects.toMatchObject({ retryable: true });
+
+    await expect(
+      new GatewayImageProvider(vi.fn().mockRejectedValue(serverError)).generate({
+        prompt: "x",
+        aspectRatio: "16:9",
+      }),
+    ).rejects.toMatchObject({ retryable: true });
+
+    await expect(
+      new GatewayImageProvider(vi.fn().mockRejectedValue(badRequest)).generate({
+        prompt: "x",
+        aspectRatio: "16:9",
+      }),
+    ).rejects.toMatchObject({ retryable: false });
+  });
+
+  it("marks a failure with no HTTP status as not retryable", async () => {
     const generate = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
 
     await expect(
@@ -38,6 +100,6 @@ describe("GatewayImageProvider", () => {
         prompt: "x",
         aspectRatio: "16:9",
       }),
-    ).rejects.toMatchObject({ retryable: true });
+    ).rejects.toMatchObject({ retryable: false });
   });
 });
