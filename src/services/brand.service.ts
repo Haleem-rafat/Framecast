@@ -1,5 +1,7 @@
 import "server-only";
 
+import { z } from "zod";
+
 import { prisma } from "@/lib/prisma";
 import type { VideoStyle } from "@/lib/video-style";
 import { DEFAULT_STYLE } from "@/lib/video-style";
@@ -28,25 +30,96 @@ const FALLBACK = {
 } as const;
 
 /**
- * Merges a stored style over the defaults one section at a time.
+ * Mirrors `VideoStyle`. Every section is optional — a stored value may set
+ * only one — and every leaf carries both its real type and the bound that
+ * keeps it safe to reach FFmpeg or ElevenLabs. This is not defensive
+ * decoration: `render.service.ts` computes things like
+ * `transitions.durationSeconds * 2`, and a string there produces `NaN`, a
+ * negative or zero duration is exactly as unrenderable as a string, and a
+ * `voice.stability` outside `[0, 1]` is a value ElevenLabs itself would
+ * reject. `z.object()` strips keys it does not recognise by default, so an
+ * unknown key nested inside an otherwise-valid section never survives the
+ * merge either.
+ */
+const motionStyleSchema = z.object({
+  enabled: z.boolean().optional(),
+  // (scale - 1) is the pannable margin (see VideoStyle's own doc comment);
+  // below 1 that margin is negative.
+  scale: z.number().min(1).optional(),
+});
+
+const captionStyleSchema = z.object({
+  fontName: z.string().min(1).optional(),
+  fontSize: z.number().positive().optional(),
+  primaryColour: z.string().min(1).optional(),
+  outlineColour: z.string().min(1).optional(),
+  outline: z.number().nonnegative().optional(),
+  shadow: z.number().nonnegative().optional(),
+  marginV: z.number().nonnegative().optional(),
+});
+
+const audioStyleSchema = z.object({
+  musicGainDb: z.number().finite().optional(),
+  sfxGainDb: z.number().finite().optional(),
+  duckThreshold: z.number().min(0).max(1).optional(),
+  duckRatio: z.number().positive().optional(),
+  duckAttackMs: z.number().nonnegative().optional(),
+  duckReleaseMs: z.number().nonnegative().optional(),
+});
+
+const transitionStyleSchema = z.object({
+  enabled: z.boolean().optional(),
+  durationSeconds: z.number().positive().optional(),
+});
+
+const voiceStyleSchema = z.object({
+  stability: z.number().min(0).max(1).optional(),
+  style: z.number().min(0).max(1).optional(),
+  speed: z.number().positive().optional(),
+  seed: z.number().int().optional(),
+});
+
+const videoStyleSchema = z.object({
+  motion: motionStyleSchema.optional(),
+  captions: captionStyleSchema.optional(),
+  audio: audioStyleSchema.optional(),
+  transitions: transitionStyleSchema.optional(),
+  voice: voiceStyleSchema.optional(),
+});
+
+type ParsedVideoStyle = z.infer<typeof videoStyleSchema>;
+
+/**
+ * Parses a stored style against `videoStyleSchema` and merges what parsed
+ * over the defaults, one section at a time.
  *
- * Not a deep merge and not a replacement. A brand that sets only
+ * Parsing is whole-or-nothing: if any part of the stored value fails
+ * validation — a wrong-typed leaf, a section that is `null` instead of
+ * absent, anything Zod rejects — the entire column is discarded and
+ * `DEFAULT_STYLE` is returned untouched, rather than trying to salvage the
+ * sections that happened to parse. A column that is partly garbage most
+ * likely became garbage by accident (a bad manual edit, a future migration
+ * bug), and guessing which half is still trustworthy is exactly the kind of
+ * guess that lets a stray `NaN` reach FFmpeg.
+ *
+ * What *does* parse is still merged section by section rather than
+ * replacing `VideoStyle` outright: a brand that sets only
  * `transitions.durationSeconds` must keep every other transition field and
- * every other section — a replacement would silently blank them, and a fully
- * general deep merge would let a malformed column reach FFmpeg. Section by
- * section is exactly as much merging as `VideoStyle`'s shape needs.
+ * every other section, which a full replacement would silently blank.
+ *
+ * Always returns a fresh, deep copy — including on the all-defaults path —
+ * so a caller that mutates a resolved style in place can never corrupt
+ * `DEFAULT_STYLE` for every other channel for the rest of the process.
  */
 function mergeVideoStyle(stored: unknown): VideoStyle {
-  if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
-    return DEFAULT_STYLE;
-  }
+  const result = videoStyleSchema.safeParse(stored);
+  const parsed: ParsedVideoStyle = result.success ? result.data : {};
 
-  const partial = stored as Partial<Record<keyof VideoStyle, unknown>>;
-  const merged = { ...DEFAULT_STYLE };
+  const merged = structuredClone(DEFAULT_STYLE);
 
   for (const key of Object.keys(DEFAULT_STYLE) as (keyof VideoStyle)[]) {
-    const section = partial[key];
-    if (section && typeof section === "object" && !Array.isArray(section)) {
+    const section = parsed[key];
+    if (section) {
       merged[key] = { ...DEFAULT_STYLE[key], ...section } as never;
     }
   }
@@ -59,14 +132,14 @@ export class BrandService {
    * The one way anything reads a channel's identity.
    *
    * Never throws and never returns null: a missing brand row, a video whose
-   * project has no channel, and a malformed `videoStyle` column all resolve to
-   * defaults. Generation is an enhancement, and a channel that has not been
-   * branded yet must still render and publish.
+   * project has no channel, a malformed `videoStyle` column, a `channelId`
+   * that turns out not to be a valid UUID, and a database call that fails
+   * outright all resolve to defaults instead of escaping. Generation is an
+   * enhancement, and a channel that has not been branded yet — or whose
+   * brand lookup breaks — must still render and publish.
    */
   async resolve(channelId: string | null): Promise<ResolvedBrand> {
-    const brand = channelId
-      ? await prisma.channelBrand.findUnique({ where: { channelId } })
-      : null;
+    const brand = channelId ? await this.findBrand(channelId) : null;
 
     return {
       videoStyle: mergeVideoStyle(brand?.videoStyle),
@@ -78,6 +151,31 @@ export class BrandService {
       niche: brand?.niche ?? FALLBACK.niche,
       musicQuery: brand?.musicQuery ?? FALLBACK.musicQuery,
     };
+  }
+
+  /**
+   * Isolates the one call in `resolve()` that can fail for reasons that have
+   * nothing to do with branding. The column backing `channelId` is
+   * `@db.Uuid`, but the parameter here is an unconstrained `string` — a
+   * caller building a video for a project with no channel could pass
+   * anything — so a non-UUID value throws a Postgres error straight out of
+   * `findUnique`, and so does an ordinary transient connection failure.
+   * `resolve()`'s whole contract is that it never throws; once this is wired
+   * into rendering, an error escaping here would not be a missing brand, it
+   * would be a failed video over what should have been a cosmetic lookup.
+   * Caught, logged for whoever is debugging a channel that looks unbranded,
+   * never rethrown.
+   */
+  private async findBrand(channelId: string) {
+    try {
+      return await prisma.channelBrand.findUnique({ where: { channelId } });
+    } catch (error) {
+      console.error(
+        `brandService.resolve: could not load brand for channel ${channelId}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return null;
+    }
   }
 }
 

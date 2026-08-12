@@ -85,4 +85,61 @@ describe("brandService.resolve", () => {
     expect(brand.musicQuery).toBe("calm ambient documentary");
     expect(brand.primaryColour).toBe("#FFCC00");
   });
+
+  it("discards the whole videoStyle when a leaf has the wrong type", async () => {
+    // render.service.ts computes durationSeconds * 2; a string there produces
+    // NaN, not a validation error, so this must never reach FFmpeg.
+    await prisma.channelBrand.create({
+      data: { channelId, videoStyle: { transitions: { durationSeconds: "fast" } } },
+    });
+
+    const brand = await brandService.resolve(channelId);
+    expect(brand.videoStyle).toEqual(DEFAULT_STYLE);
+  });
+
+  it("discards the whole videoStyle when a section is null instead of absent", async () => {
+    // The column is Json; a section can be explicitly null rather than
+    // simply missing. Null is not "no override" — it fails validation like
+    // any other wrong shape and falls back to defaults wholesale.
+    await prisma.channelBrand.create({
+      data: { channelId, videoStyle: { transitions: null } },
+    });
+
+    const brand = await brandService.resolve(channelId);
+    expect(brand.videoStyle).toEqual(DEFAULT_STYLE);
+  });
+
+  it("strips an unknown key inside an otherwise-valid section", async () => {
+    await prisma.channelBrand.create({
+      data: {
+        channelId,
+        videoStyle: { transitions: { durationSeconds: 0.25, madeUpField: "nope" } },
+      },
+    });
+
+    const brand = await brandService.resolve(channelId);
+
+    expect(brand.videoStyle.transitions.durationSeconds).toBe(0.25);
+    expect(brand.videoStyle.transitions).not.toHaveProperty("madeUpField");
+  });
+
+  it("never mutates DEFAULT_STYLE through a returned videoStyle", async () => {
+    // The no-row path and the unmodified sections on the merge path must not
+    // hand back references into DEFAULT_STYLE — otherwise a caller that
+    // tweaks its copy in place rewrites the defaults for every channel until
+    // the process restarts.
+    const brand = await brandService.resolve(channelId);
+    brand.videoStyle.captions.fontSize = 999;
+
+    expect(DEFAULT_STYLE.captions.fontSize).not.toBe(999);
+  });
+
+  it("resolves to defaults rather than throwing when the lookup fails", async () => {
+    // Not a valid UUID, so the query itself throws against the @db.Uuid
+    // column instead of simply finding no row — this exercises the "the
+    // database call fails" path, not "no brand exists" one.
+    const brand = await brandService.resolve("not-a-valid-uuid");
+    expect(brand.videoStyle).toEqual(DEFAULT_STYLE);
+    expect(brand.logoPath).toBeNull();
+  });
 });
