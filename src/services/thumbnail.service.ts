@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { prisma } from "@/lib/prisma";
-import { putObject, removeObjects, storagePath } from "@/lib/storage";
+import { getObject, putObject, removeObjects, storagePath } from "@/lib/storage";
 import { buildThumbnailArgs } from "@/lib/thumbnail-command";
 import { brandService } from "@/services/brand.service";
 import { gatewayImageProvider } from "@/services/providers/image.provider";
@@ -25,6 +25,49 @@ const HOOK_CHARACTERS = 400;
  *  `fitHeadline`'s shrink-then-truncate path for no benefit, since nobody
  *  reads a full sentence off a thumbnail at browsing size anyway. */
 const HEADLINE_WORDS = 5;
+
+/**
+ * YouTube's hard cap on a custom thumbnail's file size. `thumbnails.set`
+ * rejects anything larger outright, so bytes over this line are not a
+ * thumbnail — they are a `Publication.thumbnailApplied: false` and a
+ * console line nobody reads.
+ *
+ * Only the fallback path can realistically reach it. The composited path
+ * encodes through FFmpeg's mjpeg encoder at 1280x720 (see
+ * `JPEG_QUALITY`/`THUMBNAIL_WIDTH` in thumbnail-command.ts), which lands in
+ * the low hundreds of KB. The fallback stores the image provider's own bytes
+ * untouched, and `AI_IMAGE_MODEL` defaults to `openai/gpt-image-1`, whose
+ * 16:9 output is a 1536x1024 PNG that routinely runs 1.5-3MB.
+ *
+ * Dimensions are deliberately not checked alongside this. YouTube accepts a
+ * thumbnail wider than 640px at whatever aspect ratio it is given — 1280x720
+ * is the recommendation, not the requirement, and a 1536x1024 image uploads
+ * and displays letterboxed rather than being refused. The file size is the
+ * only limit that turns into a rejection, so it is the only one worth
+ * refusing to store over.
+ */
+const THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * How long the composite may run before the child is killed.
+ *
+ * Generous for the work — a single-frame filter graph over one image is a
+ * second or two — because the cost of being wrong is asymmetric. Too short
+ * only loses a headline on a slow machine; too long, or absent, wedges the
+ * caller forever: this runs inside `runPipeline`, whose worker keeps renewing
+ * `Video.leaseExpiresAt` on its own timer, so a `ffmpeg` that never exits
+ * leaves a live lease on a video no worker is making progress on and
+ * `JobService.claimNext` — which skips any video whose lease is still live —
+ * can never reclaim it. Nothing else in this path has a deadline.
+ */
+const COMPOSITE_TIMEOUT_MS = 120_000;
+
+/** How much of FFmpeg's stderr to carry into the thrown error. Enough for the
+ *  filter-graph diagnostics that actually explain a failure, bounded so a
+ *  pathological run can't build an unbounded string in memory. The *tail* is
+ *  kept rather than the head: FFmpeg prints its banner and input analysis
+ *  first and the reason it gave up last. */
+const STDERR_CAPTURE_LIMIT = 4000;
 
 function buildPrompt(hook: string, tone: string, niche: string): string {
   return (
@@ -82,6 +125,9 @@ export class ThumbnailService {
   constructor(
     private readonly images: ImageProvider = gatewayImageProvider,
     private readonly spawnProcess: ProcessSpawner = defaultSpawner,
+    /** Injected for the same reason the spawner is: a test proving the
+     *  timeout fires cannot wait two real minutes to do it. */
+    private readonly compositeTimeoutMs: number = COMPOSITE_TIMEOUT_MS,
   ) {}
 
   async generate(userId: string, videoId: string): Promise<string | null> {
@@ -142,14 +188,45 @@ export class ThumbnailService {
             outputPath: compositePath,
             headline: buildHeadline(video.generatedTitle ?? video.title),
             brand,
-            logoPath: brand.logoPath,
+            // The *downloaded* logo, never `brand.logoPath` itself — see
+            // `downloadLogo` for what that string actually is.
+            logoPath: await this.downloadLogo(brand.logoPath, tempDir),
           }),
         );
         bytes = await readFile(compositePath);
         format = { contentType: "image/jpeg", extension: "jpg" };
-      } catch {
+      } catch (error) {
+        // Logged, not swallowed. The fallback is deliberate, but it is also
+        // the only symptom a broken filter graph ever produces — a thumbnail
+        // that quietly has no headline — and without the reason here the
+        // stderr `runFfmpeg` went to the trouble of capturing dies at this
+        // `catch` and the failure is undiagnosable from production.
+        console.error(
+          `Could not composite the thumbnail for video ${videoId}, storing the ` +
+            `raw image instead: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
         bytes = image.data;
         format = detectImageFormat(image.data);
+      }
+
+      // Checked after both paths converge, because either could in principle
+      // produce it, though only the fallback realistically does — see
+      // THUMBNAIL_MAX_BYTES. Storing bytes YouTube will refuse is worse than
+      // storing nothing: `publish.service.ts` would download them, spend
+      // quota on a `thumbnails.set` that fails, and record
+      // `thumbnailApplied: false` — the same operator-visible outcome as no
+      // thumbnail at all, reached expensively and via a `ThumbnailVersion`
+      // row that claims a thumbnail exists. Returning null instead leaves the
+      // video publishable with YouTube picking a frame, which is exactly what
+      // this service's own doc comment says a missing thumbnail costs.
+      if (bytes.byteLength > THUMBNAIL_MAX_BYTES) {
+        console.error(
+          `Not storing a thumbnail for video ${videoId}: ${bytes.byteLength} bytes ` +
+            `exceeds YouTube's ${THUMBNAIL_MAX_BYTES}-byte limit, so it could never ` +
+            `be uploaded.`,
+        );
+        return null;
       }
 
       return await this.storeVersion(videoId, bytes, format, prompt, image.model);
@@ -261,15 +338,140 @@ export class ThumbnailService {
     }
   }
 
+  /**
+   * Copies the channel's logo out of Supabase Storage and into `tempDir`,
+   * returning the local path FFmpeg can actually open.
+   *
+   * `ChannelBrand.logoPath` is a Supabase *object key* — `logo.service.ts`
+   * writes it via `storagePath(channelId, "logos", ...)` and stores exactly
+   * what `putObject` returns. It is not a filesystem path and nothing on the
+   * machine running FFmpeg has ever had a file at it. Handing it straight to
+   * `buildThumbnailArgs` (as this did) put it inside a `movie=` source
+   * filter, which fails to open it, which fails the *whole* filter graph —
+   * so choosing a logo did not just lose the watermark, it silently lost the
+   * headline too and dropped every branded channel onto the raw-image
+   * fallback.
+   *
+   * A failure here returns `null` and composites without the logo rather
+   * than propagating. The trade is the same one the fallback path makes one
+   * level up, only finer-grained: a headline with no watermark is a small
+   * loss, and losing the headline as well — which is what letting this throw
+   * would cost — is a much larger one for a channel that has done nothing
+   * wrong except have a storage hiccup.
+   */
+  private async downloadLogo(
+    logoPath: string | null,
+    tempDir: string,
+  ): Promise<string | null> {
+    if (!logoPath) {
+      return null;
+    }
+
+    try {
+      const bytes = await getObject(logoPath);
+      // The extension is carried over so `movie=` gets the filename shape it
+      // would have had on disk. FFmpeg probes content rather than trusting
+      // the suffix, so this is tidiness, not correctness — hence the plain
+      // default for a key that somehow has none.
+      const localPath = path.join(tempDir, `logo${path.extname(logoPath) || ".png"}`);
+      await writeFile(localPath, bytes);
+      return localPath;
+    } catch (error) {
+      console.error(
+        `Could not download the channel logo at ${logoPath}; compositing the ` +
+          `thumbnail without it: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Runs the composite and turns its outcome into a resolved promise or an
+   * error that says what went wrong.
+   *
+   * Three things this deliberately does that the first version did not, all
+   * of them the same lesson `render.service.ts` already learned:
+   *
+   * Stderr is captured and carried into the error. FFmpeg says why it failed
+   * on stderr and nowhere else — a filter graph that cannot open its `movie=`
+   * source, a font that does not exist, an unwritable output path all exit
+   * with the same bare code 1. Reporting only that code is what made the
+   * logo-path bug above invisible in production for as long as it was.
+   *
+   * Both pipes are drained. An unread pipe fills its OS buffer and blocks the
+   * writer, at which point FFmpeg stops making progress and never reaches the
+   * `close` this promise is waiting on. Unlikely for a single-frame composite
+   * that prints little, but it is a deadlock rather than a slowdown, and
+   * `stdout` costs one no-op listener to remove entirely.
+   *
+   * The child gets a deadline. See `COMPOSITE_TIMEOUT_MS` for why a hang here
+   * does not merely lose one thumbnail but strands the video permanently.
+   * SIGKILL rather than SIGTERM: this fires only after the process has
+   * already failed to finish work that takes seconds, so it is past the point
+   * where asking politely is worth another wait.
+   */
   private runFfmpeg(args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
       const child = this.spawnProcess("ffmpeg", args);
-      child.on("error", reject);
-      child.on("close", (code: number | null) => {
-        if (code === 0) {
-          resolve();
+
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, this.compositeTimeoutMs);
+
+      /** Appended to the message so the reason travels with the error rather
+       *  than needing a second log line to correlate against. */
+      const reason = () => (stderr.trim() ? `: ${stderr.trim()}` : "");
+
+      // `settled` guards the pair rather than trusting Node to emit only one
+      // of them: `error` and `close` can both fire (a spawn that fails still
+      // closes), and a second reject on an already-rejected promise is a
+      // silent no-op that hides which of the two actually described the
+      // failure.
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      };
+
+      // Drained, not parsed: this invocation passes no `-progress`, so there
+      // is nothing on stdout worth reading — only a pipe worth emptying.
+      child.stdout.on("data", () => {});
+
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+        if (stderr.length > STDERR_CAPTURE_LIMIT) {
+          stderr = stderr.slice(-STDERR_CAPTURE_LIMIT);
+        }
+      });
+
+      child.on("error", (error: Error) => {
+        finish(new Error(`ffmpeg could not be started: ${error.message}${reason()}`));
+      });
+
+      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        if (timedOut) {
+          finish(
+            new Error(
+              `ffmpeg did not finish compositing within ${this.compositeTimeoutMs}ms ` +
+                `and was killed${reason()}`,
+            ),
+          );
+        } else if (code === 0) {
+          finish();
+        } else if (signal) {
+          // No exit code exists for a process killed by a signal — naming the
+          // signal is the only clue an OOM kill (SIGKILL) leaves behind.
+          finish(new Error(`ffmpeg was killed by signal ${signal}${reason()}`));
         } else {
-          reject(new Error(`ffmpeg exited with code ${code}`));
+          finish(new Error(`ffmpeg exited with code ${code}${reason()}`));
         }
       });
     });
