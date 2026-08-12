@@ -1261,29 +1261,197 @@ git commit -m "feat: composite the thumbnail's text instead of generating it"
 Create `src/services/thumbnail.service.test.ts` covering:
 
 ```typescript
+import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { writeFile } from "node:fs/promises";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { prisma } from "@/lib/prisma";
+import { removeObjects } from "@/lib/storage";
+import { projectService } from "@/services/project.service";
+import { ThumbnailService } from "@/services/thumbnail.service";
+import { videoService } from "@/services/video.service";
+import { createTestUser, deleteTestUser } from "@/test/fixtures";
+
+// The image provider and the FFmpeg spawner are both injected, so no image is
+// ever generated and no process is ever spawned — the same convention
+// render.service.test.ts and footage.service.test.ts already follow.
+vi.setConfig({ testTimeout: 20_000 });
+
+const RUN = randomUUID().slice(0, 8);
+
+let userId: string;
+let videoId: string;
+
+/** Objects this file writes to the real bucket, swept first in afterEach so a
+ *  failed assertion cannot leave one behind — Asset carries no FK back to
+ *  User, so deleteTestUser's cascade cannot reach them. */
+const storedPaths: string[] = [];
+
+class FakeChildProcess extends EventEmitter {
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+}
+
+/** Mirrors render.service.test.ts's spawner: `run` is invoked on a microtask
+ *  after spawn() returns, so listeners are attached before any event fires. */
+function createSpawner(run: (child: FakeChildProcess, args: string[]) => Promise<void>) {
+  const calls: string[][] = [];
+
+  const spawner = (_command: string, args: string[]) => {
+    const child = new FakeChildProcess();
+    calls.push(args);
+    queueMicrotask(() => void run(child, args));
+    return child as never;
+  };
+
+  return { spawner, calls };
+}
+
+/** A spawner that writes plausible bytes to the output path and exits 0. */
+function succeedingSpawner() {
+  return createSpawner(async (child, args) => {
+    await writeFile(args[args.length - 1], `composited-${RUN}`);
+    child.emit("close", 0);
+  });
+}
+
+function fakeImageProvider(bytes = "raw-image-bytes") {
+  return {
+    generate: vi.fn().mockResolvedValue({
+      data: Buffer.from(bytes),
+      model: "test/image-model",
+    }),
+  };
+}
+
+async function makeVideoWithScript() {
+  const project = await projectService.create(userId, { name: `thumb-${RUN}` });
+  const video = await videoService.create(userId, {
+    projectId: project.id,
+    title: "How inflation actually works",
+    topic: "inflation",
+  });
+
+  const script = await prisma.script.create({ data: { videoId: video.id } });
+  const version = await prisma.scriptVersion.create({
+    data: {
+      scriptId: script.id,
+      version: 1,
+      content: "Money is weirder than you think. Here is why.",
+    },
+  });
+  await prisma.script.update({
+    where: { id: script.id },
+    data: { activeVersionId: version.id },
+  });
+
+  return video.id;
+}
+
+beforeEach(async () => {
+  userId = await createTestUser("thumbnail");
+  videoId = await makeVideoWithScript();
+});
+
+afterEach(async () => {
+  const paths = storedPaths.splice(0);
+  if (paths.length > 0) {
+    await removeObjects(paths).catch(() => {});
+  }
+  await deleteTestUser(userId);
+});
+
 describe("ThumbnailService.generate", () => {
   it("stores a version whose prompt can reproduce it", async () => {
+    const { spawner } = succeedingSpawner();
+    const images = fakeImageProvider();
+
+    const path = await new ThumbnailService(images, spawner).generate(userId, videoId);
+    storedPaths.push(path!);
+
+    const thumbnail = await prisma.thumbnail.findUniqueOrThrow({
+      where: { videoId },
+      include: { activeVersion: true },
+    });
+
     // ThumbnailVersion.prompt exists precisely so a good thumbnail is
     // repeatable; a version without it is a dead end.
+    expect(thumbnail.activeVersion!.prompt).toBeTruthy();
+    expect(thumbnail.activeVersion!.prompt).toContain("Money is weirder");
+    expect(thumbnail.activeVersion!.model).toBe("test/image-model");
   });
 
   it("appends a version and moves the active pointer rather than overwriting", async () => {
-    // Regenerating is the expected workflow — the first image is often wrong.
+    const { spawner } = succeedingSpawner();
+    const service = new ThumbnailService(fakeImageProvider(), spawner);
+
+    const first = await service.generate(userId, videoId);
+    const second = await service.generate(userId, videoId);
+    storedPaths.push(first!, second!);
+
+    const thumbnail = await prisma.thumbnail.findUniqueOrThrow({
+      where: { videoId },
+      include: { versions: { orderBy: { version: "asc" } } },
+    });
+
+    // Regenerating is the expected workflow — the first image is often wrong,
+    // and comparing attempts is what ThumbnailVersion is for.
+    expect(thumbnail.versions).toHaveLength(2);
+    expect(thumbnail.versions.map((v) => v.version)).toEqual([1, 2]);
+    expect(thumbnail.activeVersionId).toBe(thumbnail.versions[1].id);
+    expect(first).not.toBe(second);
   });
 
-  it("returns null when image generation fails, leaving the video publishable", async () => {});
+  it("returns null when image generation fails, leaving the video publishable", async () => {
+    const { spawner, calls } = succeedingSpawner();
+    const images = {
+      generate: vi.fn().mockRejectedValue(new Error("gateway down")),
+    };
+
+    // A thumbnail is an enhancement: without one YouTube picks a frame, and
+    // the video still publishes.
+    expect(await new ThumbnailService(images, spawner).generate(userId, videoId)).toBeNull();
+    expect(calls).toHaveLength(0);
+    expect(await prisma.thumbnail.findUnique({ where: { videoId } })).toBeNull();
+  });
 
   it("falls back to the raw image when compositing fails", async () => {
-    // A thumbnail without a headline still beats YouTube picking a frame.
+    const { spawner } = createSpawner(async (child) => {
+      child.emit("close", 1);
+    });
+
+    const path = await new ThumbnailService(fakeImageProvider(), spawner).generate(
+      userId,
+      videoId,
+    );
+    storedPaths.push(path!);
+
+    // A thumbnail without a headline still beats YouTube picking a frame from
+    // stock footage.
+    expect(path).toBeTruthy();
+    const thumbnail = await prisma.thumbnail.findUniqueOrThrow({ where: { videoId } });
+    expect(thumbnail.activeVersionId).not.toBeNull();
   });
 
-  it("never calls a real image provider or spawns a real ffmpeg", async () => {});
+  it("returns null for a video with no approved script", async () => {
+    const project = await projectService.create(userId, { name: `thumb-bare-${RUN}` });
+    const bare = await videoService.create(userId, {
+      projectId: project.id,
+      title: "No script",
+    });
+
+    const { spawner } = succeedingSpawner();
+    const images = fakeImageProvider();
+
+    // The script's opening is what the thumbnail illustrates; without one
+    // there is nothing to build a prompt from.
+    expect(await new ThumbnailService(images, spawner).generate(userId, bare.id)).toBeNull();
+    expect(images.generate).not.toHaveBeenCalled();
+  });
 });
 ```
-
-Write these out fully against the injected `ImageProvider` and the injected
-`ProcessSpawner`, following `render.service.test.ts`'s `createSpawner` helper
-for the latter.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1292,22 +1460,193 @@ Expected: FAIL — cannot resolve `@/services/thumbnail.service`
 
 - [ ] **Step 3: Implement**
 
-Create `src/services/thumbnail.service.ts`. `generate` must:
+Add `"thumbnails"` to `StorageKind` in `src/lib/storage.ts`, then create
+`src/services/thumbnail.service.ts`:
 
-1. Load the video's active script and its project's channel; return `null` if
-   there is no script.
-2. Resolve the brand.
-3. Build the prompt from the script's opening — the hook is what the thumbnail
-   illustrates — plus the brand's tone and niche.
-4. Generate the image; on failure log and return `null`.
-5. Write the raw image to a temp dir, run `buildThumbnailArgs` through the
-   injected spawner, and on failure use the raw image rather than nothing.
-6. `putObject` the result at `storagePath(videoId, "thumbnails", "thumbnail-NNN.jpg")`
-   and append a `ThumbnailVersion` with `prompt`, `provider`, `model` and
-   `imageUrl`, moving `Thumbnail.activeVersionId` to it.
-7. Return the storage path.
+```typescript
+import "server-only";
 
-Add `"thumbnails"` to `StorageKind` in `src/lib/storage.ts`.
+import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { prisma } from "@/lib/prisma";
+import { buildThumbnailArgs } from "@/lib/thumbnail-command";
+import { putObject, storagePath } from "@/lib/storage";
+import { brandService } from "@/services/brand.service";
+import { gatewayImageProvider } from "@/services/providers/image.provider";
+import type { ImageProvider } from "@/services/providers/types";
+import type { ProcessSpawner } from "@/services/render.service";
+import { defaultSpawner } from "@/services/render.service";
+
+/** How much of the script the prompt is built from. The hook is what the
+ *  thumbnail has to illustrate; the rest of a 6,000-character script is
+ *  detail the image cannot show and only dilutes the prompt. */
+const HOOK_CHARACTERS = 400;
+
+/** The headline drawn on the image. Shorter than the title deliberately: a
+ *  thumbnail read at 210px wide fits about four words, not a sentence. */
+const HEADLINE_WORDS = 5;
+
+function buildPrompt(hook: string, tone: string, niche: string): string {
+  return (
+    `A YouTube thumbnail background for a ${niche} video. Tone: ${tone}. ` +
+    `The video opens: "${hook}". Cinematic, high contrast, strong focal ` +
+    `subject, empty space on one side for a headline. No text, no words, no ` +
+    `letters anywhere in the image.`
+  );
+}
+
+function buildHeadline(title: string): string {
+  return title.split(/\s+/).slice(0, HEADLINE_WORDS).join(" ");
+}
+
+/**
+ * Turns a video into a thumbnail somebody might click.
+ *
+ * Both the image provider and the FFmpeg spawner are injected, so a test never
+ * generates a real image or spawns a real process — the same shape
+ * `RenderService` and `FootageService` already use.
+ *
+ * Never throws. A thumbnail is an enhancement: without one YouTube picks a
+ * frame from the stock footage and the video still publishes. Nothing here may
+ * turn a renderable video into a failed one.
+ */
+export class ThumbnailService {
+  constructor(
+    private readonly images: ImageProvider = gatewayImageProvider,
+    private readonly spawnProcess: ProcessSpawner = defaultSpawner,
+  ) {}
+
+  async generate(userId: string, videoId: string): Promise<string | null> {
+    try {
+      return await this.generateThumbnail(userId, videoId);
+    } catch (error) {
+      console.error(
+        `Could not generate a thumbnail for video ${videoId}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return null;
+    }
+  }
+
+  private async generateThumbnail(
+    userId: string,
+    videoId: string,
+  ): Promise<string | null> {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: {
+        title: true,
+        generatedTitle: true,
+        script: { select: { activeVersion: { select: { content: true } } } },
+        project: { select: { channelId: true } },
+      },
+    });
+
+    const script = video?.script?.activeVersion?.content;
+    if (!script) {
+      return null;
+    }
+
+    const brand = await brandService.resolve(video.project?.channelId ?? null);
+    const prompt = buildPrompt(
+      script.slice(0, HOOK_CHARACTERS),
+      brand.tone,
+      brand.niche,
+    );
+
+    const image = await this.images.generate({ prompt, aspectRatio: "16:9" });
+
+    const tempDir = await mkdtemp(path.join(tmpdir(), "framecast-thumb-"));
+
+    try {
+      const rawPath = path.join(tempDir, "image.png");
+      const compositePath = path.join(tempDir, "thumbnail.jpg");
+      await writeFile(rawPath, image.data);
+
+      // A failed composite is not a failed thumbnail: the generated image on
+      // its own still beats a random frame of stock footage, so the headline
+      // is the part that degrades, not the whole feature.
+      let bytes: Buffer;
+      try {
+        await this.runFfmpeg(
+          buildThumbnailArgs({
+            imagePath: rawPath,
+            outputPath: compositePath,
+            headline: buildHeadline(video.generatedTitle ?? video.title),
+            brand,
+            logoPath: brand.logoPath,
+          }),
+        );
+        bytes = await readFile(compositePath);
+      } catch {
+        bytes = image.data;
+      }
+
+      return await this.storeVersion(videoId, bytes, prompt, image.model);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  /** Appends a version and moves the active pointer. Nothing is ever
+   *  overwritten — regenerating is the expected workflow, and comparing
+   *  attempts is what ThumbnailVersion exists for. */
+  private async storeVersion(
+    videoId: string,
+    bytes: Buffer,
+    prompt: string,
+    model: string,
+  ): Promise<string> {
+    const thumbnail = await prisma.thumbnail.upsert({
+      where: { videoId },
+      create: { videoId },
+      update: {},
+      include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+    });
+
+    const version = (thumbnail.versions[0]?.version ?? 0) + 1;
+    const objectPath = storagePath(
+      videoId,
+      "thumbnails",
+      `thumbnail-${String(version).padStart(3, "0")}.jpg`,
+    );
+
+    await putObject(objectPath, bytes, "image/jpeg");
+
+    const created = await prisma.thumbnailVersion.create({
+      data: { thumbnailId: thumbnail.id, version, imageUrl: objectPath, prompt, model },
+    });
+
+    await prisma.thumbnail.update({
+      where: { id: thumbnail.id },
+      data: { activeVersionId: created.id },
+    });
+
+    return objectPath;
+  }
+
+  private runFfmpeg(args: string[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = this.spawnProcess("ffmpeg", args);
+      child.on("error", reject);
+      child.on("close", (code: number | null) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`ffmpeg exited with code ${code}`));
+        }
+      });
+    });
+  }
+}
+
+export const thumbnailService = new ThumbnailService();
+```
+
+`defaultSpawner` is currently module-private in `render.service.ts`; export it
+so both services spawn FFmpeg the same way rather than each defining its own.
 
 - [ ] **Step 4: Run to verify they pass**
 
