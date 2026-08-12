@@ -542,19 +542,24 @@ enum PublishStatus {
 }
 
 model Publication {
-  id             String            @id @default(uuid()) @db.Uuid
-  youtubeVideoId String?
-  title          String
-  description    String?
-  tags           String[]
-  playlistId     String?
-  visibility     PublishVisibility @default(PRIVATE)
-  status         PublishStatus     @default(PENDING)
-  scheduledFor   DateTime?
-  publishedAt    DateTime?
-  error          String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id               String            @id @default(uuid()) @db.Uuid
+  youtubeVideoId   String?
+  title            String
+  description      String?
+  tags             String[]
+  playlistId       String?
+  visibility       PublishVisibility @default(PRIVATE)
+  status           PublishStatus     @default(PENDING)
+  scheduledFor     DateTime?
+  publishedAt      DateTime?
+  error            String?
+  /// False when the video published but its thumbnail did not attach — most
+  /// often because the YouTube channel is not verified, which custom
+  /// thumbnails require. Not a publish failure; a thing the operator can fix
+  /// and retry.
+  thumbnailApplied Boolean           @default(false)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   videoId String @unique @db.Uuid
   video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)

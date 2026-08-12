@@ -100,7 +100,15 @@ interface FetchCall {
  * the created video's id. Either leg can be made to fail.
  */
 function createUploadFetch(
-  opts: { failInit?: boolean; failUpload?: boolean; youtubeVideoId?: string } = {},
+  opts: {
+    failInit?: boolean;
+    failUpload?: boolean;
+    youtubeVideoId?: string;
+    /** Status code for a faked `thumbnails/set` failure — e.g. 403 for the
+     *  unverified-channel case `applyThumbnail` exists to survive. Omitted
+     *  entirely means the call succeeds. */
+    failThumbnail?: number;
+  } = {},
 ): { fetchImpl: FetchLike; calls: FetchCall[] } {
   const calls: FetchCall[] = [];
   const youtubeVideoId = opts.youtubeVideoId ?? `yt_${randomUUID().slice(0, 8)}`;
@@ -125,6 +133,26 @@ function createUploadFetch(
         ok: true,
         status: 200,
         headers: new Headers({ location: "https://upload.example.invalid/resumable/abc123" }),
+        json: async () => ({}),
+      } as unknown as Response;
+    }
+
+    // Matched before the PUT branch below, which is the current catch-all —
+    // a thumbnails/set request is a POST, same as it would fall through to
+    // otherwise, so this has to be checked first, not merely added last.
+    if (url.includes("thumbnails/set")) {
+      if (opts.failThumbnail) {
+        return {
+          ok: false,
+          status: opts.failThumbnail,
+          headers: new Headers(),
+          json: async () => ({}),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
         json: async () => ({}),
       } as unknown as Response;
     }
@@ -712,6 +740,94 @@ describe("publishService.publish — clip storage reclaim", () => {
       },
     });
     expect(clips).toHaveLength(0);
+  });
+});
+
+/**
+ * Attaches an active thumbnail to a video, writing a real object to the bucket
+ * so `publish()` has something to download and send.
+ */
+async function giveVideoAThumbnail(videoId: string): Promise<string> {
+  const objectPath = storagePath(videoId, "thumbnails", "thumbnail-001.jpg");
+  await putObject(objectPath, Buffer.from(`thumb-${RUN}`), "image/jpeg");
+  clipStoragePaths.push(objectPath);
+
+  const thumbnail = await prisma.thumbnail.create({ data: { videoId } });
+  const version = await prisma.thumbnailVersion.create({
+    data: {
+      thumbnailId: thumbnail.id,
+      version: 1,
+      imageUrl: objectPath,
+      prompt: "a city at night",
+    },
+  });
+  await prisma.thumbnail.update({
+    where: { id: thumbnail.id },
+    data: { activeVersionId: version.id },
+  });
+
+  return objectPath;
+}
+
+describe("publishService.publish — thumbnail", () => {
+  it("uploads the thumbnail after the video insert, not with it", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    // thumbnails.set is a separate endpoint — it cannot ride along with
+    // videos.insert — so it must come after the video exists to attach to.
+    const thumbnailCall = calls.findIndex((call) => call.url.includes("thumbnails/set"));
+    const insertCall = calls.findIndex((call) => call.url.includes("uploadType=resumable"));
+
+    expect(thumbnailCall).toBeGreaterThan(-1);
+    expect(thumbnailCall).toBeGreaterThan(insertCall);
+    expect(calls[thumbnailCall].url).toContain("videoId=");
+  });
+
+  it("leaves the video published when the channel is unverified (403)", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl } = createUploadFetch({ failThumbnail: 403 });
+
+    // Custom thumbnails require a verified YouTube channel — a property of the
+    // operator's account, not something this code can satisfy. Failing an
+    // upload that already succeeded, over a thumbnail, is the wrong trade.
+    await expect(new PublishService(fetchImpl).publish(userId, videoId)).resolves
+      .toMatchObject({ youtubeVideoId: expect.any(String) });
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("PUBLISHED");
+  });
+
+  it("survives any other thumbnail failure just as completely", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl } = createUploadFetch({ failThumbnail: 500 });
+
+    await expect(new PublishService(fetchImpl).publish(userId, videoId)).resolves
+      .toMatchObject({ youtubeVideoId: expect.any(String) });
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+  });
+
+  it("skips the thumbnail call entirely when the video has none", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    // 50 quota units, against the same daily allowance as the 1,600 the upload
+    // itself costs — not free, and not worth spending on nothing.
+    expect(calls.some((call) => call.url.includes("thumbnails/set"))).toBe(false);
   });
 });
 

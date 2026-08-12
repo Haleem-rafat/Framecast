@@ -5,7 +5,7 @@ import type { PublishStatus, PublishVisibility } from "@/generated/prisma/enums"
 import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { removeObjects } from "@/lib/storage";
+import { getObject, objectContentType, removeObjects } from "@/lib/storage";
 import { clampDescription } from "@/lib/youtube-limits";
 import { channelService } from "@/services/channel.service";
 
@@ -276,8 +276,13 @@ export class PublishService {
     }
 
     let youtubeVideoId: string;
+    // Lifted out of the try block below (rather than declared with `const`
+    // inside it) because `applyThumbnail` needs the same token afterwards,
+    // once the video is already PUBLISHED — resolving a second token there
+    // would be a second, redundant round trip for something already in hand.
+    let accessToken: string;
     try {
-      const accessToken = await channelService.resolveAccessToken(userId, channelId);
+      accessToken = await channelService.resolveAccessToken(userId, channelId);
       // Reads from Vercel Blob, not local disk — see blob-render-storage.ts.
       // `getRenderFile` returns `null` rather than throwing for a missing
       // blob (see its doc comment); this is the one call site that turns
@@ -385,6 +390,22 @@ export class PublishService {
     });
 
     // Deliberately outside the transaction above and after it has already
+    // committed, for the same reason `reclaimClipStorage` below is: YouTube
+    // has accepted the upload and the video is genuinely PUBLISHED at this
+    // point, and `thumbnails.set` is a separate endpoint from `videos.insert`
+    // — it can only be called once the video exists on YouTube to attach to,
+    // which is precisely now. See `applyThumbnail`'s own doc comment for why
+    // its failure can never unwind a publish that already succeeded.
+    const thumbnailApplied = await this.applyThumbnail(accessToken, videoId, youtubeVideoId);
+    // Best-effort, same shape as the failure-path writes above: a bookkeeping
+    // column that fails to update must not throw past a publish that has
+    // already succeeded, and the default (`false`) already describes the
+    // operator-visible reality — "no thumbnail" — if this write is lost.
+    await prisma.publication
+      .update({ where: { id: publication.id }, data: { thumbnailApplied } })
+      .catch(() => {});
+
+    // Deliberately outside the transaction above and after it has already
     // committed. YouTube has accepted the upload and the video is genuinely
     // PUBLISHED at this point; a storage hiccup while reclaiming clips must
     // never unwind that. See reclaimClipStorage's own doc comment for what
@@ -392,6 +413,91 @@ export class PublishService {
     await this.reclaimClipStorage(userId, videoId);
 
     return { youtubeVideoId };
+  }
+
+  /**
+   * Attaches the video's thumbnail on YouTube.
+   *
+   * Never throws, and deliberately runs outside the try/catch that marks a
+   * video FAILED. By the time this is called the video is already on
+   * YouTube: rolling that back is impossible, and failing a publish that
+   * already succeeded over a thumbnail would be the wrong trade — the same
+   * reasoning `reclaimClipStorage` below is built on.
+   *
+   * The most likely failure is not a bug. `thumbnails.set` returns 403 for a
+   * channel that has not been verified, which is a property of the
+   * operator's YouTube account that no amount of code here can satisfy — so
+   * it is reported (via `Publication.thumbnailApplied`, updated by the
+   * caller), not retried.
+   *
+   * `Content-Type` is read back from what `putObject` actually stored rather
+   * than assumed: `ThumbnailVersion.imageUrl` is usually a composited JPEG,
+   * but `ThumbnailService`'s fallback path (composite failed) stores the
+   * image provider's raw bytes as-is, which may be PNG — see
+   * `detectImageFormat` in thumbnail.service.ts. Sending `image/jpeg` for a
+   * PNG body would not necessarily fail outright (YouTube may still decode
+   * it), but there is no reason to rely on that when the true type is one
+   * cheap `list()` call away. `objectContentType` returning `null` (it never
+   * should for something `putObject` wrote, but the call is a network round
+   * trip with its own failure modes) falls back to sniffing the object key's
+   * extension, which `storeVersion` in thumbnail.service.ts always sets
+   * correctly for exactly this reason.
+   */
+  private async applyThumbnail(
+    accessToken: string,
+    videoId: string,
+    youtubeVideoId: string,
+  ): Promise<boolean> {
+    try {
+      const thumbnail = await prisma.thumbnail.findUnique({
+        where: { videoId },
+        select: { activeVersion: { select: { imageUrl: true } } },
+      });
+
+      const objectPath = thumbnail?.activeVersion?.imageUrl;
+      if (!objectPath) {
+        // No thumbnail to apply — 50 quota units against the same daily
+        // allowance the upload itself spends 1,600 of, not worth spending on
+        // nothing.
+        return false;
+      }
+
+      const bytes = await getObject(objectPath);
+      const contentType =
+        (await objectContentType(objectPath)) ??
+        (objectPath.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+
+      const response = await this.fetchImpl(
+        `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${youtubeVideoId}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": contentType,
+          },
+          body: bytes as unknown as BodyInit,
+        },
+      );
+
+      if (!response.ok) {
+        console.error(
+          `Could not set the thumbnail for video ${videoId} ` +
+            `(${response.status})` +
+            (response.status === 403
+              ? ": the YouTube channel is not verified, which custom thumbnails require."
+              : "."),
+        );
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error(
+        `Could not set the thumbnail for video ${videoId}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return false;
+    }
   }
 
   /**
