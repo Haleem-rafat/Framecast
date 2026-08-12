@@ -232,26 +232,32 @@ enum VideoStatus {
 }
 
 model Video {
-  id                String      @id @default(uuid()) @db.Uuid
-  title             String
-  description       String?
-  topic             String?
-  status            VideoStatus @default(DRAFT)
+  id                   String      @id @default(uuid()) @db.Uuid
+  title                String
+  description          String?
+  /// Written by MetadataService, kept separate from the operator's own `title`
+  /// and `description` so a model can never silently overwrite what a human
+  /// typed. `publish()` sends `generatedTitle ?? title`.
+  generatedTitle       String?
+  generatedDescription String?
+  tags                 String[]
+  topic                String?
+  status               VideoStatus @default(DRAFT)
   // Denormalised only as a UI hint; the durable record lives in VideoStatusEvent.
-  failureReason     String?
-  durationSeconds   Int?
+  failureReason        String?
+  durationSeconds      Int?
   /// Worker lease. Null when unclaimed; a value in the past means the holder
   /// died and the video is claimable again. A lock would strand it forever.
-  leaseExpiresAt    DateTime?
+  leaseExpiresAt       DateTime?
   /// Guards a deterministically-failing video against retrying until the end of
   /// time, spending real provider money each round.
-  attempts          Int         @default(0)
+  attempts             Int         @default(0)
   /// Cooperative cancellation. The worker owns the FFmpeg child process, so
   /// only it can stop one; it checks this on every heartbeat.
-  cancelRequestedAt DateTime?
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
-  deletedAt         DateTime?
+  cancelRequestedAt    DateTime?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  deletedAt            DateTime?
 
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)

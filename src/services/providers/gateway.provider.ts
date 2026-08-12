@@ -8,9 +8,11 @@ import { estimateCostUsd } from "@/lib/cost";
 import { ProviderError } from "@/lib/errors";
 import { normalise } from "@/lib/script-cues";
 import type {
+  MetadataGenerationInput,
   ScriptGenerationInput,
   ScriptGenerationResult,
   TextGenerationProvider,
+  VideoMetadata,
 } from "@/services/providers/types";
 
 /** 429 and 5xx are transient; everything else means the request itself is wrong. */
@@ -64,6 +66,35 @@ const scriptSchema = z.object({
       "Every source cited in the narration, one entry per source. These are " +
         "published in the video's description and are never spoken, so they " +
         "belong here and nowhere in any section's text.",
+    ),
+});
+
+// Structured output for the video's discoverability fields, following the
+// same `generateObject` pattern as `scriptSchema` above. Descriptions live on
+// the schema rather than only in the prompt for the same reason `scriptSchema`
+// puts `sources` there: the schema is the one instruction a caller cannot
+// accidentally omit by editing a stored prompt template, since metadata
+// generation — unlike script generation — has no operator-editable template
+// at all.
+const metadataSchema = z.object({
+  title: z
+    .string()
+    .describe(
+      "A YouTube title under 100 characters. State the payoff; no clickbait " +
+        "the video does not deliver.",
+    ),
+  description: z
+    .string()
+    .describe(
+      "A YouTube description under 5000 characters: two or three sentences on " +
+        "what the video covers, then nothing else. Sources and credits are " +
+        "appended separately and must not appear here.",
+    ),
+  tags: z
+    .array(z.string())
+    .describe(
+      "Search terms a viewer would actually type. Combined length under 500 " +
+        "characters.",
     ),
 });
 
@@ -158,6 +189,60 @@ export class GatewayProvider implements TextGenerationProvider {
       throw new ProviderError(
         "ANTHROPIC",
         "The model provider failed to generate a script.",
+        isRetryable(cause),
+        { cause },
+      );
+    }
+  }
+
+  /**
+   * Generates a title, description and tags for a video's narration.
+   *
+   * Deliberately has no `withSections`-style opt-out: unlike `generateScript`,
+   * this method has exactly one caller (`MetadataService`) and exactly one
+   * shape of answer it can ever want, so there is no free-form-text path to
+   * preserve.
+   */
+  async generateMetadata(input: MetadataGenerationInput): Promise<VideoMetadata> {
+    const apiKey = input.apiKey ?? env.AI_GATEWAY_API_KEY;
+
+    if (!apiKey) {
+      throw new ProviderError(
+        "ANTHROPIC",
+        "No API key configured. Add one on the Providers page.",
+        false,
+      );
+    }
+
+    try {
+      const languageModel = createGateway({ apiKey }).languageModel(
+        env.AI_SCRIPT_MODEL,
+      );
+
+      const prompt = [
+        `Write YouTube metadata (title, description, tags) for a video whose ` +
+          `narration follows. Tone: ${input.tone}. Niche: ${input.niche}.`,
+        "",
+        "Narration:",
+        input.script,
+        // Only present on the retry MetadataService issues after a first
+        // answer broke a limit — see LIMITS_REMINDER in metadata.service.ts.
+        input.limitsReminder ? `\n${input.limitsReminder}` : undefined,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
+
+      const result = await generateObject({
+        model: languageModel,
+        schema: metadataSchema,
+        prompt,
+      });
+
+      return result.object;
+    } catch (cause) {
+      throw new ProviderError(
+        "ANTHROPIC",
+        "The model provider failed to generate video metadata.",
         isRetryable(cause),
         { cause },
       );

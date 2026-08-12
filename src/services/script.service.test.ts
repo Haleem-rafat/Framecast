@@ -42,7 +42,7 @@ const FAKE_MODEL = `test-model-${RUN}`;
 // a real regression.
 vi.setConfig({ testTimeout: 20_000 });
 
-function makeFakeProvider(): TextGenerationProvider {
+function makeFakeProvider(): Pick<TextGenerationProvider, "generateScript"> {
   return {
     generateScript: vi.fn(async () => ({
       content: "Hook. Body. Sources on screen.",
@@ -416,7 +416,7 @@ describe("Gate 1 bypass — approval mid-generation must not overwrite the appro
     >((resolve) => {
       resolveGeneration = resolve;
     });
-    const holdingProvider: TextGenerationProvider = {
+    const holdingProvider: Pick<TextGenerationProvider, "generateScript"> = {
       generateScript: vi.fn(() => pendingGeneration),
     };
     const holdingService = new ScriptService(holdingProvider);

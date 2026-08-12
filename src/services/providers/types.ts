@@ -56,8 +56,25 @@ export interface ScriptGenerationResult {
   sources?: string[];
 }
 
+export interface MetadataGenerationInput {
+  /** The narration the metadata must describe. */
+  script: string;
+  tone: string;
+  niche: string;
+  /** Restated limits on a retry, so the model is told what it broke. */
+  limitsReminder?: string;
+  apiKey?: string;
+}
+
+export interface VideoMetadata {
+  title: string;
+  description: string;
+  tags: string[];
+}
+
 export interface TextGenerationProvider {
   generateScript(input: ScriptGenerationInput): Promise<ScriptGenerationResult>;
+  generateMetadata(input: MetadataGenerationInput): Promise<VideoMetadata>;
 }
 
 export interface DictionaryLocator {

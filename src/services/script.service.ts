@@ -37,7 +37,14 @@ function countWords(content: string): number {
 }
 
 export class ScriptService {
-  constructor(private readonly provider: TextGenerationProvider = gatewayProvider) {}
+  // `Pick`, not the full `TextGenerationProvider`, for the same reason
+  // `MetadataService` narrows its own constructor: this service only ever
+  // calls `generateScript`, and typing the parameter as the whole interface
+  // would force every test's fake provider to also stub `generateMetadata`,
+  // a method this service never touches.
+  constructor(
+    private readonly provider: Pick<TextGenerationProvider, "generateScript"> = gatewayProvider,
+  ) {}
 
   async generate(
     userId: string,
