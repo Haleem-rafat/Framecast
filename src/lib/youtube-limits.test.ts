@@ -33,11 +33,14 @@ describe("clampTitle", () => {
   });
 
   it("removes trailing spaces when cutting at word boundary", () => {
-    // When two spaces meet at the cut boundary, the result should not have a
-    // trailing space, so it reads as intentionally short rather than trailing off.
-    const title = clampTitle("aaaa  " + "x".repeat(50));
-    expect(title.endsWith(" ")).toBe(false);
+    // When multiple spaces land at the cut boundary, truncateOnWord leaves a
+    // trailing space if not trimmed: "word " + spaces + cut point. This would read
+    // as trailing off, not intentionally short. Test forces truncation at TITLE_MAX
+    // with double space positioned to leave trailing space without trimEnd().
+    const title = clampTitle("word ".repeat(19) + "     " + "x".repeat(50));
     expect(title.length).toBeLessThanOrEqual(TITLE_MAX);
+    // Result must not end with space, even though the raw truncation would.
+    expect(title.endsWith(" ")).toBe(false);
   });
 });
 
@@ -72,11 +75,11 @@ describe("clampTags", () => {
 
   it("drops whole tags from the end rather than truncating one", () => {
     // A truncated tag is a different, meaningless tag. Dropping is the only
-    // lossless option.
+    // lossless option. Measure the joined form as YouTube does, not bare sum.
     const tags = clampTags(Array.from({ length: 60 }, (_tag, i) => `tag-number-${i}`));
 
-    const combined = tags.join("").length;
-    expect(combined).toBeLessThanOrEqual(TAGS_MAX);
+    const joined = tags.join(",");
+    expect(joined.length).toBeLessThanOrEqual(TAGS_MAX);
     for (const tag of tags) {
       expect(tag).toMatch(/^tag-number-\d+$/);
     }
