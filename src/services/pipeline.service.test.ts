@@ -186,7 +186,16 @@ function addActivityLog(opts: {
   });
 }
 
-async function addPublication() {
+/** Defaults to `PUBLISHED` — a successful publish — but accepts any
+ * `PublishStatus` so a test can build the exact row shape a *failed* publish
+ * leaves behind: `publish.service.ts` creates this row with `UPLOADING`
+ * before the upload as its concurrency claim and never deletes it on
+ * failure, only flips `status` to `FAILED` (see `uploadStageStatus`'s own
+ * comment in pipeline.service.ts) — a `Publication` row existing is
+ * therefore never proof the upload actually succeeded. */
+async function addPublication(
+  status: "PENDING" | "PUBLISHED" | "SCHEDULED" | "UPLOADING" | "FAILED" = "PUBLISHED",
+) {
   const channel = await prisma.channel.create({
     data: {
       userId,
@@ -203,8 +212,9 @@ async function addPublication() {
       channelId: channel.id,
       title: "Published video",
       visibility: "UNLISTED",
-      status: "PUBLISHED",
-      publishedAt: new Date(),
+      status,
+      publishedAt: status === "PUBLISHED" ? new Date() : null,
+      error: status === "FAILED" ? "YouTube upload failed" : null,
     },
   });
 }
@@ -634,18 +644,16 @@ describe("pipelineService.getState — failure attribution", () => {
     expect(stageStatus(state.stages, "upload")).toBe("pending");
   });
 
-  it("marks upload failed when the render succeeded but no Publication was created", async () => {
-    // Mirrors publish.service.ts's error path: it deliberately never creates
-    // a Publication row when the YouTube upload itself fails, so upload's
-    // only failure signal is the video-wide FAILED fallback. Deliberately
-    // does NOT set up metadata/thumbnail — the realistic case is that a
-    // publish failure can land on a video where one or both never completed
-    // for reasons unrelated to why the upload failed, and the fallback must
-    // still land on upload, not on metadata/thumbnail (see
-    // OPTIONAL_STAGE_KEYS's own comment for why they're excluded from this
-    // scan). This is the regression case: without that exclusion, the first
-    // stage the generic "first incomplete stage" scan would find here is
-    // metadata, and it would misattribute the failure to it instead.
+  it("marks upload failed from Publication.status, not from a Publication row merely existing", async () => {
+    // This is the shape publish.service.ts actually leaves behind on a
+    // failed upload — it creates the Publication row *before* the upload as
+    // its concurrency claim (Publication.videoId is @unique) and never
+    // deletes it on failure, only flips status to FAILED (see
+    // uploadStageStatus's own comment in pipeline.service.ts). A fixture
+    // with no Publication row at all — the previous version of this test —
+    // is a state publish.service.ts cannot actually produce and so doesn't
+    // prove anything about the real bug: "does a Publication row exist" used
+    // to read a failed publish as *done*, since the row is right there.
     await addVoiceOver();
     await addSubtitleAsset();
     await addClipAssets(2, 0);
@@ -655,6 +663,7 @@ describe("pipelineService.getState — failure attribution", () => {
       startedAt: new Date(Date.now() - 60_000),
       finishedAt: new Date(),
     });
+    await addPublication("FAILED");
     await setVideoStatus("FAILED");
 
     const state = await service.getState(userId, videoId);
@@ -683,6 +692,7 @@ describe("pipelineService.getState — failure attribution", () => {
     });
     await addGeneratedTitle();
     await addThumbnail();
+    await addPublication("FAILED");
     await setVideoStatus("FAILED");
 
     const state = await service.getState(userId, videoId);
@@ -690,6 +700,44 @@ describe("pipelineService.getState — failure attribution", () => {
     expect(stageStatus(state.stages, "metadata")).toBe("done");
     expect(stageStatus(state.stages, "thumbnail")).toBe("done");
     expect(stageStatus(state.stages, "upload")).toBe("failed");
+  });
+
+  it("falls back to attributing failure to narration when no stage has any row yet", async () => {
+    // The fallback scan still has a real job: a video can fail before
+    // render or upload ever produce a row of their own (e.g. narration
+    // itself throwing, aborting the pipeline outright). Nothing here is
+    // metadata/thumbnail-specific — this just confirms the fallback still
+    // works for the stages that never got their own row-level signal.
+    await setVideoStatus("FAILED");
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "narration")).toBe("failed");
+    // upload was never reached — no Publication row exists — so it reads
+    // pending, not failed: the fallback stops at the first unfinished stage.
+    expect(stageStatus(state.stages, "upload")).toBe("pending");
+  });
+});
+
+describe("pipelineService.getState — upload stage from Publication.status", () => {
+  it.each([
+    ["PENDING", "pending"],
+    ["UPLOADING", "running"],
+    ["FAILED", "failed"],
+    ["PUBLISHED", "done"],
+    ["SCHEDULED", "done"],
+  ] as const)("maps Publication.status %s to stage status %s", async (publicationStatus, expected) => {
+    await addPublication(publicationStatus);
+
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "upload")).toBe(expected);
+  });
+
+  it("is pending when no Publication row exists at all", async () => {
+    const state = await service.getState(userId, videoId);
+
+    expect(stageStatus(state.stages, "upload")).toBe("pending");
   });
 });
 

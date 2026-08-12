@@ -282,6 +282,38 @@ describe("jobService.release", () => {
     expect(video.cancelRequestedAt).toBeNull();
   });
 
+  it("does not demote a PUBLISHED video back to READY", async () => {
+    // The window this reproduces: the video reads READY while runPipeline
+    // still has metadata/thumbnail left to run (isFinalizing, see
+    // pipeline.service.ts), the operator publishes during it — a plain
+    // READY -> PUBLISHED transition from publish.service.ts's point of view,
+    // since Video.status is the only signal it has ever consulted — and only
+    // then does this worker finally call release("succeeded") for the
+    // render it kicked off. Before this fix, release blindly wrote READY
+    // over whatever `status` it found, live on YouTube or not.
+    const videoId = await createVideo({
+      status: "PUBLISHED",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      cancelRequestedAt: new Date(),
+    });
+
+    await jobService.release(videoId, "succeeded");
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+    // Still released: nothing will ever claim this video again to do it
+    // itself, and a stray cancel flag has nothing left to mean.
+    expect(video.leaseExpiresAt).toBeNull();
+    expect(video.cancelRequestedAt).toBeNull();
+
+    // No spurious "PUBLISHED -> READY" history rewriting what actually
+    // happened.
+    const readyEvents = await prisma.videoStatusEvent.count({
+      where: { videoId, to: "READY" },
+    });
+    expect(readyEvents).toBe(0);
+  });
+
   it("clears the lease so a failed video can be retried", async () => {
     const videoId = await createVideo({
       status: "GENERATING",

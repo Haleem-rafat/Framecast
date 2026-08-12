@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { VideoStatus } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
@@ -11,6 +12,28 @@ export const HEARTBEAT_SECONDS = 30;
  * read model (`pipeline.service.ts`) can tell an operator "retry is pointless
  * now" without duplicating the cap as a second magic number. */
 export const MAX_ATTEMPTS = 3;
+
+/**
+ * The statuses `release(..., "succeeded")` is allowed to move a video out of.
+ * `render.service.ts` sets `READY` the moment the encode finishes, well
+ * before `runPipeline` has actually run the `metadata`/`thumbnail` stages
+ * that come after it — see `PipelineState.isFinalizing`
+ * (pipeline.service.ts) for the full reasoning — so by the time this worker
+ * calls `release`, the video's *current* status is not necessarily what it
+ * was when this run started. In particular, an operator can publish a
+ * `READY` video during that window: `publish()` (publish.service.ts) reads
+ * `READY` as license to move on to `PUBLISHED`, same as it always has, since
+ * `Video.status` is the only signal it has ever consulted. `release` must
+ * not treat "the render pipeline finished" as license to stamp `READY` back
+ * over a video an entirely different, legitimate process has since moved
+ * past — see `release`'s own comment on the specific silent-no-op this set
+ * exists to enable.
+ */
+const PRE_PUBLISH_STATUSES: ReadonlySet<VideoStatus> = new Set([
+  "GENERATING",
+  "RENDERING",
+  "READY",
+]);
 
 /**
  * Claim, heartbeat and release: the worker-facing half of the pipeline. The
@@ -113,7 +136,12 @@ export class JobService {
    * again by the next attempt (subject to `MAX_ATTEMPTS`). The transition
    * itself is guarded the same way `VideoService.approveScript` guards
    * DRAFT -> QUEUED: read the current status, then only write if a
-   * conditional update still finds the row in that exact state.
+   * conditional update still finds the row in that exact state — except
+   * `"succeeded"`, whose write is skipped entirely (not merely guarded) once
+   * `status` has already moved past `READY`. See `PRE_PUBLISH_STATUSES`'s own
+   * comment for why: this worker's own idea of "done" can be stale the
+   * moment `metadata`/`thumbnail` delay it past when the video first became
+   * publishable.
    */
   async release(
     videoId: string,
@@ -132,6 +160,29 @@ export class JobService {
     const from = video.status;
 
     if (outcome === "succeeded") {
+      // `from` can be `PUBLISHED` here — see `PRE_PUBLISH_STATUSES`'s own
+      // comment for the exact window this opens up: an operator publishing a
+      // `READY` video while this worker is still finishing `metadata`/
+      // `thumbnail` behind it. When that's what happened, this call is not
+      // reporting a conflict, it is reporting old news: the render pipeline
+      // genuinely did succeed, but something else already recorded that more
+      // specifically and more recently. Silently doing nothing to `status`
+      // is deliberate, not merely "skip the throw below" — a `ConflictError`
+      // here would have the worker's own catch block (worker/index.ts)
+      // conclude its own successful run had failed and call `release` again
+      // with outcome `"failed"`, which — reading `PUBLISHED` fresh on that
+      // second call — would overwrite a live, published video's status with
+      // `FAILED`. The lease and cancel flag are still cleared regardless:
+      // this worker's own work is genuinely finished either way, and nothing
+      // will ever claim this video again to clear them itself.
+      if (!PRE_PUBLISH_STATUSES.has(from)) {
+        await prisma.video.updateMany({
+          where: { id: videoId, deletedAt: null },
+          data: { leaseExpiresAt: null, cancelRequestedAt: null },
+        });
+        return;
+      }
+
       const { count } = await prisma.video.updateMany({
         where: { id: videoId, deletedAt: null, status: from },
         // `cancelRequestedAt` is cleared here too, matching the `failed` and

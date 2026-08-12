@@ -1,7 +1,7 @@
 import "server-only";
 
 import { NotFoundError } from "@/lib/errors";
-import type { LogLevel, RenderStatus, VideoStatus } from "@/generated/prisma/enums";
+import type { LogLevel, PublishStatus, RenderStatus, VideoStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
 import { MAX_ATTEMPTS } from "@/services/job.service";
 import { formatBytes, formatDuration } from "@/utils/format";
@@ -230,6 +230,31 @@ function renderStageStatus(job: { status: RenderStatus } | null): PipelineStageS
   return "failed"; // FAILED or CANCELLED
 }
 
+/**
+ * Same reasoning as `renderStageStatus` above, and for the same underlying
+ * bug it once shared with `upload`: `publish.service.ts` creates the
+ * `Publication` row *before* the actual YouTube upload, as its concurrency
+ * claim (`Publication.videoId` is `@unique` — see that file's own comment on
+ * why), and never deletes it on failure, only flips its `status` to
+ * `FAILED`. Deriving `upload`'s status from "does a `Publication` row exist"
+ * therefore reads a failed publish as *done* — the row is right there, it
+ * just failed. `Publication` carries its own row-level status for exactly
+ * this reason, so `upload` needs it read and mapped, not merely checked for
+ * existence, mirroring how `render` already reads `RenderJob.status` instead
+ * of asking "does a `RenderJob` exist". `PENDING` (the schema default) is
+ * mapped to `pending`: `publish.service.ts` always writes `UPLOADING`
+ * immediately on create and never leaves a row at the schema default, but
+ * treating an unreached value as "not started" costs nothing and is safer
+ * than assuming it can't happen.
+ */
+function uploadStageStatus(publication: { status: PublishStatus } | null): PipelineStageStatus {
+  if (!publication) return "pending";
+  if (publication.status === "PENDING") return "pending";
+  if (publication.status === "UPLOADING") return "running";
+  if (publication.status === "FAILED") return "failed";
+  return "done"; // PUBLISHED or SCHEDULED
+}
+
 function titleCase(value: string): string {
   return value.length ? `${value[0]}${value.slice(1).toLowerCase()}` : value;
 }
@@ -298,7 +323,10 @@ export class PipelineService {
         // overwritten), so the presence of the row alone isn't "done"; the
         // active pointer is.
         thumbnail: { select: { activeVersionId: true } },
-        publication: { select: { id: true } },
+        // `status` (not just `id`): see `uploadStageStatus`'s own comment on
+        // why "a Publication row exists" is not the same question as
+        // "upload succeeded".
+        publication: { select: { id: true, status: true } },
         renderJobs: {
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -450,7 +478,8 @@ export class PipelineService {
         status: video.thumbnail?.activeVersionId ? "done" : "pending",
       },
       upload: {
-        status: video.publication ? "done" : "pending",
+        status: uploadStageStatus(video.publication),
+        detail: video.publication?.status === "FAILED" ? "publish failed" : undefined,
       },
     };
 
@@ -476,23 +505,29 @@ export class PipelineService {
       }
     }
 
-    // Render already carries its own definitive failure signal from
-    // RenderJob.status (handled in renderStageStatus above) — if it fired,
-    // the fallback below must not also flag Upload just because it happens
-    // to be the next incomplete stage in the list.
+    // Render and Upload each carry their own definitive failure signal now —
+    // RenderJob.status (renderStageStatus) and Publication.status
+    // (uploadStageStatus) — so if either fired, the fallback below must not
+    // also flag some other stage just because it happens to be the next
+    // incomplete one in the list. This used to be render-only: `upload` was
+    // derived from "does a Publication row exist", which reads a *failed*
+    // publish (publish.service.ts creates the row before the upload as its
+    // concurrency claim, and never deletes it, only flips its status to
+    // FAILED — see uploadStageStatus's own comment) as done, silently
+    // routing every publish failure into this fallback instead. With
+    // `uploadStageStatus` reading the row's actual status, that
+    // misattribution is now the same as render's: it can't happen, because
+    // `hasRowLevelFailure` catches it first.
     const hasRowLevelFailure = stages.some((stage) => stage.status === "failed");
 
     if (video.status === "FAILED" && !hasRowLevelFailure) {
-      // No stage had its own row-level failure signal, so attribute the
-      // failure to the first stage that never finished — in practice almost
-      // always Upload, since publish.service.ts's error path deliberately
-      // never creates a Publication row on a failed upload, leaving nothing
-      // else to distinguish "hasn't started" from "failed here". `metadata`
-      // and `thumbnail` are excluded from this scan (see
-      // `OPTIONAL_STAGE_KEYS`): either can legitimately still be `pending`
-      // on a `FAILED` video for reasons that have nothing to do with why it
-      // failed, and attributing the failure to one of them would bury the
-      // real cause.
+      // Neither stage with its own row-level signal fired, so this is some
+      // other, less common way a video ended up FAILED — attribute it to the
+      // first stage that never finished. `metadata` and `thumbnail` are
+      // excluded from this scan (see `OPTIONAL_STAGE_KEYS`): either can
+      // legitimately still be `pending` on a `FAILED` video for reasons that
+      // have nothing to do with why it failed, and attributing the failure
+      // to one of them would bury the real cause.
       const failedIndex = stages.findIndex(
         (stage) => stage.status !== "done" && !OPTIONAL_STAGE_KEYS.has(stage.key),
       );
