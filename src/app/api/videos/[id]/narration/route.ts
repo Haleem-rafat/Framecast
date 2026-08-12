@@ -53,7 +53,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     });
 
     if (!voiceOver?.audioUrl) {
-      throw new NotFoundError("This video has no narration.");
+      throw new NotFoundError("Video narration");
     }
 
     const [body, contentType] = await Promise.all([
