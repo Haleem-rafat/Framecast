@@ -21,9 +21,12 @@ import { publishVideoAction } from "@/actions/publish.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
 import type { SerializedError } from "@/lib/errors";
 
-/** publish.service.ts hardcodes this — see its `uploadToYouTube` doc
- * comment. No client-side toggle exists for it, so the confirmation states
- * it as a fact rather than a choice the operator is making here. */
+/** `publish.action.ts` passes `UNLISTED` explicitly — see
+ * `PLACEHOLDER_VISIBILITY` there. It is *not* `publish.service.ts`'s own
+ * default any more (that is `PRIVATE`), so this copy is only true for as long
+ * as the action keeps sending `UNLISTED`; the two must be changed together.
+ * No client-side toggle exists yet, so the confirmation states the visibility
+ * as a fact rather than as a choice the operator is making here. */
 const UPLOAD_VISIBILITY_NOTE =
   "The video uploads as unlisted, not public — only people with the link can watch it.";
 
