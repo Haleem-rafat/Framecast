@@ -357,7 +357,12 @@ describe("publishService.publish — Gate 2", () => {
     expect(video.failureReason).toContain("no longer available");
   });
 
-  it("uploads with privacyStatus always unlisted, regardless of channel default visibility", async () => {
+  // Visibility-default and "asked-for visibility wins" coverage moved to the
+  // "metadata and visibility" describe block below, once uploadToYouTube
+  // stopped hard-coding "unlisted" regardless of caller input. What's left
+  // worth asserting here, on its own, is the one flag that genuinely never
+  // varies by caller input.
+  it("declares every upload not made for kids", async () => {
     const { videoId } = await makePublishableVideo();
     const { fetchImpl, calls } = createUploadFetch();
     const service = new PublishService(fetchImpl);
@@ -367,7 +372,6 @@ describe("publishService.publish — Gate 2", () => {
     const initCall = calls.find((c) => c.url.includes("uploadType=resumable"));
     expect(initCall).toBeDefined();
     const body = JSON.parse(initCall!.init!.body as string);
-    expect(body.status.privacyStatus).toBe("unlisted");
     expect(body.status.selfDeclaredMadeForKids).toBe(false);
   });
 
@@ -433,7 +437,9 @@ describe("publishService.publish — Gate 2", () => {
     const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
     expect(publication.youtubeVideoId).toBe("yt_abc123");
     expect(publication.status).toBe("PUBLISHED");
-    expect(publication.visibility).toBe("UNLISTED");
+    // No visibility was requested, so this is the new safe default — see the
+    // "metadata and visibility" describe block for the dedicated coverage.
+    expect(publication.visibility).toBe("PRIVATE");
 
     const events = await prisma.videoStatusEvent.findMany({ where: { videoId } });
     expect(events.map((e) => `${e.from}->${e.to}`)).toContain("READY->PUBLISHED");
@@ -705,5 +711,75 @@ describe("publishService.publish — clip storage reclaim", () => {
       },
     });
     expect(clips).toHaveLength(0);
+  });
+});
+
+describe("publishService.publish — metadata and visibility", () => {
+  it("sends the generated title and tags, not the operator's placeholder", async () => {
+    const { videoId } = await makePublishableVideo();
+    await prisma.video.update({
+      where: { id: videoId },
+      data: {
+        generatedTitle: "How inflation actually works",
+        generatedDescription: "The full explanation.",
+        tags: ["money", "inflation"],
+      },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.snippet.title).toBe("How inflation actually works");
+    expect(body.snippet.tags).toEqual(["money", "inflation"]);
+  });
+
+  it("falls back to the operator's title when nothing was generated", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.snippet.title).toBe("How inflation actually works");
+  });
+
+  it("publishes at the visibility asked for, not a constant", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, { visibility: "PUBLIC" });
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.status.privacyStatus).toBe("public");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.visibility).toBe("PUBLIC");
+  });
+
+  it("defaults to private rather than to whatever it used to hard-code", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.status.privacyStatus).toBe("private");
+  });
+
+  it("schedules with publishAt and a private status, which is how YouTube schedules", async () => {
+    const { videoId } = await makePublishableVideo();
+    const scheduledFor = new Date("2030-01-01T12:00:00.000Z");
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      scheduledFor,
+    });
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    // A scheduled upload must go up private; publishAt is what flips it later.
+    expect(body.status.privacyStatus).toBe("private");
+    expect(body.status.publishAt).toBe(scheduledFor.toISOString());
   });
 });

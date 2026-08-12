@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
+import type { PublishVisibility } from "@/generated/prisma/enums";
 import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -27,6 +28,23 @@ function isUniqueConstraintViolation(
 
 export interface PublishResult {
   youtubeVideoId: string;
+}
+
+/**
+ * Everything about a publish that is the caller's decision rather than a
+ * fact derived from the video. `visibility` defaults to `"PRIVATE"` when
+ * omitted — see the doc comment on `uploadToYouTube` for why the default
+ * changed from an unconditional `"unlisted"` to something a caller actually
+ * chooses. `scheduledFor` only has an effect together with a `visibility`
+ * that isn't already `PRIVATE`: YouTube schedules a video by uploading it
+ * private with `status.publishAt` set, so the upload itself always goes up
+ * private regardless of what's requested here, and `publishAt` is what
+ * flips it to the requested visibility later.
+ */
+export interface PublishOptions {
+  visibility?: PublishVisibility;
+  playlistId?: string;
+  scheduledFor?: Date;
 }
 
 /**
@@ -126,12 +144,21 @@ function readStoredSources(value: unknown): string[] | null {
 export class PublishService {
   constructor(private readonly fetchImpl: FetchLike = fetch) {}
 
-  async publish(userId: string, videoId: string): Promise<PublishResult> {
+  async publish(
+    userId: string,
+    videoId: string,
+    opts: PublishOptions = {},
+  ): Promise<PublishResult> {
+    const visibility: PublishVisibility = opts.visibility ?? "PRIVATE";
+
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
       select: {
         id: true,
         title: true,
+        generatedTitle: true,
+        generatedDescription: true,
+        tags: true,
         status: true,
         project: { select: { channelId: true } },
         script: {
@@ -183,11 +210,21 @@ export class PublishService {
       select: { prompt: true },
     });
 
-    const description = buildDescription(
+    // The sources/credits block is always computed — it's owed regardless of
+    // whether MetadataService ever ran for this video — and then either
+    // stands alone (today's behaviour, unchanged) or trails a generated
+    // description. Prepending rather than replacing is what keeps a script's
+    // citations and the Pixabay/music credits on every upload even after
+    // Task 3 started writing `generatedDescription`.
+    const sourcesAndCredits = buildDescription(
       video.script?.activeVersion?.content,
       readStoredSources(video.script?.activeVersion?.sources),
       musicAsset?.prompt,
     );
+    const title = video.generatedTitle ?? video.title;
+    const description = video.generatedDescription
+      ? [video.generatedDescription, sourcesAndCredits].filter(Boolean).join("\n\n")
+      : sourcesAndCredits;
 
     // The gate itself, and it happens *before* the upload — not after, the
     // way the first draft of this method had it. `Publication.videoId` is
@@ -206,9 +243,12 @@ export class PublishService {
         data: {
           videoId,
           channelId,
-          title: video.title,
+          title,
           description,
-          visibility: "UNLISTED",
+          tags: video.tags,
+          playlistId: opts.playlistId,
+          visibility,
+          scheduledFor: opts.scheduledFor,
           status: "UPLOADING",
         },
       });
@@ -237,10 +277,17 @@ export class PublishService {
       // buffered here rather than piped through — same memory tradeoff the
       // local-disk version made reading the whole file at once.
       const fileBuffer = Buffer.from(await new Response(file.stream).arrayBuffer());
-      youtubeVideoId = await this.uploadToYouTube(accessToken, {
-        title: video.title,
-        description,
-      }, fileBuffer);
+      youtubeVideoId = await this.uploadToYouTube(
+        accessToken,
+        {
+          title,
+          description,
+          tags: video.tags,
+          visibility,
+          publishAt: opts.scheduledFor,
+        },
+        fileBuffer,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
@@ -412,18 +459,35 @@ export class PublishService {
    * Resumable upload: an init POST carrying the metadata, then a PUT of the
    * bytes to the `Location` it returns.
    *
-   * `privacyStatus: "unlisted"` is not a default — it is the only value this
-   * method will ever send, regardless of any caller input. The operator's
-   * ElevenLabs narration is on a free tier with no commercial rights, and
-   * this channel is scrutinised for automated content; a public upload of
-   * that audio would be a licensing violation, not just an embarrassing
-   * mistake. There is deliberately no parameter that can override it.
+   * Visibility is the caller's decision, not this method's — `publish()`
+   * defaults it to `"PRIVATE"` when nobody asks for anything else, which is
+   * the safe failure mode (nothing leaks to the public by omission) rather
+   * than the permissive one.
+   *
+   * Scheduling piggybacks on privacy rather than being a separate YouTube
+   * concept: the API has no "scheduled" `privacyStatus`, so a scheduled
+   * upload always goes up `private` with `status.publishAt` set, and YouTube
+   * itself flips it to the requested visibility at that timestamp. Sending
+   * `publishAt` alongside `public` or `unlisted` does not schedule anything —
+   * YouTube just publishes immediately and ignores the timestamp — so
+   * `scheduledFor` being set overrides whatever `visibility` was asked for,
+   * here, unconditionally.
    */
   private async uploadToYouTube(
     accessToken: string,
-    metadata: { title: string; description: string },
+    metadata: {
+      title: string;
+      description: string;
+      tags: string[];
+      visibility: PublishVisibility;
+      publishAt?: Date;
+    },
     fileBuffer: Buffer,
   ): Promise<string> {
+    const privacyStatus = metadata.publishAt
+      ? "private"
+      : metadata.visibility.toLowerCase();
+
     const initResponse = await this.fetchImpl(
       "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
       {
@@ -435,8 +499,16 @@ export class PublishService {
           "X-Upload-Content-Length": String(fileBuffer.byteLength),
         },
         body: JSON.stringify({
-          snippet: { title: metadata.title, description: metadata.description },
-          status: { privacyStatus: "unlisted", selfDeclaredMadeForKids: false },
+          snippet: {
+            title: metadata.title,
+            description: metadata.description,
+            tags: metadata.tags,
+          },
+          status: {
+            privacyStatus,
+            selfDeclaredMadeForKids: false,
+            ...(metadata.publishAt && { publishAt: metadata.publishAt.toISOString() }),
+          },
         }),
       },
     );
