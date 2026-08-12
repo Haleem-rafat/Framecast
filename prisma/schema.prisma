@@ -124,6 +124,7 @@ model Channel {
   statistics   ChannelStatistic[]
   publications Publication[]
   projects     Project[]
+  brand        ChannelBrand?
 
   @@unique([userId, youtubeChannelId])
   @@index([userId, deletedAt])
@@ -144,6 +145,44 @@ model ChannelStatistic {
 
   @@index([channelId, capturedAt])
   @@map("channel_statistic")
+}
+
+/// A channel's identity: what its videos look like, sound like and are about.
+///
+/// Deliberately a separate table rather than columns on `Channel`. `Channel`
+/// holds OAuth access and refresh tokens — the one row here whose accidental
+/// exposure is a security incident, and whose own comment says those tokens are
+/// never selected into client payloads. Brand fields are the opposite: read
+/// constantly, rendered in the UI, edited by the operator. Separating them means
+/// the brand editor never has to select from the row holding the tokens.
+model ChannelBrand {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// The VideoStyle object, merged over DEFAULT_STYLE. Null means "all
+  /// defaults", so an existing channel renders exactly as it does today and
+  /// this column needs no backfill.
+  videoStyle Json?
+
+  logoPath        String?
+  primaryColour   String?
+  secondaryColour String?
+  /// Must exist in the worker image — libass and drawtext both fall back
+  /// silently on a missing face.
+  headlineFont    String?
+  tone            String?
+  niche           String?
+  /// What to search Jamendo for. A channel's music should sound consistent,
+  /// and a video's title is not a musical description — which is why searching
+  /// by title found nothing usable.
+  musicQuery      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channelId String  @unique @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@map("channel_brand")
 }
 
 // ---------------------------------------------------------------------------
