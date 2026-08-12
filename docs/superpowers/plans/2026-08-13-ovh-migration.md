@@ -1265,30 +1265,32 @@ Add to `src/services/publish.service.test.ts`, inside the block covering a succe
 
 ```typescript
   it("deletes the local render once YouTube has the video", async () => {
-    const { videoId, outputUrl } = await makePublishableVideo(userId);
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    const { videoId, outputUrl } = await makePublishableVideo({});
 
-    await publishService.publish(userId, videoId, {});
+    await service.publish(userId, videoId, {});
 
     expect(await statRenderFile(outputUrl)).toBeNull();
   });
 
-  it("still reports the publish as successful when the render cannot be deleted", async () => {
-    const { videoId, outputUrl } = await makePublishableVideo(userId);
-    // Delete it first: the reclaim then runs against a file that is not there,
-    // which is exactly what a retried publish does.
+  it("still publishes when the render was already reclaimed", async () => {
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    const { videoId, outputUrl } = await makePublishableVideo({});
+    // Exactly what a retried publish meets: the first attempt already
+    // deleted the file.
     await deleteRenderFile(outputUrl);
 
-    const publication = await publishService.publish(userId, videoId, {});
+    await service.publish(userId, videoId, {});
 
-    expect(publication.status).toBe("PUBLISHED");
+    const publication = await prisma.publication.findFirst({ where: { videoId } });
+    expect(publication?.status).toBe("PUBLISHED");
   });
 
   it("keeps the render when the publish failed", async () => {
-    const { videoId, outputUrl } = await makePublishableVideo(userId, {
-      fetchImpl: createUploadFetch({ failUpload: 500 }),
-    });
+    const service = new PublishService(createUploadFetch({ failUpload: true }).fetchImpl);
+    const { videoId, outputUrl } = await makePublishableVideo({});
 
-    await expect(publishService.publish(userId, videoId, {})).rejects.toThrow();
+    await expect(service.publish(userId, videoId, {})).rejects.toThrow();
 
     // A failed publish must leave the render in place, or a retry has nothing
     // to upload and the video is unrecoverable.
@@ -1296,7 +1298,7 @@ Add to `src/services/publish.service.test.ts`, inside the block covering a succe
   });
 ```
 
-Adapt `makePublishableVideo`'s call shape and the failure-injection helper to whatever the file already uses — read it first rather than assuming these names.
+These use the file's real helpers, verified against it while this plan was written: `userId` is a module-level fixture set in `beforeAll`; `makePublishableVideo(opts)` takes an options object and returns `{ videoId, channelId, outputUrl }`; `createUploadFetch(opts)` returns `{ fetchImpl, calls }` and its `failUpload` is a **boolean**, not a status code. Import `statRenderFile` and `deleteRenderFile` from `@/lib/render-storage`.
 
 - [ ] **Step 3: Run and watch them fail**
 
@@ -1307,29 +1309,31 @@ Expected: FAIL — the render is still on disk after a successful publish.
 
 Beside the existing clip reclaim, after the success transaction commits:
 
+`reclaimClipStorage` is a **private method** on `PublishService`, not a standalone function. Match it:
+
 ```typescript
-/**
- * Deletes the local render once YouTube has confirmed the upload.
- *
- * The video is on YouTube; the copy on disk is redundant, and at ~170MB each
- * on a 40GB machine, keeping them is the difference between a disk that
- * stabilises and one that fills at roughly 140 videos.
- *
- * Best-effort, exactly like the clip reclaim above: this runs after the
- * publish has already succeeded and is not permitted to turn a live video
- * into a failed one. A render that is already gone — a retried publish — is
- * not an error.
- */
-async function reclaimRenderStorage(videoId: string, location: string): Promise<void> {
-  try {
-    await deleteRenderFile(location);
-  } catch (error) {
-    console.error(
-      `Could not reclaim the render for video ${videoId} at ${location}:`,
-      error,
-    );
+  /**
+   * Deletes the local render once YouTube has confirmed the upload.
+   *
+   * The video is on YouTube; the copy on disk is redundant, and at ~170MB
+   * each on a 40GB machine, keeping every published one is the difference
+   * between a disk that stabilises and one that fills at roughly 140 videos.
+   *
+   * Best-effort, for the same reason `reclaimClipStorage` above is: this runs
+   * after the publish has already succeeded, and nothing here is permitted to
+   * turn a live video into a failed one. A render that is already gone — what
+   * a retried publish meets — is not an error.
+   */
+  private async reclaimRenderStorage(videoId: string, location: string): Promise<void> {
+    try {
+      await deleteRenderFile(location);
+    } catch (error) {
+      console.error(
+        `Could not reclaim the render for video ${videoId} at ${location}:`,
+        error,
+      );
+    }
   }
-}
 ```
 
 Call it only on the success path, after the transaction — never in a `finally`, which would delete the render of a failed publish and leave the video unrecoverable.
