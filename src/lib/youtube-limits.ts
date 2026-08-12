@@ -23,7 +23,10 @@ function truncateOnWord(value: string, max: number): string {
   const hardCut = value.slice(0, max);
   const lastSpace = hardCut.lastIndexOf(" ");
 
-  return lastSpace > 0 ? hardCut.slice(0, lastSpace) : hardCut;
+  const result = lastSpace > 0 ? hardCut.slice(0, lastSpace) : hardCut;
+  // Trim trailing spaces (e.g., when two spaces meet at the cut boundary)
+  // so output reads as intentionally short, not trailing off.
+  return result.trimEnd();
 }
 
 export function clampTitle(value: string): string {
@@ -39,21 +42,36 @@ export function clampDescription(value: string): string {
  *
  * Never truncates a tag: half of "cryptocurrency" is a different word that
  * nobody searches for, so a shortened tag is worse than an absent one.
+ *
+ * Measures in comma-separated form as YouTube does: `tag1,tag2,tag3`. Tags
+ * containing commas or spaces are quoted, adding 2 characters. The naive sum
+ * of bare tag lengths is the obvious wrong answer but measurably false: 125
+ * four-char tags sum to 500 bare but 624 when joined, which YouTube rejects.
  */
 export function clampTags(tags: string[]): string[] {
   const kept: string[] = [];
-  let combined = 0;
+  let joined = "";
 
   for (const raw of tags) {
     const tag = raw.trim();
     if (!tag) {
       continue;
     }
-    if (combined + tag.length > TAGS_MAX) {
+
+    // Quote tags containing commas or spaces; these characters require escaping
+    // in comma-separated form and add 2 characters (the quotes themselves).
+    const needsQuotes = tag.includes(",") || tag.includes(" ");
+    const quoted = needsQuotes ? `"${tag}"` : tag;
+
+    // Simulate the joined form: prepend a comma if we already have tags
+    const addition = kept.length > 0 ? `,${quoted}` : quoted;
+
+    if ((joined + addition).length > TAGS_MAX) {
       break;
     }
+
     kept.push(tag);
-    combined += tag.length;
+    joined += addition;
   }
 
   return kept;
@@ -64,9 +82,22 @@ export function withinLimits(input: {
   description: string;
   tags: string[];
 }): boolean {
+  // Measure tags in comma-separated form, accounting for quoting.
+  const joined = input.tags
+    .map(tag => {
+      const trimmed = tag.trim();
+      if (!trimmed) {
+        return "";
+      }
+      const needsQuotes = trimmed.includes(",") || trimmed.includes(" ");
+      return needsQuotes ? `"${trimmed}"` : trimmed;
+    })
+    .filter(Boolean)
+    .join(",");
+
   return (
     input.title.length <= TITLE_MAX &&
     input.description.length <= DESCRIPTION_MAX &&
-    input.tags.join("").length <= TAGS_MAX
+    joined.length <= TAGS_MAX
   );
 }

@@ -31,6 +31,14 @@ describe("clampTitle", () => {
     const title = clampTitle("x".repeat(200));
     expect(title).toHaveLength(TITLE_MAX);
   });
+
+  it("removes trailing spaces when cutting at word boundary", () => {
+    // When two spaces meet at the cut boundary, the result should not have a
+    // trailing space, so it reads as intentionally short rather than trailing off.
+    const title = clampTitle("aaaa  " + "x".repeat(50));
+    expect(title.endsWith(" ")).toBe(false);
+    expect(title.length).toBeLessThanOrEqual(TITLE_MAX);
+  });
 });
 
 describe("clampDescription", () => {
@@ -76,6 +84,27 @@ describe("clampTags", () => {
 
   it("drops empty and whitespace-only tags", () => {
     expect(clampTags(["money", "", "   ", "debt"])).toEqual(["money", "debt"]);
+  });
+
+  it("measures tags in comma-separated form, not bare sum", () => {
+    // This test demonstrates the critical bug: naive bare-sum measurement fails.
+    // YouTube counts tags as a comma-separated string: "tag0,tag1,tag2,...".
+    // With 126 three-character tags:
+    // - Bare sum: 126 * 3 = 378 chars (passes the naive TAGS_MAX check)
+    // - Comma-joined: 378 + 125 commas = 503 chars (exceeds TAGS_MAX of 500)
+    // The old code would keep all 126; the corrected code should keep exactly 125.
+    const tags = Array.from({ length: 126 }, (_, i) => {
+      const n = i.toString().padStart(2, "0");
+      return `t${n}`;
+    });
+
+    const result = clampTags(tags);
+    const joined = result.join(",");
+
+    // The joined form must fit within the limit.
+    expect(joined.length).toBeLessThanOrEqual(TAGS_MAX);
+    // Confirm we had to drop at least one tag to meet the joined-form limit.
+    expect(result.length).toBeLessThan(126);
   });
 });
 
