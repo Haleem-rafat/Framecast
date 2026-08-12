@@ -6,7 +6,7 @@ import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getObject, objectContentType, removeObjects } from "@/lib/storage";
-import { clampDescription } from "@/lib/youtube-limits";
+import { clampDescription, clampTitle } from "@/lib/youtube-limits";
 import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. */
@@ -36,11 +36,15 @@ export interface PublishResult {
  * fact derived from the video. `visibility` defaults to `"PRIVATE"` when
  * omitted — see the doc comment on `uploadToYouTube` for why the default
  * changed from an unconditional `"unlisted"` to something a caller actually
- * chooses. `scheduledFor` only has an effect together with a `visibility`
- * that isn't already `PRIVATE`: YouTube schedules a video by uploading it
- * private with `status.publishAt` set, so the upload itself always goes up
- * private regardless of what's requested here, and `publishAt` is what
- * flips it to the requested visibility later.
+ * chooses.
+ *
+ * `scheduledFor` is only accepted together with `visibility: "PUBLIC"`, and
+ * `publish()` refuses any other combination. YouTube's `status.publishAt` is
+ * not a "become whatever was asked for, later" field: it is only valid
+ * alongside `privacyStatus: private`, and when the timestamp arrives YouTube
+ * makes the video **public**, unconditionally. Scheduling to unlisted is not
+ * something the API can express at all. See `uploadToYouTube` for the full
+ * account and `publish()` for why the refusal is a refusal.
  */
 export interface PublishOptions {
   visibility?: PublishVisibility;
@@ -152,6 +156,40 @@ export class PublishService {
   ): Promise<PublishResult> {
     const visibility: PublishVisibility = opts.visibility ?? "PRIVATE";
 
+    // Scheduling is only honest for PUBLIC, so anything else is refused
+    // rather than accepted and quietly reinterpreted.
+    //
+    // YouTube's `status.publishAt` is valid only alongside `privacyStatus:
+    // private`, and what it does at the timestamp is make the video public.
+    // It carries no visibility of its own — there is no "schedule this to
+    // become unlisted" in the Data API, and no combination of fields that
+    // expresses one. So a caller asking to schedule an UNLISTED (or PRIVATE)
+    // publish is asking for something the platform cannot do.
+    //
+    // The three available answers were: silently upgrade it to public,
+    // silently ignore `scheduledFor` and publish immediately at the requested
+    // visibility, or refuse. Refusing is the only one that doesn't lie.
+    // Publishing public when unlisted was asked for is unrecoverable from
+    // this app — there is no unpublish path (see this class's doc comment) —
+    // and it is precisely the failure the `Publication.visibility` column
+    // would go on recording as UNLISTED, so nothing downstream would ever
+    // reveal the discrepancy either. Ignoring `scheduledFor` is milder but
+    // still publishes a video *now* that the caller explicitly asked to hold
+    // back until later. A ConflictError costs the caller one round trip and
+    // tells them exactly which of the two things they asked for has to give.
+    //
+    // Nothing in the app reaches this yet: `publish.action.ts` passes no
+    // `scheduledFor` at all. It is the CLI and whatever schedules publishes
+    // later that this is waiting for.
+    if (opts.scheduledFor && visibility !== "PUBLIC") {
+      throw new ConflictError(
+        `A scheduled publish always goes live as public — YouTube's publishAt ` +
+          `field cannot schedule anything else, and there is no way to schedule ` +
+          `a video to become ${visibility.toLowerCase()}. Ask for PUBLIC to ` +
+          `schedule it, or drop the schedule to publish it ${visibility.toLowerCase()} now.`,
+      );
+    }
+
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
       select: {
@@ -161,6 +199,10 @@ export class PublishService {
         generatedDescription: true,
         tags: true,
         status: true,
+        // Read purely to detect the finalizing window — see the refusal
+        // below, and `PipelineState.isFinalizing` in pipeline.service.ts for
+        // the same signal read for the same reason.
+        leaseExpiresAt: true,
         project: { select: { channelId: true } },
         script: {
           select: { activeVersion: { select: { content: true, sources: true } } },
@@ -181,6 +223,39 @@ export class PublishService {
     if (video.status !== "READY") {
       throw new ConflictError(
         `Only videos in READY can be published. This one is ${video.status.toLowerCase()}.`,
+      );
+    }
+
+    // READY is necessary but not sufficient, and this is the gap between the
+    // two. `render.service.ts` commits READY inside its own transaction the
+    // moment the encode succeeds, but `runPipeline` (pipeline-runner.ts) then
+    // goes on to run the `metadata` and `thumbnail` stages behind that status
+    // — an Anthropic call, an image generation and an FFmpeg composite, 30-60
+    // seconds during which `generatedTitle`, `tags` and the `Thumbnail` row
+    // this method reads all still land. Publishing inside that window uploads
+    // the operator's placeholder title with no tags and no thumbnail, and
+    // because a `Publication` row permanently blocks a retry (see this
+    // class's own doc comment) there is no second chance at it afterwards.
+    //
+    // The signal is `Video.leaseExpiresAt`, exactly as `isFinalizing` defines
+    // it in pipeline.service.ts: the worker — or the CLI's direct lease —
+    // holds and renews that lease for the whole of `runPipeline`, releasing it
+    // only once every stage has resolved. So a live lease on a READY video is
+    // proof those stages are still in flight, and a lapsed or absent one is
+    // proof they have already had their single automatic chance.
+    //
+    // Enforced here rather than in `publish-video-button.tsx` on purpose. The
+    // button is one of three ways in (the server action, the button, and the
+    // CLI in scripts/), the client cannot see `leaseExpiresAt` at all, and a
+    // client-side gate would in any case be racing the same 30-60 second
+    // window it is supposed to close. Nothing else re-derives this: the panel
+    // reads `isFinalizing` off `PipelineState` for its own purposes, and this
+    // is the enforcement copy.
+    if (video.leaseExpiresAt !== null && video.leaseExpiresAt.getTime() > Date.now()) {
+      throw new ConflictError(
+        "This video is still being finished off — its title, tags and thumbnail " +
+          "are generated after the render completes, and publishing now would " +
+          "upload it without them. Wait a moment and try again.",
       );
     }
 
@@ -222,7 +297,23 @@ export class PublishService {
       readStoredSources(video.script?.activeVersion?.sources),
       musicAsset?.prompt,
     );
-    const title = video.generatedTitle ?? video.title;
+    // Clamped here rather than trusted from upstream, because only one of the
+    // two branches has ever been clamped. `metadata.service.ts` runs
+    // `clampTitle` over `generatedTitle` before storing it, but
+    // `video.title` — the deliberate fallback for a video whose metadata
+    // stage never ran or failed — comes straight from `createVideoSchema`,
+    // which permits 120 characters against YouTube's cap of 100.
+    //
+    // An over-limit title is not a cosmetic problem on this path: `videos.insert`
+    // answers with a 400 *after* the whole file has been sent, the failure
+    // branch below marks the video FAILED, and the `Publication` row it
+    // deliberately leaves behind then blocks every retry (see this class's own
+    // doc comment on retries). So a title 101 characters long would cost the
+    // operator the video permanently, over something a trim fixes. Clamping is
+    // idempotent, so running it over an already-clamped `generatedTitle` costs
+    // nothing and means this call site — the only one that knows what is about
+    // to be sent — needs no branch.
+    const title = clampTitle(video.generatedTitle ?? video.title);
 
     // sourcesAndCredits goes *first*, generatedDescription second — the
     // reverse of "natural" reading order — specifically so that when the
@@ -614,12 +705,21 @@ export class PublishService {
    *
    * Scheduling piggybacks on privacy rather than being a separate YouTube
    * concept: the API has no "scheduled" `privacyStatus`, so a scheduled
-   * upload always goes up `private` with `status.publishAt` set, and YouTube
-   * itself flips it to the requested visibility at that timestamp. Sending
-   * `publishAt` alongside `public` or `unlisted` does not schedule anything —
-   * YouTube just publishes immediately and ignores the timestamp — so
-   * `scheduledFor` being set overrides whatever `visibility` was asked for,
-   * here, unconditionally.
+   * upload always goes up `private` with `status.publishAt` set, which is why
+   * `scheduledFor` overrides whatever `visibility` was asked for here,
+   * unconditionally. Sending `publishAt` alongside `public` or `unlisted`
+   * does not schedule anything — YouTube publishes immediately and ignores
+   * the timestamp.
+   *
+   * What YouTube does *when the timestamp arrives* is the part an earlier
+   * version of this comment got wrong. `publishAt` does not restore "the
+   * requested visibility": it makes the video **public**, full stop. The
+   * field carries no visibility of its own, and `privacyStatus: private` is
+   * the only value it is valid with, so there is nothing for YouTube to
+   * remember and nothing to flip back to. Scheduling a video to become
+   * *unlisted* is not expressible in this API. `publish()` refuses any
+   * scheduled publish that asks for a visibility other than PUBLIC rather
+   * than accepting it and quietly going public later — see its own comment.
    */
   private async uploadToYouTube(
     accessToken: string,

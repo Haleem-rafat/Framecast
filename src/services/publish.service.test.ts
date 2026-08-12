@@ -192,6 +192,18 @@ async function makePublishableVideo(
     /** `ScriptVersion.sources` — what a script generated through the
      *  structured-output schema stores instead of an inline SOURCES block. */
     scriptSources?: string[];
+    /** Skips the `writeRenderFile` upload and points `RenderJob.outputUrl` at
+     *  a URL no blob was ever written to.
+     *
+     *  Only for tests of a refusal that happens *before* `publish()` ever
+     *  reads the render — the finalizing gate and the scheduling gate below.
+     *  Both refuse while validating the video row, several steps ahead of the
+     *  `getRenderFile` call, so uploading ~26 bytes to Vercel Blob and
+     *  deleting them again in `afterEach` would prove nothing about either
+     *  one. A test that gets this wrong fails loudly (the publish reaches
+     *  `getRenderFile` and errors on a URL with nothing behind it) rather than
+     *  passing for the wrong reason. */
+    withoutRenderFile?: boolean;
   } = {},
 ): Promise<{ videoId: string; channelId: string; outputUrl: string }> {
   const channel = await channelService.connect(userId, {
@@ -233,8 +245,13 @@ async function makePublishableVideo(
   // The render itself lives in Vercel Blob, not Supabase — see
   // blob-render-storage.ts. `outputUrl` is the same value
   // `RenderService.render` would have written to `RenderJob.outputUrl`.
-  const outputUrl = await writeRenderFile(video.id, Buffer.from(`fake-rendered-mp4-${RUN}`));
-  publishedVideoIds.push(video.id);
+  let outputUrl: string;
+  if (opts.withoutRenderFile) {
+    outputUrl = `https://blob.invalid/renders/${video.id}.mp4`;
+  } else {
+    outputUrl = await writeRenderFile(video.id, Buffer.from(`fake-rendered-mp4-${RUN}`));
+    publishedVideoIds.push(video.id);
+  }
   await prisma.renderJob.create({
     data: { videoId: video.id, status: "SUCCEEDED", progress: 100, outputUrl },
   });
@@ -532,6 +549,78 @@ describe("publishService.publish — Gate 2", () => {
 
     const publications = await prisma.publication.count({ where: { videoId } });
     expect(publications).toBe(1); // still just the original FAILED row
+  });
+});
+
+/**
+ * The window between `render.service.ts` committing READY and
+ * `runPipeline` (pipeline-runner.ts) finishing the `metadata` and `thumbnail`
+ * stages that come after it. `Video.leaseExpiresAt` is the signal — the same
+ * one `PipelineState.isFinalizing` is defined on — so setting it directly is
+ * exactly what a worker mid-`runPipeline` looks like to this service.
+ */
+async function setLease(videoId: string, expiresAt: Date | null): Promise<void> {
+  await prisma.video.update({
+    where: { id: videoId },
+    data: { leaseExpiresAt: expiresAt },
+  });
+}
+
+describe("publishService.publish — the finalizing window", () => {
+  it("refuses a READY video whose lease is still live, and says why", async () => {
+    const { videoId } = await makePublishableVideo({ withoutRenderFile: true });
+    // A worker that has just committed READY and is now generating the title,
+    // tags and thumbnail. It renews this lease for the whole of runPipeline.
+    await setLease(videoId, new Date(Date.now() + 60_000));
+
+    const { fetchImpl, calls } = createUploadFetch();
+    const attempt = new PublishService(fetchImpl).publish(userId, videoId);
+
+    await expect(attempt).rejects.toThrow(ConflictError);
+    // The operator's next step has to be in the message: "wait" is
+    // actionable, "conflict" is not, and there is no other channel telling
+    // them the video is still being finished off.
+    await expect(attempt).rejects.toThrow(/Wait a moment/);
+
+    // Refused before the network and before the claim, so nothing about the
+    // video changed and publishing after the wait is still possible — a
+    // Publication row here would block every future attempt permanently (see
+    // PublishService's own doc comment on retries).
+    expect(calls).toHaveLength(0);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("READY");
+  });
+
+  it("refuses even though the video is READY and has everything else it needs", async () => {
+    // The whole point of the gate: READY, a channel, a render, a script — the
+    // video passes every other check in publish(), and would upload with the
+    // operator's placeholder title, no tags and no thumbnail if this one
+    // didn't exist.
+    const { videoId } = await makePublishableVideo({ withoutRenderFile: true });
+    await setLease(videoId, new Date(Date.now() + 60_000));
+
+    const before = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(before.status).toBe("READY");
+    expect(before.generatedTitle).toBeNull();
+    expect(before.tags).toEqual([]);
+
+    await expect(
+      new PublishService(createUploadFetch().fetchImpl).publish(userId, videoId),
+    ).rejects.toThrow(/still being finished off/);
+  });
+
+  it("allows a READY video whose lease has already lapsed", async () => {
+    const { videoId } = await makePublishableVideo({ withoutRenderFile: true });
+    // A lapsed lease means runPipeline has already had its single automatic
+    // chance at metadata and thumbnail — waiting longer would achieve nothing,
+    // so this must not be refused. Reaching getRenderFile is what proves the
+    // gate let it through; the URL points at no blob, so it fails *there*.
+    await setLease(videoId, new Date(Date.now() - 60_000));
+
+    await expect(
+      new PublishService(createUploadFetch().fetchImpl).publish(userId, videoId),
+    ).rejects.not.toThrow(/still being finished off/);
   });
 });
 
@@ -955,6 +1044,45 @@ describe("publishService.publish — metadata and visibility", () => {
     // A scheduled upload must go up private; publishAt is what flips it later.
     expect(body.status.privacyStatus).toBe("private");
     expect(body.status.publishAt).toBe(scheduledFor.toISOString());
+  });
+
+  it.each(["UNLISTED", "PRIVATE"] as const)(
+    "refuses to schedule a %s publish, which YouTube would make public anyway",
+    async (visibility) => {
+      const { videoId } = await makePublishableVideo({ withoutRenderFile: true });
+
+      const { fetchImpl, calls } = createUploadFetch();
+      const attempt = new PublishService(fetchImpl).publish(userId, videoId, {
+        visibility,
+        scheduledFor: new Date("2030-01-01T12:00:00.000Z"),
+      });
+
+      // status.publishAt is only valid with privacyStatus: private, and what
+      // it does at the timestamp is make the video *public*. There is no way
+      // to schedule a video to become unlisted, so accepting this and
+      // uploading it would publish something publicly that the caller
+      // explicitly asked to keep off search — with Publication.visibility
+      // still recording UNLISTED, so nothing downstream would ever say so.
+      await expect(attempt).rejects.toThrow(ConflictError);
+      await expect(attempt).rejects.toThrow(/always goes live as public/);
+
+      expect(calls).toHaveLength(0);
+      expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+    },
+  );
+
+  it("refuses to schedule when no visibility is given, rather than using the PRIVATE default", async () => {
+    // The default exists so an unspecified *immediate* publish leaks nothing.
+    // Silently applying it to a scheduled publish would mean "schedule this"
+    // alone resolved to a combination YouTube cannot honour, so the caller has
+    // to say PUBLIC out loud.
+    const { videoId } = await makePublishableVideo({ withoutRenderFile: true });
+
+    await expect(
+      new PublishService(createUploadFetch().fetchImpl).publish(userId, videoId, {
+        scheduledFor: new Date("2030-01-01T12:00:00.000Z"),
+      }),
+    ).rejects.toThrow(/always goes live as public/);
   });
 
   it("records a scheduled publish as SCHEDULED with no publishedAt, not as already published", async () => {
