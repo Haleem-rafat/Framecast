@@ -1,11 +1,12 @@
 import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
-import type { PublishVisibility } from "@/generated/prisma/enums";
+import type { PublishStatus, PublishVisibility } from "@/generated/prisma/enums";
 import { getRenderFile, RenderFileMissingError } from "@/lib/blob-render-storage";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { removeObjects } from "@/lib/storage";
+import { clampDescription } from "@/lib/youtube-limits";
 import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. */
@@ -222,9 +223,24 @@ export class PublishService {
       musicAsset?.prompt,
     );
     const title = video.generatedTitle ?? video.title;
-    const description = video.generatedDescription
-      ? [video.generatedDescription, sourcesAndCredits].filter(Boolean).join("\n\n")
+
+    // sourcesAndCredits goes *first*, generatedDescription second — the
+    // reverse of "natural" reading order — specifically so that when the
+    // combined text is over DESCRIPTION_MAX and clampDescription has to cut
+    // something, the cut lands in the narration summary's tail rather than
+    // in the Pixabay/music credit lines. Losing the end of a generated
+    // summary is a cosmetic loss; losing an attribution those licenses
+    // require is not. clampDescription always runs, even when there is no
+    // generatedDescription: buildDescription's own output is not otherwise
+    // bounded (an unusually long SOURCES list is the only realistic way it
+    // could exceed the limit), and this is the one call site that knows
+    // what's about to be sent to YouTube. See youtube-limits.ts's doc
+    // comment for why this is checked before the upload rather than
+    // discovered from its 400 response after the bytes are already sent.
+    const combinedDescription = video.generatedDescription
+      ? [sourcesAndCredits, video.generatedDescription].filter(Boolean).join("\n\n")
       : sourcesAndCredits;
+    const description = clampDescription(combinedDescription);
 
     // The gate itself, and it happens *before* the upload — not after, the
     // way the first draft of this method had it. `Publication.videoId` is
@@ -315,6 +331,26 @@ export class PublishService {
       throw error;
     }
 
+    // The upload has landed on YouTube either way, but "landed" and "live"
+    // are not the same thing for a scheduled publish: it went up `private`
+    // with a future `publishAt` (see uploadToYouTube), so nobody can see it
+    // yet. Recording Publication.status as PUBLISHED and stamping
+    // `publishedAt: new Date()` here regardless would tell any dashboard or
+    // analytics feature built on this table that a video scheduled for next
+    // month already shipped today. `publishedAt` specifically means "when
+    // this went live" — SCHEDULED with a null `publishedAt` is what keeps
+    // that column honest until YouTube's own scheduler actually flips it.
+    //
+    // Video.status has no equivalent SCHEDULED value (see VideoStatus in
+    // schema.prisma) and doesn't need one: from Framecast's side, the
+    // video's lifecycle question is "has this been handed off to YouTube,"
+    // which is unconditionally true the instant the upload succeeds — there
+    // is no re-render or retry path for it either way (see this class's own
+    // doc comment), scheduled or not. So Video.status still becomes
+    // PUBLISHED here; only the Publication row — the one that actually
+    // models a YouTube-side publish state — reflects the wait.
+    const publicationStatus: PublishStatus = opts.scheduledFor ? "SCHEDULED" : "PUBLISHED";
+
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.video.updateMany({
         where: { id: videoId, userId, deletedAt: null, status: "READY" },
@@ -332,13 +368,19 @@ export class PublishService {
           videoId,
           from: "READY",
           to: "PUBLISHED",
-          message: "Published to YouTube",
+          message: opts.scheduledFor
+            ? `Uploaded to YouTube, scheduled to go live at ${opts.scheduledFor.toISOString()}`
+            : "Published to YouTube",
         },
       });
 
       await tx.publication.update({
         where: { id: publication.id },
-        data: { status: "PUBLISHED", youtubeVideoId, publishedAt: new Date() },
+        data: {
+          status: publicationStatus,
+          youtubeVideoId,
+          publishedAt: opts.scheduledFor ? null : new Date(),
+        },
       });
     });
 

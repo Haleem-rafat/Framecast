@@ -7,6 +7,7 @@ import type { VideoStatus } from "@/generated/prisma/enums";
 import { deleteRenderFile, renderBlobPathname, writeRenderFile } from "@/lib/blob-render-storage";
 import { prisma } from "@/lib/prisma";
 import { getObject, putObject, removeObjects, storagePath } from "@/lib/storage";
+import { DESCRIPTION_MAX } from "@/lib/youtube-limits";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import type { FetchLike } from "@/services/publish.service";
@@ -781,5 +782,67 @@ describe("publishService.publish — metadata and visibility", () => {
     // A scheduled upload must go up private; publishAt is what flips it later.
     expect(body.status.privacyStatus).toBe("private");
     expect(body.status.publishAt).toBe(scheduledFor.toISOString());
+  });
+
+  it("records a scheduled publish as SCHEDULED with no publishedAt, not as already published", async () => {
+    const { videoId } = await makePublishableVideo();
+    const scheduledFor = new Date("2030-01-01T12:00:00.000Z");
+
+    const { fetchImpl } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      scheduledFor,
+    });
+
+    // The bytes are on YouTube, but nobody can see them until publishAt
+    // arrives — publishedAt means "when this went live", and it hasn't yet.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("SCHEDULED");
+    expect(publication.publishedAt).toBeNull();
+
+    // The video itself has genuinely left Framecast's pipeline the moment
+    // the upload succeeds — there's no VideoStatus for "uploaded but not yet
+    // live", and nothing here ever re-renders or retries it either way.
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+  });
+
+  it("records an immediate publish as PUBLISHED with a publishedAt timestamp", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const before = new Date();
+    const { fetchImpl } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("PUBLISHED");
+    expect(publication.publishedAt).not.toBeNull();
+    expect(publication.publishedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
+  });
+
+  it("clamps the combined description to YouTube's limit without losing the credits", async () => {
+    const { videoId } = await makePublishableVideo();
+    // Comfortably over DESCRIPTION_MAX even before the sources/Pixabay block
+    // is added on top, so this exercises the clamp rather than just missing it.
+    const nearLimitDescription = "word ".repeat(1200);
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { generatedDescription: nearLimitDescription },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect((body.snippet.description as string).length).toBeLessThanOrEqual(DESCRIPTION_MAX);
+    // sourcesAndCredits is placed first specifically so a cut lands in the
+    // narration summary's tail, never in the licensing-required attribution.
+    expect(body.snippet.description).toContain("Pixabay");
+    expect(body.snippet.description).toContain("SOURCES");
+
+    // What's persisted must match what YouTube actually received.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.description!.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
+    expect(publication.description).toBe(body.snippet.description);
   });
 });
