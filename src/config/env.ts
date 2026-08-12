@@ -84,6 +84,9 @@ const serverEnvSchema = z.object({
   /** Vercel AI Gateway. Optional: a stored ANTHROPIC credential takes precedence. */
   AI_GATEWAY_API_KEY: z.string().min(1).optional(),
   AI_SCRIPT_MODEL: z.string().min(1).default("anthropic/claude-sonnet-5"),
+  /** Image model for thumbnails and logos, through the same gateway as
+   *  AI_SCRIPT_MODEL. */
+  AI_IMAGE_MODEL: z.string().min(1).default("openai/gpt-image-1"),
 
   /** Stock footage search. Platform-level, not per-operator — AiProviderType has no member for either. */
   PEXELS_API_KEY: z.string().min(1).optional(),

@@ -148,3 +148,15 @@ export interface MusicTrack {
 export interface MusicProvider {
   search(query: string, count: number): Promise<MusicTrack[]>;
 }
+
+export interface GeneratedImage {
+  data: Buffer;
+  model: string;
+}
+
+export interface ImageProvider {
+  generate(input: {
+    prompt: string;
+    aspectRatio: "16:9" | "1:1";
+  }): Promise<GeneratedImage>;
+}
