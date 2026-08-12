@@ -63,27 +63,44 @@ export class MetadataService {
       // One retry with the limits restated, because a model that overran once
       // usually complies when told exactly what it broke — and a retry is far
       // cheaper than a clamped title that reads as truncated.
-      let generated = await this.provider.generateMetadata({
+      const generated = await this.provider.generateMetadata({
         script,
         tone: brand.tone,
         niche: brand.niche,
         apiKey,
       });
 
+      // The first response is already usable — over-limit is exactly what
+      // clampTitle/clampDescription/clampTags exist to fix — so a failure on
+      // the retry must fall back to clamping it rather than propagate to the
+      // top-level catch below. Only the *first* call failing may produce
+      // `null`: a retry that never improves on an already-clampable result
+      // must never turn that result into nothing, which is precisely the
+      // moment a flaky provider (a network blip, a rate limit) would do the
+      // most damage.
+      let best = generated;
       if (!withinLimits(generated)) {
-        generated = await this.provider.generateMetadata({
-          script,
-          tone: brand.tone,
-          niche: brand.niche,
-          apiKey,
-          limitsReminder: LIMITS_REMINDER,
-        });
+        try {
+          best = await this.provider.generateMetadata({
+            script,
+            tone: brand.tone,
+            niche: brand.niche,
+            apiKey,
+            limitsReminder: LIMITS_REMINDER,
+          });
+        } catch (retryError) {
+          console.error(
+            `Metadata retry failed for video ${videoId}, falling back to the ` +
+              `clamped first response: ` +
+              (retryError instanceof Error ? retryError.message : String(retryError)),
+          );
+        }
       }
 
       const metadata: VideoMetadata = {
-        title: clampTitle(generated.title),
-        description: clampDescription(generated.description),
-        tags: clampTags(generated.tags),
+        title: clampTitle(best.title),
+        description: clampDescription(best.description),
+        tags: clampTags(best.tags),
       };
 
       await prisma.video.update({

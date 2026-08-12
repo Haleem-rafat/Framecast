@@ -100,6 +100,31 @@ describe("MetadataService.generate", () => {
     expect(video.generatedTitle).toBe("A title that fits");
   });
 
+  it("falls back to the clamped first response when the retry itself fails", async () => {
+    // The first call is over-limit but still usable — clamping fixes exactly
+    // this. A retry that then fails outright must not discard it: the video
+    // should end up with clamped metadata from the first response, not none.
+    const generateMetadata = vi
+      .fn()
+      .mockResolvedValueOnce({
+        title: `${"word ".repeat(40)}end`,
+        description: "Body",
+        tags: [],
+      })
+      .mockRejectedValueOnce(new Error("gateway down"));
+
+    const result = await new MetadataService({ generateMetadata }).generate(
+      userId,
+      videoId,
+    );
+
+    expect(generateMetadata).toHaveBeenCalledTimes(2);
+    expect(result).not.toBeNull();
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.generatedTitle).not.toBeNull();
+    expect(video.generatedTitle!.length).toBeLessThanOrEqual(TITLE_MAX);
+  });
+
   it("returns null and leaves the video publishable when generation fails", async () => {
     const service = new MetadataService({
       generateMetadata: async () => {
