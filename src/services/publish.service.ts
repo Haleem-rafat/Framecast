@@ -2,7 +2,7 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import type { PublishStatus, PublishVisibility } from "@/generated/prisma/enums";
-import { getRenderFile, RenderFileMissingError } from "@/lib/render-storage";
+import { deleteRenderFile, getRenderFile, RenderFileMissingError } from "@/lib/render-storage";
 import { ConflictError, InternalError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getObject, objectContentType, removeObjects } from "@/lib/storage";
@@ -511,6 +511,12 @@ export class PublishService {
     // happens if this fails.
     await this.reclaimClipStorage(userId, videoId);
 
+    // Same placement and the same reasoning as reclaimClipStorage above: the
+    // transaction has committed, the video is genuinely PUBLISHED, and a
+    // failure here must never unwind that. See reclaimRenderStorage's own
+    // doc comment for why this runs here and nowhere else.
+    await this.reclaimRenderStorage(videoId, outputUrl);
+
     return { youtubeVideoId };
   }
 
@@ -699,6 +705,29 @@ export class PublishService {
         // losing the operator-visible copy too isn't worth a second
         // failure path here.
       }
+    }
+  }
+
+  /**
+   * Deletes the local render once YouTube has confirmed the upload.
+   *
+   * The video is on YouTube; the copy on disk is redundant, and at ~170MB
+   * each on a 40GB machine, keeping every published one is the difference
+   * between a disk that stabilises and one that fills at roughly 140 videos.
+   *
+   * Best-effort, for the same reason `reclaimClipStorage` above is: this runs
+   * after the publish has already succeeded, and nothing here is permitted to
+   * turn a live video into a failed one. A render that is already gone — what
+   * a retried publish meets — is not an error.
+   */
+  private async reclaimRenderStorage(videoId: string, location: string): Promise<void> {
+    try {
+      await deleteRenderFile(location);
+    } catch (error) {
+      console.error(
+        `Could not reclaim the render for video ${videoId} at ${location}:`,
+        error,
+      );
     }
   }
 

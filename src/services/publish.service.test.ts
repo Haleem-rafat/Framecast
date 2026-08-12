@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { VideoStatus } from "@/generated/prisma/enums";
-import { deleteRenderFile, renderPath, writeRenderFile } from "@/lib/render-storage";
+import { deleteRenderFile, renderPath, statRenderFile, writeRenderFile } from "@/lib/render-storage";
 import { prisma } from "@/lib/prisma";
 import { getObject, putObject, removeObjects, storagePath } from "@/lib/storage";
 import { DESCRIPTION_MAX } from "@/lib/youtube-limits";
@@ -486,6 +486,26 @@ describe("publishService.publish — Gate 2", () => {
 
     const events = await prisma.videoStatusEvent.findMany({ where: { videoId } });
     expect(events.map((e) => `${e.from}->${e.to}`)).toContain("READY->PUBLISHED");
+  });
+
+  it("deletes the local render once YouTube has the video", async () => {
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    const { videoId, outputUrl } = await makePublishableVideo({});
+
+    await service.publish(userId, videoId, {});
+
+    expect(await statRenderFile(outputUrl)).toBeNull();
+  });
+
+  it("keeps the render when the publish failed", async () => {
+    const service = new PublishService(createUploadFetch({ failUpload: true }).fetchImpl);
+    const { videoId, outputUrl } = await makePublishableVideo({});
+
+    await expect(service.publish(userId, videoId, {})).rejects.toThrow();
+
+    // A failed publish must leave the render in place, or a retry has nothing
+    // to upload and the video is unrecoverable.
+    expect(await statRenderFile(outputUrl)).not.toBeNull();
   });
 
   it("a failed upload sets the video and its Publication FAILED — the claim row is kept, not deleted", async () => {
