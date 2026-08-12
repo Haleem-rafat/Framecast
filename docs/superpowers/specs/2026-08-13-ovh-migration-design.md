@@ -135,20 +135,23 @@ publishing pack can legitimately store a PNG where a JPEG was expected. Inferrin
 the type from the file extension would work today and break silently the first
 time it did not.
 
-### `signedUrl()` — the one interface that cannot be preserved literally
+### `signedUrl()` is deleted rather than reimplemented
 
-Today this returns a Supabase URL the browser fetches directly, with the
-signature carrying the authorisation. A local disk has no equivalent, and
-changing every caller to route through an authenticated fetch would spread this
-migration across the UI.
+This returns a Supabase URL the browser fetches directly, with the signature
+carrying the authorisation. A local disk has no equivalent.
 
-Instead `signedUrl()` returns a URL to a new app route carrying a short-lived
-HMAC token: `/api/storage/<path>?exp=<unix>&sig=<hmac>`. A route validates the
-expiry and signature, then streams the file. The signature *is* the
-authorisation, exactly as before, so the semantics callers rely on are unchanged
-and the function keeps its signature.
+It has **exactly one non-test caller**: `resolvePreviewAsset()` in
+`src/app/(dashboard)/videos/[id]/page.tsx:44`, which mints a one-hour URL for the
+narration audio preview. That changes the calculus. Rather than invent a signed
+-token scheme to preserve an interface with a single user, the narration follows
+the route the render already takes: a new `/api/videos/[id]/narration` endpoint
+that checks the session and the video's ownership, then streams the file.
 
-`/api/videos/[id]/file` already establishes this pattern for renders.
+`/api/videos/[id]/file` already establishes this pattern, and its own doc comment
+argues for it — a route resolving the object server-side from a video id cannot
+be used by anyone who merely obtained a URL. Replacing a bearer-token URL with a
+session check is a security improvement, not merely a port, and it deletes the
+`SIGNED_URL_TTL_SECONDS` expiry problem the page comments already apologise for.
 
 ### `src/lib/blob-render-storage.ts` — Vercel Blob to local disk
 
