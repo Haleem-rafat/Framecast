@@ -5,7 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/prisma";
-import { removeObjects } from "@/lib/storage";
+import { objectContentType, removeObjects } from "@/lib/storage";
 import { projectService } from "@/services/project.service";
 import { ThumbnailService } from "@/services/thumbnail.service";
 import { videoService } from "@/services/video.service";
@@ -54,14 +54,25 @@ function succeedingSpawner() {
   });
 }
 
-function fakeImageProvider(bytes = "raw-image-bytes") {
+function fakeImageProvider(bytes: string | Buffer = "raw-image-bytes") {
   return {
     generate: vi.fn().mockResolvedValue({
-      data: Buffer.from(bytes),
+      data: Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes),
       model: "test/image-model",
     }),
   };
 }
+
+/** The real 8-byte PNG magic number, padded with filler so the buffer isn't
+ *  suspiciously tiny. Passed as a `Buffer` rather than a string to
+ *  `fakeImageProvider`: `Buffer.from(str, "utf8")` — the string overload's
+ *  default — re-encodes any code point above 0x7f as multiple UTF-8 bytes,
+ *  which corrupts exactly the high bytes (0x89, 0x8a) this signature needs
+ *  to survive intact. */
+const PNG_BYTES = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.from(`fake-png-body-${RUN}`),
+]);
 
 async function makeVideoWithScript() {
   const project = await projectService.create(userId, { name: `thumb-${RUN}` });
@@ -170,6 +181,29 @@ describe("ThumbnailService.generate", () => {
     expect(path).toBeTruthy();
     const thumbnail = await prisma.thumbnail.findUniqueOrThrow({ where: { videoId } });
     expect(thumbnail.activeVersionId).not.toBeNull();
+  });
+
+  it("stores the raw fallback image under its real content type, not a guessed one", async () => {
+    const { spawner } = createSpawner(async (child) => {
+      child.emit("close", 1);
+    });
+
+    // The provider's bytes carry a real PNG signature this time, unlike the
+    // opaque ASCII fixture the other tests use — that fixture matches no
+    // known image signature, so every other test's fallback path exercises
+    // only detectImageFormat's default branch, never its PNG branch.
+    const path = await new ThumbnailService(fakeImageProvider(PNG_BYTES), spawner).generate(
+      userId,
+      videoId,
+    );
+    storedPaths.push(path!);
+
+    // Not just that the path exists: what Supabase actually recorded as the
+    // object's content type must match the bytes it received, or a later
+    // reader (e.g. Task 8's YouTube upload) trusting the declared type over
+    // the bytes gets misled the same way an unconditional "image/jpeg"
+    // fallback would have misled it.
+    expect(await objectContentType(path!)).toBe("image/png");
   });
 
   it("returns null for a video with no approved script", async () => {

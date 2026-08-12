@@ -1,11 +1,12 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { prisma } from "@/lib/prisma";
-import { putObject, storagePath } from "@/lib/storage";
+import { putObject, removeObjects, storagePath } from "@/lib/storage";
 import { buildThumbnailArgs } from "@/lib/thumbnail-command";
 import { brandService } from "@/services/brand.service";
 import { gatewayImageProvider } from "@/services/providers/image.provider";
@@ -38,7 +39,11 @@ function buildHeadline(title: string): string {
   return title.split(/\s+/).slice(0, HEADLINE_WORDS).join(" ");
 }
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+// The full 8-byte PNG signature (the first 4 bytes alone — 0x89 'P' 'N' 'G' —
+// are already enough to identify PNG in practice, but the format's own spec
+// defines all 8 as the magic number, and checking only half of it for no
+// benefit was an easy thing to tighten once it was pointed out).
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /**
  * The composited path always produces real JPEG — `buildThumbnailArgs`
@@ -50,9 +55,9 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
  * PNG bytes under an `image/jpeg` content-type — harmless to Supabase,
  * which stores whatever it is given, but a landmine for whatever reads
  * `ThumbnailVersion.imageUrl` next (Task 8's YouTube upload) and trusts the
- * declared type instead of re-sniffing it. A four-byte signature check is
- * cheap insurance; anything that isn't recognisably PNG — real JPEG bytes,
- * or this file's own non-image test fixtures — keeps the original
+ * declared type instead of re-sniffing it. A signature check is cheap
+ * insurance; anything that isn't recognisably PNG — real JPEG bytes, or
+ * this file's own non-image test fixtures — keeps the original
  * jpg/`image/jpeg` default.
  */
 function detectImageFormat(bytes: Buffer): { contentType: string; extension: string } {
@@ -149,7 +154,20 @@ export class ThumbnailService {
 
       return await this.storeVersion(videoId, bytes, format, prompt, image.model);
     } finally {
-      await rm(tempDir, { recursive: true, force: true });
+      // Caught, not awaited bare: a `finally` block's own throw replaces
+      // whatever the `try` block returned, so a temp-dir cleanup failure —
+      // `force: true` only swallows ENOENT, not e.g. a transient EBUSY —
+      // would turn an already-committed `ThumbnailVersion` and already
+      // uploaded bytes into a `null` return, telling the caller generation
+      // failed when it had, in fact, already succeeded. Best-effort cleanup
+      // logged for whoever is debugging a filling disk, never allowed to
+      // override a result that already happened.
+      await rm(tempDir, { recursive: true, force: true }).catch((error) => {
+        console.error(
+          `Could not remove temp dir ${tempDir}: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      });
     }
   }
 
@@ -165,16 +183,38 @@ export class ThumbnailService {
    * open for the length of the upload, and `voiceover.service.ts` already
    * documents where that leads against a remote database.
    *
-   * That ordering leaves a real, accepted race: two concurrent
-   * regenerations for the same video can both read the same "latest
-   * version" before either writes, upload to two different objects, and
-   * then collide on `ThumbnailVersion`'s `[thumbnailId, version]` unique
-   * constraint when both try to insert the same next version number. One
-   * insert wins; the other throws, is caught by `generate()`'s outer
-   * try/catch, and returns `null` — which is the correct outcome for an
-   * enhancement that must never fail the video, not a bug to design away
-   * with heavier locking. `script.service.ts` accepts the identical race on
-   * `ScriptVersion` for the identical reason.
+   * The object key includes a random token precisely because that ordering
+   * is not atomic with the version-number read above it: two concurrent
+   * regenerations for the same video can both read "latest version 0"
+   * before either writes. A key built from the version number alone
+   * (`thumbnail-001.jpg`) would then have both calls uploading to the
+   * *same* path — `putObject` uploads with `upsert: true`, so the second
+   * write silently overwrites the first, including after the first call's
+   * transaction already committed a `ThumbnailVersion` row whose `prompt`
+   * and `model` describe the bytes it uploaded, not the bytes now sitting
+   * at that path. That breaks the exact guarantee `ThumbnailVersion.prompt`
+   * exists for — that a version is reproducible — and no unique constraint
+   * catches it, because the constraint is on `[thumbnailId, version]`, a
+   * property of the row, not of the object it points at. Randomising the
+   * key removes the collision at the root: every generation now owns a
+   * path nothing else will ever write to, so whichever `ThumbnailVersion`
+   * row commits is guaranteed to describe the bytes actually at its
+   * `imageUrl`. The two calls can still collide on inserting the same
+   * `version` number — one throws on the unique constraint, is caught by
+   * `generate()`'s outer try/catch, and returns `null`, same as
+   * `script.service.ts` accepts for `ScriptVersion` — but that race is now
+   * confined to "did this regeneration count as version 3 or 4", never to
+   * "which regeneration's bytes does version 3 actually contain".
+   *
+   * A losing call's upload is not wasted for nothing, though: unlike
+   * `voiceover.service.ts`'s fixed key, which self-heals because the next
+   * successful write reuses the same path, a randomised key is never
+   * reused, so a losing call — or any call whose transaction fails for an
+   * unrelated reason after the upload succeeds — leaves that object
+   * permanently orphaned unless something deletes it. The `catch` below
+   * does exactly that: best-effort, and swallowed on its own failure,
+   * because losing the cleanup must never turn into losing the original
+   * error the caller (`generate()`) needs to log and turn into `null`.
    */
   private async storeVersion(
     videoId: string,
@@ -194,23 +234,31 @@ export class ThumbnailService {
     const objectPath = storagePath(
       videoId,
       "thumbnails",
-      `thumbnail-${String(version).padStart(3, "0")}.${format.extension}`,
+      `thumbnail-${String(version).padStart(3, "0")}-${randomUUID()}.${format.extension}`,
     );
 
     await putObject(objectPath, bytes, format.contentType);
 
-    return prisma.$transaction(async (tx) => {
-      const created = await tx.thumbnailVersion.create({
-        data: { thumbnailId: thumbnail.id, version, imageUrl: objectPath, prompt, model },
-      });
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const created = await tx.thumbnailVersion.create({
+          data: { thumbnailId: thumbnail.id, version, imageUrl: objectPath, prompt, model },
+        });
 
-      await tx.thumbnail.update({
-        where: { id: thumbnail.id },
-        data: { activeVersionId: created.id },
-      });
+        await tx.thumbnail.update({
+          where: { id: thumbnail.id },
+          data: { activeVersionId: created.id },
+        });
 
-      return objectPath;
-    });
+        return objectPath;
+      });
+    } catch (error) {
+      await removeObjects([objectPath]).catch(() => {
+        // Best-effort: an orphaned object is a storage-cleanup problem, not
+        // a reason to hide the transaction failure below from the caller.
+      });
+      throw error;
+    }
   }
 
   private runFfmpeg(args: string[]): Promise<void> {

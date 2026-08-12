@@ -202,3 +202,28 @@ export async function objectSizeBytes(path: string): Promise<number | null> {
 
   return data?.find((item) => item.name === filename)?.metadata?.size ?? null;
 }
+
+/**
+ * The content-type Supabase actually stored for an object — as opposed to
+ * whatever a caller believes it uploaded — read back the same way
+ * `objectSizeBytes` reads size, since `list()` is the only call that
+ * surfaces either. Exists so a test can assert on the declared type of what
+ * `putObject` wrote (see thumbnail.service.test.ts's PNG-fallback case)
+ * rather than only on the bytes, which would pass even if the content-type
+ * argument were wrong.
+ */
+export async function objectContentType(path: string): Promise<string | null> {
+  const lastSlash = path.lastIndexOf("/");
+  const folder = path.slice(0, lastSlash);
+  const filename = path.slice(lastSlash + 1);
+
+  const { data, error } = await client.storage
+    .from(env.SUPABASE_STORAGE_BUCKET)
+    .list(folder, { search: filename });
+
+  if (error) {
+    throw new InternalError(`Could not list ${folder}: ${error.message}`);
+  }
+
+  return data?.find((item) => item.name === filename)?.metadata?.mimetype ?? null;
+}
