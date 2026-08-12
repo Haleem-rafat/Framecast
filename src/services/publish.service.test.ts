@@ -746,10 +746,21 @@ describe("publishService.publish — clip storage reclaim", () => {
 /**
  * Attaches an active thumbnail to a video, writing a real object to the bucket
  * so `publish()` has something to download and send.
+ *
+ * Defaults to a JPEG, which is what `ThumbnailService`'s composited path
+ * always produces. A test exercising the PNG fallback path (composite
+ * failed — see `detectImageFormat` in thumbnail.service.ts) can pass
+ * `format: "png"` to write a `.png` object with an `image/png` content-type
+ * instead, so `applyThumbnail`'s `objectContentType` read-back is actually
+ * exercised against both shapes, not just the common one.
  */
-async function giveVideoAThumbnail(videoId: string): Promise<string> {
-  const objectPath = storagePath(videoId, "thumbnails", "thumbnail-001.jpg");
-  await putObject(objectPath, Buffer.from(`thumb-${RUN}`), "image/jpeg");
+async function giveVideoAThumbnail(
+  videoId: string,
+  format: "jpg" | "png" = "jpg",
+): Promise<string> {
+  const contentType = format === "png" ? "image/png" : "image/jpeg";
+  const objectPath = storagePath(videoId, "thumbnails", `thumbnail-001.${format}`);
+  await putObject(objectPath, Buffer.from(`thumb-${RUN}`), contentType);
   clipStoragePaths.push(objectPath);
 
   const thumbnail = await prisma.thumbnail.create({ data: { videoId } });
@@ -785,6 +796,41 @@ describe("publishService.publish — thumbnail", () => {
     expect(thumbnailCall).toBeGreaterThan(-1);
     expect(thumbnailCall).toBeGreaterThan(insertCall);
     expect(calls[thumbnailCall].url).toContain("videoId=");
+
+    // Publication.thumbnailApplied is the entire point of this task — a
+    // console.error the operator never sees is not a report. A successful
+    // attach must record `true`, not just silently succeed at the network
+    // call.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailApplied).toBe(true);
+  });
+
+  it("sends the stored content-type, not a hard-coded assumption", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId, "jpg");
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const thumbnailCall = calls.find((call) => call.url.includes("thumbnails/set"));
+    const headers = new Headers(thumbnailCall!.init!.headers);
+    expect(headers.get("Content-Type")).toBe("image/jpeg");
+  });
+
+  it("sends image/png for the composite-failure fallback's PNG bytes", async () => {
+    // The path `detectImageFormat` in thumbnail.service.ts exists for:
+    // FFmpeg compositing failed, so the raw image-provider bytes were stored
+    // as-is, which may be PNG rather than the usual composited JPEG. Sending
+    // a hard-coded `image/jpeg` here would misdeclare the body's actual type.
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId, "png");
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const thumbnailCall = calls.find((call) => call.url.includes("thumbnails/set"));
+    const headers = new Headers(thumbnailCall!.init!.headers);
+    expect(headers.get("Content-Type")).toBe("image/png");
   });
 
   it("leaves the video published when the channel is unverified (403)", async () => {
@@ -804,6 +850,9 @@ describe("publishService.publish — thumbnail", () => {
 
     const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
     expect(publication.status).toBe("PUBLISHED");
+    // The attach genuinely failed — this must read false, not just default
+    // to it by the write never having fired at all.
+    expect(publication.thumbnailApplied).toBe(false);
   });
 
   it("survives any other thumbnail failure just as completely", async () => {
@@ -817,6 +866,9 @@ describe("publishService.publish — thumbnail", () => {
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("PUBLISHED");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailApplied).toBe(false);
   });
 
   it("skips the thumbnail call entirely when the video has none", async () => {
@@ -828,6 +880,11 @@ describe("publishService.publish — thumbnail", () => {
     // 50 quota units, against the same daily allowance as the 1,600 the upload
     // itself costs — not free, and not worth spending on nothing.
     expect(calls.some((call) => call.url.includes("thumbnails/set"))).toBe(false);
+
+    // No thumbnail existed to attach, so this must read false, not the
+    // "attached" default a missing write would be indistinguishable from.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailApplied).toBe(false);
   });
 });
 
