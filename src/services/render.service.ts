@@ -126,7 +126,13 @@ const CANCEL_CHECK_INTERVAL_MS = 1000;
  * once the buffer crosses this size, and always on process exit. */
 const STDERR_FLUSH_BYTES = 4000;
 
-function defaultSpawner(command: string, args: string[]): ChildProcessWithoutNullStreams {
+/** Exported so ThumbnailService (thumbnail.service.ts) spawns FFmpeg the same
+ *  way this service does, rather than each defining its own thin wrapper
+ *  around `child_process.spawn`. */
+export function defaultSpawner(
+  command: string,
+  args: string[],
+): ChildProcessWithoutNullStreams {
   return spawn(command, args);
 }
 
