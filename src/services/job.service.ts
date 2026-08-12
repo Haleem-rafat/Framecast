@@ -14,7 +14,7 @@ export const HEARTBEAT_SECONDS = 30;
 export const MAX_ATTEMPTS = 3;
 
 /**
- * The statuses `release(..., "succeeded")` is allowed to move a video out of.
+ * The statuses any branch of `release` is allowed to move a video out of.
  * `render.service.ts` sets `READY` the moment the encode finishes, well
  * before `runPipeline` has actually run the `metadata`/`thumbnail` stages
  * that come after it — see `PipelineState.isFinalizing`
@@ -23,11 +23,14 @@ export const MAX_ATTEMPTS = 3;
  * was when this run started. In particular, an operator can publish a
  * `READY` video during that window: `publish()` (publish.service.ts) reads
  * `READY` as license to move on to `PUBLISHED`, same as it always has, since
- * `Video.status` is the only signal it has ever consulted. `release` must
- * not treat "the render pipeline finished" as license to stamp `READY` back
- * over a video an entirely different, legitimate process has since moved
- * past — see `release`'s own comment on the specific silent-no-op this set
- * exists to enable.
+ * `Video.status` is the only signal it has ever consulted. Whatever outcome
+ * this worker is reporting — succeeded, failed, or cancelled — moving a
+ * video that has already left this set is not its call to make: it would be
+ * overwriting a more recent, more specific transition with a stale one. Every
+ * branch below therefore no-ops on `status` once `from` falls outside this
+ * set, rather than only the `succeeded` branch guarding it — see each
+ * branch's own comment on why that specifically has to be a silent no-op,
+ * not a thrown conflict.
  */
 const PRE_PUBLISH_STATUSES: ReadonlySet<VideoStatus> = new Set([
   "GENERATING",
@@ -211,6 +214,35 @@ export class JobService {
     }
 
     if (outcome === "failed") {
+      // Same guard, same reasoning, as `succeeded` above — and the branch
+      // that actually turns the underlying race into its worst outcome.
+      // `succeeded` reading a stale `from = READY` and losing the race to a
+      // concurrent `publish()` commit throws `ConflictError` (the guarded
+      // update below matches nothing); `worker/index.ts`'s catch block
+      // reacts to *any* thrown error from a run it just believed had
+      // succeeded by calling `release` a second time with outcome
+      // `"failed"`. Without this guard, that second call would re-read
+      // `from` fresh — now genuinely `PUBLISHED` — and its own `where:
+      // { status: from }` would match, overwriting a video that is live on
+      // YouTube with `FAILED`. This doesn't close the underlying
+      // read-then-write gap (a documented, tracked follow-up), but it does
+      // sever the one path by which that gap could ever reach a published
+      // video's status — the worst it can do now is leave a stray
+      // `ConflictError` in the worker's log.
+      if (!PRE_PUBLISH_STATUSES.has(from)) {
+        // Clears `cancelRequestedAt` too, even though the guarded write just
+        // below (the normal, pre-publish path) does not: a stray cancel
+        // request has nothing left to mean once this worker's run is
+        // resolving against a video some other process has already moved
+        // past `READY` — same reasoning as the `succeeded`/`cancelled`
+        // no-ops either side of this one.
+        await prisma.video.updateMany({
+          where: { id: videoId, deletedAt: null },
+          data: { leaseExpiresAt: null, cancelRequestedAt: null },
+        });
+        return;
+      }
+
       const { count } = await prisma.video.updateMany({
         where: { id: videoId, deletedAt: null, status: from },
         data: {
@@ -235,7 +267,18 @@ export class JobService {
     // worker is the only thing that can act on it (it owns the FFmpeg child
     // process). This is where it does — and it clears the flag it's acting
     // on, so the video is a plain, retryable FAILED afterward rather than
-    // one still flagged as "please cancel me".
+    // one still flagged as "please cancel me". Same guard as the other two
+    // branches, and for the same reason: a cancellation this worker is
+    // reporting must not overwrite a video some other, more recent process
+    // has already moved past the pre-publish states.
+    if (!PRE_PUBLISH_STATUSES.has(from)) {
+      await prisma.video.updateMany({
+        where: { id: videoId, deletedAt: null },
+        data: { leaseExpiresAt: null, cancelRequestedAt: null },
+      });
+      return;
+    }
+
     const message = reason ?? "Cancelled by operator";
     const { count } = await prisma.video.updateMany({
       where: { id: videoId, deletedAt: null, status: from },

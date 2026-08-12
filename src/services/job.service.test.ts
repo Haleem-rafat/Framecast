@@ -314,6 +314,63 @@ describe("jobService.release", () => {
     expect(readyEvents).toBe(0);
   });
 
+  it("does not demote a PUBLISHED video to FAILED via a delayed release(\"failed\")", async () => {
+    // The worse half of the same window: `release("succeeded")` reading a
+    // stale `from = READY` and losing the millisecond race to a concurrent
+    // publish() commit throws ConflictError (documented, tracked, not fixed
+    // here — see this file's own note). worker/index.ts's catch block reacts
+    // to that by calling release again with outcome "failed". Without this
+    // guard, that second call re-reads `from` fresh — now genuinely
+    // PUBLISHED — and would overwrite a video that is live on YouTube with
+    // FAILED. This test skips straight to the dangerous call rather than
+    // reproducing the race that leads to it, since that's the one part of
+    // this scenario that isn't reliably reproducible in a test.
+    const videoId = await createVideo({
+      status: "PUBLISHED",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      cancelRequestedAt: new Date(),
+    });
+
+    await jobService.release(videoId, "failed", "provider timed out");
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+    expect(video.leaseExpiresAt).toBeNull();
+    expect(video.cancelRequestedAt).toBeNull();
+    // failureReason must not be stamped onto a video that never actually
+    // failed.
+    expect(video.failureReason).toBeNull();
+
+    const failedEvents = await prisma.videoStatusEvent.count({
+      where: { videoId, to: "FAILED" },
+    });
+    expect(failedEvents).toBe(0);
+  });
+
+  it("does not demote a PUBLISHED video to FAILED via a delayed release(\"cancelled\")", async () => {
+    // Same guard, same shape, for the third outcome: a cancellation this
+    // worker is reporting is no more entitled to overwrite an
+    // already-published video than a failure or a success is.
+    const videoId = await createVideo({
+      status: "PUBLISHED",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      cancelRequestedAt: new Date(),
+    });
+
+    await jobService.release(videoId, "cancelled", "Cancelled by operator");
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+    expect(video.leaseExpiresAt).toBeNull();
+    expect(video.cancelRequestedAt).toBeNull();
+    expect(video.failureReason).toBeNull();
+
+    const failedEvents = await prisma.videoStatusEvent.count({
+      where: { videoId, to: "FAILED" },
+    });
+    expect(failedEvents).toBe(0);
+  });
+
   it("clears the lease so a failed video can be retried", async () => {
     const videoId = await createVideo({
       status: "GENERATING",
