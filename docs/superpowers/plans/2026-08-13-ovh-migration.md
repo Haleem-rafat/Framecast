@@ -1765,7 +1765,26 @@ mkdir -p /srv/framecast/{postgres,env}
 mkdir -p /srv/framecast/prod/{storage,renders}
 mkdir -p /srv/framecast/staging/{storage,renders}
 chmod 700 /srv/framecast/env
+
+# The app and worker containers run as UID 1001 (see deploy/README.md). A
+# bind-mount source created by root stays root-owned inside the container,
+# and while reading a root-owned file works, *deleting* one needs write
+# permission on the directory. Without this chown the post-publish render
+# reclaim fails on every publish, logs a warning nobody reads, and the 40GB
+# disk fills exactly as it would have without Task 5.
+#
+# Postgres is excluded deliberately: its container runs as its own postgres
+# user and manages that directory itself.
+chown -R 1001:1001 /srv/framecast/prod /srv/framecast/staging
 ```
+
+Verify it took, because this is silent when wrong:
+
+```bash
+stat -c '%u:%g %n' /srv/framecast/prod/renders /srv/framecast/staging/renders
+```
+
+Expected: `1001:1001` for both.
 
 - [ ] **Step 5: Write the environment files**
 
