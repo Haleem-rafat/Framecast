@@ -124,6 +124,22 @@ describe("GET /api/videos/[id]/narration — auth", () => {
   });
 });
 
+describe("GET /api/videos/[id]/narration — missing object", () => {
+  it("409s a video whose VoiceOver points at an object that no longer exists", async () => {
+    const videoId = await makeVideo({ withNarration: Buffer.from("will-be-deleted") });
+    vi.mocked(getSession).mockResolvedValue(sessionFor(ownerId));
+    await removeObjects(writtenPaths.splice(0));
+
+    const response = await call(videoId);
+
+    // Distinct from "no narration at all" (404) above — the row says the
+    // narration exists, so this is the named "needs regenerating" condition,
+    // the same shape /api/videos/[id]/file returns for a missing render. It
+    // must not be the 500 `getObject`'s InternalError would produce.
+    expect(response.status).toBe(409);
+  });
+});
+
 describe("GET /api/videos/[id]/narration — serving bytes", () => {
   it("returns 200 with the narration bytes and the right headers for the owner", async () => {
     const body = "fake-mp3-bytes-for-the-narration-route-test";

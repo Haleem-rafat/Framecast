@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { isAppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
+import { ConflictError, isAppError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { getObject, objectContentType } from "@/lib/storage";
+import { getObject, objectContentType, objectSizeBytes } from "@/lib/storage";
 import { getSession } from "@/server/session";
 
 /**
@@ -54,6 +54,23 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
     if (!voiceOver?.audioUrl) {
       throw new NotFoundError("Video narration");
+    }
+
+    // Two different conditions, two different answers — the same distinction
+    // `/api/videos/[id]/file` draws. No `VoiceOver` row is a plain 404: this
+    // video has no narration. A row whose object is gone from disk is not
+    // "not found", it is a named, recoverable state — regenerate the
+    // narration — and it has to say so, because `getObject` below would
+    // otherwise turn a missing file into an `InternalError`, i.e. a 500 with
+    // "Something went wrong on our end." That reads as a bug in the server
+    // rather than as the one thing the operator can actually act on, and it
+    // is a plausible state, not a corrupt one: storage restored without this
+    // object (docs/vps-deployment.md's migration), a manual cleanup, a
+    // machine that no longer exists.
+    if ((await objectSizeBytes(voiceOver.audioUrl)) === null) {
+      throw new ConflictError(
+        "This video's narration is no longer available and needs to be regenerated.",
+      );
     }
 
     const [body, contentType] = await Promise.all([
