@@ -5,12 +5,14 @@ replaces Vercel, Supabase and Railway. This document is written to be
 followed top to bottom by whoever has SSH access, without having to
 reconstruct anything from memory or from this migration's history.
 
-**Scope of this page today:** provisioning (turning a bare box into one that
-can run `deploy/docker-compose.yml`), migrating the existing data across, and
-nightly backups with a restore procedure. Deploying the stack for the first
-time and the DNS cutover are separate steps covered by later sections this
-document grows as those are built; if you're looking for one of those and it
-isn't below yet, it hasn't been written.
+**Scope of this page today:** the whole path, start to finish — provisioning
+(turning a bare box into one that can run `deploy/docker-compose.yml`),
+migrating the existing data across, nightly backups with a restore
+procedure, deploying the stack for the first time, cutting DNS over from
+Vercel, watching production, retiring Railway/Vercel/Supabase once that
+watch is clean, and the routine deploy that follows for everything after.
+This is the last section this document grows for this migration — if a step
+you're looking for isn't below, it doesn't exist anywhere yet, not just here.
 
 **Every command below runs on the server, as root**, unless stated
 otherwise. None of it has been executed as of this writing — see
@@ -273,10 +275,10 @@ Every operator's stored provider API keys (ElevenLabs, and anything else
 added through the Providers page) are encrypted at rest with this key. It is
 **not** an environment-specific secret to regenerate for the new deployment
 — it's a fixed value that has to make the trip from wherever it lives today
-(the current production deployment's environment — pull it from there, e.g.
-via the platform's own env-var UI or CLI, the same way
-`docs/worker-deployment.md` describes for the Railway worker today) to both
-`prod.env` and `staging.env` **byte-for-byte identical**.
+(the current production deployment's environment — pull it from Railway's
+own dashboard or CLI, the same way it was originally set on the Railway
+worker before this migration) to both `prod.env` and `staging.env`
+**byte-for-byte identical**.
 
 Generating a fresh one instead of copying the existing value is the failure
 mode to guard against: the app will start fine, log in fine, and only fail
@@ -751,6 +753,273 @@ are filled in.** Everything else in this migration can be redone if it turns
 out wrong; a database that was never proven restorable, discovered only
 after the one copy of it is gone, cannot be.
 
+## Step 8: Deploy the stack, then prove it works in staging
+
+Nothing has copied `deploy/docker-compose.yml`, the `Caddyfile`, or
+`init-staging-db.sh` to the server yet. Step 1 and `provision.sh` set up the
+box, the firewall and the directory tree; Step 5 and Step 7.1 put env files
+and the backup tooling in `/srv/framecast` — but nothing before this point
+has ever put the Compose stack itself there. Without this step, `docker
+compose` has no file to read and nothing to start:
+
+```bash
+scp deploy/docker-compose.yml deploy/Caddyfile deploy/init-staging-db.sh \
+    root@51.38.80.36:/srv/framecast/
+ssh root@51.38.80.36 'chmod +x /srv/framecast/init-staging-db.sh'
+```
+
+**`init-staging-db.sh` must be in place and executable before Postgres
+starts for the very first time — not shortly after, not "close enough."**
+Postgres's own entrypoint only runs scripts under
+`/docker-entrypoint-initdb.d/` the first time it starts against a
+completely empty `PGDATA` (see `deploy/README.md`'s section on this script
+for the fuller version). Bring `postgres` up even once before the script is
+in place — an early `docker compose up` to sanity-check something, a
+Postgres that's already been started once before during testing — and it
+will never create `framecast_staging` on that data directory again: no
+error, no log line pointing at why, just `app-staging` failing to connect to
+a database that quietly doesn't exist. Copy all three files and `chmod` the
+script *before* the `docker compose up -d` below, every time, including on
+a rebuilt box.
+
+Also write `/srv/framecast/.env` — the file Compose itself reads to
+interpolate `${GITHUB_OWNER}`, `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}`
+and, optionally, `${IMAGE_TAG}` before any container starts. This is
+distinct from `prod.env`/`staging.env` (Step 5) and from `backup.env` (Step
+7.1) — three different files, three different purposes, all under
+`/srv/framecast`. Set `GITHUB_OWNER=haleem-rafat`, **lowercase** — GHCR
+rejects the repository owner's actual GitHub-login case (`Haleem-rafat`);
+see `deploy/README.md`'s "`GITHUB_OWNER` must be lowercase" section — and
+`POSTGRES_USER`/`POSTGRES_PASSWORD` matching what `prod.env` and
+`staging.env` already have baked into their `DATABASE_URL`s.
+
+Then:
+
+```bash
+cd /srv/framecast && docker compose pull && docker compose up -d
+docker compose --profile staging-worker run --rm worker-staging npx prisma migrate deploy
+docker compose --profile staging-worker up -d worker-staging
+```
+
+`worker-staging` needs `--profile staging-worker run --rm`, not a bare
+`exec` or `up -d worker-staging` alone — it sits behind the `staging-worker`
+Compose profile and is stopped by default (see `deploy/README.md`), so a
+plain `exec` against it fails outright with "container is not running."
+`run --rm` starts a throwaway container for the one command and removes it
+immediately afterward, rather than leaving a staging worker up and
+competing with production for the box's two cores.
+
+On `staging.framecasts.com`: sign in, create a video, and run it all the way
+through the pipeline — script, narration, footage, and render — then
+publish it to an unlisted YouTube video and confirm the thumbnail applies.
+This is the first time anything in this stack talks to a real
+provider (ElevenLabs, Pexels/Pixabay, YouTube) instead of a mock, and the
+first real proof that `worker-prod`'s image actually contains, and can run,
+everything Step 10 below will need from it.
+
+```bash
+docker compose stop worker-staging
+```
+
+Leave it stopped once the test passes — it only ever runs when explicitly
+started, by design (see `deploy/README.md`'s "`worker-staging` is
+deliberately not started automatically").
+
+## Step 9: Freeze production
+
+Stop the Railway worker — from the Railway dashboard, or `railway down`
+against that specific service — so nothing new is written to Supabase
+Storage or Vercel Blob while Step 10 copies both.
+
+That one service is the whole write path that matters here: every
+`putObject`/`writeRenderFile` call in this codebase runs inside a pipeline
+stage the worker executes (`footage.service.ts`, `voiceover.service.ts`,
+`render.service.ts`, `thumbnail.service.ts`, `logo.service.ts`) — never from
+an app API route directly. The app itself only *reads* storage (streaming a
+narration file or a render back to the browser) and reads/writes ordinary
+Postgres rows. Stopping the worker alone is therefore enough to freeze the
+file data. Leave the app on Vercel running through this step and the next
+two — Steps 10 and 11 both still need it reachable, to sign in against and
+to verify the Providers page check. Postgres stays live too: it keeps
+accepting whatever ordinary reads and writes the still-running app makes
+right up until Step 6.3's `pg_dump`, which is what actually freezes its
+state — new rows created between now and then are harmless, since with the
+worker stopped nothing can create a new render, footage clip or narration
+file for such a row to reference.
+
+## Step 10: Run the migration
+
+This is Step 6 above, run for real, for the first time, against the
+operator's actual production data. In order:
+
+1. Step 6.1 — copy every stored object.
+2. Step 6.2 — copy the six finished renders (or skip it — see that step for
+   what skipping costs and doesn't).
+3. Step 6.3 — move the database.
+4. Step 6.4 — rewrite `outputUrl`.
+5. Step 6.5 — verify, **including the Providers page check.** Do not
+   proceed to Step 11 if the stored ElevenLabs key doesn't come back as
+   connected — see Step 6.5's own warning for why that one check is
+   different from every other in this migration.
+
+## Step 11: Move DNS
+
+The domain is registered at **GoDaddy**, with nameservers currently
+delegated to Vercel — today, Vercel (not GoDaddy) is who actually answers
+DNS queries for `framecasts.com`. In the GoDaddy dashboard:
+
+1. Set the nameservers back to GoDaddy's own defaults, taking DNS out of
+   Vercel's hands.
+2. Add `A` records: `@` → `51.38.80.36`, `www` → `51.38.80.36`, `staging` →
+   `51.38.80.36`.
+3. Delete any Vercel-specific records left over — its `TXT` verification
+   record, and whatever `A`/`CNAME` entries it had been serving.
+
+**Registration itself is unaffected by any of this.** The domain stays
+registered at GoDaddy throughout this whole migration; only where DNS
+*answers* come from changes. This is also why cancelling Vercel in Step 13
+can't take the domain with it — by the time that happens, Vercel is no
+longer in the nameserver chain at all.
+
+Propagation takes minutes to hours, not immediately. Watch it resolve:
+
+```bash
+dig +short A framecasts.com
+```
+
+Once that returns `51.38.80.36`, Caddy issues a certificate on the very
+first HTTPS request it receives for that hostname — see `deploy/Caddyfile`;
+there is no manual certificate step anywhere in this stack, it's automatic.
+Confirm `https://framecasts.com` loads with a valid certificate before
+treating cutover as done.
+
+## Step 12: Watch for 48 hours
+
+Render a video end to end on production, the same way Step 8 proved it on
+staging. Publish it. Then confirm:
+
+```bash
+# The published video's render file should be gone — reclaimed post-publish
+# per Task 5. The extra `renders/` is not a typo: RENDER_ROOT is the
+# directory, and renderPath() always prefixes its own `renders/` segment on
+# top of it (see Step 6.2 above). If a file is still here, the chown from
+# provisioning (Step 4) didn't take, and reclaim has been failing silently
+# on every publish since cutover.
+ls -la /srv/framecast/prod/renders/renders/
+
+# Disk isn't slowly filling.
+df -h /
+
+docker compose logs --tail 100 worker-prod
+```
+
+Confirm the nightly backup actually ran against the newly-migrated,
+now-live data, not just against Step 7.1's original test dump:
+
+```bash
+journalctl -u framecast-backup.service --since yesterday
+```
+
+## Step 13: Retire the old services
+
+**Only once Step 12 has been clean for the full 48 hours.** In order:
+
+1. Delete the Railway worker.
+2. Cancel Vercel — the app, the Blob store, and the DNS zone, none of which
+   are serving anything anymore.
+3. Cancel Supabase — **but only once Step 7.4's restore has actually been
+   performed and its counts recorded in the fields above.** Everything else
+   in this migration can be redone if it turns out wrong; a database that
+   was never proven restorable, discovered only after the one copy of it is
+   gone, cannot be.
+
+Nothing in this step is reversible. Don't run it early to "save a step" —
+the entire point of Step 12 is having real evidence in hand before any of
+these three commitments gets made.
+
+## Step 14: Remove what is now dead — as its own, later commit
+
+`railway.json` and `docs/worker-deployment.md` describe a deployment path
+(Railway) this migration replaces outright, and nothing above this line
+ever reads either file — they were deleted in the same commit that added
+Steps 8 through this one, alongside this runbook update.
+
+**The three migration scripts follow a different rule, and are deliberately
+still in the tree as of that same commit.** They stay until Step 10 has
+actually run against real production data and Step 13 has retired the old
+services — not before, and not bundled into the commit that wrote this
+runbook. The reason: `worker-prod`'s image is built from whatever this
+branch's tree contains at build time (Task 8's workflow, dispatched by hand
+against this branch, or by whatever commit is checked out when it later
+merges to `main`). This branch does not merge until after cutover — so if
+the scripts were deleted in the same commit that wrote Steps 8–13 above, the
+image Step 8 pulls and Step 10 runs `docker compose exec worker-prod ...`
+against would be built from a tree that never had them, on the one branch
+where that image is the *only* one that will ever exist for this migration.
+That would remove the operator's tools before they've been used, not after —
+exactly the mistake this step exists to avoid. Once Step 10 has actually run
+for real and Step 13 has retired the old services, remove them in a commit
+of their own:
+
+```bash
+git rm scripts/migrate-storage.ts scripts/migrate-renders.ts scripts/relink-renders.ts
+pnpm remove @supabase/supabase-js @vercel/blob
+git add -A
+git commit -m "chore: retire the one-shot migration scripts"
+```
+
+`scripts/relink-renders.ts` is included even though it doesn't match the
+`scripts/migrate-*.ts` pattern named elsewhere — it's one-shot for the
+identical reason the other two are, stated in its own header comment: it "is
+deleted, along with the other two scripts, once this migration has run for
+real." `@supabase/supabase-js` and `@vercel/blob` are `devDependencies`
+added back solely for this migration (see Step 6's intro); they have no
+caller left once the scripts that imported them are gone, and go with them
+for the same delayed-timing reason — `worker/Dockerfile`'s `pnpm install`
+reads `package.json` at build time, so a script that still does `await
+import("@supabase/supabase-js")` needs the package present in whatever
+commit builds the image that runs it.
+
+All three scripts remain reachable in git history after this later commit —
+`git log --all --full-history -- scripts/migrate-storage.ts` (or the same
+search on GitHub) finds them if a second migration off this box ever needs
+the same mechanism again.
+
+## Step 15: The routine deploy
+
+Everything above is the migration — run once, in order, never again after
+Step 14. This is what actually happens from here on, far more often than
+any of it: an ordinary code change reaching production.
+
+```bash
+ssh root@51.38.80.36
+cd /srv/framecast
+docker compose pull
+docker compose up -d
+```
+
+If the change includes a Prisma migration, apply it from the **worker**
+image, never the app image. `app-prod`'s runtime stage (`Dockerfile` at the
+repo root) copies only `public`, `.next/standalone`, and `.next/static` — no
+Prisma schema, no migrations directory, no CLI, so `prisma migrate deploy`
+run there would have `npx` fetch `prisma` from the network and then find
+nothing to apply, silently rather than loudly. `worker-prod`'s image
+(`worker/Dockerfile`) does `COPY . .`, so it's the only container in this
+stack that carries the schema and the migrations directory (and, until Step
+14 removes it, `scripts/`):
+
+```bash
+docker compose exec worker-prod npx prisma migrate deploy
+```
+
+The same applies to staging, substituting the profile-gated `run --rm` form
+for `worker-staging` (see Step 8 above for why a bare `exec` won't work
+against it):
+
+```bash
+docker compose --profile staging-worker run --rm worker-staging npx prisma migrate deploy
+```
+
 ## Status
 
 Nothing on this page has been executed against `51.38.80.36`. As of this
@@ -781,3 +1050,23 @@ lifecycle rule set (Step 7.3), and the restore actually performed and its
 counts recorded (Step 7.4) — **both checkboxes above, in Step 7.3 and Step
 7.4, are still unchecked**. Supabase must not be cancelled until Step 7.4's
 is.
+
+**Steps 8–15 (deploy, cutover, watch, retire, and the routine deploy that
+follows) are in the same unexecuted state as everything above — written and
+reviewable, nothing run.** Nothing was executed against `51.38.80.36`,
+Railway, GoDaddy, Vercel or Supabase while writing them, and nothing at any
+of those four was cancelled, modified, or reached in any way; DNS was not
+touched. Steps 9 and 13 additionally require the operator's own access to
+Railway and Vercel, and Step 11 requires the operator's own access to the
+GoDaddy account the domain is registered under — none of which exist from
+here.
+
+`railway.json` and `docs/worker-deployment.md` are deleted as of this
+commit — see Step 14 for why neither one has any remaining reader.
+`scripts/migrate-storage.ts`, `scripts/migrate-renders.ts`,
+`scripts/relink-renders.ts`, and the `@supabase/supabase-js`/`@vercel/blob`
+devDependencies are **deliberately still present** as of this same commit:
+Step 14 explains why removing them now, before Step 10 has actually run for
+real, would delete the operator's only tools before they've had a chance to
+use them. Their removal is a separate commit, to be made later, once Steps
+10 and 13 are both done for real — not part of this one.
