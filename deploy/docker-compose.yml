@@ -1,0 +1,102 @@
+# deploy/docker-compose.yml
+#
+# The whole of Framecast on one VPS: 2 vCPU, 4GB RAM, 40GB disk.
+#
+# Two environments share one Postgres instance holding two databases. A second
+# Postgres would cost ~400MB of 4GB for isolation the databases already give.
+#
+# Files live on the host under /srv/framecast so a container rebuild cannot
+# destroy them.
+
+name: framecast
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [app-prod, app-staging]
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: framecast
+    volumes:
+      - /srv/framecast/postgres:/var/lib/postgresql/data
+      - ./init-staging-db.sh:/docker-entrypoint-initdb.d/init-staging-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Postgres defaults assume far more memory than this box has.
+    command: >
+      postgres -c shared_buffers=256MB -c effective_cache_size=768MB
+               -c max_connections=50 -c work_mem=4MB
+
+  app-prod:
+    image: ghcr.io/${GITHUB_OWNER}/framecast-app:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: /srv/framecast/env/prod.env
+    volumes:
+      - /srv/framecast/prod/storage:/data/storage
+      - /srv/framecast/prod/renders:/data/renders
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  worker-prod:
+    image: ghcr.io/${GITHUB_OWNER}/framecast-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: /srv/framecast/env/prod.env
+    volumes:
+      - /srv/framecast/prod/storage:/data/storage
+      - /srv/framecast/prod/renders:/data/renders
+    depends_on:
+      postgres: { condition: service_healthy }
+    # ffmpeg will take every core it is given. cpu_shares is a relative weight
+    # under contention, not a hard cap: it lets a render use both cores when
+    # nothing else needs them, but yields CPU to app-prod and postgres (default
+    # weight 1024) the moment they ask for it, rather than always capping the
+    # worker to a fixed fraction and stretching every render regardless of
+    # whether the site is even under load. See deploy/README.md for the
+    # tradeoff against a hard --cpus limit.
+    cpu_shares: 512
+
+  app-staging:
+    image: ghcr.io/${GITHUB_OWNER}/framecast-app:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: /srv/framecast/env/staging.env
+    volumes:
+      - /srv/framecast/staging/storage:/data/storage
+      - /srv/framecast/staging/renders:/data/renders
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # Started deliberately, never automatically: two renders on two cores would
+  # make both slow and the site unusable.
+  #   docker compose --profile staging-worker up -d worker-staging
+  #   docker compose stop worker-staging
+  worker-staging:
+    image: ghcr.io/${GITHUB_OWNER}/framecast-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    profiles: [staging-worker]
+    env_file: /srv/framecast/env/staging.env
+    volumes:
+      - /srv/framecast/staging/storage:/data/storage
+      - /srv/framecast/staging/renders:/data/renders
+    depends_on:
+      postgres: { condition: service_healthy }
+    cpu_shares: 256
+
+volumes:
+  caddy-data:
+  caddy-config:

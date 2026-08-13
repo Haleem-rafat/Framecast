@@ -1,0 +1,23 @@
+# deploy/Caddyfile
+#
+# Caddy obtains and renews certificates for both hostnames automatically. It
+# is the only service bound to the host's ports; everything else talks over
+# the Compose network.
+
+framecasts.com, www.framecasts.com {
+	encode zstd gzip
+	# Renders are ~170MB and stream with byte ranges. Never buffer them.
+	reverse_proxy app-prod:3000 {
+		flush_interval -1
+	}
+}
+
+staging.framecasts.com {
+	# Staging holds the same unpublished work as production and must not be
+	# indexed if it is ever discovered.
+	header X-Robots-Tag "noindex, nofollow"
+	encode zstd gzip
+	reverse_proxy app-staging:3000 {
+		flush_interval -1
+	}
+}
