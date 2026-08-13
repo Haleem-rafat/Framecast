@@ -22,7 +22,7 @@ export default function PrivacyPage() {
       <article className="space-y-8">
         <MarketingHeading
           title="Privacy policy"
-          subtitle="Last updated 9 August 2026"
+          subtitle="Last updated 13 August 2026"
         />
 
         <section className="space-y-3">
@@ -103,12 +103,24 @@ export default function PrivacyPage() {
         <section className="space-y-3">
           <h2 className="font-medium">Where data is stored</h2>
           <p className="text-muted-foreground text-sm text-pretty">
-            Data is held in a private PostgreSQL database hosted by Supabase, and
-            the application runs on Vercel. Connections to the database are
-            encrypted and the server certificate is verified. Access tokens for
-            connected accounts, and any third-party API keys you enter, are
-            encrypted at rest with AES-256-GCM before being written to the
-            database.
+            The application and its private PostgreSQL database both run on a
+            single dedicated server rented from OVH, in London. The database
+            accepts no connections from the internet: it is reachable only by the
+            application running beside it on that same machine, over the host&apos;s
+            own internal network. Uploaded and generated files — narration audio,
+            video clips, thumbnails and finished videos — are stored on that
+            server&apos;s disk, not with a third-party storage provider.
+          </p>
+          <p className="text-muted-foreground text-sm text-pretty">
+            Access tokens for connected accounts, and any third-party API keys you
+            enter, are encrypted at rest with AES-256-GCM before being written to
+            the database.
+          </p>
+          <p className="text-muted-foreground text-sm text-pretty">
+            The database is backed up nightly to Cloudflare R2 object storage, so
+            that a failure of the server itself is recoverable. Those backups
+            contain the same data as the database, including the encrypted values
+            described above, and are deleted after 30 days.
           </p>
         </section>
 
