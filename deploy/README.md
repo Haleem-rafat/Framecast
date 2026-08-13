@@ -37,6 +37,56 @@ docker compose stop worker-staging
 
 `docker compose up -d` (no profile) never touches `worker-staging`.
 
+## File ownership: the host directories must be chowned to 1001:1001 before first start
+
+`app-prod`, `worker-prod`, `app-staging`, and `worker-staging` all run as
+**UID 1001, GID 1001** — a non-root user baked into both images
+(`app/Dockerfile`'s `nextjs` user and `worker/Dockerfile`'s `worker` user)
+and stated again explicitly in this Compose file as `user: "1001:1001"` on
+each of the four services, so the contract doesn't depend on nobody ever
+changing an image's `USER` line.
+
+That matters because of what each pair bind-mounts:
+
+```
+/srv/framecast/prod/storage    -> /data/storage    (app-prod, worker-prod)
+/srv/framecast/prod/renders    -> /data/renders    (app-prod, worker-prod)
+/srv/framecast/staging/storage -> /data/storage    (app-staging, worker-staging)
+/srv/framecast/staging/renders -> /data/renders    (app-staging, worker-staging)
+```
+
+Docker creates a bind-mount source directory that doesn't already exist as
+`root:root`, and a directory created by `mkdir` during provisioning is
+`root:root` too. A container running as UID 1001 can *read* a root-owned
+directory (typical default permissions are world-readable), but it cannot
+**write or delete** inside one — unlinking a file needs write permission on
+the directory, not the file. Left unfixed, this means the post-publish
+render cleanup in `publish.service.ts` fails silently on every publish (it
+only logs a warning), finished renders are never reclaimed, and the 40GB
+disk fills exactly the way Task 5 exists to prevent.
+
+**Before the stack is started for the first time**, chown these four
+directories to UID:GID 1001:1001:
+
+```bash
+mkdir -p /srv/framecast/prod/{storage,renders} /srv/framecast/staging/{storage,renders}
+chown -R 1001:1001 /srv/framecast/prod/{storage,renders} /srv/framecast/staging/{storage,renders}
+```
+
+No matching user needs to exist on the host — `chown` accepts a bare numeric
+UID:GID, and only the *number* has to agree with what the containers run as.
+This is a one-time step per fresh directory; it does not need to be repeated
+after every deploy, only after `mkdir`ing a new one (e.g. provisioning a
+rebuilt server, or adding a new environment).
+
+`/srv/framecast/postgres` needs no such step: the `postgres:17-alpine`
+entrypoint starts as root and `chown`s its own data directory to the
+`postgres` user internally before dropping privileges, every time it finds
+one it doesn't already own. The app and worker images have already dropped
+to non-root by the time they'd touch their volumes, so nothing inside either
+container can do the equivalent for `/data/storage` and `/data/renders` —
+that step has to happen on the host, ahead of time.
+
 ## `worker-prod`'s CPU weight is a priority, not a cap
 
 `worker-prod` is given `cpu_shares: 512`, half the default weight of 1024
@@ -82,6 +132,49 @@ processes and ffmpeg. These numbers were sized for this box, not copied from
 a larger one; increase `max_connections` only if a connection-pool-exhaustion
 error is actually observed.
 
+## Memory limits, and what happens when one is hit
+
+Every service carries a `mem_limit`. On a box with no memory to spare, an
+unbounded process — a leak, or ffmpeg on a larger-than-expected source —
+would otherwise be free to grow until the kernel OOM killer steps in and
+picks a victim *system-wide*, which without per-container limits is just as
+likely to be Postgres or a healthy app process as the one actually at fault.
+A per-service cap makes an OOM kill land on the offending container's own
+cgroup instead of wherever the kernel's heuristic happens to point, and
+`restart: unless-stopped` brings that one container straight back.
+
+| Service         | `mem_limit` | Why                                                                 |
+| ---------------- | ----------- | -------------------------------------------------------------------- |
+| `caddy`          | 128m        | A reverse proxy; has no reason to need more.                        |
+| `postgres`       | 640m        | `shared_buffers=256MB` fixed + worst-case ~200MB across 50 connections, plus headroom. |
+| `app-prod`       | 512m        | Next.js standalone server under real traffic.                       |
+| `worker-prod`    | 1408m       | The biggest budget: ffmpeg's own memory use scales with resolution and filters, on top of the Node/tsx process running it. |
+| `app-staging`    | 384m        | Same process as `app-prod`, expected lighter traffic.               |
+| `worker-staging` | 896m        | Off by default; smaller than `worker-prod` to match its lower `cpu_shares`. |
+
+The five services that run by default sum to ~3GB, leaving ~1GB of the box's
+4GB for the OS, the Docker daemon, and bursts above these numbers (page
+cache is reclaimed under pressure before a limit triggers a kill, so this
+isn't as tight as summing feels). Starting `worker-staging` on top adds
+another 896m — expected to be brief and supervised, per the profile above,
+not a steady state the box is sized to hold indefinitely alongside
+everything else.
+
+**What happens when a render is killed mid-encode:** the kill is a SIGKILL,
+which the worker's SIGTERM handler (in `worker/index.ts`, there for
+Railway's redeploys) cannot intercept — the process just stops. The video it
+was rendering stays claimed under a lease (`LEASE_SECONDS = 600` in
+`src/services/job.service.ts`), renewed every `HEARTBEAT_SECONDS = 30` while
+a worker holds it. With the worker dead, that heartbeat stops, the lease
+lapses after at most 10 minutes, and `claimNext`'s stale-lease check makes
+the video claimable again — any worker (including the one Compose just
+restarted) picks it up and renders it again from scratch. No stuck job, no
+manual intervention, at the cost of one render's worth of wasted work — the
+same recovery path an ordinary crash or redeploy already relies on, not
+something new this adds. An app process killed mid-request just drops that
+one request; Caddy serves a brief 502 until the restart lands, typically a
+few seconds.
+
 ## Where things live
 
 - **Compose file, Caddyfile, init script** (this directory): copied to the
@@ -94,7 +187,15 @@ error is actually observed.
   - `/srv/framecast/env/prod.env` and `/srv/framecast/env/staging.env` —
     each app/worker pair's full environment (`DATABASE_URL`,
     `BETTER_AUTH_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, provider API keys,
-    etc.), loaded via each service's `env_file:`.
+    etc.), loaded via each service's `env_file:`. **`STORAGE_ROOT` must be
+    `/data/storage` and `RENDER_ROOT` must be `/data/renders`** in both env
+    files — those are the container-side paths this Compose file's volumes
+    create, not a default either app picks on its own. Get them wrong (or
+    leave them unset, so `src/config/env.ts` falls back to its
+    `.framecast/...`-relative defaults) and the app writes into the
+    container's own throwaway filesystem instead of the bind mount: nothing
+    errors, data is simply gone the moment the container is recreated, and
+    the other container sharing that mount never sees it either.
   - A `.env` file next to the Compose file on the server (e.g.
     `/srv/framecast/.env`) supplying the variables Compose itself
     interpolates before any container starts: `GITHUB_OWNER`,
@@ -119,6 +220,25 @@ ghcr.io/haleem-rafat/framecast-worker
 Set `GITHUB_OWNER=haleem-rafat` (all lowercase) wherever it is defined for
 this Compose file. Setting it to `Haleem-rafat` will make every
 `ghcr.io/${GITHUB_OWNER}/...` image reference invalid.
+
+## `init-staging-db.sh` only ever runs once, against an empty data directory
+
+Postgres's own entrypoint only executes scripts under
+`/docker-entrypoint-initdb.d/` the first time it starts against a `PGDATA`
+that is completely empty. That's what creates `framecast_staging` — but it
+means the script is silently skipped whenever `/srv/framecast/postgres`
+already holds data on first boot of a given stack: a restore from backup
+(Task 11), a redeploy that reuses an existing volume, or any other path that
+doesn't start from a genuinely empty directory. In that case Postgres comes
+up with `framecast` but no `framecast_staging`, `app-staging` fails to
+connect, and there is no error pointing at why.
+
+If that happens, create the database by hand — it's the same statement the
+script would have run:
+
+```bash
+docker compose exec postgres createdb -U "$POSTGRES_USER" framecast_staging
+```
 
 ## Starting the stack
 

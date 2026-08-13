@@ -71,9 +71,26 @@ RUN ffmpeg -hide_banner -encoders | grep -q libx264 \
     && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
     && echo "ffmpeg has libx264, aac, subtitles and the caption font"
 
-# No `USER node`. The pipeline writes to a temp directory it creates itself and
-# cleans up in a `finally`; the container is ephemeral and holds no persistent
-# volume. Revisit if this ever gains a mounted disk.
+# Non-root, matching app/Dockerfile's UID:GID (1001:1001) exactly. This used
+# to run as root on the strength of holding no persistent volume — Task 7
+# gave it one (/data/storage, /data/renders, bind-mounted from the host and
+# shared with the app container), which is exactly the condition under which
+# that reasoning no longer applies. `useradd --gid 1001` (Debian, unlike
+# Alpine's `adduser -S` in app/Dockerfile) makes the primary group explicit
+# rather than whatever `useradd` would default it to. The host directories
+# under /srv/framecast are chowned to 1001:1001 once, in provisioning — see
+# deploy/README.md; only the numeric UID has to agree for either container to
+# write there; the GID is set to match for legibility, not because anything
+# depends on it.
+# `--create-home` (not `--no-create-home`) deliberately: Docker's `USER`
+# directive does not update `$HOME`, so without a real, owned home directory
+# `npx`/npm would inherit root's `$HOME` and fail writing its cache the first
+# time this container runs — a permission error that would only show up at
+# runtime, not at build time.
+RUN groupadd --gid 1001 nodejs \
+    && useradd --uid 1001 --gid 1001 --create-home --shell /usr/sbin/nologin worker
+ENV HOME=/home/worker
+USER worker
 
 # Not `pnpm worker` — pnpm would sit in the process tree between the init
 # process and node, and SIGTERM (which Railway sends on redeploy) would reach

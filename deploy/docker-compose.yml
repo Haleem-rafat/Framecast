@@ -10,10 +10,27 @@
 
 name: framecast
 
+# `mem_limit` on every service: on 4GB total, an unbounded process (a leak, or
+# ffmpeg on an unexpectedly large source) would otherwise let the kernel OOM
+# killer pick its own victim system-wide — which could as easily be postgres
+# or a healthy app process as the one actually misbehaving. A per-service
+# cap makes the kill land on the offending container's own cgroup instead,
+# and `restart: unless-stopped` brings it straight back. That is deliberately
+# cheap to recover from here: a worker killed mid-render leaves its video
+# claimed under a lease (`LEASE_SECONDS` in `src/services/job.service.ts`)
+# that lapses after 10 minutes with no heartbeat, after which any worker
+# reclaims it and the render simply runs again — the same recovery path an
+# ordinary redeploy already relies on. An app process killed mid-request just
+# drops that request; Caddy serves a brief 502 until the restart lands.
+# Limits sum to ~3GB across the five services that run by default, leaving
+# ~1GB for the OS, the Docker daemon, and bursts — see deploy/README.md for
+# the full breakdown and the swap this still assumes exists (Task 9).
+
 services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: 128m
     ports:
       - "80:80"
       - "443:443"
@@ -26,6 +43,7 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    mem_limit: 640m
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -46,6 +64,14 @@ services:
   app-prod:
     image: ghcr.io/${GITHUB_OWNER}/framecast-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 512m
+    # Matches the UID:GID the image already runs as (app/Dockerfile's `USER
+    # nextjs`, created at 1001:1001). Stated explicitly here, not just in the
+    # image, because it is also the contract with the bind-mounted host
+    # directories below: /srv/framecast/prod/{storage,renders} must be
+    # chowned to 1001:1001 in provisioning, or this container can read what
+    # it mounts but not write or delete it. See deploy/README.md.
+    user: "1001:1001"
     env_file: /srv/framecast/env/prod.env
     volumes:
       - /srv/framecast/prod/storage:/data/storage
@@ -56,6 +82,11 @@ services:
   worker-prod:
     image: ghcr.io/${GITHUB_OWNER}/framecast-worker:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 1408m
+    # Same UID:GID as app-prod (worker/Dockerfile's `USER worker`, also
+    # 1001:1001) — the two containers share these directories, so both must
+    # agree on who owns files in them. See deploy/README.md.
+    user: "1001:1001"
     env_file: /srv/framecast/env/prod.env
     volumes:
       - /srv/framecast/prod/storage:/data/storage
@@ -74,6 +105,8 @@ services:
   app-staging:
     image: ghcr.io/${GITHUB_OWNER}/framecast-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 384m
+    user: "1001:1001"
     env_file: /srv/framecast/env/staging.env
     volumes:
       - /srv/framecast/staging/storage:/data/storage
@@ -82,12 +115,16 @@ services:
       postgres: { condition: service_healthy }
 
   # Started deliberately, never automatically: two renders on two cores would
-  # make both slow and the site unusable.
+  # make both slow and the site unusable. Starting it alongside a production
+  # render also stacks its 896m memory limit on top of the ~3GB the five
+  # always-on services already budget for — briefly, not as a steady state.
   #   docker compose --profile staging-worker up -d worker-staging
   #   docker compose stop worker-staging
   worker-staging:
     image: ghcr.io/${GITHUB_OWNER}/framecast-worker:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 896m
+    user: "1001:1001"
     profiles: [staging-worker]
     env_file: /srv/framecast/env/staging.env
     volumes:
