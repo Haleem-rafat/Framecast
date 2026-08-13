@@ -103,17 +103,34 @@ Two things the script deliberately leaves for you to do by hand, and why:
 
 ## Step 2: Swap
 
-Handled by `provision.sh`, which runs (guarding each part so a re-run
-neither duplicates the swapfile nor duplicates the `/etc/fstab`/
-`sysctl.conf` lines):
+Handled by `provision.sh` (its lines 71–88), shown here verbatim — not
+simplified, because the guards are the entire point of this being a script
+instead of four lines to retype:
 
 ```bash
-fallocate -l 2G /swapfile && chmod 600 /swapfile
-mkswap /swapfile && swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab   # only if not already present
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+else
+  # /swapfile already exists — re-running never re-creates or re-formats it,
+  # only makes sure it's actually turned on.
+  swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile
+fi
+# Appends the fstab line only if it isn't already there — a bare `echo >>`
+# would duplicate it on every re-run.
+grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-sysctl -w vm.swappiness=10
-echo 'vm.swappiness=10' >> /etc/sysctl.conf       # or replaces an existing line
+sysctl -w vm.swappiness=10 >/dev/null
+# Replaces an existing vm.swappiness line in place if one exists; only
+# appends a new one if it doesn't. A bare `echo >>` would add a second,
+# conflicting line on every re-run instead.
+if grep -q '^vm.swappiness=' /etc/sysctl.conf; then
+  sed -i 's/^vm.swappiness=.*/vm.swappiness=10/' /etc/sysctl.conf
+else
+  echo 'vm.swappiness=10' >> /etc/sysctl.conf
+fi
 ```
 
 Why it's there: 4 GB with Postgres, two Next.js processes and ffmpeg running
@@ -127,18 +144,23 @@ and a swapped-out Postgres backend is not.
 
 ## Step 3: Docker
 
-Also handled by `provision.sh`:
+Also handled by `provision.sh` (its lines 91–97), verbatim:
 
 ```bash
-curl -fsSL https://get.docker.com | sh
-docker --version && docker compose version
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sh
+fi
+docker --version
+docker compose version
 ```
 
-Skipped if `docker` is already on the `PATH`, so a re-run doesn't reinstall
-over a working setup. Confirm both version commands print real version
-strings before moving on; a silent failure here would otherwise only
-surface later, confusingly, when Step 4's `docker compose up` (a later
-runbook section) can't find `docker` at all.
+The `if` is the guard: `get.docker.com`'s installer runs only when `docker`
+isn't already on the `PATH`, so a re-run doesn't reinstall over a working
+setup. `docker --version` and `docker compose version` run unconditionally
+either way — confirm both print real version strings before moving on; a
+silent failure here would otherwise only surface later, confusingly, when
+Step 4's `docker compose up` (a later runbook section) can't find `docker`
+at all.
 
 ## Step 4: Directory tree, and why the chown is not optional
 
