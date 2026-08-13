@@ -335,9 +335,17 @@ ever writes to *this* database. All three are resumable: run any of them
 again after any failure and whatever already succeeded is skipped, not
 redone.
 
-This step assumes the stack is already up (`docker compose up -d` from
-`/srv/framecast` on the server). Every command below that runs inside a
-container targets **`worker-prod`**, never `app-prod` — see the explanation
+**This step assumes the stack is already up** (`docker compose up -d` from
+`/srv/framecast` on the server) — which nothing before this point in the
+document has done yet. If you're reading top to bottom for the first time,
+that's Step 8 below, out of order relative to where you're reading now: this
+step and Step 7 immediately after it were written before Step 8 existed and
+still read as if the stack already exists, because in the real sequence of
+running this whole runbook it does — Step 8 is where an operator actually
+brings it up for the first time, before ever reaching this step's commands
+for real. Read Step 8 first if the stack isn't up yet; come back here once it
+is. Every command below that runs inside a container targets **`worker-prod`**,
+never `app-prod` — see the explanation
 in Step 6.4, which is where it first matters, for why. `app-prod` is built
 from `Dockerfile` at the repo root, a standalone Next.js runtime image that
 deliberately excludes the Prisma schema, the migrations directory,
@@ -547,8 +555,18 @@ du -sh /srv/framecast/prod
 find /srv/framecast/prod/renders -name '*.tmp-*'
 ```
 
-Then, sign in to the running app and open the Providers page. If the stored
-ElevenLabs key renders as connected rather than as an error,
+Then, sign in to the running app and open the Providers page. **DNS hasn't
+moved yet at this point either — Step 11 comes after this, not before —**
+and by this point in the runbook Step 9 has also paused the Vercel app, so
+`https://framecasts.com` the normal way reaches neither the VPS nor a live
+Vercel deployment. Reach the VPS directly the same way Step 8's staging test
+did: the `/etc/hosts` entries added there already cover `framecasts.com`
+(add them now, pointing at `51.38.80.36`, if Step 8 was skipped or they were
+already removed). This has to be a real browser session against the app now
+running on the VPS — the Providers page is the thing being checked, and
+checking it anywhere else checks nothing.
+
+If the stored ElevenLabs key renders as connected rather than as an error,
 `CREDENTIAL_ENCRYPTION_KEY` came across correctly — this is the one thing on
 this page that cannot be checked any other way. **Do not proceed past this
 check.** Everything else here can be redone if something is wrong; a wrong
@@ -556,6 +574,14 @@ encryption key cannot — every credential ever saved becomes unrecoverable
 the moment it fails to decrypt.
 
 ## Step 7: Nightly backups to R2, and a restore that was actually performed
+
+**Like Step 6 above, this step assumes the stack is already up** — Step
+7.1's `docker compose cp`/`exec postgres` commands and Step 7.4's restore
+both need a running `postgres` container, which nothing before Step 8
+brings up. Read Step 8 first if you haven't already; this step (and Step
+6 before it) were written before Step 8 existed and still read as if the
+stack is a given, because by the time either is actually run for real, it
+is.
 
 Cancelling Supabase means backups stop being someone else's job. Managed
 Postgres included automated backups; this VPS does not, so `deploy/backup.sh`
@@ -809,6 +835,38 @@ plain `exec` against it fails outright with "container is not running."
 immediately afterward, rather than leaving a staging worker up and
 competing with production for the box's two cores.
 
+**DNS still points at Vercel at this point — Step 11 is what moves it, and
+that's still three steps away.** `deploy/Caddyfile` virtual-hosts strictly
+on `staging.framecasts.com` (and `framecasts.com`/`www.framecasts.com`), and
+`staging.env`'s `BETTER_AUTH_URL` is pinned to
+`https://staging.framecasts.com` — a browser that resolves that hostname the
+normal way still gets Vercel's IP, the only answer DNS gives before Step 11.
+That either can't reach the VPS at all or, worse, reaches the *old* Vercel
+deployment and quietly tests the system this migration is replacing instead
+of the one it's supposed to prove. Reach the VPS directly instead: on your
+Mac, add temporary entries to `/etc/hosts` (`sudo` required):
+
+```
+51.38.80.36  staging.framecasts.com
+51.38.80.36  framecasts.com
+51.38.80.36  www.framecasts.com
+```
+
+This makes only *your* machine resolve those three hostnames straight to
+the VPS, bypassing DNS entirely — every other device on the internet still
+gets Vercel's answer until Step 11 actually moves it for real. Caddy issues
+a real certificate for each hostname on its first request the same way it
+will after cutover, so the browser sees a normal, valid `https://`
+connection rather than a warning.
+
+**Remove these lines from `/etc/hosts` once Step 11 has moved DNS for
+real.** A forgotten entry keeps pinning your Mac to `51.38.80.36` for these
+three hostnames indefinitely, silently overriding whatever DNS actually
+says from then on — which could as easily hide a real production problem on
+the VPS (your machine alone still "sees" the old, frozen answer) as make a
+future Vercel-side check behave differently on your machine than everyone
+else's.
+
 On `staging.framecasts.com`: sign in, create a video, and run it all the way
 through the pipeline — script, narration, footage, and render — then
 publish it to an unlisted YouTube video and confirm the thumbnail applies.
@@ -829,23 +887,53 @@ deliberately not started automatically").
 
 Stop the Railway worker — from the Railway dashboard, or `railway down`
 against that specific service — so nothing new is written to Supabase
-Storage or Vercel Blob while Step 10 copies both.
-
-That one service is the whole write path that matters here: every
-`putObject`/`writeRenderFile` call in this codebase runs inside a pipeline
+Storage or Vercel Blob by the pipeline while Step 10 copies both. Every
+`putObject`/`writeRenderFile` call made *by the pipeline* runs inside a
 stage the worker executes (`footage.service.ts`, `voiceover.service.ts`,
-`render.service.ts`, `thumbnail.service.ts`, `logo.service.ts`) — never from
-an app API route directly. The app itself only *reads* storage (streaming a
-narration file or a render back to the browser) and reads/writes ordinary
-Postgres rows. Stopping the worker alone is therefore enough to freeze the
-file data. Leave the app on Vercel running through this step and the next
-two — Steps 10 and 11 both still need it reachable, to sign in against and
-to verify the Providers page check. Postgres stays live too: it keeps
-accepting whatever ordinary reads and writes the still-running app makes
-right up until Step 6.3's `pg_dump`, which is what actually freezes its
-state — new rows created between now and then are harmless, since with the
-worker stopped nothing can create a new render, footage clip or narration
-file for such a row to reference.
+`render.service.ts`, `thumbnail.service.ts`, `logo.service.ts`); stopping it
+freezes that whole path.
+
+**That is not the whole write path, and treating it as one deletes data.**
+`publishVideoAction` (`src/actions/publish.action.ts`) is a Next.js Server
+Action — it runs inside the **app** process on Vercel, not the worker — and
+calls `publishService.publish()`, which after a successful YouTube upload
+calls `reclaimClipStorage()` (`publish.service.ts:512`, deletes the video's
+source clips via `removeObjects()`) and `reclaimRenderStorage()`
+(`publish.service.ts:518`, deletes the render via `deleteRenderFile()`).
+This is new as of Task 5 of this same migration — before it existed, "the
+app only reads storage" was true, which is presumably where that assumption
+came from. It no longer is. Leaving the Vercel app reachable through Steps
+9–10 means one Publish click on any already-rendered video deletes clips or
+a render that Step 10 may not have copied yet, permanently — the deletion
+and the copy race the same source objects, and there is no undo on either
+side.
+
+**Take the Vercel app itself offline for the duration of Steps 9 and 10.**
+In the Vercel dashboard: Project Settings → General → **Pause Project**,
+type the project name to confirm. A paused project serves `503
+DEPLOYMENT_PAUSED` to every visitor — nobody can sign in, create a video, or
+publish, which is the actual guarantee this step needs, not a request that
+nobody does. Two things to know before relying on it:
+
+- **It is not instantaneous.** Vercel's own docs note it can take several
+  minutes to take effect. Confirm the app is actually returning `503`
+  (`curl -I https://framecasts.com`, or just load it in a browser) before
+  treating production as frozen and starting Step 10.
+- **It does not auto-resume.** Nothing brings it back until Step 13
+  explicitly cancels the project, or you resume it by hand (dashboard, or
+  the `Pause a project` REST endpoint) — which you won't need to, since
+  Step 13 is the next and only time this project is touched again.
+
+This is a pause, not a cancellation — reversible, and not the "nothing is
+cancelled until the replacement is serving real traffic" commitment being
+broken. It just means production genuinely stops serving anyone, including
+the operator, for the (hopefully short) window Step 10 takes to run — which
+is the honest cost of a migration copying live data out from under an app
+that can otherwise still write to it.
+
+Postgres stays live throughout: it keeps accepting connections, but with
+both the worker stopped and the app paused, nothing is left to write to it
+until Step 6.3's `pg_dump` runs and actually freezes its state.
 
 ## Step 10: Run the migration
 
