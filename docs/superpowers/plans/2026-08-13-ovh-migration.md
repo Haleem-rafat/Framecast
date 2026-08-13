@@ -2123,7 +2123,7 @@ Nothing is cancelled until the replacement is serving real traffic.
 
 ```bash
 cd /srv/framecast && docker compose pull && docker compose up -d
-docker compose exec app-staging npx prisma migrate deploy
+docker compose --profile staging-worker run --rm worker-staging npx prisma migrate deploy
 docker compose --profile staging-worker up -d worker-staging
 ```
 
@@ -2196,7 +2196,12 @@ ssh root@51.38.80.36
 cd /srv/framecast
 docker compose pull
 docker compose up -d
-docker compose exec app-prod npx prisma migrate deploy
+# Migrations run from the WORKER image, not the app image. The app's runtime
+# stage copies only `public`, `.next/standalone` and `.next/static` — it has
+# no Prisma schema, no migrations directory and no CLI, so `prisma migrate
+# deploy` there has nothing to apply. The worker image does `COPY . .`, so it
+# carries the schema, the migrations and `scripts/`.
+docker compose exec worker-prod npx prisma migrate deploy
 ```
 
 - [ ] **Step 9: Commit**
