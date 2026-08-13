@@ -24,6 +24,17 @@ config({ path: ".env" });
 // last thing in the repository that still needs the Supabase client; it is a
 // devDependency for exactly that reason, not a runtime one.
 //
+// MIGRATE_ALLOW_OVERSIZE=true lifts `putObject`'s 50MB per-object cap for this
+// script only (see `allowOversize` in src/lib/storage.ts). Default off, because
+// copying an unexpectedly huge object onto a 40GB disk should be a decision,
+// not a default — but there is a real one to make: the cap's own comment
+// records a 70.9MB clip, and such an object fails identically on every re-run,
+// so "investigate and re-run" never clears it. Leaving it uncopied is not
+// neutral. `reclaimClipStorage` in publish.service.ts passes every clip path
+// for a video to `removeObjects`, which throws if any one of them is missing,
+// so a single uncopied clip blocks reclaim for that whole video forever and
+// strands ~400MB. Re-run with the flag set; already-copied objects are skipped.
+//
 // STORAGE_ROOT *is* still in `@/config/env`'s schema, for the app's own use —
 // but that schema defaults it to a git-ignored relative path rather than
 // failing when it's unset, which is exactly wrong for this script: a
@@ -62,6 +73,9 @@ async function main(): Promise<void> {
   const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
   const SUPABASE_STORAGE_BUCKET = requireEnv("SUPABASE_STORAGE_BUCKET");
   const STORAGE_ROOT = requireEnv("STORAGE_ROOT");
+  // Opt-in, exactly "true" — see this file's header for when to set it and
+  // what leaving an object uncopied actually costs.
+  const ALLOW_OVERSIZE = process.env.MIGRATE_ALLOW_OVERSIZE === "true";
 
   const { resolve } = await import("node:path");
   const { createClient } = await import("@supabase/supabase-js");
@@ -160,7 +174,7 @@ async function main(): Promise<void> {
       // an empty sidecar, which is exactly the case this fallback exists for.
       const contentType = entry.metadata?.mimetype || data.type || "application/octet-stream";
 
-      await putObject(path, buffer, contentType);
+      await putObject(path, buffer, contentType, { allowOversize: ALLOW_OVERSIZE });
 
       counts.copied += 1;
       console.log(
@@ -170,6 +184,16 @@ async function main(): Promise<void> {
       counts.failed += 1;
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[${processed()}] FAILED: ${path} — ${message}`);
+      // A size refusal is the one failure that is guaranteed to repeat
+      // identically on every re-run, so "re-run this script" is useless advice
+      // for it. Say so at the point it happens rather than only in the summary.
+      if (message.includes("per-object limit")) {
+        console.error(
+          "         This will fail the same way every re-run. Set " +
+            "MIGRATE_ALLOW_OVERSIZE=true to copy it anyway — see this " +
+            "script's header, and Step 6.1 of docs/vps-deployment.md.",
+        );
+      }
     }
   }
 

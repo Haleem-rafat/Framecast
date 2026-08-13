@@ -98,15 +98,39 @@ export async function ensureBucket(): Promise<void> {
   await mkdir(ROOT, { recursive: true });
 }
 
+/**
+ * `allowOversize` exists for exactly one caller: `scripts/migrate-storage.ts`,
+ * which is deleted once the OVH migration has run (see its header comment).
+ * No application code may pass it.
+ *
+ * The cap above is a policy about *new* content this codebase produces. A
+ * migration copying an object that already exists upstream is not producing
+ * anything — and the object it refuses is the one the cap's own comment
+ * records as real: a 70.9MB clip. Refusing it there is worse than storing it,
+ * for a reason that isn't obvious: `publish.service.ts`'s `reclaimClipStorage`
+ * calls `removeObjects` with the whole set for a video, and `removeObjects`
+ * throws if *any* path is missing. One clip that never arrived therefore
+ * blocks reclaim for that entire video, permanently, leaving ~400MB on a 40GB
+ * disk — the exact outcome the reclaim exists to prevent.
+ */
 export async function putObject(
   path: string,
   body: Buffer,
   contentType: string,
+  options: { allowOversize?: boolean } = {},
 ): Promise<string> {
-  if (body.byteLength > OBJECT_SIZE_LIMIT_BYTES) {
+  if (!options.allowOversize && body.byteLength > OBJECT_SIZE_LIMIT_BYTES) {
     throw new InternalError(
       `Refusing to store ${path}: ${formatMegabytes(body.byteLength)} exceeds ` +
         `the ${formatMegabytes(OBJECT_SIZE_LIMIT_BYTES)} per-object limit.`,
+    );
+  }
+
+  if (options.allowOversize && body.byteLength > OBJECT_SIZE_LIMIT_BYTES) {
+    console.warn(
+      `Storing ${path} at ${formatMegabytes(body.byteLength)}, past the ` +
+        `${formatMegabytes(OBJECT_SIZE_LIMIT_BYTES)} per-object limit, because ` +
+        "the caller asked for allowOversize.",
     );
   }
 

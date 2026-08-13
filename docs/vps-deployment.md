@@ -404,6 +404,44 @@ the bucket, and a final total; a non-zero exit means at least one object
 failed and should be investigated before moving on — re-running is safe and
 only retries what didn't already land.
 
+#### When an object will not copy
+
+"Re-run it" clears a network blip. It does not clear a failure that is a
+property of the object itself, and there is one of those: `putObject` refuses
+anything over 50MB (`src/lib/storage.ts`), and the comment on that limit
+records a real 70.9MB clip. Such an object fails identically every time.
+
+**Do not shrug and move on.** An uncopied clip is not just a missing file.
+`reclaimClipStorage` in `publish.service.ts` hands *every* clip path for a
+video to `removeObjects`, which throws if any one of them is missing — so a
+single clip that never arrived blocks the post-publish reclaim for that whole
+video, permanently, leaving roughly 400MB on a 40GB disk. That is precisely
+the outcome the reclaim exists to prevent.
+
+In order:
+
+1. **If the failure names the per-object limit**, re-run the same command with
+   `-e MIGRATE_ALLOW_OVERSIZE=true` added. That lifts the cap for this script
+   only (see `allowOversize` in `src/lib/storage.ts`). Objects already copied
+   are skipped, so only the refusals are retried. A copy of something that
+   already exists upstream is not new content, which is why the cap does not
+   apply to it.
+2. **If it still will not copy** — the object is gone from Supabase, corrupt,
+   or unreadable — then it is not coming, and the row pointing at it has to
+   stop pointing at it. Soft-delete just that `asset` row so
+   `reclaimClipStorage` (which filters `deletedAt: null`) never asks for it:
+
+   ```bash
+   docker compose exec postgres psql -U "$POSTGRES_USER" -d framecast \
+     -c "UPDATE asset SET \"deletedAt\" = now() WHERE \"storagePath\" = '<the path the script printed>' AND \"deletedAt\" IS NULL;"
+   ```
+
+   Do this **after** Step 6.3 has restored the database — there are no rows to
+   update before then. Run it once per uncopyable path, using the exact path
+   from the script's `FAILED:` line. The video loses that one clip; every
+   other clip it owns still gets reclaimed on publish, which is the whole
+   point.
+
 ### Step 6.2: Copy the six finished renders
 
 **Requires the Vercel Blob store to be un-suspended first** — suspended
