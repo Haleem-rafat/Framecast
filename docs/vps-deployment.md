@@ -502,8 +502,29 @@ pg_dump "$DIRECT_URL" --no-owner --no-acl --format=custom --file=framecast.dump
 scp framecast.dump root@51.38.80.36:/tmp/
 ```
 
-**On the server** (`ssh root@51.38.80.36`, then `cd /srv/framecast`), copy
-the dump into the running `postgres` container and restore it:
+**On the server** (`ssh root@51.38.80.36`, then `cd /srv/framecast`), **stop
+the production app and worker before restoring anything**:
+
+```bash
+docker compose stop app-prod worker-prod
+```
+
+**This is not optional and it is not tidiness.** Step 8 started both, and
+`docker compose up -d` keeps them up. `worker-prod` polls for claimable work
+every five seconds, and the instant `pg_restore` lands it is looking at real
+production videos — before Step 6.4 has rewritten a single `outputUrl`, and
+before the `CREDENTIAL_ENCRYPTION_KEY` check in Step 6.5 that this runbook
+calls a hard stop. That gate stops the *operator* proceeding; it does not
+stop a process that is already running. `app-prod` is in the same position:
+it is reachable through the `/etc/hosts` entries added in Step 8, and one
+Publish click runs `publish()`, which deletes the video's clips and its
+render on success (see Step 9 — this is the same destructive path that step
+takes Vercel offline to close).
+
+Postgres stays up: it is what the restore targets, and nothing else writes to
+it once these two are stopped.
+
+Then copy the dump into the `postgres` container and restore it:
 
 ```bash
 docker compose cp /tmp/framecast.dump postgres:/tmp/
@@ -527,12 +548,20 @@ is no route to this database from the Mac to fall back to.
 `RenderJob.outputUrl` held an absolute Blob URL; it now holds a path
 relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`), or null for a
 render that wasn't copied. The rewrite is two parts, both **on the server**,
-from `/srv/framecast`, run inside the already-running **`worker-prod`**
-container:
+from `/srv/framecast`, run in a **`worker-prod`** container:
 
 ```bash
-docker compose exec worker-prod npx prisma migrate deploy
+docker compose run --rm worker-prod npx prisma migrate deploy
 ```
+
+**`run --rm`, not `exec`** — `worker-prod` is stopped as of Step 6.3, so
+there is no running container to `exec` into. `run --rm` starts a throwaway
+one that executes only the command it is given and then removes itself, which
+is exactly what is wanted here: it uses the same image, the same `prod.env`
+and the same bind mounts, but it never enters the poll loop, so it cannot
+claim a video while the database is still half-migrated. (This is the same
+substitution the runbook already makes for `worker-staging`, for the same
+mechanical reason.)
 
 **Why `worker-prod` and not `app-prod`:** `app-prod`'s image is a
 standalone Next.js build that carries no Prisma schema, no migrations
@@ -555,15 +584,15 @@ from whatever was already committed. Nulling everything unconditionally and
 re-pointing separately, below, needs none of that.)
 
 ```bash
-docker compose exec worker-prod npx tsx --conditions=react-server scripts/relink-renders.ts
+docker compose run --rm worker-prod npx tsx --conditions=react-server scripts/relink-renders.ts
 ```
 
 `scripts/relink-renders.ts` re-points `outputUrl` back to a real path for
 every `RenderJob` row whose render is actually present at `RENDER_ROOT`
-**in this same container** — checked against the filesystem directly, not
-against anything printed by Step 6.2 on a different machine (nor, this
-time, on a different container: `worker-prod`'s `/data/renders` is the same
-bind mount Step 6.2 wrote to). It prints how many rows it re-pointed; Step
+**from this same image and mounts** — checked against the filesystem
+directly, not against anything printed by Step 6.2 on a different machine
+(nor, this time, on a different container: every `worker-prod` container,
+running or throwaway, mounts the same `/data/renders` Step 6.2 wrote to). It prints how many rows it re-pointed; Step
 6.5 checks that count against the database. Re-running it later (after
 restoring Blob billing and re-running Step 6.2) picks up whatever's newly on
 disk — it only ever touches a row that's currently null, so nothing already
@@ -578,7 +607,7 @@ Then confirm Prisma agrees the schema is current — same container, same
 directory:
 
 ```bash
-docker compose exec worker-prod npx prisma migrate status
+docker compose run --rm worker-prod npx prisma migrate status
 ```
 
 Expected: `Database schema is up to date!`
@@ -613,7 +642,20 @@ du -sh /srv/framecast/prod
 find /srv/framecast/prod/renders -name '*.tmp-*'
 ```
 
-Then, sign in to the running app and open the Providers page. **DNS hasn't
+Then start **`app-prod` only** — not `worker-prod` — and sign in:
+
+```bash
+docker compose up -d app-prod
+```
+
+The Providers page is the check, and it needs a running app to be checked
+against. `worker-prod` does not: it is the unattended actor, so it stays down
+until the check below has passed. While `app-prod` is up, **do not click
+Publish on anything** — `publish()` deletes a video's clips and its render on
+success, and nothing here has verified that the data underneath it is correct
+yet. Sign in, look at the Providers page, and touch nothing else.
+
+**DNS hasn't
 moved yet at this point either — Step 11 comes after this, not before —**
 and by this point in the runbook Step 9 has also paused the Vercel app, so
 `https://framecasts.com` the normal way reaches neither the VPS nor a live
@@ -630,6 +672,20 @@ this page that cannot be checked any other way. **Do not proceed past this
 check.** Everything else here can be redone if something is wrong; a wrong
 encryption key cannot — every credential ever saved becomes unrecoverable
 the moment it fails to decrypt.
+
+**Once, and only once, that check has passed**, bring the worker back:
+
+```bash
+docker compose up -d worker-prod
+```
+
+This is the first moment production is genuinely running on the VPS: the data
+is restored, `outputUrl` is rewritten, the encryption key is proven, and only
+now is anything allowed to pick up work on its own. If the check did **not**
+pass, leave `worker-prod` stopped and stop `app-prod` again
+(`docker compose stop app-prod`) while you work out what went wrong — a
+half-correct production stack serving and rendering is worse than one that is
+simply off.
 
 ## Step 7: Nightly backups to R2, and a restore that was actually performed
 
