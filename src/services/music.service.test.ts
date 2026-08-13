@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { MusicService } from "@/services/music.service";
 import type { MusicTrack } from "@/services/providers/types";
 
-// Tests run against a real, shared Supabase database and storage bucket (see
+// Tests run against a real, shared Postgres database and the real storage root (see
 // src/test/setup.ts). An Asset carries no videoId column — it is scoped by its
 // `videos/{videoId}/` storage prefix, the same convention render.service.ts
 // queries by — so a throwaway uuid is a sufficient tenant here and no Video
@@ -20,7 +20,7 @@ vi.setConfig({ testTimeout: 15_000 });
  * has to chase down in the operator's real storage.
  *
  * "real" is the default and every existing test keeps using it. "throw" is a
- * Supabase outage; "noop" pretends the upload succeeded so the *next* step
+ * storage failure; "noop" pretends the upload succeeded so the *next* step
  * (the Asset insert) can be the thing that fails, without leaving an object
  * behind for a test that never gets as far as recording it.
  */
@@ -33,7 +33,7 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     ...actual,
     putObject: async (...args: Parameters<typeof actual.putObject>) => {
       if (storage.putObject === "throw") {
-        throw new Error("supabase storage is unavailable");
+        throw new Error("storage is unavailable");
       }
       if (storage.putObject === "noop") {
         return;
@@ -57,10 +57,10 @@ const track: MusicTrack = {
 /**
  * Answers the track download and passes everything else to the real `fetch`.
  *
- * Replacing `global.fetch` outright is not an option here: the Supabase
- * storage client uses `fetch` internally, so a blanket stub makes `putObject`
- * receive the fake audio response and fail with "result.json is not a
- * function" — a test artefact that looks exactly like a bug in the service.
+ * Replacing `global.fetch` outright is not an option here: other code on this
+ * path uses `fetch` internally, so a blanket stub makes an unrelated call
+ * receive the fake audio response and fail in a way that looks exactly like a
+ * bug in the service rather than a test artefact.
  */
 function stubTrackDownload(response: Partial<Response>): ReturnType<typeof vi.fn> {
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -11,7 +11,7 @@ import type { StockClip, StockFootageProvider } from "@/services/providers/types
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database and storage bucket (see
+// Tests run against a real, shared Postgres database and the real storage root (see
 // src/test/setup.ts and src/lib/storage.ts) that also holds the operator's
 // real data. Every test in this file gets its own private, throwaway User
 // (see src/test/fixtures.ts) instead of the operator's real account. The

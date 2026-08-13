@@ -9,7 +9,7 @@ import { projectService } from "@/services/project.service";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test in this file gets its
 // own private, throwaway User (see src/test/fixtures.ts) instead of the
 // operator's real account, so this file's fixtures can never collide with —

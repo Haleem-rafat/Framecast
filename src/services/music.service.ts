@@ -35,7 +35,7 @@ export class MusicService {
    * What makes it worth a wrapper rather than a promise in a comment: the one
    * caller, `RenderService.render`, calls this *after* every segment and
    * transition has already been encoded — roughly fifty FFmpeg runs and
-   * fifteen-odd minutes of work on a real video. A transient Supabase error
+   * fifteen-odd minutes of work on a real video. A transient storage error
    * while storing the bed used to escape from here, land in render's catch,
    * and mark the whole video FAILED, discarding all of it for the sake of
    * background music. Every step below is individually guarded, and this
@@ -100,7 +100,7 @@ export class MusicService {
 
       const path = storagePath(videoId, "music", "bed.mp3");
 
-      // Storing the bed is as fallible as fetching it — a Supabase blip, a
+      // Storing the bed is as fallible as fetching it — a failed write, a
       // rejected insert — and it sits inside the same loop for the same
       // reason: whatever went wrong here, the answer is to try the next
       // candidate and, failing that, render without music. Nothing about a

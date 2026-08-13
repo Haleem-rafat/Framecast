@@ -83,8 +83,8 @@ services:
     # ConflictError("This video is already being published.") while YouTube may
     # already hold the video. Do not trim this back.
     mem_limit: 1024m
-    # Matches the UID:GID the image already runs as (app/Dockerfile's `USER
-    # nextjs`, created at 1001:1001). Stated explicitly here, not just in the
+    # Matches the UID:GID the image already runs as (the repo-root
+    # `Dockerfile`'s `USER nextjs`, created at 1001:1001). Stated explicitly here, not just in the
     # image, because it is also the contract with the bind-mounted host
     # directories below: /srv/framecast/prod/{storage,renders} must be
     # chowned to 1001:1001 in provisioning, or this container can read what

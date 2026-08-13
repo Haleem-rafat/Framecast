@@ -19,11 +19,11 @@ function clampPerPage(count: number, max: number, min = 1): number {
 //
 // Discovered live: a real search returned a clip 111s long and 70.9MB at
 // 1920x1080. footage.service.ts only ever plays SECONDS_PER_CLIP (12s) of
-// any clip it downloads — the rest is decoded to disk, uploaded to Supabase,
-// and then never used. That one clip took 2m38s to download and then failed
-// the upload outright: Supabase's per-object limit on this plan is 50MB, and
-// there was no ceiling here stopping a candidate that size from being picked
-// in the first place.
+// any clip it downloads — the rest is decoded to disk, written to storage,
+// and then never used. That one clip took 2m38s to download and was then
+// refused by storage outright: the per-object limit was, and still is, 50MB
+// (storage.ts's OBJECT_SIZE_LIMIT_BYTES), and there was no ceiling here
+// stopping a candidate that size from being picked in the first place.
 //
 // The fix is a duration band, not a size cap alone, because size and
 // duration both point the same direction and duration is free (both APIs
@@ -41,9 +41,9 @@ function clampPerPage(count: number, max: number, min = 1): number {
 const MIN_CLIP_DURATION_SECONDS = 6;
 const MAX_CLIP_DURATION_SECONDS = 30;
 
-/** Comfortably under Supabase's 50MB per-object limit (see storage.ts's
- * `ensureBucket`) — leaves headroom for the estimate below to be slightly
- * off before it becomes an upload failure instead of a skip. */
+/** Comfortably under storage.ts's 50MB `OBJECT_SIZE_LIMIT_BYTES` — leaves
+ * headroom for the estimate below to be slightly off before it becomes a
+ * write failure instead of a skip. */
 const MAX_CLIP_SIZE_BYTES = 40 * 1024 * 1024;
 
 /** Ask each API for more candidates than the caller actually needs, so that

@@ -21,7 +21,7 @@ import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 import { GET } from "./route";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // and the real local render store (RENDER_ROOT, see render-storage.ts) —
 // every test gets its own throwaway User (src/test/fixtures.ts) and cleans
 // up whatever render it wrote in afterEach.

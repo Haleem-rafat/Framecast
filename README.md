@@ -13,7 +13,7 @@ Single-operator today. Every table is already scoped by `userId` and every query
 | Backend  | Server Actions + Route Handlers, service classes                |
 | Data     | PostgreSQL 17, Prisma 7 (`prisma-client` + `@prisma/adapter-pg`) |
 | Auth     | Better Auth (email/password, Prisma adapter)                    |
-| Storage  | Supabase Storage                                                |
+| Storage  | Local disk (`STORAGE_ROOT` for objects, `RENDER_ROOT` for renders) |
 | Video    | FFmpeg                                                          |
 | Deploy   | Docker + Docker Compose                                         |
 

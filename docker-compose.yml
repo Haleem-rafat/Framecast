@@ -39,9 +39,11 @@ services:
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      SUPABASE_URL: ${SUPABASE_URL:-}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
-      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-framecast}
+      # Objects live on local disk now, not in a bucket. Left at the image's
+      # own defaults (src/config/env.ts) rather than set here: this stack is
+      # for local work, and a container-internal path is exactly what a
+      # throwaway `docker compose --profile full up` wants. Set STORAGE_ROOT
+      # and RENDER_ROOT with volumes if you need what it writes to survive.
     ports:
       - "3000:3000"
 

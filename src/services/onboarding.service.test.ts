@@ -10,7 +10,7 @@ import { providerCredentialService } from "@/services/provider-credential.servic
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { videoService } from "@/services/video.service";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts).
+// Tests run against a real, shared Postgres database (see src/test/setup.ts).
 // Rather than reuse the shared dev user (whose channel/project/video counts
 // this file can't control), each test gets its own fresh, run-tagged User —
 // deleting it cascades away every fixture the test created, so cleanup is

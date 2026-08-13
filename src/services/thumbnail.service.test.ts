@@ -94,10 +94,10 @@ const PNG_BYTES = Buffer.concat([
  * pointing at it, plus a video whose project is assigned to that channel —
  * i.e. exactly what an operator gets after `logoService.choose`.
  *
- * `ChannelBrand.logoPath` is a Supabase object key, not a filesystem path;
- * writing a real object and storing its real key is the whole point, since a
- * key that happens to exist locally would prove nothing about the download
- * this exercises.
+ * `ChannelBrand.logoPath` is a storage key (relative to `STORAGE_ROOT`), not a
+ * path FFmpeg can open; writing a real object and storing its real key is the
+ * whole point, since a key that happens to resolve from the working directory
+ * would prove nothing about the copy this exercises.
  */
 async function makeVideoWithLogo(): Promise<{
   videoId: string;
@@ -250,7 +250,7 @@ describe("ThumbnailService.generate", () => {
     );
     storedPaths.push(path!);
 
-    // Not just that the path exists: what Supabase actually recorded as the
+    // Not just that the path exists: what storage actually recorded as the
     // object's content type must match the bytes it received, or a later
     // reader (e.g. Task 8's YouTube upload) trusting the declared type over
     // the bytes gets misled the same way an unconditional "image/jpeg"
@@ -289,7 +289,7 @@ describe("ThumbnailService.generate", () => {
     const movieSource = /movie=([^,]+)/.exec(filter)?.[1];
     expect(movieSource).toBeDefined();
 
-    // The bug this exists for: `ChannelBrand.logoPath` is a Supabase object
+    // The bug this exists for: `ChannelBrand.logoPath` is a storage object
     // key, and passing it straight through put it inside `movie=` where
     // FFmpeg tried to open it as a file. It cannot, and a `movie=` source
     // that won't open fails the entire filter graph — so choosing a logo

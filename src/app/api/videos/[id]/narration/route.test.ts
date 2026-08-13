@@ -20,7 +20,7 @@ import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 import { GET } from "./route";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // and the real local storage root (see storage.ts) — every test gets its own
 // throwaway User (src/test/fixtures.ts) and its own throwaway storage object,
 // cleaned up in afterEach.

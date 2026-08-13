@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Tests run against a real, shared Supabase database (see src/test/setup.ts)
+ * Tests run against a real, shared Postgres database (see src/test/setup.ts)
  * that also holds the operator's real data. `prisma.user.findFirstOrThrow()`
  * used to be how service tests obtained a `userId` — which silently returned
  * the operator's real account. Any table unique on `userId` (e.g.

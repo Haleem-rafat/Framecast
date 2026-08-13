@@ -19,7 +19,7 @@ import {
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database and storage bucket (see
+// Tests run against a real, shared Postgres database and the real storage root (see
 // src/test/setup.ts and src/lib/storage.ts) that also holds the operator's
 // real data. Every test in this file gets its own private, throwaway User
 // (see src/test/fixtures.ts). YouTube itself is never called: `fetch` is
@@ -29,7 +29,7 @@ import { createTestUser, deleteTestUser } from "@/test/fixtures";
 const RUN = randomUUID().slice(0, 8);
 const PROJECT_NAME = `test-publish-${RUN}`;
 
-// Several tests make multiple live round trips to Supabase storage/DB
+// Several tests make multiple live round trips to storage and the database
 // (connect a channel, create a project/video/script, upload fake render
 // bytes, then download them back inside publish()) — comfortably past
 // Vitest's 5s default under network variance, same rationale as
@@ -240,7 +240,7 @@ async function makePublishableVideo(
     });
   }
 
-  // The render itself lives on local disk, not Supabase — see
+  // The render itself lives under RENDER_ROOT, separate from STORAGE_ROOT — see
   // render-storage.ts. `outputUrl` is the same value `RenderService.render`
   // would have written to `RenderJob.outputUrl`.
   let outputUrl: string;

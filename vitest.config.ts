@@ -21,10 +21,10 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    // Service tests run against a real Supabase database in another region, so
-    // a single round trip costs ~130ms and a stage that uploads to storage costs
-    // seconds. Vitest's 5s default fails honest tests for being far away rather
-    // than for being wrong.
+    // Service tests run against a real Postgres database and the real storage
+    // root, not against mocks, so a stage that writes objects costs seconds and
+    // a remote database costs a round trip per query. Vitest's 5s default fails
+    // honest tests for being slow rather than for being wrong.
     testTimeout: 20_000,
     hookTimeout: 20_000,
     setupFiles: ["src/test/setup.ts"],

@@ -8,7 +8,7 @@ import type { VideoStatus } from "@/generated/prisma/enums";
 import { jobService, MAX_ATTEMPTS } from "@/services/job.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test in this file gets its
 // own private, throwaway User (see src/test/fixtures.ts) instead of the
 // operator's real account, so this file's own fixtures can never collide with
@@ -69,7 +69,7 @@ async function resetToQueued(videoId: string): Promise<void> {
 describe("jobService.claimNext", () => {
   // claimNext scans every Video row system-wide by design — there is no
   // per-user queue for it to look in, `Video.status = QUEUED` *is* the
-  // queue. Run unmodified against the shared Supabase database, that scan
+  // queue. Run unmodified against the shared Postgres database, that scan
   // would also see the operator's own real QUEUED videos (there are several
   // as of this writing) and could actually claim one: flip it to
   // GENERATING, burn one of its three retry attempts, and leave a fake

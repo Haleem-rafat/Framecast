@@ -95,8 +95,8 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
  * as-is, and `GeneratedImage` (providers/types.ts) carries no format field
  * to say what they are: image models commonly return PNG, some return
  * JPEG. Assuming JPEG unconditionally, as the raw path used to, would store
- * PNG bytes under an `image/jpeg` content-type — harmless to Supabase,
- * which stores whatever it is given, but a landmine for whatever reads
+ * PNG bytes under an `image/jpeg` content-type — harmless to the storage
+ * layer, which stores whatever it is given, but a landmine for whatever reads
  * `ThumbnailVersion.imageUrl` next (Task 8's YouTube upload) and trusts the
  * declared type instead of re-sniffing it. A signature check is cheap
  * insurance; anything that isn't recognisably PNG — real JPEG bytes, or
@@ -255,10 +255,10 @@ export class ThumbnailService {
    *
    * The upload happens before the transaction opens, same as
    * `VoiceOverService`'s own storage write and for the same reason: a
-   * network call to Supabase Storage inside a Postgres transaction would
-   * hold that transaction's connection (and any row locks it has taken)
-   * open for the length of the upload, and `voiceover.service.ts` already
-   * documents where that leads against a remote database.
+   * storage write inside a Postgres transaction would hold that
+   * transaction's connection (and any row locks it has taken) open for the
+   * length of the write, and `voiceover.service.ts` already documents where
+   * that leads.
    *
    * The object key includes a random token precisely because that ordering
    * is not atomic with the version-number read above it: two concurrent
@@ -339,13 +339,14 @@ export class ThumbnailService {
   }
 
   /**
-   * Copies the channel's logo out of Supabase Storage and into `tempDir`,
+   * Copies the channel's logo out of object storage and into `tempDir`,
    * returning the local path FFmpeg can actually open.
    *
-   * `ChannelBrand.logoPath` is a Supabase *object key* — `logo.service.ts`
-   * writes it via `storagePath(channelId, "logos", ...)` and stores exactly
-   * what `putObject` returns. It is not a filesystem path and nothing on the
-   * machine running FFmpeg has ever had a file at it. Handing it straight to
+   * `ChannelBrand.logoPath` is a *storage key* — `logo.service.ts` writes it
+   * via `storagePath(channelId, "logos", ...)` and stores exactly what
+   * `putObject` returns. It is a path relative to `STORAGE_ROOT`, resolvable
+   * only by `src/lib/storage.ts`, and not something FFmpeg's own working
+   * directory has ever had a file at. Handing it straight to
    * `buildThumbnailArgs` (as this did) put it inside a `movie=` source
    * filter, which fails to open it, which fails the *whole* filter graph —
    * so choosing a logo did not just lose the watermark, it silently lost the

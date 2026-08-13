@@ -2,7 +2,7 @@ import { config } from "dotenv";
 
 import { formatElapsed } from "@/utils/format";
 
-// .env.local holds the Supabase values written by `vercel env pull`; it must load
+// .env.local holds local overrides; it must load
 // first so it overrides the local docker-compose defaults in .env. Mirrors
 // prisma.config.ts exactly.
 config({ path: ".env.local" });

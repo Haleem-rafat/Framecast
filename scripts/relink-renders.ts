@@ -1,6 +1,6 @@
 import { config } from "dotenv";
 
-// .env.local holds locally-pulled values written by `vercel env pull`; it must
+// .env.local holds local overrides; it must
 // load first so it overrides the local docker-compose defaults in .env.
 // Mirrors src/lib/prisma.ts and prisma.config.ts exactly.
 config({ path: ".env.local" });

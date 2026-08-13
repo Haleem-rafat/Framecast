@@ -40,9 +40,9 @@ docker compose stop worker-staging
 ## File ownership: the host directories must be chowned to 1001:1001 before first start
 
 `app-prod`, `worker-prod`, `app-staging`, and `worker-staging` all run as
-**UID 1001, GID 1001** — a non-root user baked into both images
-(`app/Dockerfile`'s `nextjs` user and `worker/Dockerfile`'s `worker` user)
-and stated again explicitly in this Compose file as `user: "1001:1001"` on
+**UID 1001, GID 1001** — a non-root user baked into both images (the
+repo-root `Dockerfile`'s `nextjs` user and `worker/Dockerfile`'s `worker`
+user) and stated again explicitly in this Compose file as `user: "1001:1001"` on
 each of the four services, so the contract doesn't depend on nobody ever
 changing an image's `USER` line.
 

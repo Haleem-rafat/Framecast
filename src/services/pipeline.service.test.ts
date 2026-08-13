@@ -11,7 +11,7 @@ import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 import { formatDuration } from "@/utils/format";
 
-// Tests run against a real, shared Supabase database (see src/test/setup.ts)
+// Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test gets its own private,
 // throwaway User (see src/test/fixtures.ts). This file only ever reads rows
 // it writes itself directly via prisma — narration/footage/render are owned

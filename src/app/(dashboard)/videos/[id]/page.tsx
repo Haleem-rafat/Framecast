@@ -179,9 +179,9 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
       />
 
       {/* Everything below streams. Previously this page awaited the pipeline
-       * state, the log stream, a Vercel Blob HEAD and a Supabase signed URL
-       * before rendering a single element, so the whole route sat on its
-       * skeleton for the slowest of the four and then appeared at once. The
+       * state, the log stream, a remote HEAD on the render and a signed URL
+       * for the narration before rendering a single element, so the whole
+       * route sat on its skeleton for the slowest of the four and then appeared at once. The
        * header and script come from the query already resolved above and have
        * no reason to wait on any of that. */}
       {video.status !== "DRAFT" && (

@@ -181,8 +181,8 @@ export class VideoService {
    * schema.prisma's top comment). The row — and everything Cascade-deletes
    * off it transitively (script, voice-over, scenes, render jobs,
    * publication, status events) — stays in Postgres, just excluded from
-   * every `deletedAt: null` query from here on. The render's Vercel Blob
-   * file and any Supabase-stored scene assets are deliberately left in
+   * every `deletedAt: null` query from here on. The render under
+   * `RENDER_ROOT` and any stored scene assets are deliberately left in
    * place: destroying the underlying files here would make this exactly as
    * unrecoverable as a hard delete, which defeats the point of soft
    * deleting at all. Deleting Framecast's record of a video never touches
