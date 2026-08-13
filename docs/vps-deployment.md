@@ -37,12 +37,30 @@ own workstation:
 ssh-copy-id root@51.38.80.36
 ```
 
-Then, **in a second terminal, with the first one still open**, confirm a
-plain `ssh root@51.38.80.36` logs in with no password prompt. Only proceed
-past Step 1 once that succeeds. Keep the first terminal's session open until
-you've confirmed the second one still works after Step 1 runs — that way a
-mistake leaves you one still-open session to fix it from, instead of a
-locked door.
+`ssh-copy-id` connects once, installs the key, and disconnects — it leaves
+nothing running. It is not the fallback. Do these two things, in order,
+before Step 1 runs anything:
+
+1. In a **second terminal**, confirm a plain `ssh root@51.38.80.36` logs in
+   with no password prompt. Only proceed once that succeeds.
+2. In that same second terminal, **stay logged in** — you now have a real,
+   persistent `ssh root@51.38.80.36` session open. Keep it connected through
+   all of Step 1, including the point where it disables password auth and
+   reloads `sshd`. This session is the only way back into the box if the key
+   turns out not to work after all (a wrong key pushed, a permissions
+   problem `ssh-copy-id` didn't catch, anything else). It is already
+   authenticated, so it stays usable even after password login is turned
+   off and even if a *new* login with the key would now fail for some
+   reason. **Closing it before you've verified everything in Step 1 is what
+   locks you out** — a third terminal opened after Step 1 runs is not a
+   substitute; if the key doesn't actually work, that third terminal simply
+   won't connect, keys or password.
+
+Run Step 1's `scp`/`ssh` commands below from a **third** terminal, leaving
+the second terminal's already-open, already-authenticated session untouched
+throughout. Only close the second terminal once you've confirmed, from a
+brand-new fourth terminal, that `ssh root@51.38.80.36` still logs in after
+Step 1 has run.
 
 ## Step 1: Harden the host
 
@@ -85,24 +103,42 @@ Two things the script deliberately leaves for you to do by hand, and why:
 
 ## Step 2: Swap
 
-Handled by `provision.sh`. Recorded here for why it's there: 4 GB with
-Postgres, two Next.js processes and ffmpeg running is tight. A 2 GB swap
-file turns a memory spike into a slowdown instead of the kernel OOM-killing
-a container — on top of, not instead of, the per-container `mem_limit`s
-already set in `deploy/docker-compose.yml` (see `deploy/README.md`'s
-"Memory limits" section for how those two mechanisms interact).
-`vm.swappiness=10` tells the kernel to prefer reclaiming page cache over
-swapping out a live process, since page cache is cheap to refill and a
-swapped-out Postgres backend is not.
+Handled by `provision.sh`, which runs (guarding each part so a re-run
+neither duplicates the swapfile nor duplicates the `/etc/fstab`/
+`sysctl.conf` lines):
+
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile
+mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab   # only if not already present
+
+sysctl -w vm.swappiness=10
+echo 'vm.swappiness=10' >> /etc/sysctl.conf       # or replaces an existing line
+```
+
+Why it's there: 4 GB with Postgres, two Next.js processes and ffmpeg running
+is tight. A 2 GB swap file turns a memory spike into a slowdown instead of
+the kernel OOM-killing a container — on top of, not instead of, the
+per-container `mem_limit`s already set in `deploy/docker-compose.yml` (see
+`deploy/README.md`'s "Memory limits" section for how those two mechanisms
+interact). `vm.swappiness=10` tells the kernel to prefer reclaiming page
+cache over swapping out a live process, since page cache is cheap to refill
+and a swapped-out Postgres backend is not.
 
 ## Step 3: Docker
 
-Also handled by `provision.sh`, via `get.docker.com`'s install script. The
-script's own final lines print `docker --version` and
-`docker compose version` — confirm both produced real version strings
-before moving on; a silent failure here would otherwise only surface later,
-confusingly, when Step 4's `docker compose up` (a later runbook section)
-can't find `docker` at all.
+Also handled by `provision.sh`:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+docker --version && docker compose version
+```
+
+Skipped if `docker` is already on the `PATH`, so a re-run doesn't reinstall
+over a working setup. Confirm both version commands print real version
+strings before moving on; a silent failure here would otherwise only
+surface later, confusingly, when Step 4's `docker compose up` (a later
+runbook section) can't find `docker` at all.
 
 ## Step 4: Directory tree, and why the chown is not optional
 
@@ -229,11 +265,16 @@ recovery path from that; it is not a bug that gets fixed by looking harder.
 **Verify by comparing, not by running anything:** open the value from the
 current deployment's environment and the value you're about to paste into
 `prod.env` side by side and confirm they match character for character
-before saving. The only true end-to-end confirmation is behavioral and
-belongs to a later step in this runbook once the stack is actually up: an
-existing operator's already-saved provider key (e.g. ElevenLabs) must still
-decrypt without error. Prove that in staging before it matters in
-production.
+before saving. That's the only check this page can offer — the stack isn't
+running yet at the point Step 5 happens.
+
+**The real end-to-end proof is deliberately deferred, not forgotten.** It's
+behavioral: once the stack is up (a later section of this runbook, still
+unwritten as of this page), an existing operator's already-saved provider
+key (e.g. ElevenLabs) must still decrypt without error. That check can't
+exist until there's a running app to check it against, so it belongs to
+whichever later task first brings the stack up and verifies it end to end —
+prove it in staging before it matters in production.
 
 ### Why `DATABASE_SSL_DISABLE=true` is safe here and only here
 
