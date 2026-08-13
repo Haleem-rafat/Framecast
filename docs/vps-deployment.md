@@ -334,49 +334,59 @@ again after any failure and whatever already succeeded is skipped, not
 redone.
 
 This step assumes the stack is already up (`docker compose up -d` from
-`/srv/framecast` on the server) — the migration runs against a running
-`postgres` container and, for the database steps below, from inside a
-running `app-prod` container.
+`/srv/framecast` on the server). Every command below that runs inside a
+container targets **`worker-prod`**, never `app-prod` — see the explanation
+in Step 6.4, which is where it first matters, for why. `app-prod` is built
+from `Dockerfile` at the repo root, a standalone Next.js runtime image that
+deliberately excludes the Prisma schema, the migrations directory,
+`scripts/`, and every devDependency; `worker-prod` is built from
+`worker/Dockerfile`, which copies the whole source tree and keeps
+devDependencies (it runs the pipeline through `tsx`, itself one), so it is
+the only container in this stack that can run any of these commands at all.
 
 ### Step 6.1: Copy every stored object
 
-Run from the operator's Mac, against the **current production Supabase
-project**:
+**On the server**, from `/srv/framecast`, inside `worker-prod` — the
+Supabase credentials are passed as one-off environment overrides on the
+`exec` itself, never written to `prod.env`:
 
 ```bash
-SUPABASE_URL=... \
-SUPABASE_SERVICE_ROLE_KEY=... \
-SUPABASE_STORAGE_BUCKET=... \
-STORAGE_ROOT=/path/to/srv-mirror/storage \
-pnpm migrate:storage
+docker compose exec \
+  -e SUPABASE_URL=... \
+  -e SUPABASE_SERVICE_ROLE_KEY=... \
+  -e SUPABASE_STORAGE_BUCKET=... \
+  worker-prod npx tsx --conditions=react-server scripts/migrate-storage.ts
 ```
 
+Get the service role key and bucket name from the Supabase dashboard
+(Project Settings → API, and Storage) — never from a file in this repo.
 These three `SUPABASE_*` variables are read straight from the process
-environment, not from `.env`/`.env.local` — Task 6 removed them from
-`src/config/env.ts`'s schema once the app itself stopped needing them, and
-this script deliberately does not resurrect them there. Get the service role
-key and bucket name from the Supabase dashboard (Project Settings → API,
-and Storage), not from any file in this repo.
+environment, not from `.env`/`.env.local`/`prod.env` — Task 6 removed them
+from `src/config/env.ts`'s schema once the app itself stopped needing them,
+and this script deliberately does not resurrect them there.
 
-`STORAGE_ROOT` should point at wherever you're staging the copy before it
-goes to the server — either a local directory you `rsync` across afterward,
-or (with SSH tunnelling or a mounted path) directly at
-`/srv/framecast/prod/storage`. The script prints a running count as it
-recurses the bucket, and a final total; a non-zero exit means at least one
-object failed and should be investigated before moving on — re-running is
-safe and only retries what didn't already land.
+`STORAGE_ROOT` needs no override here: `worker-prod`'s `prod.env` already
+sets it to `/data/storage`, the container-side path bind-mounted from
+`/srv/framecast/prod/storage` (see Step 4) — so the script writes straight
+to its real destination, with no intermediate staging directory or `rsync`
+to get it there afterward. The script prints a running count as it recurses
+the bucket, and a final total; a non-zero exit means at least one object
+failed and should be investigated before moving on — re-running is safe and
+only retries what didn't already land.
 
 ### Step 6.2: Copy the six finished renders
 
 **Requires the Vercel Blob store to be un-suspended first** — suspended
-means unreadable, not merely slow. Restore billing on the Blob store, then
-run:
+means unreadable, not merely slow. Restore billing on the Blob store, then,
+**on the server**, from `/srv/framecast`, inside `worker-prod`:
 
 ```bash
-BLOB_READ_WRITE_TOKEN=... \
-RENDER_ROOT=/path/to/srv-mirror/renders \
-pnpm migrate:renders
+docker compose exec -e BLOB_READ_WRITE_TOKEN=... \
+  worker-prod npx tsx --conditions=react-server scripts/migrate-renders.ts
 ```
+
+`RENDER_ROOT` is likewise already `/data/renders` via `prod.env` — no
+staging directory, no `rsync`.
 
 If the store is still suspended, the script detects this specifically (via
 `@vercel/blob`'s own `BlobStoreSuspendedError`, checked on every render
@@ -391,16 +401,28 @@ matters — not a broken player pointing at a file that isn't there.
 
 Nothing needs to be copied out of this script's output for the next steps —
 `scripts/relink-renders.ts` (Step 6.4) finds what landed here by checking
-`RENDER_ROOT` directly, from wherever it actually runs, rather than trusting
-anything this script printed on a different machine.
+`RENDER_ROOT` directly, from the same container, rather than trusting
+anything this script printed.
 
 `RENDER_ROOT`'s destination doubles up as `renders/renders/<videoId>.mp4` —
-e.g. `/srv/framecast/prod/renders/renders/…` if `RENDER_ROOT` is
-`/srv/framecast/prod/renders`. That's correct, not a bug to flatten during
-an `rsync`: `RENDER_ROOT` is the directory, and `renderPath()` in
-`src/lib/render-storage.ts` always prefixes its own `renders/` segment on
-top of it. Removing the inner one breaks every path the app resolves
-afterward.
+e.g. `/data/renders/renders/…` inside the container, or
+`/srv/framecast/prod/renders/renders/…` if you inspect it from the host.
+That's correct, not a bug to flatten if you go looking: `RENDER_ROOT` is the
+directory, and `renderPath()` in `src/lib/render-storage.ts` always prefixes
+its own `renders/` segment on top of it. Removing the inner one breaks every
+path the app resolves afterward.
+
+**Testing this against staging first:** `worker-staging` isn't started by
+`docker compose up -d` (see `deploy/docker-compose.yml`), so a bare `exec`
+against it fails with "container is not running." Use `run --rm` instead,
+which starts a throwaway container for just this command and removes it
+afterward rather than leaving a staging worker up and competing with
+production for the box's two cores:
+`docker compose --profile staging-worker run --rm worker-staging npx tsx --conditions=react-server scripts/migrate-storage.ts`
+(and the same substitution for every other `worker-prod` command on this
+page). Task 10 itself only ever migrates the operator's real production
+data, so staging has no equivalent Step 6 of its own — this is only for
+dry-running the mechanism.
 
 ### Step 6.3: Move the database
 
@@ -437,13 +459,19 @@ is no route to this database from the Mac to fall back to.
 `RenderJob.outputUrl` held an absolute Blob URL; it now holds a path
 relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`), or null for a
 render that wasn't copied. The rewrite is two parts, both **on the server**,
-from `/srv/framecast`, run inside the already-running `app-prod`
-container — the same route every other migration in this stack is applied
-by, and the only one that can reach this database at all:
+from `/srv/framecast`, run inside the already-running **`worker-prod`**
+container:
 
 ```bash
-docker compose exec app-prod npx prisma migrate deploy
+docker compose exec worker-prod npx prisma migrate deploy
 ```
+
+**Why `worker-prod` and not `app-prod`:** `app-prod`'s image is a
+standalone Next.js build that carries no Prisma schema, no migrations
+directory, and no CLI — `npx prisma migrate deploy` there would have `npx`
+fetch `prisma` from the network and then fail to find anything to apply,
+silently rather than loudly (see the intro to this step). `worker-prod`
+keeps the full source tree for exactly this kind of reason.
 
 This applies `prisma/migrations/20260813120000_output_url_to_path`, already
 committed, unedited — it needs no video ids and no local changes before
@@ -454,22 +482,24 @@ hand-edited list of video ids pasted in from `migrate-renders.ts`'s output.
 That mechanism is gone: the edit had nowhere correct to live — a version
 committed with real ids would leak production video ids into this public
 repository, and a version edited only on the Mac could never reach the
-database, since the Mac has no route to it and `app-prod`'s image runs from
-whatever was already committed. Nulling everything unconditionally and
+database, since the Mac has no route to it and the container's image runs
+from whatever was already committed. Nulling everything unconditionally and
 re-pointing separately, below, needs none of that.)
 
 ```bash
-docker compose exec app-prod npx tsx --conditions=react-server scripts/relink-renders.ts
+docker compose exec worker-prod npx tsx --conditions=react-server scripts/relink-renders.ts
 ```
 
 `scripts/relink-renders.ts` re-points `outputUrl` back to a real path for
 every `RenderJob` row whose render is actually present at `RENDER_ROOT`
-**on the server** — checked against the filesystem directly, not against
-anything printed by Step 6.2 on a different machine. It prints how many rows
-it re-pointed; Step 6.5 checks that count against the database. Re-running
-it later (after restoring Blob billing and re-running Step 6.2) picks up
-whatever's newly on disk — it only ever touches a row that's currently null,
-so nothing already re-pointed is touched twice.
+**in this same container** — checked against the filesystem directly, not
+against anything printed by Step 6.2 on a different machine (nor, this
+time, on a different container: `worker-prod`'s `/data/renders` is the same
+bind mount Step 6.2 wrote to). It prints how many rows it re-pointed; Step
+6.5 checks that count against the database. Re-running it later (after
+restoring Blob billing and re-running Step 6.2) picks up whatever's newly on
+disk — it only ever touches a row that's currently null, so nothing already
+re-pointed is touched twice.
 
 Table and column names (`render_job`, `outputUrl`, `videoId`) were verified
 against `prisma/schema.prisma`'s `@@map`, not assumed from the Prisma model
@@ -480,7 +510,7 @@ Then confirm Prisma agrees the schema is current — same container, same
 directory:
 
 ```bash
-docker compose exec app-prod npx prisma migrate status
+docker compose exec worker-prod npx prisma migrate status
 ```
 
 Expected: `Database schema is up to date!`
