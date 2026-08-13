@@ -191,7 +191,7 @@ async function main(): Promise<void> {
         console.error(
           "         This will fail the same way every re-run. Set " +
             "MIGRATE_ALLOW_OVERSIZE=true to copy it anyway — see this " +
-            "script's header, and Step 6.1 of docs/vps-deployment.md.",
+            "script's header, and Step 8.1 of docs/vps-deployment.md.",
         );
       }
     }

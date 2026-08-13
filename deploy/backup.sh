@@ -6,7 +6,7 @@
 # account-level failure, a billing suspension or a mistaken deletion must not
 # be able to take the server and its backups together. That is not
 # hypothetical: it is what happened to this project's Vercel Blob store on
-# 2026-08-12 (see docs/vps-deployment.md, Step 6.2).
+# 2026-08-12 (see docs/vps-deployment.md, Step 8.2).
 #
 # OVH's own automated backup covers "the server broke". This covers "the
 # account is gone". They are different questions.
@@ -33,7 +33,7 @@
 #      The size check stays as a cheap, fast first pass, not the real guard.
 #      Neither check proves the *row counts* are right — pg_dump emits a
 #      TABLE DATA entry for a table whether it holds one row or a million —
-#      that deeper check is what Step 7.4's periodic restore-and-compare in
+#      that deeper check is what Step 9.4's periodic restore-and-compare in
 #      docs/vps-deployment.md is for; this gate only proves the tables that
 #      matter were actually included in the dump at all.
 #   2. A backup that fails, or never runs at all, with nobody finding out

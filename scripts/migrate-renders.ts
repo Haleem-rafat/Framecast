@@ -23,7 +23,7 @@ config({ path: ".env" });
 // and after the SQL migration (prisma/migrations/20260813120000_output_url_to_path)
 // — it works entirely from what's on disk at RENDER_ROOT, so it doesn't need
 // anything from this script beyond the files this script wrote. See that
-// script's own comments and docs/vps-deployment.md's Step 6.4 for why the
+// script's own comments and docs/vps-deployment.md's Step 8.4 for why the
 // rewrite is split out that way. Never deletes or modifies anything in Blob.
 //
 // BLOB_READ_WRITE_TOKEN and RENDER_ROOT are read directly from process.env,

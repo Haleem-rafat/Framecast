@@ -6,11 +6,11 @@
 -- that still looks like a URL, regardless of whether scripts/migrate-renders.ts
 -- copied that row's render. A null here already means "this needs
 -- re-rendering" everywhere the app reads it, so nulling first and re-pointing
--- second (see below) is always safe to run, whatever Step 6.2 did or didn't
+-- second (see below) is always safe to run, whatever Step 8.2 did or didn't
 -- copy.
 --
 -- scripts/relink-renders.ts, run immediately after this migration (see
--- docs/vps-deployment.md's Step 6.4), re-points outputUrl back to a real path
+-- docs/vps-deployment.md's Step 8.4), re-points outputUrl back to a real path
 -- for every row whose render is actually present at RENDER_ROOT right now —
 -- by checking the filesystem, not by being told which rows to trust. That
 -- means this file carries no video ids, needs no local edits before running,

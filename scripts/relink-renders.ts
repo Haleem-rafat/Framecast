@@ -129,7 +129,7 @@ async function main(): Promise<void> {
   );
   console.log(
     `Verify: SELECT count(*) FROM "render_job" WHERE "outputUrl" LIKE 'renders/%'; should be ` +
-      `${relinked} more than it was before this script ran (see docs/vps-deployment.md's Step 6.5).`,
+      `${relinked} more than it was before this script ran (see docs/vps-deployment.md's Step 8.5).`,
   );
 
   await prisma.$disconnect();

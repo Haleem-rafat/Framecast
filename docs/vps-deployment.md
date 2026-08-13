@@ -7,10 +7,12 @@ reconstruct anything from memory or from this migration's history.
 
 **Scope of this page today:** the whole path, start to finish — provisioning
 (turning a bare box into one that can run `deploy/docker-compose.yml`),
-migrating the existing data across, nightly backups with a restore
-procedure, deploying the stack for the first time, cutting DNS over from
-Vercel, watching production, retiring Railway/Vercel/Supabase once that
-watch is clean, and the routine deploy that follows for everything after.
+deploying the stack for the first time, freezing the old one, migrating the
+existing data across, nightly backups with a restore procedure, cutting DNS
+over from Vercel, watching production, retiring Railway/Vercel/Supabase once
+that watch is clean, and the routine deploy that follows for everything
+after. The steps below are numbered in the order they are performed — follow
+them top to bottom.
 This is the last section this document grows for this migration — if a step
 you're looking for isn't below, it doesn't exist anywhere yet, not just here.
 
@@ -336,7 +338,206 @@ check exists to prevent by construction — don't copy `DATABASE_SSL_DISABLE`
 into any environment where the database isn't reached through this same
 Compose network.
 
-## Step 6: Migrate the data
+## Step 6: Deploy the stack, then prove it works in staging
+
+Nothing has copied `deploy/docker-compose.yml`, the `Caddyfile`, or
+`init-staging-db.sh` to the server yet. Step 1 and `provision.sh` set up the
+box, the firewall and the directory tree; Step 5 put the environment files in
+`/srv/framecast` — but nothing before this point has ever put the Compose
+stack itself there. Without this step, `docker
+compose` has no file to read and nothing to start:
+
+```bash
+scp deploy/docker-compose.yml deploy/Caddyfile deploy/init-staging-db.sh \
+    root@51.38.80.36:/srv/framecast/
+ssh root@51.38.80.36 'chmod +x /srv/framecast/init-staging-db.sh'
+```
+
+**`init-staging-db.sh` must be in place and executable before Postgres
+starts for the very first time — not shortly after, not "close enough."**
+Postgres's own entrypoint only runs scripts under
+`/docker-entrypoint-initdb.d/` the first time it starts against a
+completely empty `PGDATA` (see `deploy/README.md`'s section on this script
+for the fuller version). Bring `postgres` up even once before the script is
+in place — an early `docker compose up` to sanity-check something, a
+Postgres that's already been started once before during testing — and it
+will never create `framecast_staging` on that data directory again: no
+error, no log line pointing at why, just `app-staging` failing to connect to
+a database that quietly doesn't exist. Copy all three files and `chmod` the
+script *before* the `docker compose up -d` below, every time, including on
+a rebuilt box.
+
+Also write `/srv/framecast/.env` — the file Compose itself reads to
+interpolate `${GITHUB_OWNER}`, `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}`
+and, optionally, `${IMAGE_TAG}` before any container starts. This is
+distinct from `prod.env`/`staging.env` (Step 5) and from `backup.env`, which
+Step 9.1 adds later — three different files, three different purposes, all
+under `/srv/framecast`. Its template is `deploy/compose.env.example`, copied the
+same way as the others:
+
+```bash
+scp deploy/compose.env.example root@51.38.80.36:/srv/framecast/.env
+# then edit it in place on the server
+ssh root@51.38.80.36 'chmod 600 /srv/framecast/.env'
+```
+
+Set `GITHUB_OWNER=haleem-rafat`, **lowercase** — GHCR
+rejects the repository owner's actual GitHub-login case (`Haleem-rafat`);
+see `deploy/README.md`'s "`GITHUB_OWNER` must be lowercase" section — and
+`POSTGRES_USER`/`POSTGRES_PASSWORD` matching what `prod.env` and
+`staging.env` already have baked into their `DATABASE_URL`s.
+
+Then:
+
+```bash
+cd /srv/framecast && docker compose pull && docker compose up -d
+docker compose --profile staging-worker run --rm worker-staging npx prisma migrate deploy
+docker compose --profile staging-worker up -d worker-staging
+```
+
+`worker-staging` needs `--profile staging-worker run --rm`, not a bare
+`exec` or `up -d worker-staging` alone — it sits behind the `staging-worker`
+Compose profile and is stopped by default (see `deploy/README.md`), so a
+plain `exec` against it fails outright with "container is not running."
+`run --rm` starts a throwaway container for the one command and removes it
+immediately afterward, rather than leaving a staging worker up and
+competing with production for the box's two cores.
+
+**DNS still points at Vercel at this point — Step 10 is what moves it, and
+that's still four steps away.** `deploy/Caddyfile` virtual-hosts strictly
+on `staging.framecasts.com` (and `framecasts.com`/`www.framecasts.com`), and
+`staging.env`'s `BETTER_AUTH_URL` is pinned to
+`https://staging.framecasts.com` — a browser that resolves that hostname the
+normal way still gets Vercel's IP, the only answer DNS gives before Step 10.
+That either can't reach the VPS at all or, worse, reaches the *old* Vercel
+deployment and quietly tests the system this migration is replacing instead
+of the one it's supposed to prove. Reach the VPS directly instead: on your
+Mac, add temporary entries to `/etc/hosts` (`sudo` required):
+
+```
+51.38.80.36  staging.framecasts.com
+51.38.80.36  framecasts.com
+51.38.80.36  www.framecasts.com
+```
+
+This makes only *your* machine resolve those three hostnames straight to
+the VPS, bypassing DNS entirely — every other device on the internet still
+gets Vercel's answer until Step 10 actually moves it for real. Caddy issues
+a real certificate for each hostname on its first request the same way it
+will after cutover, so the browser sees a normal, valid `https://`
+connection rather than a warning.
+
+**Remove these lines from `/etc/hosts` once Step 10 has moved DNS for
+real.** A forgotten entry keeps pinning your Mac to `51.38.80.36` for these
+three hostnames indefinitely, silently overriding whatever DNS actually
+says from then on — which could as easily hide a real production problem on
+the VPS (your machine alone still "sees" the old, frozen answer) as make a
+future Vercel-side check behave differently on your machine than everyone
+else's.
+
+On `staging.framecasts.com`: sign in, create a video, and run it all the way
+through the pipeline — script, narration, footage, and render — then
+publish it to an unlisted YouTube video and confirm the thumbnail applies.
+This is the first time anything in this stack talks to a real
+provider (ElevenLabs, Pexels/Pixabay, YouTube) instead of a mock, and the
+first real proof that `worker-prod`'s image actually contains, and can run,
+everything Step 8 below will need from it.
+
+```bash
+docker compose stop worker-staging
+```
+
+Leave it stopped once the test passes — it only ever runs when explicitly
+started, by design (see `deploy/README.md`'s "`worker-staging` is
+deliberately not started automatically").
+
+## Step 7: Freeze production
+
+Stop the Railway worker — from the Railway dashboard, or `railway down`
+against that specific service — so nothing new is written to Supabase
+Storage or Vercel Blob by the pipeline while Step 8 copies both. Every
+`putObject`/`writeRenderFile` call made *by the pipeline* runs inside a
+stage the worker executes (`footage.service.ts`, `voiceover.service.ts`,
+`render.service.ts`, `thumbnail.service.ts`, `logo.service.ts`); stopping it
+freezes that whole path.
+
+**That is not the whole write path, and treating it as one deletes data.**
+`publishVideoAction` (`src/actions/publish.action.ts`) is a Next.js Server
+Action — it runs inside the **app** process on Vercel, not the worker — and
+calls `publishService.publish()`, which after a successful YouTube upload
+calls `reclaimClipStorage()` (deletes the video's source clips via
+`removeObjects()`) and `reclaimRenderStorage()` (deletes the render via
+`deleteRenderFile()`).
+This is new as of Task 5 of this same migration — before it existed, "the
+app only reads storage" was true, which is presumably where that assumption
+came from. It no longer is. Leaving the Vercel app reachable through Steps
+7–8 means one Publish click on any already-rendered video deletes clips or
+a render that Step 8 may not have copied yet, permanently — the deletion
+and the copy race the same source objects, and there is no undo on either
+side.
+
+**Take the Vercel app itself offline for the duration of Steps 7 and 8.**
+In the Vercel dashboard: Project Settings → General → **Pause Project**,
+type the project name to confirm. A paused project serves `503
+DEPLOYMENT_PAUSED` to every visitor — nobody can sign in, create a video, or
+publish, which is the actual guarantee this step needs, not a request that
+nobody does. Two things to know before relying on it:
+
+- **It is not instantaneous.** Vercel's own docs note it can take several
+  minutes to take effect. Confirm the pause has actually landed before
+  treating production as frozen and starting Step 8.
+
+  **Do not confirm it with `curl -I https://framecasts.com` or a browser
+  tab on the same Mac used for Step 6.** That machine has had
+  `framecasts.com` pointed at `51.38.80.36` in `/etc/hosts` since Step 6,
+  and `app-prod` is already running there by this point —
+  `docker compose up -d` starts it by default in Step 6, no profile
+  needed. A request from that machine to that hostname never reaches
+  Vercel at all; it hits the VPS's own healthy app and returns `200`
+  regardless of what Vercel is doing. That's a check that always passes,
+  which is worse than no check — it would tell the operator the freeze
+  took when it might not have, and send them into Step 8 with Vercel
+  possibly still serving live traffic and still able to run `publish()`,
+  reopening the exact race this step exists to close. If you find this
+  runbook later with a working `/etc/hosts` entry and a `curl` command
+  that appears to confirm a pause, this paragraph is why that combination
+  never actually proved anything.
+
+  Confirm the pause for real, instead:
+  - **The Vercel dashboard is authoritative and needs no DNS at all.** The
+    project's status reads "Paused" directly — this is the check, not a
+    proxy for it.
+  - **A device with no hosts override is a good second confirmation** —
+    a phone on cellular data (not the same Wi-Fi/DNS as the Mac), loading
+    `https://framecasts.com` and seeing `503 DEPLOYMENT_PAUSED`.
+  - If a command-line check is preferred, it has to genuinely bypass the
+    Mac's `/etc/hosts` entry. A plain `curl` does not — it resolves
+    hostnames the normal OS way, `/etc/hosts` included, which is exactly
+    the trap above. `dig` is different: it queries the DNS resolver
+    directly and never consults `/etc/hosts` at all, so `dig +short
+    framecasts.com` alone already returns Vercel's real, current answer.
+    Feed that into `curl --resolve framecasts.com:443:<that-ip> -I
+    https://framecasts.com` to force the *connection* to that address too
+    (rather than letting `curl` re-resolve the hostname itself and land
+    back on `/etc/hosts`), and the response is genuinely from Vercel's
+    edge.
+- **It does not auto-resume.** Nothing brings it back until Step 12
+  explicitly cancels the project, or you resume it by hand (dashboard, or
+  the `Pause a project` REST endpoint) — which you won't need to, since
+  Step 12 is the next and only time this project is touched again.
+
+This is a pause, not a cancellation — reversible, and not the "nothing is
+cancelled until the replacement is serving real traffic" commitment being
+broken. It just means production genuinely stops serving anyone, including
+the operator, for the (hopefully short) window Step 8 takes to run — which
+is the honest cost of a migration copying live data out from under an app
+that can otherwise still write to it.
+
+Postgres stays live throughout: it keeps accepting connections, but with
+both the worker stopped and the app paused, nothing is left to write to it
+until Step 8.3's `pg_dump` runs and actually freezes its state.
+
+## Step 8: Migrate the data
 
 Everything that was ever written to Supabase Storage, the six finished
 renders in Vercel Blob, and the Postgres database itself — carried from the
@@ -355,18 +556,26 @@ ever writes to *this* database. All three are resumable: run any of them
 again after any failure and whatever already succeeded is skipped, not
 redone.
 
-**This step assumes the stack is already up** (`docker compose up -d` from
-`/srv/framecast` on the server) — which nothing before this point in the
-document has done yet. If you're reading top to bottom for the first time,
-that's Step 8 below, out of order relative to where you're reading now: this
-step and Step 7 immediately after it were written before Step 8 existed and
-still read as if the stack already exists, because in the real sequence of
-running this whole runbook it does — Step 8 is where an operator actually
-brings it up for the first time, before ever reaching this step's commands
-for real. Read Step 8 first if the stack isn't up yet; come back here once it
-is. Every command below that runs inside a container targets **`worker-prod`**,
-never `app-prod` — see the explanation
-in Step 6.4, which is where it first matters, for why. `app-prod` is built
+This is the step that runs for real, once, against the operator's actual
+production data. The stack is already up (Step 6) and production is already
+frozen (Step 7); nothing below has a dry run left in it except the staging
+rehearsal described in Step 8.2.
+
+In order, and only in this order:
+
+1. **8.1** — copy every stored object.
+2. **8.2** — copy the six finished renders (or skip it — see that step for
+   what skipping costs and doesn't).
+3. **8.3** — stop `app-prod`/`worker-prod`, then move the database.
+4. **8.4** — rewrite `outputUrl`.
+5. **8.5** — verify, **including the Providers page check.** Do not proceed
+   to Step 10 (the DNS cutover) if the stored ElevenLabs key doesn't come
+   back as connected — see 8.5's own warning for why that one check is
+   different from every other in this migration.
+
+Every command below that runs inside a container targets **`worker-prod`**,
+never `app-prod` — see the explanation in Step 8.4, which is where it first
+matters, for why. `app-prod` is built
 from `Dockerfile` at the repo root, a standalone Next.js runtime image that
 deliberately excludes the Prisma schema, the migrations directory,
 `scripts/`, and every devDependency; `worker-prod` is built from
@@ -374,7 +583,7 @@ deliberately excludes the Prisma schema, the migrations directory,
 devDependencies (it runs the pipeline through `tsx`, itself one), so it is
 the only container in this stack that can run any of these commands at all.
 
-### Step 6.1: Copy every stored object
+### Step 8.1: Copy every stored object
 
 **On the server**, from `/srv/framecast`, inside `worker-prod` — the
 Supabase credentials are passed as one-off environment overrides on the
@@ -436,13 +645,13 @@ In order:
      -c "UPDATE asset SET \"deletedAt\" = now() WHERE \"storagePath\" = '<the path the script printed>' AND \"deletedAt\" IS NULL;"
    ```
 
-   Do this **after** Step 6.3 has restored the database — there are no rows to
+   Do this **after** Step 8.3 has restored the database — there are no rows to
    update before then. Run it once per uncopyable path, using the exact path
    from the script's `FAILED:` line. The video loses that one clip; every
    other clip it owns still gets reclaimed on publish, which is the whole
    point.
 
-### Step 6.2: Copy the six finished renders
+### Step 8.2: Copy the six finished renders
 
 **Requires the Vercel Blob store to be un-suspended first** — suspended
 means unreadable, not merely slow. Restore billing on the Blob store, then,
@@ -463,12 +672,12 @@ producing zero files — and, if a render is already fully copied from an
 earlier run, treats that one as done rather than failed even though the
 suspended store means it can't re-verify the byte count. **If you'd rather
 not restore billing just to migrate six files, skip this script entirely.**
-Step 6.4's SQL nulls `outputUrl` on whatever renders never got copied, which
+Step 8.4's SQL nulls `outputUrl` on whatever renders never got copied, which
 the app already treats as "this needs re-rendering" everywhere it
 matters — not a broken player pointing at a file that isn't there.
 
 Nothing needs to be copied out of this script's output for the next steps —
-`scripts/relink-renders.ts` (Step 6.4) finds what landed here by checking
+`scripts/relink-renders.ts` (Step 8.4) finds what landed here by checking
 `RENDER_ROOT` directly, from the same container, rather than trusting
 anything this script printed.
 
@@ -489,10 +698,10 @@ production for the box's two cores:
 `docker compose --profile staging-worker run --rm worker-staging npx tsx --conditions=react-server scripts/migrate-storage.ts`
 (and the same substitution for every other `worker-prod` command on this
 page). Task 10 itself only ever migrates the operator's real production
-data, so staging has no equivalent Step 6 of its own — this is only for
+data, so staging has no equivalent Step 8 of its own — this is only for
 dry-running the mechanism.
 
-### Step 6.3: Move the database
+### Step 8.3: Move the database
 
 **On the operator's Mac**, with `DIRECT_URL` pointing at Supabase, take the
 dump and copy it to the server:
@@ -509,16 +718,16 @@ the production app and worker before restoring anything**:
 docker compose stop app-prod worker-prod
 ```
 
-**This is not optional and it is not tidiness.** Step 8 started both, and
+**This is not optional and it is not tidiness.** Step 6 started both, and
 `docker compose up -d` keeps them up. `worker-prod` polls for claimable work
 every five seconds, and the instant `pg_restore` lands it is looking at real
-production videos — before Step 6.4 has rewritten a single `outputUrl`, and
-before the `CREDENTIAL_ENCRYPTION_KEY` check in Step 6.5 that this runbook
+production videos — before Step 8.4 has rewritten a single `outputUrl`, and
+before the `CREDENTIAL_ENCRYPTION_KEY` check in Step 8.5 that this runbook
 calls a hard stop. That gate stops the *operator* proceeding; it does not
 stop a process that is already running. `app-prod` is in the same position:
-it is reachable through the `/etc/hosts` entries added in Step 8, and one
+it is reachable through the `/etc/hosts` entries added in Step 6, and one
 Publish click runs `publish()`, which deletes the video's clips and its
-render on success (see Step 9 — this is the same destructive path that step
+render on success (see Step 7 — this is the same destructive path that step
 takes Vercel offline to close).
 
 Postgres stays up: it is what the restore targets, and nothing else writes to
@@ -535,7 +744,7 @@ docker compose exec postgres \
 Don't check `prisma migrate status` yet — the dump reflects Supabase's
 schema, which has never seen the `output_url_to_path` migration below (it
 was written for this VPS Postgres and was never meant to touch Supabase), so
-status would correctly report it pending. Step 6.4 resolves that.
+status would correctly report it pending. Step 8.4 resolves that.
 
 **Why this can't run from the Mac at all:** `deploy/docker-compose.yml`
 publishes no port for `postgres` — it's reachable only from other containers
@@ -543,7 +752,7 @@ on the Compose network, not from outside the server. Every command from here
 on runs on the server, inside the relevant container, for that reason; there
 is no route to this database from the Mac to fall back to.
 
-### Step 6.4: Rewrite `outputUrl`
+### Step 8.4: Rewrite `outputUrl`
 
 `RenderJob.outputUrl` held an absolute Blob URL; it now holds a path
 relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`), or null for a
@@ -554,7 +763,7 @@ from `/srv/framecast`, run in a **`worker-prod`** container:
 docker compose run --rm worker-prod npx prisma migrate deploy
 ```
 
-**`run --rm`, not `exec`** — `worker-prod` is stopped as of Step 6.3, so
+**`run --rm`, not `exec`** — `worker-prod` is stopped as of Step 8.3, so
 there is no running container to `exec` into. `run --rm` starts a throwaway
 one that executes only the command it is given and then removes itself, which
 is exactly what is wanted here: it uses the same image, the same `prod.env`
@@ -573,7 +782,7 @@ keeps the full source tree for exactly this kind of reason.
 This applies `prisma/migrations/20260813120000_output_url_to_path`, already
 committed, unedited — it needs no video ids and no local changes before
 running. It unconditionally nulls every `outputUrl` that still looks like a
-URL, whether or not Step 6.2 copied that row's render. (An earlier draft of
+URL, whether or not Step 8.2 copied that row's render. (An earlier draft of
 this migration tried to rewrite the real path directly, scoped to a
 hand-edited list of video ids pasted in from `migrate-renders.ts`'s output.
 That mechanism is gone: the edit had nowhere correct to live — a version
@@ -590,11 +799,12 @@ docker compose run --rm worker-prod npx tsx --conditions=react-server scripts/re
 `scripts/relink-renders.ts` re-points `outputUrl` back to a real path for
 every `RenderJob` row whose render is actually present at `RENDER_ROOT`
 **from this same image and mounts** — checked against the filesystem
-directly, not against anything printed by Step 6.2 on a different machine
+directly, not against anything printed by Step 8.2 on a different machine
 (nor, this time, on a different container: every `worker-prod` container,
-running or throwaway, mounts the same `/data/renders` Step 6.2 wrote to). It prints how many rows it re-pointed; Step
-6.5 checks that count against the database. Re-running it later (after
-restoring Blob billing and re-running Step 6.2) picks up whatever's newly on
+running or throwaway, mounts the same `/data/renders` Step 8.2 wrote to). It
+prints how many rows it re-pointed; Step 8.5 checks that count against the
+database. Re-running it later (after
+restoring Blob billing and re-running Step 8.2) picks up whatever's newly on
 disk — it only ever touches a row that's currently null, so nothing already
 re-pointed is touched twice.
 
@@ -612,7 +822,7 @@ docker compose run --rm worker-prod npx prisma migrate status
 
 Expected: `Database schema is up to date!`
 
-### Step 6.5: Verify
+### Step 8.5: Verify
 
 On the server, from `/srv/framecast`:
 
@@ -622,7 +832,7 @@ docker compose exec postgres psql -U "$POSTGRES_USER" -d framecast \
   -c 'SELECT (SELECT count(*) FROM "user") AS users, (SELECT count(*) FROM video) AS videos, (SELECT count(*) FROM channel) AS channels;'
 
 # outputUrl rewrite matches what relink-renders.ts actually did. Compare this
-# count to the "N row(s) re-pointed" number Step 6.4's relink-renders.ts run
+# count to the "N row(s) re-pointed" number Step 8.4's relink-renders.ts run
 # printed — they must be equal. If it's lower, some rows didn't make it in
 # (check for errors in that run's output); it can never be higher, since
 # nothing else in this migration ever writes a `renders/...` outputUrl.
@@ -655,13 +865,13 @@ Publish on anything** — `publish()` deletes a video's clips and its render on
 success, and nothing here has verified that the data underneath it is correct
 yet. Sign in, look at the Providers page, and touch nothing else.
 
-**DNS hasn't
-moved yet at this point either — Step 11 comes after this, not before —**
-and by this point in the runbook Step 9 has also paused the Vercel app, so
+**DNS hasn't moved yet at this point either — Step 10 comes after this, not
+before —** and by this point in the runbook Step 7 has also paused the
+Vercel app, so
 `https://framecasts.com` the normal way reaches neither the VPS nor a live
-Vercel deployment. Reach the VPS directly the same way Step 8's staging test
+Vercel deployment. Reach the VPS directly the same way Step 6's staging test
 did: the `/etc/hosts` entries added there already cover `framecasts.com`
-(add them now, pointing at `51.38.80.36`, if Step 8 was skipped or they were
+(add them now, pointing at `51.38.80.36`, if Step 6 was skipped or they were
 already removed). This has to be a real browser session against the app now
 running on the VPS — the Providers page is the thing being checked, and
 checking it anywhere else checks nothing.
@@ -687,15 +897,7 @@ pass, leave `worker-prod` stopped and stop `app-prod` again
 half-correct production stack serving and rendering is worse than one that is
 simply off.
 
-## Step 7: Nightly backups to R2, and a restore that was actually performed
-
-**Like Step 6 above, this step assumes the stack is already up** — Step
-7.1's `docker compose cp`/`exec postgres` commands and Step 7.4's restore
-both need a running `postgres` container, which nothing before Step 8
-brings up. Read Step 8 first if you haven't already; this step (and Step
-6 before it) were written before Step 8 existed and still read as if the
-stack is a given, because by the time either is actually run for real, it
-is.
+## Step 9: Nightly backups to R2, and a restore that was actually performed
 
 Cancelling Supabase means backups stop being someone else's job. Managed
 Postgres included automated backups; this VPS does not, so `deploy/backup.sh`
@@ -704,11 +906,11 @@ not to OVH's own object storage. OVH's automated server backup already
 answers "the server broke"; it cannot answer "the account is gone", because
 the backups would be gone with it. That distinction isn't theoretical: it's
 what happened to this project's Vercel Blob store on 2026-08-12, a billing
-suspension mid-render that took the store's readability with it (Step 6.2
+suspension mid-render that took the store's readability with it (Step 8.2
 above). R2 is a different provider from OVH for exactly that reason — an
 account-level failure on one cannot take out the other.
 
-### Step 7.0: Confirm OVH's own backup is switched on for this VPS
+### Step 9.0: Confirm OVH's own backup is switched on for this VPS
 
 `backup.sh` dumps Postgres and nothing else. That is a deliberate choice
 resting on "the files are reproducible" — and for clips and finished renders
@@ -723,7 +925,7 @@ that video is re-rendered end to end. Thumbnails and channel logos are
 generated images: also paid, also not reproducible for free, and a channel
 logo is reused across every video that channel ever renders. Those bytes live
 under `/srv/framecast/prod/storage` and exist in exactly one place once
-Supabase is cancelled in Step 13.
+Supabase is cancelled in Step 12.
 
 The whole plan for them is OVH's own server backup. So verify it is actually
 running on **this** VPS, rather than assuming it came with the plan:
@@ -733,10 +935,10 @@ running on **this** VPS, rather than assuming it came with the plan:
    the VPS's own dashboard).
 2. Confirm **Automated backup — Standard** reads as *enabled/active* for this
    VPS, not merely as available to order. If it is not, enable it now — before
-   Step 13 cancels anything.
+   Step 12 cancels anything.
 3. Confirm at least one snapshot has actually been taken, with a date. A
    subscription with no snapshot behind it is the same "belief, not a backup"
-   Step 7.4 exists to reject.
+   Step 9.4 exists to reject.
 
 **Record here once checked:**
 
@@ -749,7 +951,7 @@ leaving the box unticked and quiet — the alternative (adding
 than this migration should absorb unnoticed, but it is a real gap in what is
 recoverable and it needs to be written down somewhere the next person reads.
 
-### Step 7.1: Install the AWS CLI, the script, and the timer
+### Step 9.1: Install the AWS CLI, the script, and the timer
 
 **On the server, as root.** Nothing installs `aws` during provisioning, and
 `backup.sh` calls it — without this the timer fires nightly, fails with
@@ -789,7 +991,7 @@ ssh root@51.38.80.36 'chmod 600 /srv/framecast/env/backup.env'
 come from the Cloudflare dashboard (R2 → Manage API tokens, and the bucket's
 own settings page). `POSTGRES_USER` must match `/srv/framecast/.env`'s value
 (Compose's own interpolation file, not `prod.env`). `HEALTHCHECK_PING_URL` is
-optional — see Step 7.2.
+optional — see Step 9.2.
 
 Enable and run it once immediately, rather than waiting for 03:00 UTC:
 
@@ -803,7 +1005,7 @@ journalctl -u framecast-backup.service --no-pager
 Expected: two `Uploaded ...-<timestamp>.dump.gz (N bytes).` lines, one per
 database, no errors.
 
-### Step 7.2: What the script actually guards against, and why
+### Step 9.2: What the script actually guards against, and why
 
 **A dump that succeeds while producing nothing useful.** A byte-count
 threshold alone is easy to satisfy without the dump containing anything
@@ -844,7 +1046,7 @@ nothing. Staging is still dumped, still checked for readability with
 doesn't prove the *row counts* are
 right — `pg_dump` writes a `TABLE DATA` entry for a table whether it holds
 one row or a million — only that the tables that matter were actually
-included in the dump at all. Step 7.4's periodic restore-and-compare is the
+included in the dump at all. Step 9.4's periodic restore-and-compare is the
 check that goes that one level deeper, against real data, on a schedule.
 
 **`TimeoutStartSec=1800` on the service unit.** systemd's system-wide
@@ -878,7 +1080,7 @@ happen to run and then error out loudly. It's optional — unset, every ping
 call is a silent no-op and the backup behaves identically, just unobserved.
 **Recommended, not yet configured as of this writing** — see Status below.
 
-### Step 7.3: Set the retention rule
+### Step 9.3: Set the retention rule
 
 **In the Cloudflare R2 dashboard**, on the bucket `backup.sh` uploads to: add
 a lifecycle rule deleting objects under the `postgres/` prefix after 30 days.
@@ -892,7 +1094,7 @@ covers "we didn't notice a problem for three weeks" without also covering
 - Lifecycle rule set: ⬜ not yet done — record the date below once
   configured.
 
-### Step 7.4: Actually restore one — this is the point of the task
+### Step 9.4: Actually restore one — this is the point of the task
 
 A backup that has never been restored is a belief, not a backup. **On the
 server**, from `/srv/framecast`:
@@ -925,7 +1127,7 @@ docker compose exec -T postgres dropdb -U "$POSTGRES_USER" restore_check
 ```
 
 `$R2_BUCKET`, `$R2_ENDPOINT` and `$POSTGRES_USER` here are the same values
-written into `/srv/framecast/env/backup.env` in Step 7.1 — export them in the
+written into `/srv/framecast/env/backup.env` in Step 9.1 — export them in the
 shell before running the block above, or source the file (mind that it also
 holds the R2 access key).
 
@@ -942,221 +1144,7 @@ are filled in.** Everything else in this migration can be redone if it turns
 out wrong; a database that was never proven restorable, discovered only
 after the one copy of it is gone, cannot be.
 
-## Step 8: Deploy the stack, then prove it works in staging
-
-Nothing has copied `deploy/docker-compose.yml`, the `Caddyfile`, or
-`init-staging-db.sh` to the server yet. Step 1 and `provision.sh` set up the
-box, the firewall and the directory tree; Step 5 and Step 7.1 put env files
-and the backup tooling in `/srv/framecast` — but nothing before this point
-has ever put the Compose stack itself there. Without this step, `docker
-compose` has no file to read and nothing to start:
-
-```bash
-scp deploy/docker-compose.yml deploy/Caddyfile deploy/init-staging-db.sh \
-    root@51.38.80.36:/srv/framecast/
-ssh root@51.38.80.36 'chmod +x /srv/framecast/init-staging-db.sh'
-```
-
-**`init-staging-db.sh` must be in place and executable before Postgres
-starts for the very first time — not shortly after, not "close enough."**
-Postgres's own entrypoint only runs scripts under
-`/docker-entrypoint-initdb.d/` the first time it starts against a
-completely empty `PGDATA` (see `deploy/README.md`'s section on this script
-for the fuller version). Bring `postgres` up even once before the script is
-in place — an early `docker compose up` to sanity-check something, a
-Postgres that's already been started once before during testing — and it
-will never create `framecast_staging` on that data directory again: no
-error, no log line pointing at why, just `app-staging` failing to connect to
-a database that quietly doesn't exist. Copy all three files and `chmod` the
-script *before* the `docker compose up -d` below, every time, including on
-a rebuilt box.
-
-Also write `/srv/framecast/.env` — the file Compose itself reads to
-interpolate `${GITHUB_OWNER}`, `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}`
-and, optionally, `${IMAGE_TAG}` before any container starts. This is
-distinct from `prod.env`/`staging.env` (Step 5) and from `backup.env` (Step
-7.1) — three different files, three different purposes, all under
-`/srv/framecast`. Its template is `deploy/compose.env.example`, copied the
-same way as the others:
-
-```bash
-scp deploy/compose.env.example root@51.38.80.36:/srv/framecast/.env
-# then edit it in place on the server
-ssh root@51.38.80.36 'chmod 600 /srv/framecast/.env'
-```
-
-Set `GITHUB_OWNER=haleem-rafat`, **lowercase** — GHCR
-rejects the repository owner's actual GitHub-login case (`Haleem-rafat`);
-see `deploy/README.md`'s "`GITHUB_OWNER` must be lowercase" section — and
-`POSTGRES_USER`/`POSTGRES_PASSWORD` matching what `prod.env` and
-`staging.env` already have baked into their `DATABASE_URL`s.
-
-Then:
-
-```bash
-cd /srv/framecast && docker compose pull && docker compose up -d
-docker compose --profile staging-worker run --rm worker-staging npx prisma migrate deploy
-docker compose --profile staging-worker up -d worker-staging
-```
-
-`worker-staging` needs `--profile staging-worker run --rm`, not a bare
-`exec` or `up -d worker-staging` alone — it sits behind the `staging-worker`
-Compose profile and is stopped by default (see `deploy/README.md`), so a
-plain `exec` against it fails outright with "container is not running."
-`run --rm` starts a throwaway container for the one command and removes it
-immediately afterward, rather than leaving a staging worker up and
-competing with production for the box's two cores.
-
-**DNS still points at Vercel at this point — Step 11 is what moves it, and
-that's still three steps away.** `deploy/Caddyfile` virtual-hosts strictly
-on `staging.framecasts.com` (and `framecasts.com`/`www.framecasts.com`), and
-`staging.env`'s `BETTER_AUTH_URL` is pinned to
-`https://staging.framecasts.com` — a browser that resolves that hostname the
-normal way still gets Vercel's IP, the only answer DNS gives before Step 11.
-That either can't reach the VPS at all or, worse, reaches the *old* Vercel
-deployment and quietly tests the system this migration is replacing instead
-of the one it's supposed to prove. Reach the VPS directly instead: on your
-Mac, add temporary entries to `/etc/hosts` (`sudo` required):
-
-```
-51.38.80.36  staging.framecasts.com
-51.38.80.36  framecasts.com
-51.38.80.36  www.framecasts.com
-```
-
-This makes only *your* machine resolve those three hostnames straight to
-the VPS, bypassing DNS entirely — every other device on the internet still
-gets Vercel's answer until Step 11 actually moves it for real. Caddy issues
-a real certificate for each hostname on its first request the same way it
-will after cutover, so the browser sees a normal, valid `https://`
-connection rather than a warning.
-
-**Remove these lines from `/etc/hosts` once Step 11 has moved DNS for
-real.** A forgotten entry keeps pinning your Mac to `51.38.80.36` for these
-three hostnames indefinitely, silently overriding whatever DNS actually
-says from then on — which could as easily hide a real production problem on
-the VPS (your machine alone still "sees" the old, frozen answer) as make a
-future Vercel-side check behave differently on your machine than everyone
-else's.
-
-On `staging.framecasts.com`: sign in, create a video, and run it all the way
-through the pipeline — script, narration, footage, and render — then
-publish it to an unlisted YouTube video and confirm the thumbnail applies.
-This is the first time anything in this stack talks to a real
-provider (ElevenLabs, Pexels/Pixabay, YouTube) instead of a mock, and the
-first real proof that `worker-prod`'s image actually contains, and can run,
-everything Step 10 below will need from it.
-
-```bash
-docker compose stop worker-staging
-```
-
-Leave it stopped once the test passes — it only ever runs when explicitly
-started, by design (see `deploy/README.md`'s "`worker-staging` is
-deliberately not started automatically").
-
-## Step 9: Freeze production
-
-Stop the Railway worker — from the Railway dashboard, or `railway down`
-against that specific service — so nothing new is written to Supabase
-Storage or Vercel Blob by the pipeline while Step 10 copies both. Every
-`putObject`/`writeRenderFile` call made *by the pipeline* runs inside a
-stage the worker executes (`footage.service.ts`, `voiceover.service.ts`,
-`render.service.ts`, `thumbnail.service.ts`, `logo.service.ts`); stopping it
-freezes that whole path.
-
-**That is not the whole write path, and treating it as one deletes data.**
-`publishVideoAction` (`src/actions/publish.action.ts`) is a Next.js Server
-Action — it runs inside the **app** process on Vercel, not the worker — and
-calls `publishService.publish()`, which after a successful YouTube upload
-calls `reclaimClipStorage()` (`publish.service.ts:512`, deletes the video's
-source clips via `removeObjects()`) and `reclaimRenderStorage()`
-(`publish.service.ts:518`, deletes the render via `deleteRenderFile()`).
-This is new as of Task 5 of this same migration — before it existed, "the
-app only reads storage" was true, which is presumably where that assumption
-came from. It no longer is. Leaving the Vercel app reachable through Steps
-9–10 means one Publish click on any already-rendered video deletes clips or
-a render that Step 10 may not have copied yet, permanently — the deletion
-and the copy race the same source objects, and there is no undo on either
-side.
-
-**Take the Vercel app itself offline for the duration of Steps 9 and 10.**
-In the Vercel dashboard: Project Settings → General → **Pause Project**,
-type the project name to confirm. A paused project serves `503
-DEPLOYMENT_PAUSED` to every visitor — nobody can sign in, create a video, or
-publish, which is the actual guarantee this step needs, not a request that
-nobody does. Two things to know before relying on it:
-
-- **It is not instantaneous.** Vercel's own docs note it can take several
-  minutes to take effect. Confirm the pause has actually landed before
-  treating production as frozen and starting Step 10.
-
-  **Do not confirm it with `curl -I https://framecasts.com` or a browser
-  tab on the same Mac used for Step 8.** That machine has had
-  `framecasts.com` pointed at `51.38.80.36` in `/etc/hosts` since Step 8,
-  and `app-prod` is already running there by this point —
-  `docker compose up -d` starts it by default in Step 8, no profile
-  needed. A request from that machine to that hostname never reaches
-  Vercel at all; it hits the VPS's own healthy app and returns `200`
-  regardless of what Vercel is doing. That's a check that always passes,
-  which is worse than no check — it would tell the operator the freeze
-  took when it might not have, and send them into Step 10 with Vercel
-  possibly still serving live traffic and still able to run `publish()`,
-  reopening the exact race this step exists to close. If you find this
-  runbook later with a working `/etc/hosts` entry and a `curl` command
-  that appears to confirm a pause, this paragraph is why that combination
-  never actually proved anything.
-
-  Confirm the pause for real, instead:
-  - **The Vercel dashboard is authoritative and needs no DNS at all.** The
-    project's status reads "Paused" directly — this is the check, not a
-    proxy for it.
-  - **A device with no hosts override is a good second confirmation** —
-    a phone on cellular data (not the same Wi-Fi/DNS as the Mac), loading
-    `https://framecasts.com` and seeing `503 DEPLOYMENT_PAUSED`.
-  - If a command-line check is preferred, it has to genuinely bypass the
-    Mac's `/etc/hosts` entry. A plain `curl` does not — it resolves
-    hostnames the normal OS way, `/etc/hosts` included, which is exactly
-    the trap above. `dig` is different: it queries the DNS resolver
-    directly and never consults `/etc/hosts` at all, so `dig +short
-    framecasts.com` alone already returns Vercel's real, current answer.
-    Feed that into `curl --resolve framecasts.com:443:<that-ip> -I
-    https://framecasts.com` to force the *connection* to that address too
-    (rather than letting `curl` re-resolve the hostname itself and land
-    back on `/etc/hosts`), and the response is genuinely from Vercel's
-    edge.
-- **It does not auto-resume.** Nothing brings it back until Step 13
-  explicitly cancels the project, or you resume it by hand (dashboard, or
-  the `Pause a project` REST endpoint) — which you won't need to, since
-  Step 13 is the next and only time this project is touched again.
-
-This is a pause, not a cancellation — reversible, and not the "nothing is
-cancelled until the replacement is serving real traffic" commitment being
-broken. It just means production genuinely stops serving anyone, including
-the operator, for the (hopefully short) window Step 10 takes to run — which
-is the honest cost of a migration copying live data out from under an app
-that can otherwise still write to it.
-
-Postgres stays live throughout: it keeps accepting connections, but with
-both the worker stopped and the app paused, nothing is left to write to it
-until Step 6.3's `pg_dump` runs and actually freezes its state.
-
-## Step 10: Run the migration
-
-This is Step 6 above, run for real, for the first time, against the
-operator's actual production data. In order:
-
-1. Step 6.1 — copy every stored object.
-2. Step 6.2 — copy the six finished renders (or skip it — see that step for
-   what skipping costs and doesn't).
-3. Step 6.3 — move the database.
-4. Step 6.4 — rewrite `outputUrl`.
-5. Step 6.5 — verify, **including the Providers page check.** Do not
-   proceed to Step 11 if the stored ElevenLabs key doesn't come back as
-   connected — see Step 6.5's own warning for why that one check is
-   different from every other in this migration.
-
-## Step 11: Move DNS
+## Step 10: Move DNS
 
 The domain is registered at **GoDaddy**, with nameservers currently
 delegated to Vercel — today, Vercel (not GoDaddy) is who actually answers
@@ -1171,7 +1159,7 @@ DNS queries for `framecasts.com`. In the GoDaddy dashboard:
 
 **Registration itself is unaffected by any of this.** The domain stays
 registered at GoDaddy throughout this whole migration; only where DNS
-*answers* come from changes. This is also why cancelling Vercel in Step 13
+*answers* come from changes. This is also why cancelling Vercel in Step 12
 can't take the domain with it — by the time that happens, Vercel is no
 longer in the nameserver chain at all.
 
@@ -1187,16 +1175,16 @@ there is no manual certificate step anywhere in this stack, it's automatic.
 Confirm `https://framecasts.com` loads with a valid certificate before
 treating cutover as done.
 
-## Step 12: Watch for 48 hours
+## Step 11: Watch for 48 hours
 
-Render a video end to end on production, the same way Step 8 proved it on
+Render a video end to end on production, the same way Step 6 proved it on
 staging. Publish it. Then confirm:
 
 ```bash
 # The published video's render file should be gone — reclaimed post-publish
 # per Task 5. The extra `renders/` is not a typo: RENDER_ROOT is the
 # directory, and renderPath() always prefixes its own `renders/` segment on
-# top of it (see Step 6.2 above). If a file is still here, the chown from
+# top of it (see Step 8.2 above). If a file is still here, the chown from
 # provisioning (Step 4) didn't take, and reclaim has been failing silently
 # on every publish since cutover.
 ls -la /srv/framecast/prod/renders/renders/
@@ -1208,51 +1196,51 @@ docker compose logs --tail 100 worker-prod
 ```
 
 Confirm the nightly backup actually ran against the newly-migrated,
-now-live data, not just against Step 7.1's original test dump:
+now-live data, not just against Step 9.1's original test dump:
 
 ```bash
 journalctl -u framecast-backup.service --since yesterday
 ```
 
-## Step 13: Retire the old services
+## Step 12: Retire the old services
 
-**Only once Step 12 has been clean for the full 48 hours.** In order:
+**Only once Step 11 has been clean for the full 48 hours.** In order:
 
 1. Delete the Railway worker.
 2. Cancel Vercel — the app, the Blob store, and the DNS zone, none of which
    are serving anything anymore.
-3. Cancel Supabase — **but only once Step 7.4's restore has actually been
+3. Cancel Supabase — **but only once Step 9.4's restore has actually been
    performed and its counts recorded in the fields above.** Everything else
    in this migration can be redone if it turns out wrong; a database that
    was never proven restorable, discovered only after the one copy of it is
    gone, cannot be.
 
 Nothing in this step is reversible. Don't run it early to "save a step" —
-the entire point of Step 12 is having real evidence in hand before any of
+the entire point of Step 11 is having real evidence in hand before any of
 these three commitments gets made.
 
-## Step 14: Remove what is now dead — as its own, later commit
+## Step 13: Remove what is now dead — as its own, later commit
 
 `railway.json` and `docs/worker-deployment.md` describe a deployment path
 (Railway) this migration replaces outright, and nothing above this line
 ever reads either file — they were deleted in the same commit that added
-Steps 8 through this one, alongside this runbook update.
+Steps 6 through this one, alongside this runbook update.
 
 **The three migration scripts follow a different rule, and are deliberately
-still in the tree as of that same commit.** They stay until Step 10 has
-actually run against real production data and Step 13 has retired the old
+still in the tree as of that same commit.** They stay until Step 8 has
+actually run against real production data and Step 12 has retired the old
 services — not before, and not bundled into the commit that wrote this
 runbook. The reason: `worker-prod`'s image is built from whatever this
 branch's tree contains at build time (Task 8's workflow, dispatched by hand
 against this branch, or by whatever commit is checked out when it later
 merges to `main`). This branch does not merge until after cutover — so if
-the scripts were deleted in the same commit that wrote Steps 8–13 above, the
-image Step 8 pulls and Step 10 runs `docker compose exec worker-prod ...`
+the scripts were deleted in the same commit that wrote Steps 6–12 above, the
+image Step 6 pulls and Step 8 runs `docker compose exec worker-prod ...`
 against would be built from a tree that never had them, on the one branch
 where that image is the *only* one that will ever exist for this migration.
 That would remove the operator's tools before they've been used, not after —
-exactly the mistake this step exists to avoid. Once Step 10 has actually run
-for real and Step 13 has retired the old services, remove them in a commit
+exactly the mistake this step exists to avoid. Once Step 8 has actually run
+for real and Step 12 has retired the old services, remove them in a commit
 of their own:
 
 ```bash
@@ -1267,7 +1255,7 @@ git commit -m "chore: retire the one-shot migration scripts"
 identical reason the other two are, stated in its own header comment: it "is
 deleted, along with the other two scripts, once this migration has run for
 real." `@supabase/supabase-js` and `@vercel/blob` are `devDependencies`
-added back solely for this migration (see Step 6's intro); they have no
+added back solely for this migration (see Step 8's intro); they have no
 caller left once the scripts that imported them are gone, and go with them
 for the same delayed-timing reason — `worker/Dockerfile`'s `pnpm install`
 reads `package.json` at build time, so a script that still does `await
@@ -1279,10 +1267,10 @@ All three scripts remain reachable in git history after this later commit —
 search on GitHub) finds them if a second migration off this box ever needs
 the same mechanism again.
 
-## Step 15: The routine deploy
+## Step 14: The routine deploy
 
 Everything above is the migration — run once, in order, never again after
-Step 14. This is what actually happens from here on, far more often than
+Step 13. This is what actually happens from here on, far more often than
 any of it: an ordinary code change reaching production.
 
 ```bash
@@ -1300,14 +1288,14 @@ run there would have `npx` fetch `prisma` from the network and then find
 nothing to apply, silently rather than loudly. `worker-prod`'s image
 (`worker/Dockerfile`) does `COPY . .`, so it's the only container in this
 stack that carries the schema and the migrations directory (and, until Step
-14 removes it, `scripts/`):
+13 removes it, `scripts/`):
 
 ```bash
 docker compose exec worker-prod npx prisma migrate deploy
 ```
 
 The same applies to staging, substituting the profile-gated `run --rm` form
-for `worker-staging` (see Step 8 above for why a bare `exec` won't work
+for `worker-staging` (see Step 6 above for why a bare `exec` won't work
 against it):
 
 ```bash
@@ -1325,43 +1313,43 @@ procedure; running it for the first time is the first real test of all of
 it, same as `deploy/docker-compose.yml` and the Dockerfiles it runs remain
 unverified until `docker compose up` actually executes somewhere.
 
-Step 6 is in the same state: `scripts/migrate-storage.ts`,
+Step 8 is in the same state: `scripts/migrate-storage.ts`,
 `scripts/migrate-renders.ts`, and the `output_url_to_path` migration are
 written and reviewable but have never run against the operator's real
 Supabase project, Vercel Blob store, or `51.38.80.36` — the same SSH blocker
 above applies, and the source data is a live production account this task
 was explicitly written not to touch.
 
-Step 7 is likewise unexecuted: `deploy/backup.sh` passes `bash -n` and a
+Step 9 is likewise unexecuted: `deploy/backup.sh` passes `bash -n` and a
 clean `shellcheck` run, and `deploy/framecast-backup.service`,
 `deploy/framecast-backup.timer` and `deploy/backup.env.example` are
 reviewable, but none of it has run against real Postgres containers or a
 real R2 bucket — the same SSH blocker applies, and no R2 credentials exist
 yet to test against even if it didn't. Concretely still open, each requiring
 the operator's own access: OVH's automated backup confirmed enabled on this
-VPS (Step 7.0), awscli installed and the timer enabled (Step
-7.1), `HEALTHCHECK_PING_URL` configured (Step 7.2, recommended), the R2
-lifecycle rule set (Step 7.3), and the restore actually performed and its
-counts recorded (Step 7.4) — **all three checkboxes above, in Steps 7.0, 7.3
-and 7.4, are still unchecked**. Supabase must not be cancelled until Step
-7.4's is.
+VPS (Step 9.0), awscli installed and the timer enabled (Step
+9.1), `HEALTHCHECK_PING_URL` configured (Step 9.2, recommended), the R2
+lifecycle rule set (Step 9.3), and the restore actually performed and its
+counts recorded (Step 9.4) — **all three checkboxes above, in Steps 9.0, 9.3
+and 9.4, are still unchecked**. Supabase must not be cancelled until Step
+9.4's is.
 
-**Steps 8–15 (deploy, cutover, watch, retire, and the routine deploy that
+**Steps 6–14 (deploy, cutover, watch, retire, and the routine deploy that
 follows) are in the same unexecuted state as everything above — written and
 reviewable, nothing run.** Nothing was executed against `51.38.80.36`,
 Railway, GoDaddy, Vercel or Supabase while writing them, and nothing at any
 of those four was cancelled, modified, or reached in any way; DNS was not
-touched. Steps 9 and 13 additionally require the operator's own access to
-Railway and Vercel, and Step 11 requires the operator's own access to the
+touched. Steps 7 and 12 additionally require the operator's own access to
+Railway and Vercel, and Step 10 requires the operator's own access to the
 GoDaddy account the domain is registered under — none of which exist from
 here.
 
 `railway.json` and `docs/worker-deployment.md` are deleted as of this
-commit — see Step 14 for why neither one has any remaining reader.
+commit — see Step 13 for why neither one has any remaining reader.
 `scripts/migrate-storage.ts`, `scripts/migrate-renders.ts`,
 `scripts/relink-renders.ts`, and the `@supabase/supabase-js`/`@vercel/blob`
 devDependencies are **deliberately still present** as of this same commit:
-Step 14 explains why removing them now, before Step 10 has actually run for
+Step 13 explains why removing them now, before Step 8 has actually run for
 real, would delete the operator's only tools before they've had a chance to
 use them. Their removal is a separate commit, to be made later, once Steps
-10 and 13 are both done for real — not part of this one.
+8 and 12 are both done for real — not part of this one.
