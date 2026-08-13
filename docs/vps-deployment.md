@@ -633,12 +633,24 @@ just the file. An earlier version of this guard only required *some* `TABLE
 DATA` entry to exist anywhere in the archive; that's satisfiable by a dump
 that carries some inconsequential table's data while missing the ones this
 backup exists to protect. It now requires a `TABLE DATA` entry by name for
-each of `user`, `video`, `script` and `provider_credential` — the tables
-holding this system's only irreplaceable data: accounts, encrypted provider
-credentials, and every script and video record (clips can be re-downloaded,
-renders re-rendered; none of this can be reconstructed). Table names are
+each of `user`, `account`, `channel`, `video`, `script`, `script_version`
+and `provider_credential` — not "the tables that seem important" but
+specifically the ones with no reconstruction path once lost: `user` is
+name/email, but `account` (Better Auth's own model, not `user`) is where the
+OAuth/password credentials actually live — access tokens, refresh tokens,
+password hashes; `channel` holds the YouTube OAuth tokens for every
+connected channel, the same category of material for a different provider;
+`script` is a thin pointer, `script_version` holds the actual narration
+text, cues, sources and model used (kept both, since a dump with one and
+not the other is its own signal something's wrong); `video` is every video
+record; `provider_credential` is every operator's encrypted provider API
+keys. Clips can be re-downloaded and renders re-rendered — none of these
+seven can be reconstructed from anywhere else. Table names are
 `prisma/schema.prisma`'s `@@map` values, read from the schema rather than
-assumed from the model names. This still doesn't prove the *row counts* are
+assumed from the model names — a table named here that doesn't actually
+exist would refuse every dump, nightly and silently, so each name is
+checked against the schema file directly, not typed from memory. This still
+doesn't prove the *row counts* are
 right — `pg_dump` writes a `TABLE DATA` entry for a table whether it holds
 one row or a million — only that the tables that matter were actually
 included in the dump at all. Step 7.4's periodic restore-and-compare is the

@@ -23,9 +23,11 @@
 #      protect. The real guard reads the archive's own table of contents
 #      (`pg_restore -l`, which needs no live database connection — just the
 #      file) and requires a TABLE DATA entry for each of the tables holding
-#      this system's only irreplaceable data: accounts, encrypted provider
-#      credentials, and every script and video record (see REQUIRED_TABLES
-#      below — names taken from prisma/schema.prisma's @@map, not guessed).
+#      data with no reconstruction path — not "the important tables" in
+#      general, but specifically the ones a clip re-download or a
+#      re-rendered video can't stand in for (see REQUIRED_TABLES below for
+#      the full list and why each is on it — names taken from
+#      prisma/schema.prisma's @@map, not guessed).
 #      The size check stays as a cheap, fast first pass, not the real guard.
 #      Neither check proves the *row counts* are right — pg_dump emits a
 #      TABLE DATA entry for a table whether it holds one row or a million —
@@ -84,14 +86,38 @@ trap 'ping_monitor "/fail"' ERR
 
 COMPOSE_FILE=/srv/framecast/docker-compose.yml
 
-# The only tables whose loss this task exists to prevent: accounts, encrypted
-# provider credentials, and every script and video record — the data that
-# can't be reconstructed from anything else (clips can be re-downloaded,
-# renders re-rendered). Names are prisma/schema.prisma's @@map values, not
-# the PascalCase model names — verified by reading the schema directly:
-# User -> user, Video -> video, Script -> script,
-# ProviderCredential -> provider_credential.
-REQUIRED_TABLES=(user video script provider_credential)
+# The tables whose loss cannot be repaired by re-running anything — not "the
+# obviously important tables" but specifically the ones with no reconstruction
+# path. A clip can be re-downloaded and a render re-rendered; none of these
+# can be regenerated from anywhere else:
+#   user               - accounts. Name/email alone; reconstructable from
+#                         business records if this were lost alone, but never
+#                         lost alone in practice, so kept in the list.
+#   account             - Better Auth's OAuth/password credential store: access
+#                         and refresh tokens, password hashes. This is where
+#                         "accounts" actually lives, not in `user`.
+#   channel             - YouTube OAuth access/refresh tokens per connected
+#                         channel. Same category of material as
+#                         provider_credential, different provider. Losing it
+#                         means re-consenting every channel.
+#   video               - every video record.
+#   script              - the thin pointer (id, activeVersionId, videoId) to a
+#                         script's content.
+#   script_version      - the actual narration text, cues, sources and model
+#                         used. `script` without this is close to nothing;
+#                         kept both because a dump with one and not the other
+#                         is its own signal something's wrong.
+#   provider_credential - encrypted per-operator provider API keys
+#                         (ElevenLabs, etc).
+# Names are prisma/schema.prisma's @@map values, not the PascalCase model
+# names — verified by reading the schema directly, every table on this list:
+# User -> user, Account -> account, Channel -> channel, Video -> video,
+# Script -> script, ScriptVersion -> script_version,
+# ProviderCredential -> provider_credential. A table named here that doesn't
+# actually exist would refuse every single dump, nightly and silently, which
+# is exactly why this list is checked against the schema file and not typed
+# from memory.
+REQUIRED_TABLES=(user account video script script_version provider_credential channel)
 
 # R2 ignores the actual region value, but the AWS CLI refuses to run at all
 # with no region configured anywhere. "auto" is Cloudflare's own documented
