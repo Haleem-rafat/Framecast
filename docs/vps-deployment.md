@@ -916,9 +916,43 @@ publish, which is the actual guarantee this step needs, not a request that
 nobody does. Two things to know before relying on it:
 
 - **It is not instantaneous.** Vercel's own docs note it can take several
-  minutes to take effect. Confirm the app is actually returning `503`
-  (`curl -I https://framecasts.com`, or just load it in a browser) before
+  minutes to take effect. Confirm the pause has actually landed before
   treating production as frozen and starting Step 10.
+
+  **Do not confirm it with `curl -I https://framecasts.com` or a browser
+  tab on the same Mac used for Step 8.** That machine has had
+  `framecasts.com` pointed at `51.38.80.36` in `/etc/hosts` since Step 8,
+  and `app-prod` is already running there by this point —
+  `docker compose up -d` starts it by default in Step 8, no profile
+  needed. A request from that machine to that hostname never reaches
+  Vercel at all; it hits the VPS's own healthy app and returns `200`
+  regardless of what Vercel is doing. That's a check that always passes,
+  which is worse than no check — it would tell the operator the freeze
+  took when it might not have, and send them into Step 10 with Vercel
+  possibly still serving live traffic and still able to run `publish()`,
+  reopening the exact race this step exists to close. If you find this
+  runbook later with a working `/etc/hosts` entry and a `curl` command
+  that appears to confirm a pause, this paragraph is why that combination
+  never actually proved anything.
+
+  Confirm the pause for real, instead:
+  - **The Vercel dashboard is authoritative and needs no DNS at all.** The
+    project's status reads "Paused" directly — this is the check, not a
+    proxy for it.
+  - **A device with no hosts override is a good second confirmation** —
+    a phone on cellular data (not the same Wi-Fi/DNS as the Mac), loading
+    `https://framecasts.com` and seeing `503 DEPLOYMENT_PAUSED`.
+  - If a command-line check is preferred, it has to genuinely bypass the
+    Mac's `/etc/hosts` entry. A plain `curl` does not — it resolves
+    hostnames the normal OS way, `/etc/hosts` included, which is exactly
+    the trap above. `dig` is different: it queries the DNS resolver
+    directly and never consults `/etc/hosts` at all, so `dig +short
+    framecasts.com` alone already returns Vercel's real, current answer.
+    Feed that into `curl --resolve framecasts.com:443:<that-ip> -I
+    https://framecasts.com` to force the *connection* to that address too
+    (rather than letting `curl` re-resolve the hostname itself and land
+    back on `/etc/hosts`), and the response is genuinely from Vercel's
+    edge.
 - **It does not auto-resume.** Nothing brings it back until Step 13
   explicitly cancels the project, or you resume it by hand (dashboard, or
   the `Pause a project` REST endpoint) — which you won't need to, since
