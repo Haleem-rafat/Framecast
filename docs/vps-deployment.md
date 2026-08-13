@@ -372,13 +372,27 @@ pnpm migrate:renders
 ```
 
 If the store is still suspended, the script detects this specifically (via
-`@vercel/blob`'s own `BlobStoreSuspendedError`) and exits non-zero with an
-explicit message — it will not report "0 files copied" as if nothing were
-wrong. **If you'd rather not restore billing just to migrate six files,
-skip this script entirely.** Step 6.4's SQL nulls `outputUrl` on whatever
-rows this script didn't reach, which the app already treats as "this needs
-re-rendering" everywhere it matters — not a broken player pointing at a
-file that isn't there.
+`@vercel/blob`'s own `BlobStoreSuspendedError`, checked on every render
+before it's downloaded) and reports it clearly rather than silently
+producing zero files — and, if a render is already fully copied from an
+earlier run, treats that one as done rather than failed even though the
+suspended store means it can't re-verify the byte count. **If you'd rather
+not restore billing just to migrate six files, skip this script entirely.**
+Step 6.4's SQL nulls `outputUrl` on whatever renders never got copied, which
+the app already treats as "this needs re-rendering" everywhere it
+matters — not a broken player pointing at a file that isn't there.
+
+At the end of its run, the script prints the exact list of videoIds whose
+render is now present at `RENDER_ROOT` — copy that output; Step 6.4 needs
+it pasted in verbatim.
+
+`RENDER_ROOT`'s destination doubles up as `renders/renders/<videoId>.mp4` —
+e.g. `/srv/framecast/prod/renders/renders/…` if `RENDER_ROOT` is
+`/srv/framecast/prod/renders`. That's correct, not a bug to flatten during
+an `rsync`: `RENDER_ROOT` is the directory, and `renderPath()` in
+`src/lib/render-storage.ts` always prefixes its own `renders/` segment on
+top of it. Removing the inner one breaks every path the app resolves
+afterward.
 
 ### Step 6.3: Move the database
 
@@ -403,26 +417,46 @@ status would correctly report it pending. Step 6.4 resolves that.
 `RenderJob.outputUrl` held an absolute Blob URL; it now holds a path
 relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`). The rewrite is
 `prisma/migrations/20260813120000_output_url_to_path/migration.sql`,
-already committed:
+already committed — but it needs one local, **uncommitted** edit before you
+run it:
 
 ```sql
 UPDATE "render_job"
 SET "outputUrl" = 'renders/' || "videoId" || '.mp4'
-WHERE "outputUrl" LIKE 'https://%.blob.vercel-storage.com/%';
+WHERE "outputUrl" LIKE 'https://%.blob.vercel-storage.com/%'
+  AND "videoId" = ANY(ARRAY[
+    -- Paste scripts/migrate-renders.ts's printed videoId list here
+  ]::uuid[]);
 
 UPDATE "render_job"
 SET "outputUrl" = NULL
 WHERE "outputUrl" LIKE 'https://%';
 ```
 
-The first statement rewrites rows whose render Step 6.2 actually copied.
-The second nulls whatever the first didn't touch — either because Step 6.2
-was skipped outright, or a handful of renders failed mid-run — so a row
-never points at a Blob URL, or at a path that doesn't exist on this box,
-once this migration has run. Table and column names (`render_job`,
-`outputUrl`, `videoId`) were verified against `prisma/schema.prisma`'s
-`@@map`, not assumed from the Prisma model names; double-check with `\d
-render_job` in `psql` before running, in case the schema has moved since.
+Statement 1 only rewrites rows whose `videoId` is in that pasted array — the
+renders Step 6.2 actually confirmed present on this box, not every row that
+merely looks like a Blob URL (an earlier draft of this migration had that
+bug: it rewrote every Blob-URL row unconditionally, which made the second
+statement below dead code — it could never match anything, because nothing
+would still look like a Blob URL by the time it ran). Statement 2 nulls
+everything statement 1 didn't touch, so a row is never left pointing at a
+Blob URL or at a path that doesn't exist on this box.
+
+As committed, the array is empty — valid SQL, matching zero rows, not a
+syntax error — so if Step 6.2 was skipped entirely you can run this file
+completely unedited: statement 1 does nothing and statement 2 nulls every
+Blob-URL row. If Step 6.2 did copy renders, open this file, paste its
+printed videoId list into the `ARRAY[]`, run the migration, and **do not
+commit the edit** — those are real production video ids, and this
+repository is public. The same discipline applies here as to
+`deploy/prod.env.example` versus the real `prod.env`: this file stays a
+template in git; the filled-in version lives only on disk for as long as it
+takes to run `prisma migrate deploy`.
+
+Table and column names (`render_job`, `outputUrl`, `videoId`) were verified
+against `prisma/schema.prisma`'s `@@map`, not assumed from the Prisma model
+names; double-check with `\d render_job` in `psql` before running, in case
+the schema has moved since.
 
 Apply it — this and every other migration still pending against the
 restored database:
@@ -451,6 +485,14 @@ docker compose exec postgres psql -U "$POSTGRES_USER" -d framecast \
 # Objects arrived.
 find /srv/framecast/prod/storage -type f ! -name '*.type' | wc -l
 du -sh /srv/framecast/prod
+
+# Orphaned temp files from an interrupted render copy. writeRenderFile()
+# (src/lib/render-storage.ts) writes to a `.tmp-<uuid>` file and renames it
+# into place, cleaning the temp file up on any error it catches — but a hard
+# kill of migrate-renders.ts (SIGKILL, a dead SSH session, the box
+# rebooting) skips that cleanup entirely. Harmless — nothing ever reads a
+# `.tmp-*` name — but worth clearing so `du` reflects real usage.
+find /srv/framecast/prod/renders -name '*.tmp-*'
 ```
 
 Then, sign in to the running app and open the Providers page. If the stored

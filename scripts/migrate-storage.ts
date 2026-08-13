@@ -23,6 +23,13 @@ config({ path: ".env" });
 // and this script deliberately does not resurrect them there. This is the
 // last thing in the repository that still needs the Supabase client; it is a
 // devDependency for exactly that reason, not a runtime one.
+//
+// STORAGE_ROOT *is* still in `@/config/env`'s schema, for the app's own use —
+// but that schema defaults it to a git-ignored relative path rather than
+// failing when it's unset, which is exactly wrong for this script: a
+// forgotten STORAGE_ROOT here would silently copy the entire bucket into a
+// throwaway directory and still print "Done, N copied" as if it worked. This
+// script checks it itself, the same way it checks the Supabase variables.
 
 /** Fails immediately, naming the missing variable, rather than proceeding
  * with `undefined` and failing later with a confusing error from deep inside
@@ -54,9 +61,13 @@ async function main(): Promise<void> {
   const SUPABASE_URL = requireEnv("SUPABASE_URL");
   const SUPABASE_SERVICE_ROLE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
   const SUPABASE_STORAGE_BUCKET = requireEnv("SUPABASE_STORAGE_BUCKET");
+  const STORAGE_ROOT = requireEnv("STORAGE_ROOT");
 
+  const { resolve } = await import("node:path");
   const { createClient } = await import("@supabase/supabase-js");
-  const { ensureBucket, objectSizeBytes, putObject } = await import("@/lib/storage");
+  const { ensureBucket, objectContentType, objectSizeBytes, putObject } = await import(
+    "@/lib/storage"
+  );
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
@@ -115,10 +126,19 @@ async function main(): Promise<void> {
 
     // Resumable: an interrupted run can simply be re-run. A destination that
     // already exists at the same size Supabase reports is assumed already
-    // copied and is skipped without re-downloading it.
+    // copied and is skipped without re-downloading it — but only if its
+    // `.type` sidecar is there too. `putObject` writes the object and its
+    // sidecar as two separate calls; a process killed between them leaves a
+    // full-size object with no sidecar, and a size-only check would skip it
+    // forever, leaving `objectContentType()` returning null for that object
+    // permanently (see this script's own module comment on why that matters
+    // for thumbnails).
     if (typeof expectedSize === "number") {
-      const existingSize = await objectSizeBytes(path);
-      if (existingSize === expectedSize) {
+      const [existingSize, existingContentType] = await Promise.all([
+        objectSizeBytes(path),
+        objectContentType(path),
+      ]);
+      if (existingSize === expectedSize && existingContentType !== null) {
         counts.skipped += 1;
         console.log(`[${processed()}] skip (already present, ${formatMegabytes(expectedSize)}): ${path}`);
         return;
@@ -133,7 +153,12 @@ async function main(): Promise<void> {
       }
 
       const buffer = Buffer.from(await data.arrayBuffer());
-      const contentType = entry.metadata?.mimetype ?? data.type ?? "application/octet-stream";
+      // `||`, not `??`: Supabase records `mimetype: ""` for an object
+      // uploaded without a declared content type, and a downloaded blob's
+      // own `.type` is `""` in the same situation — both are falsy, not
+      // null/undefined, so `??` would let an empty string through and write
+      // an empty sidecar, which is exactly the case this fallback exists for.
+      const contentType = entry.metadata?.mimetype || data.type || "application/octet-stream";
 
       await putObject(path, buffer, contentType);
 
@@ -163,7 +188,9 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`Copying from Supabase bucket "${SUPABASE_STORAGE_BUCKET}" into STORAGE_ROOT...`);
+  console.log(
+    `Copying from Supabase bucket "${SUPABASE_STORAGE_BUCKET}" into ${resolve(STORAGE_ROOT)} ...`,
+  );
   await walk("");
 
   console.log(

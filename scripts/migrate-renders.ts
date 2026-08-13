@@ -19,33 +19,45 @@ config({ path: ".env" });
 // produces. It is deleted, along with migrate-storage.ts, once it has run for
 // real — see Task 12. This script only reads from Postgres and Blob; it never
 // writes RenderJob.outputUrl itself — that rewrite is the SQL migration
-// (prisma/migrations/<timestamp>_output_url_to_path), run separately and
-// strictly after this script, and never deletes or modifies anything in Blob.
+// (prisma/migrations/20260813120000_output_url_to_path), which needs this
+// script's printed videoId list pasted into it first. See that file's own
+// comments and docs/vps-deployment.md's Step 6.4 for why. Never deletes or
+// modifies anything in Blob.
 //
-// BLOB_READ_WRITE_TOKEN is read directly from process.env, not from
-// `@/config/env` — the same treatment Task 6 gave the Supabase variables:
-// removed from the schema once the app stopped needing it (Task 4), not
-// resurrected here. @vercel/blob is a devDependency for exactly this script;
-// it is the same package (and the same `access: "private"` call shape) the
-// app used before Task 4, so its `BlobStoreSuspendedError` is a documented,
-// typed signal rather than something this script has to infer from a raw
-// HTTP status.
+// BLOB_READ_WRITE_TOKEN and RENDER_ROOT are read directly from process.env,
+// not from `@/config/env` for the token (same treatment Task 6 gave the
+// Supabase variables — removed from the schema once the app stopped needing
+// it (Task 4), not resurrected here) — RENDER_ROOT *is* still in that schema
+// for the app's own use, but this script checks it itself too, because the
+// schema defaults it to a git-ignored relative path rather than failing, and
+// a forgotten RENDER_ROOT here would otherwise silently copy renders into a
+// throwaway directory and still report success. @vercel/blob is a
+// devDependency for exactly this script; it is the same package (and the
+// same `access: "private"` call shape) the app used before Task 4, so its
+// `BlobStoreSuspendedError` is a documented, typed signal rather than
+// something this script has to infer from a raw HTTP status — but only
+// `head()` goes through the code path that produces it (`get()` does a raw
+// fetch and throws a generic error for the same condition), which is why
+// every row below calls `head()` first, unconditionally, even when a local
+// copy already exists.
 //
-// This step requires the Blob store to be un-suspended (readable). If the
-// operator chooses not to restore billing, this script is simply not run —
-// the SQL migration's second UPDATE nulls the rows it would have filled in.
+// This step requires the Blob store to be un-suspended (readable) to copy
+// anything it hasn't already copied. If the operator chooses not to restore
+// billing, this script is simply not run — the SQL migration's second
+// UPDATE nulls the rows it would have filled in.
 
 const BLOB_URL_PATTERN = /^https:\/\/[^/]+\.blob\.vercel-storage\.com\//i;
 
 /** Fails immediately, naming the missing variable, rather than proceeding
  * with `undefined` and failing later with a confusing error from deep inside
- * the Blob client. */
+ * the Blob client — or, for RENDER_ROOT, silently succeeding against the
+ * wrong directory (see the module doc comment above). */
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(
-      `${name} is not set. This script reads the Blob token straight from ` +
-        "the environment — export it (or add it to .env.local) before running.",
+      `${name} is not set. This script reads it straight from the ` +
+        "environment — export it (or add it to .env.local) before running.",
     );
   }
   return value;
@@ -58,16 +70,21 @@ function formatMegabytes(bytes: number): string {
 interface CopyCounts {
   copied: number;
   skipped: number;
+  blocked: number;
   failed: number;
 }
 
 async function main(): Promise<void> {
   const BLOB_READ_WRITE_TOKEN = requireEnv("BLOB_READ_WRITE_TOKEN");
+  const RENDER_ROOT = requireEnv("RENDER_ROOT");
 
+  const { resolve } = await import("node:path");
   const { prisma } = await import("@/lib/prisma");
   const { renderPath, statRenderFile, writeRenderFile } = await import("@/lib/render-storage");
   const { get, head, BlobNotFoundError, BlobStoreSuspendedError } = await import("@vercel/blob");
   const { Readable } = await import("node:stream");
+
+  console.log(`Copying renders from Blob into ${resolve(RENDER_ROOT)} ...`);
 
   const rows = await prisma.renderJob.findMany({
     where: { outputUrl: { not: null } },
@@ -86,34 +103,101 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`Found ${targets.length} render(s) to copy from Blob into RENDER_ROOT...`);
+  console.log(`Found ${targets.length} render(s) referencing Blob.`);
 
-  const counts: CopyCounts = { copied: 0, skipped: 0, failed: 0 };
+  const counts: CopyCounts = { copied: 0, skipped: 0, blocked: 0, failed: 0 };
+  // Every videoId whose render is confirmed present at RENDER_ROOT right
+  // now — copied this run, verified already-present, or (see below)
+  // present but unverifiable because Blob couldn't be reached. This is the
+  // list the SQL migration's first statement needs pasted into it: the only
+  // rows it's safe to point at a path instead of nulling.
+  const presentVideoIds: string[] = [];
+  let sawSuspension = false;
 
   function processed(): number {
-    return counts.copied + counts.skipped + counts.failed;
+    return counts.copied + counts.skipped + counts.blocked + counts.failed;
   }
 
   for (const row of targets) {
     const location = renderPath(row.videoId);
+    const existing = await statRenderFile(location);
 
+    // `head()` is called unconditionally — even when `existing` already
+    // looks complete — for two reasons: it's the only one of the two Blob
+    // calls this script makes that routes through the SDK's error mapper,
+    // so it's the only reliable way to detect a suspended store; and it
+    // gives the remote size the resume check below needs. Calling it only
+    // when `existing` is set (as an earlier version of this script did)
+    // means a *fresh* run — no local files yet — never calls it at all,
+    // so a suspended store would never be detected as such: every row
+    // would instead fail with `get()`'s generic "Failed to fetch blob"
+    // error, or worse, be misreported as missing entirely.
+    let remote: Awaited<ReturnType<typeof head>> | undefined;
     try {
-      // Resumable: an interrupted run can simply be re-run. A destination
-      // that already exists at the same size Blob reports is assumed
-      // already copied and is skipped without re-downloading it.
-      const existing = await statRenderFile(location);
+      remote = await head(row.outputUrl, { token: BLOB_READ_WRITE_TOKEN });
+    } catch (error) {
       if (existing) {
-        const remote = await head(row.outputUrl, { token: BLOB_READ_WRITE_TOKEN });
-        if (remote.size === existing.sizeBytes) {
-          counts.skipped += 1;
-          console.log(
-            `[${processed()}/${targets.length}] skip (already present, ` +
-              `${formatMegabytes(existing.sizeBytes)}): video ${row.videoId}`,
-          );
-          continue;
+        // Can't verify against Blob right now, but `writeRenderFile` only
+        // ever leaves a *complete* file at `location` — it writes to a temp
+        // path and atomically renames, never truncates in place — so a file
+        // being there at all is good evidence a previous run already
+        // finished it. Treat this as done, not failed: reporting a render
+        // that's already safely on disk as a failure would tell the
+        // operator to worry about something that isn't actually wrong.
+        counts.skipped += 1;
+        presentVideoIds.push(row.videoId);
+        const reason =
+          error instanceof BlobStoreSuspendedError
+            ? "Blob store unreadable"
+            : "could not verify against Blob";
+        console.log(
+          `[${processed()}/${targets.length}] skip (${reason}, local copy already present): ` +
+            `video ${row.videoId}`,
+        );
+        if (error instanceof BlobStoreSuspendedError) {
+          sawSuspension = true;
         }
+        continue;
       }
 
+      if (error instanceof BlobStoreSuspendedError) {
+        // Store-wide, not per-row — every other row without a local copy
+        // will fail the same way. Keep going anyway (rather than aborting
+        // the whole script here) so rows that *do* have a local copy still
+        // get counted as done above, instead of being left unexamined.
+        sawSuspension = true;
+        counts.blocked += 1;
+        console.error(
+          `[${processed()}/${targets.length}] BLOCKED (Blob store is suspended): video ${row.videoId}`,
+        );
+        continue;
+      }
+
+      counts.failed += 1;
+      const message =
+        error instanceof BlobNotFoundError
+          ? "render is missing from Blob"
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      console.error(`[${processed()}/${targets.length}] FAILED: video ${row.videoId} — ${message}`);
+      continue;
+    }
+
+    // Resumable: an interrupted run can simply be re-run. A destination
+    // that already exists at the same size Blob reports is assumed
+    // already copied and is skipped without re-downloading it.
+    if (existing && existing.sizeBytes === remote.size) {
+      counts.skipped += 1;
+      presentVideoIds.push(row.videoId);
+      console.log(
+        `[${processed()}/${targets.length}] skip (already present, ` +
+          `${formatMegabytes(existing.sizeBytes)}): video ${row.videoId}`,
+      );
+      continue;
+    }
+
+    try {
       const result = await get(row.outputUrl, {
         access: "private",
         token: BLOB_READ_WRITE_TOKEN,
@@ -121,7 +205,7 @@ async function main(): Promise<void> {
 
       if (!result || result.statusCode !== 200 || !result.stream) {
         throw new Error(
-          `render for video ${row.videoId} is no longer in Blob (outputUrl ${row.outputUrl})`,
+          `unexpected empty response fetching video ${row.videoId}'s render from Blob`,
         );
       }
 
@@ -136,30 +220,15 @@ async function main(): Promise<void> {
       );
 
       counts.copied += 1;
+      presentVideoIds.push(row.videoId);
       console.log(
         `[${processed()}/${targets.length}] copied (${formatMegabytes(result.blob.size)}): ` +
           `video ${row.videoId}`,
       );
     } catch (error) {
       if (error instanceof BlobStoreSuspendedError) {
-        // Store-wide, not per-row: every remaining row will fail the exact
-        // same way, so hammering through the rest would just repeat this
-        // failure five more times for no new information. Stop here, loudly,
-        // rather than reporting "0 files copied" as if nothing was wrong.
-        console.error(
-          "\nThe Vercel Blob store is suspended (unreadable). Restore billing and " +
-            "re-run this script, or skip it entirely — the SQL migration's second " +
-            "UPDATE nulls any RenderJob rows this script did not reach.",
-        );
-        console.error(
-          `Stopped after ${processed()}/${targets.length} render(s): ` +
-            `${counts.copied} copied, ${counts.skipped} already present.`,
-        );
-        process.exitCode = 1;
-        await prisma.$disconnect();
-        return;
+        sawSuspension = true;
       }
-
       counts.failed += 1;
       const message =
         error instanceof BlobNotFoundError
@@ -172,15 +241,37 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nDone. ${counts.copied} copied, ${counts.skipped} already present, ${counts.failed} failed. ` +
+    `\nDone. ${counts.copied} copied, ${counts.skipped} already present, ` +
+      `${counts.blocked} blocked by a suspended store, ${counts.failed} failed. ` +
       `Total render(s) matched: ${targets.length}.`,
   );
 
-  if (counts.failed > 0) {
+  if (sawSuspension) {
     console.error(
-      `${counts.failed} render(s) failed to copy. Re-run this script — renders already ` +
-        "copied are skipped, so only the failures above will be retried.",
+      "\nThe Vercel Blob store is suspended (unreadable) for at least one render this run " +
+        "touched. Restore billing and re-run this script to pick up whatever it didn't reach — " +
+        "already-copied renders are skipped, so only what's still missing will be retried.",
     );
+  }
+
+  if (presentVideoIds.length > 0) {
+    console.log(
+      "\nPaste the following into " +
+        "prisma/migrations/20260813120000_output_url_to_path/migration.sql's ARRAY[...] list " +
+        "(statement 1) before running `prisma migrate deploy` — do not commit the edit, these " +
+        "are real production video ids and this repository is public:\n",
+    );
+    for (const videoId of presentVideoIds) {
+      console.log(`  '${videoId}',`);
+    }
+  } else {
+    console.log(
+      "\nNo renders are present locally yet. Leave the migration's videoId list empty — " +
+        "every affected row will be nulled by statement 2.",
+    );
+  }
+
+  if (counts.failed > 0 || counts.blocked > 0) {
     process.exitCode = 1;
   }
 
