@@ -5,10 +5,10 @@ replaces Vercel, Supabase and Railway. This document is written to be
 followed top to bottom by whoever has SSH access, without having to
 reconstruct anything from memory or from this migration's history.
 
-**Scope of this page today:** provisioning only — turning a bare box into
-one that can run `deploy/docker-compose.yml`. Deploying the stack for the
-first time, migrating data across, nightly backups, and the DNS cutover are
-separate steps covered by later sections this document grows as those are
+**Scope of this page today:** provisioning (turning a bare box into one that
+can run `deploy/docker-compose.yml`) and migrating the existing data across.
+Deploying the stack for the first time, nightly backups, and the DNS cutover
+are separate steps covered by later sections this document grows as those are
 built; if you're looking for one of those and it isn't below yet, it hasn't
 been written.
 
@@ -314,6 +314,153 @@ check exists to prevent by construction — don't copy `DATABASE_SSL_DISABLE`
 into any environment where the database isn't reached through this same
 Compose network.
 
+## Step 6: Migrate the data
+
+Everything that was ever written to Supabase Storage, the six finished
+renders in Vercel Blob, and the Postgres database itself — carried from the
+operator's live production account onto this box. **Files first, database
+last**, so a running app never finds a database row pointing at an object
+that hasn't arrived yet.
+
+`scripts/migrate-storage.ts` and `scripts/migrate-renders.ts` are one-shot:
+committed so this migration is reviewable and repeatable, not kept as
+permanent tooling — Task 12 deletes them, and `@supabase/supabase-js` and
+`@vercel/blob` (both `devDependencies`, added back only for this migration)
+along with them, once they've run for real. Neither script deletes or
+modifies anything at the source — both are a copy, never a move. Both are
+resumable: run them again after any failure and objects/renders already
+copied are skipped, not re-fetched.
+
+### Step 6.1: Copy every stored object
+
+Run from the operator's Mac, against the **current production Supabase
+project**:
+
+```bash
+SUPABASE_URL=... \
+SUPABASE_SERVICE_ROLE_KEY=... \
+SUPABASE_STORAGE_BUCKET=... \
+STORAGE_ROOT=/path/to/srv-mirror/storage \
+pnpm migrate:storage
+```
+
+These three `SUPABASE_*` variables are read straight from the process
+environment, not from `.env`/`.env.local` — Task 6 removed them from
+`src/config/env.ts`'s schema once the app itself stopped needing them, and
+this script deliberately does not resurrect them there. Get the service role
+key and bucket name from the Supabase dashboard (Project Settings → API,
+and Storage), not from any file in this repo.
+
+`STORAGE_ROOT` should point at wherever you're staging the copy before it
+goes to the server — either a local directory you `rsync` across afterward,
+or (with SSH tunnelling or a mounted path) directly at
+`/srv/framecast/prod/storage`. The script prints a running count as it
+recurses the bucket, and a final total; a non-zero exit means at least one
+object failed and should be investigated before moving on — re-running is
+safe and only retries what didn't already land.
+
+### Step 6.2: Copy the six finished renders
+
+**Requires the Vercel Blob store to be un-suspended first** — suspended
+means unreadable, not merely slow. Restore billing on the Blob store, then
+run:
+
+```bash
+BLOB_READ_WRITE_TOKEN=... \
+RENDER_ROOT=/path/to/srv-mirror/renders \
+pnpm migrate:renders
+```
+
+If the store is still suspended, the script detects this specifically (via
+`@vercel/blob`'s own `BlobStoreSuspendedError`) and exits non-zero with an
+explicit message — it will not report "0 files copied" as if nothing were
+wrong. **If you'd rather not restore billing just to migrate six files,
+skip this script entirely.** Step 6.4's SQL nulls `outputUrl` on whatever
+rows this script didn't reach, which the app already treats as "this needs
+re-rendering" everywhere it matters — not a broken player pointing at a
+file that isn't there.
+
+### Step 6.3: Move the database
+
+From the operator's Mac, with `DIRECT_URL` pointing at Supabase:
+
+```bash
+pg_dump "$DIRECT_URL" --no-owner --no-acl --format=custom --file=framecast.dump
+
+scp framecast.dump root@51.38.80.36:/tmp/
+ssh root@51.38.80.36 'docker compose -f /srv/framecast/docker-compose.yml cp /tmp/framecast.dump postgres:/tmp/'
+ssh root@51.38.80.36 'docker compose -f /srv/framecast/docker-compose.yml exec postgres \
+  pg_restore --no-owner --no-acl -U "$POSTGRES_USER" -d framecast /tmp/framecast.dump'
+```
+
+Don't check `prisma migrate status` yet — the dump reflects Supabase's
+schema, which has never seen the `output_url_to_path` migration below (it
+was written for this VPS Postgres and was never meant to touch Supabase), so
+status would correctly report it pending. Step 6.4 resolves that.
+
+### Step 6.4: Rewrite `outputUrl`
+
+`RenderJob.outputUrl` held an absolute Blob URL; it now holds a path
+relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`). The rewrite is
+`prisma/migrations/20260813120000_output_url_to_path/migration.sql`,
+already committed:
+
+```sql
+UPDATE "render_job"
+SET "outputUrl" = 'renders/' || "videoId" || '.mp4'
+WHERE "outputUrl" LIKE 'https://%.blob.vercel-storage.com/%';
+
+UPDATE "render_job"
+SET "outputUrl" = NULL
+WHERE "outputUrl" LIKE 'https://%';
+```
+
+The first statement rewrites rows whose render Step 6.2 actually copied.
+The second nulls whatever the first didn't touch — either because Step 6.2
+was skipped outright, or a handful of renders failed mid-run — so a row
+never points at a Blob URL, or at a path that doesn't exist on this box,
+once this migration has run. Table and column names (`render_job`,
+`outputUrl`, `videoId`) were verified against `prisma/schema.prisma`'s
+`@@map`, not assumed from the Prisma model names; double-check with `\d
+render_job` in `psql` before running, in case the schema has moved since.
+
+Apply it — this and every other migration still pending against the
+restored database:
+
+```bash
+npx prisma migrate deploy
+```
+
+Then confirm Prisma agrees the schema is current:
+
+```bash
+npx prisma migrate status
+```
+
+Expected: `Database schema is up to date!`
+
+### Step 6.5: Verify
+
+On the server:
+
+```bash
+# Row counts match the source.
+docker compose exec postgres psql -U "$POSTGRES_USER" -d framecast \
+  -c 'SELECT (SELECT count(*) FROM "user") AS users, (SELECT count(*) FROM video) AS videos, (SELECT count(*) FROM channel) AS channels;'
+
+# Objects arrived.
+find /srv/framecast/prod/storage -type f ! -name '*.type' | wc -l
+du -sh /srv/framecast/prod
+```
+
+Then, sign in to the running app and open the Providers page. If the stored
+ElevenLabs key renders as connected rather than as an error,
+`CREDENTIAL_ENCRYPTION_KEY` came across correctly — this is the one thing on
+this page that cannot be checked any other way. **Do not proceed past this
+check.** Everything else here can be redone if something is wrong; a wrong
+encryption key cannot — every credential ever saved becomes unrecoverable
+the moment it fails to decrypt.
+
 ## Status
 
 Nothing on this page has been executed against `51.38.80.36`. As of this
@@ -324,3 +471,10 @@ key is installed and the host answers SSH with
 procedure; running it for the first time is the first real test of all of
 it, same as `deploy/docker-compose.yml` and the Dockerfiles it runs remain
 unverified until `docker compose up` actually executes somewhere.
+
+Step 6 is in the same state: `scripts/migrate-storage.ts`,
+`scripts/migrate-renders.ts`, and the `output_url_to_path` migration are
+written and reviewable but have never run against the operator's real
+Supabase project, Vercel Blob store, or `51.38.80.36` — the same SSH blocker
+above applies, and the source data is a live production account this task
+was explicitly written not to touch.

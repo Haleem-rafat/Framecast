@@ -19,6 +19,8 @@
     "db:seed": "prisma db seed",
     "render": "tsx --conditions=react-server scripts/render.ts",
     "worker": "tsx --conditions=react-server worker/index.ts",
+    "migrate:storage": "tsx --conditions=react-server scripts/migrate-storage.ts",
+    "migrate:renders": "tsx --conditions=react-server scripts/migrate-renders.ts",
     "postinstall": "prisma generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },
@@ -55,10 +57,12 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@supabase/supabase-js": "^2.112.3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vercel/blob": "^2.8.0",
     "@vitejs/plugin-react": "^6.0.5",
     "dotenv": "^17.4.2",
     "eslint": "^9",
