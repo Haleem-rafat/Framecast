@@ -87,6 +87,14 @@ trap 'ping_monitor "/fail"' ERR
 : "${POSTGRES_USER:?}"
 
 COMPOSE_FILE=/srv/framecast/docker-compose.yml
+# Stated explicitly rather than left to `-f`'s default, because it is what
+# tells Compose where to find /srv/framecast/.env — the file supplying
+# GITHUB_OWNER/POSTGRES_USER/POSTGRES_PASSWORD, which docker-compose.yml
+# declares with `:?` and therefore refuses to run without. This unit has no
+# WorkingDirectory of its own (see deploy/framecast-backup.service), so
+# nothing else here would pin it.
+COMPOSE_DIR=/srv/framecast
+compose() { docker compose --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"; }
 
 # The tables whose loss cannot be repaired by re-running anything — not "the
 # obviously important tables" but specifically the ones with no reconstruction
@@ -134,7 +142,7 @@ ping_monitor "/start"
 
 for DB in framecast framecast_staging; do
   OUT="$WORK/${DB}-${STAMP}.dump.gz"
-  docker compose -f "$COMPOSE_FILE" exec -T postgres \
+  compose exec -T postgres \
     pg_dump -U "$POSTGRES_USER" --no-owner --no-acl --format=custom "$DB" \
     | gzip -9 > "$OUT"
 
@@ -166,7 +174,7 @@ for DB in framecast framecast_staging; do
   # isn't tight enough — that's satisfiable by a dump that happens to carry
   # some inconsequential table's data while missing the ones this backup
   # exists to protect. This checks each of REQUIRED_TABLES by name instead.
-  if ! LISTING=$(gunzip -c "$OUT" | docker compose -f "$COMPOSE_FILE" exec -T postgres \
+  if ! LISTING=$(gunzip -c "$OUT" | compose exec -T postgres \
       pg_restore -l - 2>&1); then
     fail "Refusing to upload ${DB}: pg_restore could not read the dump's own table of contents — it may be truncated or corrupt. Output: ${LISTING}"
   fi
