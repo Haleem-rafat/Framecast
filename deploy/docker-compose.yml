@@ -64,7 +64,19 @@ services:
   app-prod:
     image: ghcr.io/${GITHUB_OWNER}/framecast-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 512m
+    # 1024m, not the 512m a "Next.js server" would suggest, because publishing
+    # runs in this process: `publishVideoAction` (a Server Action) calls
+    # `publishService.publish()`, which buffers the whole ~170MB render into
+    # memory for YouTube's resumable upload (see the comment at
+    # src/services/publish.service.ts's `fileBuffer`), with a transient peak
+    # near double that while the chunks are concatenated — on top of the
+    # 150-250MB a Next.js standalone server already holds. An OOM kill here is
+    # not the cheap, self-healing kind described above: the Publication row is
+    # written `UPLOADING` *before* the upload, SIGKILL skips the catch that
+    # would mark it FAILED, and every retry then hits
+    # ConflictError("This video is already being published.") while YouTube may
+    # already hold the video. Do not trim this back.
+    mem_limit: 1024m
     # Matches the UID:GID the image already runs as (app/Dockerfile's `USER
     # nextjs`, created at 1001:1001). Stated explicitly here, not just in the
     # image, because it is also the contract with the bind-mounted host
@@ -82,7 +94,18 @@ services:
   worker-prod:
     image: ghcr.io/${GITHUB_OWNER}/framecast-worker:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 1408m
+    # 640m, down from the 1408m this held before app-prod's publish buffer was
+    # accounted for. The room the two app services now need came from here on
+    # purpose: a worker killed mid-render is recovered automatically by the
+    # lease lapse described at the top of this file, while an app killed
+    # mid-publish is not recoverable without manual work and risks a duplicate
+    # YouTube upload. Put the margin where the failure is unrecoverable.
+    # 640m is workable because rendering no longer scales with the video:
+    # ffmpeg runs one decoder and one encoder at a time across two passes
+    # (see src/lib/ffmpeg-command.ts), so memory is flat in both clip count
+    # and duration. If a render is ever OOM-killed here, raise this and take
+    # it back from `app-staging` — a staging publish is always supervised.
+    mem_limit: 640m
     # Same UID:GID as app-prod (worker/Dockerfile's `USER worker`, also
     # 1001:1001) — the two containers share these directories, so both must
     # agree on who owns files in them. See deploy/README.md.
@@ -105,7 +128,11 @@ services:
   app-staging:
     image: ghcr.io/${GITHUB_OWNER}/framecast-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 384m
+    # Same process as app-prod, and the staging proof in the runbook publishes
+    # a real video — so it holds the same ~170MB render buffer app-prod does.
+    # Lighter traffic, not a lighter peak; 384m would be killed by the first
+    # staging publish.
+    mem_limit: 640m
     user: "1001:1001"
     env_file: /srv/framecast/env/staging.env
     volumes:
@@ -116,14 +143,18 @@ services:
 
   # Started deliberately, never automatically: two renders on two cores would
   # make both slow and the site unusable. Starting it alongside a production
-  # render also stacks its 896m memory limit on top of the ~3GB the five
+  # render also stacks its 640m memory limit on top of the ~3GB the five
   # always-on services already budget for — briefly, not as a steady state.
   #   docker compose --profile staging-worker up -d worker-staging
   #   docker compose stop worker-staging
   worker-staging:
     image: ghcr.io/${GITHUB_OWNER}/framecast-worker:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 896m
+    # Matches worker-prod rather than undercutting it: it runs the identical
+    # pipeline, and the staging render is the proof that the pipeline works at
+    # all. A smaller limit here would mean a staging render that dies where a
+    # production one would have survived — the opposite of what staging is for.
+    mem_limit: 640m
     user: "1001:1001"
     profiles: [staging-worker]
     env_file: /srv/framecast/env/staging.env

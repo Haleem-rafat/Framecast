@@ -396,6 +396,19 @@ export class PublishService {
       // uploadToYouTube's X-Upload-Content-Length below), so the stream is
       // buffered here rather than piped through — same memory tradeoff the
       // local-disk version made reading the whole file at once.
+      //
+      // THIS LINE IS WHY `app-prod` IS CAPPED AT 1024m AND NOT 512m.
+      // publish() runs in the **app** process, not the worker —
+      // `publishVideoAction` (src/actions/publish.action.ts) is a Server
+      // Action — so this ~170MB allocation, whose transient peak is close to
+      // double that while the chunks are concatenated, lands on top of the
+      // 150-250MB a Next.js standalone server already holds. See
+      // deploy/docker-compose.yml's `app-prod`/`app-staging` limits and
+      // deploy/README.md's "Why `app-prod` gets 1024m" section before
+      // trimming either number, and before assuming this buffer is free:
+      // an OOM kill here is a SIGKILL, so the catch below never runs, the
+      // `Publication` row created above stays `UPLOADING` forever, and every
+      // retry gets ConflictError while YouTube may already hold the video.
       const fileBuffer = Buffer.from(await new Response(file.stream).arrayBuffer());
       youtubeVideoId = await this.uploadToYouTube(
         accessToken,

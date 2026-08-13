@@ -147,18 +147,50 @@ cgroup instead of wherever the kernel's heuristic happens to point, and
 | ---------------- | ----------- | -------------------------------------------------------------------- |
 | `caddy`          | 128m        | A reverse proxy; has no reason to need more.                        |
 | `postgres`       | 640m        | `shared_buffers=256MB` fixed + worst-case ~200MB across 50 connections, plus headroom. |
-| `app-prod`       | 512m        | Next.js standalone server under real traffic.                       |
-| `worker-prod`    | 1408m       | The biggest budget: ffmpeg's own memory use scales with resolution and filters, on top of the Node/tsx process running it. |
-| `app-staging`    | 384m        | Same process as `app-prod`, expected lighter traffic.               |
-| `worker-staging` | 896m        | Off by default; smaller than `worker-prod` to match its lower `cpu_shares`. |
+| `app-prod`       | 1024m       | Not just "a Next.js server": publishing runs in this process and buffers the whole ~170MB render — see below. |
+| `worker-prod`    | 640m        | ffmpeg, one decoder and one encoder at a time — see below.           |
+| `app-staging`    | 640m        | Same process and the same publish buffer as `app-prod`; lighter traffic, not a lighter peak. |
+| `worker-staging` | 640m        | Off by default. Matches `worker-prod` because it runs the identical pipeline. |
 
-The five services that run by default sum to ~3GB, leaving ~1GB of the box's
-4GB for the OS, the Docker daemon, and bursts above these numbers (page
-cache is reclaimed under pressure before a limit triggers a kill, so this
-isn't as tight as summing feels). Starting `worker-staging` on top adds
-another 896m — expected to be brief and supervised, per the profile above,
-not a steady state the box is sized to hold indefinitely alongside
-everything else.
+The five services that run by default sum to 3072m (~3GB), leaving ~1GB of
+the box's 4GB for the OS, the Docker daemon, and bursts above these numbers
+(page cache is reclaimed under pressure before a limit triggers a kill, and
+provisioning also adds a 2GB swap file, so this isn't as tight as summing
+feels). Starting `worker-staging` on top adds another 640m — expected to be
+brief and supervised, per the profile above, not a steady state the box is
+sized to hold indefinitely alongside everything else.
+
+### Why `app-prod` gets 1024m and `worker-prod` only 640m
+
+That looks backwards for a box whose expensive job is video encoding. It
+isn't, for two reasons.
+
+**The app is not only a web server — it is the uploader.**
+`publishVideoAction` (`src/actions/publish.action.ts`) is a Next.js Server
+Action, so it runs inside `app-prod`, not `worker-prod`. It calls
+`publishService.publish()`, which buffers the entire ~170MB render into
+memory because YouTube's resumable upload needs the full byte length up
+front, with a transient peak near double that while the chunks are
+concatenated. Next.js standalone's own RSS is 150–250MB before any of that.
+512m could not survive a single publish. `app-staging` carries the same
+number for the same reason: the staging proof in `docs/vps-deployment.md`
+publishes a real video.
+
+**An OOM kill is cheap in the worker and expensive in the app.** A worker
+killed mid-render loses its lease and any worker re-renders the video
+automatically (see the section below). An app killed mid-publish leaves the
+`Publication` row stuck at `UPLOADING` — the row is written before the
+upload, and `SIGKILL` skips the catch that would mark it `FAILED` — so every
+retry returns `ConflictError("This video is already being published.")`
+while YouTube may already hold the video, and the manual recovery risks a
+duplicate upload. The margin belongs where the failure is unrecoverable.
+
+`worker-prod` can afford 640m because rendering no longer scales with the
+video. Both ffmpeg passes hold one decoder and one encoder open at a time
+(`src/lib/ffmpeg-command.ts`); memory is flat in clip count and duration.
+If a render is ever OOM-killed at this limit, raise `worker-prod` and take
+it back from `app-staging` — a staging publish is always supervised, and a
+production one is not.
 
 **What happens when a render is killed mid-encode:** the kill is a SIGKILL,
 which the worker's SIGTERM handler (in `worker/index.ts`, there for
