@@ -246,8 +246,8 @@ ssh root@51.38.80.36 'chmod 600 /srv/framecast/env/*.env'
 The two files are identical in shape. They differ in exactly three values:
 the database name (`framecast` vs `framecast_staging`), the hostname
 (`framecasts.com` vs `staging.framecasts.com`), and `JAMENDO_CLIENT_ID`,
-left **empty** in staging so test renders don't spend the music quota shared
-with production.
+**commented out** in staging so test renders don't spend the music quota
+shared with production.
 
 | Variable | Notes |
 |---|---|
@@ -262,8 +262,9 @@ with production.
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | From the Google Cloud Console OAuth client already in use. |
 | `AI_GATEWAY_API_KEY` | From the Vercel AI Gateway project. |
 | `PEXELS_API_KEY`, `PIXABAY_API_KEY` | Platform-level stock footage keys, not per-operator. |
-| `JAMENDO_CLIENT_ID` | Prod only — leave empty in `staging.env`. |
+| `JAMENDO_CLIENT_ID` | Prod only. In `staging.env`, **comment the line out** — do not write `JAMENDO_CLIENT_ID=`. `src/config/env.ts` accepts it absent but rejects the empty string, and `env_file:` passes a bare `NAME=` through as `""`, so an "empty" line stops `app-staging` booting. |
 | `SEED_USER_EMAIL` | The seeded operator address / first allowlisted sign-in. |
+| `SEED_USER_PASSWORD` | Required by `prisma/seed.ts` alongside `SEED_USER_EMAIL`; it reads both straight from the process environment, so a missing value is only discovered when the seed is run. |
 
 Get `STORAGE_ROOT` or `RENDER_ROOT` wrong (or leave either unset, letting
 `src/config/env.ts` fall back to its dev-only relative default) and nothing
@@ -816,7 +817,16 @@ interpolate `${GITHUB_OWNER}`, `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}`
 and, optionally, `${IMAGE_TAG}` before any container starts. This is
 distinct from `prod.env`/`staging.env` (Step 5) and from `backup.env` (Step
 7.1) — three different files, three different purposes, all under
-`/srv/framecast`. Set `GITHUB_OWNER=haleem-rafat`, **lowercase** — GHCR
+`/srv/framecast`. Its template is `deploy/compose.env.example`, copied the
+same way as the others:
+
+```bash
+scp deploy/compose.env.example root@51.38.80.36:/srv/framecast/.env
+# then edit it in place on the server
+ssh root@51.38.80.36 'chmod 600 /srv/framecast/.env'
+```
+
+Set `GITHUB_OWNER=haleem-rafat`, **lowercase** — GHCR
 rejects the repository owner's actual GitHub-login case (`Haleem-rafat`);
 see `deploy/README.md`'s "`GITHUB_OWNER` must be lowercase" section — and
 `POSTGRES_USER`/`POSTGRES_PASSWORD` matching what `prod.env` and

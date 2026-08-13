@@ -231,9 +231,14 @@ few seconds.
   - A `.env` file next to the Compose file on the server (e.g.
     `/srv/framecast/.env`) supplying the variables Compose itself
     interpolates before any container starts: `GITHUB_OWNER`,
-    `POSTGRES_USER`, `POSTGRES_PASSWORD`, and optionally `IMAGE_TAG`. Run
-    `docker compose` commands from that same directory (or pass
-    `--project-directory`) so this file is picked up.
+    `POSTGRES_USER`, `POSTGRES_PASSWORD`, and optionally `IMAGE_TAG`. Its
+    template is `deploy/compose.env.example`. Run `docker compose` commands
+    from that same directory (or pass `--project-directory`) so this file is
+    picked up. All four are declared in the Compose file with `:?`, so a
+    missing one stops `docker compose up` immediately and names the
+    variable — rather than interpolating to the empty string and leaving the
+    `postgres` healthcheck as `pg_isready -U `, which never passes and hangs
+    every `depends_on: service_healthy` with nothing pointing at the cause.
 
 None of the above are committed. `.gitignore` covers both naming families at
 any depth: `.env`/`.env.*` for the app's dot-prefixed files, and `*.env` for
