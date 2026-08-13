@@ -515,7 +515,7 @@ export class PublishService {
     // transaction has committed, the video is genuinely PUBLISHED, and a
     // failure here must never unwind that. See reclaimRenderStorage's own
     // doc comment for why this runs here and nowhere else.
-    await this.reclaimRenderStorage(videoId, outputUrl);
+    await this.reclaimRenderStorage(userId, videoId, outputUrl);
 
     return { youtubeVideoId };
   }
@@ -715,19 +715,49 @@ export class PublishService {
    * each on a 40GB machine, keeping every published one is the difference
    * between a disk that stabilises and one that fills at roughly 140 videos.
    *
-   * Best-effort, for the same reason `reclaimClipStorage` above is: this runs
-   * after the publish has already succeeded, and nothing here is permitted to
-   * turn a live video into a failed one. A render that is already gone — what
-   * a retried publish meets — is not an error.
+   * Best-effort, and mirrors `reclaimClipStorage` above in full — not just
+   * its placement, but its failure handling too: this runs after the publish
+   * has already succeeded, so nothing here is permitted to turn a live video
+   * into a failed one. A render that is already gone — what a retried
+   * publish meets — is not an error. But a *persistent* failure here (a
+   * permissions problem on the render volume, say) is worse for this method
+   * than for `reclaimClipStorage`: this is the one path that exists
+   * specifically to keep the 40GB disk from filling, one 170MB render at a
+   * time, and a `console.error` nobody reads until the disk is already full
+   * is not a signal the operator will ever see in time. So this also writes
+   * a `WARN` `ActivityLog` row, same as `reclaimClipStorage` does — best
+   * effort itself, per that method's own doc comment on why a failed log
+   * write isn't worth a second failure path here.
    */
-  private async reclaimRenderStorage(videoId: string, location: string): Promise<void> {
+  private async reclaimRenderStorage(
+    userId: string,
+    videoId: string,
+    location: string,
+  ): Promise<void> {
     try {
       await deleteRenderFile(location);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       console.error(
-        `Could not reclaim the render for video ${videoId} at ${location}:`,
-        error,
+        `Could not reclaim the render for video ${videoId} at ${location}: ${message}`,
       );
+
+      try {
+        await prisma.activityLog.create({
+          data: {
+            userId,
+            level: "WARN",
+            action: "publish.reclaimRenderStorage",
+            entityType: "Video",
+            entityId: videoId,
+            message: `Could not reclaim the render after publish: ${message}`,
+          },
+        });
+      } catch {
+        // The console.error above already recorded this run's failure;
+        // losing the operator-visible copy too isn't worth a second
+        // failure path here.
+      }
     }
   }
 
