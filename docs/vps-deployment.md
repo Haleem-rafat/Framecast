@@ -652,6 +652,47 @@ suspension mid-render that took the store's readability with it (Step 6.2
 above). R2 is a different provider from OVH for exactly that reason — an
 account-level failure on one cannot take out the other.
 
+### Step 7.0: Confirm OVH's own backup is switched on for this VPS
+
+`backup.sh` dumps Postgres and nothing else. That is a deliberate choice
+resting on "the files are reproducible" — and for clips and finished renders
+it is true: a clip re-downloads from Pexels/Pixabay, a render re-renders from
+the script and the narration.
+
+**It is not true for all of them.** Narration audio is paid ElevenLabs
+synthesis, and re-synthesising it does not reproduce the file — it produces a
+*different* one, whose timings no longer match the alignment cues stored
+against the script, so every caption in every affected video is wrong until
+that video is re-rendered end to end. Thumbnails and channel logos are
+generated images: also paid, also not reproducible for free, and a channel
+logo is reused across every video that channel ever renders. Those bytes live
+under `/srv/framecast/prod/storage` and exist in exactly one place once
+Supabase is cancelled in Step 13.
+
+The whole plan for them is OVH's own server backup. So verify it is actually
+running on **this** VPS, rather than assuming it came with the plan:
+
+1. In the OVH manager, open **Bare Metal Cloud → Virtual Private Servers →
+   `vps-940eaa43.vps.ovh.net` → Backup** (or the **Automated backup** entry on
+   the VPS's own dashboard).
+2. Confirm **Automated backup — Standard** reads as *enabled/active* for this
+   VPS, not merely as available to order. If it is not, enable it now — before
+   Step 13 cancels anything.
+3. Confirm at least one snapshot has actually been taken, with a date. A
+   subscription with no snapshot behind it is the same "belief, not a backup"
+   Step 7.4 exists to reject.
+
+**Record here once checked:**
+
+- OVH automated backup enabled on this VPS: ⬜ not yet verified.
+- Date checked: `<fill in>`. Most recent snapshot shown: `<date>`.
+
+If it turns out not to be included on this VPS's plan, say so here rather than
+leaving the box unticked and quiet — the alternative (adding
+`/srv/framecast/*/storage` to `backup.sh`'s nightly upload) is a bigger change
+than this migration should absorb unnoticed, but it is a real gap in what is
+recoverable and it needs to be written down somewhere the next person reads.
+
 ### Step 7.1: Install the AWS CLI, the script, and the timer
 
 **On the server, as root.** Nothing installs `aws` during provisioning, and
@@ -735,7 +776,15 @@ seven can be reconstructed from anywhere else. Table names are
 `prisma/schema.prisma`'s `@@map` values, read from the schema rather than
 assumed from the model names — a table named here that doesn't actually
 exist would refuse every dump, nightly and silently, so each name is
-checked against the schema file directly, not typed from memory. This still
+checked against the schema file directly, not typed from memory. **Both
+content guards — the size threshold and the required-table list — apply to
+`framecast` only, not to `framecast_staging`.** Staging is a scratch database
+that is legitimately empty until someone migrates it and legitimately wiped
+whenever a test needs it to be; holding it to production's standard would
+fail this job every night forever, and page every night once
+`HEALTHCHECK_PING_URL` is configured, over a database whose loss costs
+nothing. Staging is still dumped, still checked for readability with
+`pg_restore -l`, and still uploaded. This still
 doesn't prove the *row counts* are
 right — `pg_dump` writes a `TABLE DATA` entry for a table whether it holds
 one row or a million — only that the tables that matter were actually
@@ -1233,12 +1282,13 @@ clean `shellcheck` run, and `deploy/framecast-backup.service`,
 reviewable, but none of it has run against real Postgres containers or a
 real R2 bucket — the same SSH blocker applies, and no R2 credentials exist
 yet to test against even if it didn't. Concretely still open, each requiring
-the operator's own access: awscli installed and the timer enabled (Step
+the operator's own access: OVH's automated backup confirmed enabled on this
+VPS (Step 7.0), awscli installed and the timer enabled (Step
 7.1), `HEALTHCHECK_PING_URL` configured (Step 7.2, recommended), the R2
 lifecycle rule set (Step 7.3), and the restore actually performed and its
-counts recorded (Step 7.4) — **both checkboxes above, in Step 7.3 and Step
-7.4, are still unchecked**. Supabase must not be cancelled until Step 7.4's
-is.
+counts recorded (Step 7.4) — **all three checkboxes above, in Steps 7.0, 7.3
+and 7.4, are still unchecked**. Supabase must not be cancelled until Step
+7.4's is.
 
 **Steps 8–15 (deploy, cutover, watch, retire, and the routine deploy that
 follows) are in the same unexecuted state as everything above — written and

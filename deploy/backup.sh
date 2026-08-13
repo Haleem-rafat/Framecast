@@ -14,7 +14,9 @@
 # Two failure modes a naive version of this script gets wrong, both handled
 # below:
 #
-#   1. A dump that succeeds while producing nothing useful. A byte-count
+#   1. A dump that succeeds while producing nothing useful. Note that these
+#      content guards are applied to `framecast` only, not to
+#      `framecast_staging` — see the comment on the loop below. A byte-count
 #      threshold alone can be satisfied by schema noise (many tables, few or
 #      zero rows) without the dump containing anything worth restoring, and
 #      even "at least one TABLE DATA entry exists somewhere" isn't tight
@@ -136,13 +138,24 @@ for DB in framecast framecast_staging; do
     pg_dump -U "$POSTGRES_USER" --no-owner --no-acl --format=custom "$DB" \
     | gzip -9 > "$OUT"
 
-  # First pass: a dump this small is almost certainly nothing at all (empty
-  # output, a connection failure that didn't propagate a non-zero exit).
-  # Cheap, but satisfiable without the dump containing anything that
-  # actually matters — the table-of-contents check below is the real guard.
-  SIZE=$(stat -c%s "$OUT")
-  if [ "$SIZE" -lt 10000 ]; then
-    fail "Refusing to upload ${DB}: dump is only ${SIZE} bytes."
+  # The content guards below apply to `framecast` only. `framecast_staging` is
+  # a scratch database — it is legitimately empty until someone runs
+  # `prisma migrate deploy` against it, and it is legitimately wiped and
+  # rebuilt whenever a test needs it to be. Holding it to production's
+  # standard means an empty or unmigrated staging database fails this job
+  # every single night, forever, and once HEALTHCHECK_PING_URL is configured
+  # that is a page every night for a database whose loss costs nothing. The
+  # cost of relaxing it is nil in the other direction too: nothing in staging
+  # has "no reconstruction path", which is the entire basis of the list below.
+  if [ "$DB" = framecast ]; then
+    # First pass: a dump this small is almost certainly nothing at all (empty
+    # output, a connection failure that didn't propagate a non-zero exit).
+    # Cheap, but satisfiable without the dump containing anything that
+    # actually matters — the table-of-contents check below is the real guard.
+    SIZE=$(stat -c%s "$OUT")
+    if [ "$SIZE" -lt 10000 ]; then
+      fail "Refusing to upload ${DB}: dump is only ${SIZE} bytes."
+    fi
   fi
 
   # Second pass: pg_restore -l reads the archive's own table of contents —
@@ -157,16 +170,18 @@ for DB in framecast framecast_staging; do
       pg_restore -l - 2>&1); then
     fail "Refusing to upload ${DB}: pg_restore could not read the dump's own table of contents — it may be truncated or corrupt. Output: ${LISTING}"
   fi
-  DUMPED_TABLES=$(awk '$4 == "TABLE" && $5 == "DATA" { print $7 }' <<<"$LISTING")
-  for TABLE in "${REQUIRED_TABLES[@]}"; do
-    if ! grep -qx "$TABLE" <<<"$DUMPED_TABLES"; then
-      fail "Refusing to upload ${DB}: table of contents has no TABLE DATA entry for '${TABLE}' — a dump missing one of the tables this backup exists to protect is a failure that produced output, not a usable backup."
-    fi
-  done
+  if [ "$DB" = framecast ]; then
+    DUMPED_TABLES=$(awk '$4 == "TABLE" && $5 == "DATA" { print $7 }' <<<"$LISTING")
+    for TABLE in "${REQUIRED_TABLES[@]}"; do
+      if ! grep -qx "$TABLE" <<<"$DUMPED_TABLES"; then
+        fail "Refusing to upload ${DB}: table of contents has no TABLE DATA entry for '${TABLE}' — a dump missing one of the tables this backup exists to protect is a failure that produced output, not a usable backup."
+      fi
+    done
+  fi
 
   aws s3 cp "$OUT" "s3://${R2_BUCKET}/postgres/$(basename "$OUT")" \
     --endpoint-url "$R2_ENDPOINT"
-  log "Uploaded $(basename "$OUT") (${SIZE} bytes)."
+  log "Uploaded $(basename "$OUT") ($(stat -c%s "$OUT") bytes)."
 done
 
 ping_monitor ""
