@@ -2041,7 +2041,19 @@ WantedBy=timers.target
 
 `Persistent=true` so a backup missed while the box was down runs on the next boot rather than being skipped silently.
 
-- [ ] **Step 3: Install and run it once**
+- [ ] **Step 3: Install the AWS CLI, the script, and the timer**
+
+Nothing installs `aws` yet — provisioning does not, and `backup.sh` calls it.
+Without this the timer runs nightly, fails with "command not found", and the
+operator has no backups at all while believing they do:
+
+```bash
+apt-get install -y awscli
+aws --version
+```
+
+R2 speaks the S3 API, so the standard client works against it; the endpoint is
+supplied per-command by `--endpoint-url`.
 
 ```bash
 cp deploy/backup.sh /srv/framecast/backup.sh && chmod +x /srv/framecast/backup.sh
@@ -2119,7 +2131,24 @@ Nothing is cancelled until the replacement is serving real traffic.
 - Consumes: everything above.
 - Produces: `framecasts.com` served from the VPS.
 
-- [ ] **Step 1: Bring up staging and exercise it**
+- [ ] **Step 1: Put the stack on the server, then bring up staging**
+
+Nothing has copied the Compose files across yet — Task 9 provisioned the box
+and the directory tree, but `/srv/framecast` holds only env files. Without
+this step `docker compose` has no stack to start:
+
+```bash
+scp deploy/docker-compose.yml deploy/Caddyfile deploy/init-staging-db.sh \
+    root@51.38.80.36:/srv/framecast/
+ssh root@51.38.80.36 'chmod +x /srv/framecast/init-staging-db.sh'
+```
+
+`init-staging-db.sh` must be executable and must be in place **before**
+Postgres first starts — it runs only against an empty data directory, and a
+Postgres that has already initialised will never create the staging database.
+
+Set `GITHUB_OWNER=haleem-rafat` and the Postgres credentials in
+`/srv/framecast/.env`, which is what Compose interpolates from. Then:
 
 ```bash
 cd /srv/framecast && docker compose pull && docker compose up -d
