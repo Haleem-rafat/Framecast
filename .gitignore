@@ -30,10 +30,24 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files — never commit real secrets
+# env files — never commit real secrets.
+#
+# Two families, because two naming conventions exist in this repo:
+#   .env, .env.local, .env.production  — the app's own, dot-prefixed.
+#   deploy/prod.env, deploy/staging.env, deploy/backup.env — the server's,
+#     created by docs/vps-deployment.md by copying a .example next to them
+#     and filling it in. These do NOT start with ".env", so `.env*` alone
+#     never matched them, and they hold CREDENTIAL_ENCRYPTION_KEY,
+#     BETTER_AUTH_SECRET, POSTGRES_PASSWORD and the R2 keys.
+# Patterns are unanchored, so both families are covered at any depth.
+# The negations must stay AFTER their patterns: a later re-ignore would
+# silently undo them (which is exactly what a stray `.env*` further down
+# this file used to do to `!.env.example`).
 .env
 .env.*
+*.env
 !.env.example
+!*.env.example
 
 # vercel
 .vercel
@@ -44,8 +58,7 @@ next-env.d.ts
 
 # prisma generated client
 src/generated/prisma
-.env*
 
-# finished renders live on local disk, not Supabase Storage — see
-# src/lib/local-render-storage.ts. Large binaries, machine-local, never committed.
+# finished renders live on local disk — see src/lib/render-storage.ts. Large
+# binaries, machine-local, never committed.
 .framecast/

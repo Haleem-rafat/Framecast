@@ -12,12 +12,18 @@ src/generated
 # Finished renders and other local pipeline scratch.
 .framecast
 
-# Secrets. `.env.local` in particular holds the Supabase service-role key,
-# the credential-encryption key and the Blob token. Runtime configuration is
-# injected by the host, never baked into an image.
+# Secrets. `.env.local` in particular holds the credential-encryption key and
+# the provider keys. Runtime configuration is injected by the host, never
+# baked into an image — and `worker/Dockerfile` does `COPY . .`, so anything
+# not listed here really does end up in a published GHCR image.
+# `*.env` covers the server-side family too (`deploy/prod.env`,
+# `deploy/staging.env`, `deploy/backup.env`), which the runbook creates by
+# copying a `.example` and filling it in — see .gitignore for the same split.
 .env
 .env.*
+*.env
 !.env.example
+!*.env.example
 
 # Local-only tooling and history.
 .git

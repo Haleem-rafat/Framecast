@@ -225,9 +225,12 @@ starting the stack, not after.
 
 `/srv/framecast/env/prod.env` and `/srv/framecast/env/staging.env` hold
 every secret the app and worker containers need. **They are written by hand,
-directly on the server, and are never committed** — `.gitignore`'s
-unanchored `.env`/`.env.*` patterns cover them if anyone ever tries, but the
-real safeguard is that they never leave the server in the first place.
+directly on the server, and are never committed** — `.gitignore`'s unanchored
+`*.env` pattern covers `prod.env`/`staging.env`/`backup.env` if anyone ever
+tries (they do not start with `.env`, so the `.env`/`.env.*` patterns alone
+never matched them; check with
+`git check-ignore --no-index deploy/prod.env` if in doubt). The real
+safeguard is still that they never leave the server in the first place.
 
 Templates with every variable name and a placeholder (never a real value)
 are committed at `deploy/prod.env.example` and `deploy/staging.env.example`.

@@ -235,8 +235,20 @@ few seconds.
     `docker compose` commands from that same directory (or pass
     `--project-directory`) so this file is picked up.
 
-None of the above are committed. `.gitignore`'s unanchored `.env`/`.env.*`
-patterns already cover any `.env` placed under `deploy/` too.
+None of the above are committed. `.gitignore` covers both naming families at
+any depth: `.env`/`.env.*` for the app's dot-prefixed files, and `*.env` for
+the server's — `prod.env`, `staging.env`, `backup.env`, which do **not**
+start with `.env` and so were not covered by the first pattern at all. The
+`.example` templates are negated back in. That matters because the runbook's
+own workflow is to `scp` an example across and edit it in place, which makes
+copying a filled-in one back into a checkout an easy accident. Verify with:
+
+```bash
+git check-ignore --no-index deploy/prod.env deploy/staging.env deploy/backup.env
+```
+
+All three must be listed. If any is missing, do not create that file inside
+a checkout.
 
 ## `GITHUB_OWNER` must be lowercase
 
