@@ -1,0 +1,16 @@
+# deploy/framecast-backup.service
+[Unit]
+Description=Framecast nightly database backup to R2
+
+[Service]
+Type=oneshot
+EnvironmentFile=/srv/framecast/env/backup.env
+ExecStart=/srv/framecast/backup.sh
+# systemd's system-wide default start timeout is 90s. pg_dump + gzip + the
+# table-of-contents integrity check + upload of two databases can easily run
+# longer than that once there's real data in them — without this override,
+# systemd silently SIGTERMs the backup mid-dump the first night the
+# databases grow past whatever fits in 90s, and that failure looks exactly
+# like any other in journalctl unless someone already knows to suspect a
+# timeout. 30 minutes is generous headroom on this box's 2 vCPUs.
+TimeoutStartSec=1800

@@ -6,11 +6,11 @@ followed top to bottom by whoever has SSH access, without having to
 reconstruct anything from memory or from this migration's history.
 
 **Scope of this page today:** provisioning (turning a bare box into one that
-can run `deploy/docker-compose.yml`) and migrating the existing data across.
-Deploying the stack for the first time, nightly backups, and the DNS cutover
-are separate steps covered by later sections this document grows as those are
-built; if you're looking for one of those and it isn't below yet, it hasn't
-been written.
+can run `deploy/docker-compose.yml`), migrating the existing data across, and
+nightly backups with a restore procedure. Deploying the stack for the first
+time and the DNS cutover are separate steps covered by later sections this
+document grows as those are built; if you're looking for one of those and it
+isn't below yet, it hasn't been written.
 
 **Every command below runs on the server, as root**, unless stated
 otherwise. None of it has been executed as of this writing — see
@@ -553,6 +553,177 @@ check.** Everything else here can be redone if something is wrong; a wrong
 encryption key cannot — every credential ever saved becomes unrecoverable
 the moment it fails to decrypt.
 
+## Step 7: Nightly backups to R2, and a restore that was actually performed
+
+Cancelling Supabase means backups stop being someone else's job. Managed
+Postgres included automated backups; this VPS does not, so `deploy/backup.sh`
+dumps both databases nightly and uploads them to Cloudflare R2 — deliberately
+not to OVH's own object storage. OVH's automated server backup already
+answers "the server broke"; it cannot answer "the account is gone", because
+the backups would be gone with it. That distinction isn't theoretical: it's
+what happened to this project's Vercel Blob store on 2026-08-12, a billing
+suspension mid-render that took the store's readability with it (Step 6.2
+above). R2 is a different provider from OVH for exactly that reason — an
+account-level failure on one cannot take out the other.
+
+### Step 7.1: Install the AWS CLI, the script, and the timer
+
+**On the server, as root.** Nothing installs `aws` during provisioning, and
+`backup.sh` calls it — without this the timer fires nightly, fails with
+"command not found", and the operator has no backups at all while believing
+they do:
+
+```bash
+apt-get install -y awscli
+aws --version
+```
+
+R2 speaks the S3 API, so the standard client works against it unmodified;
+the endpoint is supplied per-command via `--endpoint-url`, not baked into
+any config file.
+
+Copy the script and the systemd units:
+
+```bash
+scp deploy/backup.sh deploy/framecast-backup.service deploy/framecast-backup.timer \
+  root@51.38.80.36:/tmp/
+ssh root@51.38.80.36
+cp /tmp/backup.sh /srv/framecast/backup.sh && chmod +x /srv/framecast/backup.sh
+cp /tmp/framecast-backup.{service,timer} /etc/systemd/system/
+```
+
+Write `/srv/framecast/env/backup.env` from `deploy/backup.env.example` — same
+rule as `prod.env`/`staging.env` in Step 5: filled in **by hand, directly on
+the server**, never committed:
+
+```bash
+scp deploy/backup.env.example root@51.38.80.36:/srv/framecast/env/backup.env
+# then edit it in place on the server to fill in every placeholder
+ssh root@51.38.80.36 'chmod 600 /srv/framecast/env/backup.env'
+```
+
+`R2_BUCKET`, `R2_ENDPOINT`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+come from the Cloudflare dashboard (R2 → Manage API tokens, and the bucket's
+own settings page). `POSTGRES_USER` must match `/srv/framecast/.env`'s value
+(Compose's own interpolation file, not `prod.env`). `HEALTHCHECK_PING_URL` is
+optional — see Step 7.2.
+
+Enable and run it once immediately, rather than waiting for 03:00 UTC:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now framecast-backup.timer
+systemctl start framecast-backup.service
+journalctl -u framecast-backup.service --no-pager
+```
+
+Expected: two `Uploaded ...-<timestamp>.dump.gz (N bytes).` lines, one per
+database, no errors.
+
+### Step 7.2: What the script actually guards against, and why
+
+**A dump that succeeds while producing nothing useful.** A byte-count
+threshold alone is easy to satisfy without the dump containing anything
+worth restoring — a schema with enough tables produces a compressed file
+well past any size threshold even with zero rows in every one of them.
+`backup.sh` keeps a size check as a cheap first pass (catches a dump that's
+essentially empty output), but the real guard is reading the archive's own
+table of contents with `pg_restore -l` — no live database connection
+required, just the file — and refusing to upload anything with no `TABLE
+DATA` entries at all. A dump of a real, populated database always has at
+least one; a dump that quietly targeted the wrong thing, or ran against a
+database that turned out to be empty, does not, regardless of how large the
+schema makes the file.
+
+**`TimeoutStartSec=1800` on the service unit.** systemd's system-wide
+default start timeout is 90 seconds. Two `pg_dump`s, the integrity check,
+and two uploads can outrun that easily once there's real data — without the
+override, systemd would silently `SIGTERM` the backup mid-dump the first
+night the databases grow past whatever fits in 90s, and that failure looks
+exactly like any other line in `journalctl` unless someone already knows to
+suspect a timeout.
+
+**A backup that fails, or never runs, with nobody finding out.**
+`Persistent=true` on the timer only covers a schedule missed because the box
+was down — it runs the backup on next boot instead of skipping it silently.
+It does nothing for a command that runs and fails, or a systemd
+misconfiguration that stops the timer firing at all; both would otherwise
+sit unnoticed in `journalctl` until the day they matter. `backup.sh`
+supports an optional `HEALTHCHECK_PING_URL` (a
+[healthchecks.io](https://healthchecks.io)-style ping URL, or any compatible
+service) — set, it pings `<url>/start` on begin, bare `<url>` once both
+uploads succeed, and `<url>/fail` on any failure. Pointed at a check
+configured with a grace period past 03:00 UTC, a night where the timer never
+runs at all is caught by the monitoring service's own missed-check-in alert,
+not only failures that happen to run and then error out loudly. It's
+optional — unset, every ping call is a silent no-op and the backup behaves
+identically, just unobserved. **Recommended, not yet configured as of this
+writing** — see Status below.
+
+### Step 7.3: Set the retention rule
+
+**In the Cloudflare R2 dashboard**, on the bucket `backup.sh` uploads to: add
+a lifecycle rule deleting objects under the `postgres/` prefix after 30 days.
+An unbounded backup bucket is a bill that grows quietly, at roughly (dump
+size × 2 databases × 30-ish backups a month) — the 30-day window still
+covers "we didn't notice a problem for three weeks" without also covering
+"we didn't notice for a year".
+
+**Record here once done:**
+
+- Lifecycle rule set: ⬜ not yet done — record the date below once
+  configured.
+
+### Step 7.4: Actually restore one — this is the point of the task
+
+A backup that has never been restored is a belief, not a backup. **On the
+server**, from `/srv/framecast`:
+
+```bash
+cd /srv/framecast
+
+# Pull back last night's dump for one database.
+LATEST=$(aws s3 ls "s3://${R2_BUCKET}/postgres/" --endpoint-url "$R2_ENDPOINT" \
+  | grep framecast- | sort | tail -1 | awk '{print $4}')
+aws s3 cp "s3://${R2_BUCKET}/postgres/${LATEST}" /tmp/verify.dump.gz \
+  --endpoint-url "$R2_ENDPOINT"
+gunzip -f /tmp/verify.dump.gz
+
+# Restore into a scratch database — never over a live one.
+docker compose exec -T postgres createdb -U "$POSTGRES_USER" restore_check
+docker compose cp /tmp/verify.dump postgres:/tmp/
+docker compose exec -T postgres pg_restore --no-owner --no-acl \
+  -U "$POSTGRES_USER" -d restore_check /tmp/verify.dump
+
+# The counts must match production.
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d restore_check \
+  -c 'SELECT (SELECT count(*) FROM "user") AS users, (SELECT count(*) FROM video) AS videos;'
+
+# Compare against the live database before tearing the scratch one down.
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d framecast \
+  -c 'SELECT (SELECT count(*) FROM "user") AS users, (SELECT count(*) FROM video) AS videos;'
+
+docker compose exec -T postgres dropdb -U "$POSTGRES_USER" restore_check
+```
+
+`$R2_BUCKET`, `$R2_ENDPOINT` and `$POSTGRES_USER` here are the same values
+written into `/srv/framecast/env/backup.env` in Step 7.1 — export them in the
+shell before running the block above, or source the file (mind that it also
+holds the R2 access key).
+
+**Record the counts you saw, with the date, here:**
+
+- Restore verified: ⬜ not yet performed.
+- Date: `<fill in>`. Dump used: `<filename>`.
+- `restore_check` counts: `users=<N>`, `videos=<N>`.
+- Live `framecast` counts at the same time: `users=<N>`, `videos=<N>`.
+- Match: ⬜ yes / ⬜ no.
+
+**Supabase is not cancelled until this step has passed and the fields above
+are filled in.** Everything else in this migration can be redone if it turns
+out wrong; a database that was never proven restorable, discovered only
+after the one copy of it is gone, cannot be.
+
 ## Status
 
 Nothing on this page has been executed against `51.38.80.36`. As of this
@@ -570,3 +741,16 @@ written and reviewable but have never run against the operator's real
 Supabase project, Vercel Blob store, or `51.38.80.36` — the same SSH blocker
 above applies, and the source data is a live production account this task
 was explicitly written not to touch.
+
+Step 7 is likewise unexecuted: `deploy/backup.sh` passes `bash -n` and a
+clean `shellcheck` run, and `deploy/framecast-backup.service`,
+`deploy/framecast-backup.timer` and `deploy/backup.env.example` are
+reviewable, but none of it has run against real Postgres containers or a
+real R2 bucket — the same SSH blocker applies, and no R2 credentials exist
+yet to test against even if it didn't. Concretely still open, each requiring
+the operator's own access: awscli installed and the timer enabled (Step
+7.1), `HEALTHCHECK_PING_URL` configured (Step 7.2, recommended), the R2
+lifecycle rule set (Step 7.3), and the restore actually performed and its
+counts recorded (Step 7.4) — **both checkboxes above, in Step 7.3 and Step
+7.4, are still unchecked**. Supabase must not be cancelled until Step 7.4's
+is.
