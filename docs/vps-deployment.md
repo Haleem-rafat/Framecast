@@ -322,14 +322,21 @@ operator's live production account onto this box. **Files first, database
 last**, so a running app never finds a database row pointing at an object
 that hasn't arrived yet.
 
-`scripts/migrate-storage.ts` and `scripts/migrate-renders.ts` are one-shot:
-committed so this migration is reviewable and repeatable, not kept as
-permanent tooling — Task 12 deletes them, and `@supabase/supabase-js` and
-`@vercel/blob` (both `devDependencies`, added back only for this migration)
-along with them, once they've run for real. Neither script deletes or
-modifies anything at the source — both are a copy, never a move. Both are
-resumable: run them again after any failure and objects/renders already
-copied are skipped, not re-fetched.
+`scripts/migrate-storage.ts`, `scripts/migrate-renders.ts` and
+`scripts/relink-renders.ts` are one-shot: committed so this migration is
+reviewable and repeatable, not kept as permanent tooling — Task 12 deletes
+them, and `@supabase/supabase-js` and `@vercel/blob` (both `devDependencies`,
+added back only for this migration) along with them, once they've run for
+real. None of the three deletes or modifies anything at the source (Supabase,
+Blob) — the two copy scripts are a copy, never a move, and the third only
+ever writes to *this* database. All three are resumable: run any of them
+again after any failure and whatever already succeeded is skipped, not
+redone.
+
+This step assumes the stack is already up (`docker compose up -d` from
+`/srv/framecast` on the server) — the migration runs against a running
+`postgres` container and, for the database steps below, from inside a
+running `app-prod` container.
 
 ### Step 6.1: Copy every stored object
 
@@ -382,9 +389,10 @@ Step 6.4's SQL nulls `outputUrl` on whatever renders never got copied, which
 the app already treats as "this needs re-rendering" everywhere it
 matters — not a broken player pointing at a file that isn't there.
 
-At the end of its run, the script prints the exact list of videoIds whose
-render is now present at `RENDER_ROOT` — copy that output; Step 6.4 needs
-it pasted in verbatim.
+Nothing needs to be copied out of this script's output for the next steps —
+`scripts/relink-renders.ts` (Step 6.4) finds what landed here by checking
+`RENDER_ROOT` directly, from wherever it actually runs, rather than trusting
+anything this script printed on a different machine.
 
 `RENDER_ROOT`'s destination doubles up as `renders/renders/<videoId>.mp4` —
 e.g. `/srv/framecast/prod/renders/renders/…` if `RENDER_ROOT` is
@@ -396,15 +404,21 @@ afterward.
 
 ### Step 6.3: Move the database
 
-From the operator's Mac, with `DIRECT_URL` pointing at Supabase:
+**On the operator's Mac**, with `DIRECT_URL` pointing at Supabase, take the
+dump and copy it to the server:
 
 ```bash
 pg_dump "$DIRECT_URL" --no-owner --no-acl --format=custom --file=framecast.dump
-
 scp framecast.dump root@51.38.80.36:/tmp/
-ssh root@51.38.80.36 'docker compose -f /srv/framecast/docker-compose.yml cp /tmp/framecast.dump postgres:/tmp/'
-ssh root@51.38.80.36 'docker compose -f /srv/framecast/docker-compose.yml exec postgres \
-  pg_restore --no-owner --no-acl -U "$POSTGRES_USER" -d framecast /tmp/framecast.dump'
+```
+
+**On the server** (`ssh root@51.38.80.36`, then `cd /srv/framecast`), copy
+the dump into the running `postgres` container and restore it:
+
+```bash
+docker compose cp /tmp/framecast.dump postgres:/tmp/
+docker compose exec postgres \
+  pg_restore --no-owner --no-acl -U "$POSTGRES_USER" -d framecast /tmp/framecast.dump
 ```
 
 Don't check `prisma migrate status` yet — the dump reflects Supabase's
@@ -412,75 +426,81 @@ schema, which has never seen the `output_url_to_path` migration below (it
 was written for this VPS Postgres and was never meant to touch Supabase), so
 status would correctly report it pending. Step 6.4 resolves that.
 
+**Why this can't run from the Mac at all:** `deploy/docker-compose.yml`
+publishes no port for `postgres` — it's reachable only from other containers
+on the Compose network, not from outside the server. Every command from here
+on runs on the server, inside the relevant container, for that reason; there
+is no route to this database from the Mac to fall back to.
+
 ### Step 6.4: Rewrite `outputUrl`
 
 `RenderJob.outputUrl` held an absolute Blob URL; it now holds a path
-relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`). The rewrite is
-`prisma/migrations/20260813120000_output_url_to_path/migration.sql`,
-already committed — but it needs one local, **uncommitted** edit before you
-run it:
+relative to `RENDER_ROOT` (see `src/lib/render-storage.ts`), or null for a
+render that wasn't copied. The rewrite is two parts, both **on the server**,
+from `/srv/framecast`, run inside the already-running `app-prod`
+container — the same route every other migration in this stack is applied
+by, and the only one that can reach this database at all:
 
-```sql
-UPDATE "render_job"
-SET "outputUrl" = 'renders/' || "videoId" || '.mp4'
-WHERE "outputUrl" LIKE 'https://%.blob.vercel-storage.com/%'
-  AND "videoId" = ANY(ARRAY[
-    -- Paste scripts/migrate-renders.ts's printed videoId list here
-  ]::uuid[]);
-
-UPDATE "render_job"
-SET "outputUrl" = NULL
-WHERE "outputUrl" LIKE 'https://%';
+```bash
+docker compose exec app-prod npx prisma migrate deploy
 ```
 
-Statement 1 only rewrites rows whose `videoId` is in that pasted array — the
-renders Step 6.2 actually confirmed present on this box, not every row that
-merely looks like a Blob URL (an earlier draft of this migration had that
-bug: it rewrote every Blob-URL row unconditionally, which made the second
-statement below dead code — it could never match anything, because nothing
-would still look like a Blob URL by the time it ran). Statement 2 nulls
-everything statement 1 didn't touch, so a row is never left pointing at a
-Blob URL or at a path that doesn't exist on this box.
+This applies `prisma/migrations/20260813120000_output_url_to_path`, already
+committed, unedited — it needs no video ids and no local changes before
+running. It unconditionally nulls every `outputUrl` that still looks like a
+URL, whether or not Step 6.2 copied that row's render. (An earlier draft of
+this migration tried to rewrite the real path directly, scoped to a
+hand-edited list of video ids pasted in from `migrate-renders.ts`'s output.
+That mechanism is gone: the edit had nowhere correct to live — a version
+committed with real ids would leak production video ids into this public
+repository, and a version edited only on the Mac could never reach the
+database, since the Mac has no route to it and `app-prod`'s image runs from
+whatever was already committed. Nulling everything unconditionally and
+re-pointing separately, below, needs none of that.)
 
-As committed, the array is empty — valid SQL, matching zero rows, not a
-syntax error — so if Step 6.2 was skipped entirely you can run this file
-completely unedited: statement 1 does nothing and statement 2 nulls every
-Blob-URL row. If Step 6.2 did copy renders, open this file, paste its
-printed videoId list into the `ARRAY[]`, run the migration, and **do not
-commit the edit** — those are real production video ids, and this
-repository is public. The same discipline applies here as to
-`deploy/prod.env.example` versus the real `prod.env`: this file stays a
-template in git; the filled-in version lives only on disk for as long as it
-takes to run `prisma migrate deploy`.
+```bash
+docker compose exec app-prod npx tsx --conditions=react-server scripts/relink-renders.ts
+```
+
+`scripts/relink-renders.ts` re-points `outputUrl` back to a real path for
+every `RenderJob` row whose render is actually present at `RENDER_ROOT`
+**on the server** — checked against the filesystem directly, not against
+anything printed by Step 6.2 on a different machine. It prints how many rows
+it re-pointed; Step 6.5 checks that count against the database. Re-running
+it later (after restoring Blob billing and re-running Step 6.2) picks up
+whatever's newly on disk — it only ever touches a row that's currently null,
+so nothing already re-pointed is touched twice.
 
 Table and column names (`render_job`, `outputUrl`, `videoId`) were verified
 against `prisma/schema.prisma`'s `@@map`, not assumed from the Prisma model
 names; double-check with `\d render_job` in `psql` before running, in case
 the schema has moved since.
 
-Apply it — this and every other migration still pending against the
-restored database:
+Then confirm Prisma agrees the schema is current — same container, same
+directory:
 
 ```bash
-npx prisma migrate deploy
-```
-
-Then confirm Prisma agrees the schema is current:
-
-```bash
-npx prisma migrate status
+docker compose exec app-prod npx prisma migrate status
 ```
 
 Expected: `Database schema is up to date!`
 
 ### Step 6.5: Verify
 
-On the server:
+On the server, from `/srv/framecast`:
 
 ```bash
 # Row counts match the source.
 docker compose exec postgres psql -U "$POSTGRES_USER" -d framecast \
   -c 'SELECT (SELECT count(*) FROM "user") AS users, (SELECT count(*) FROM video) AS videos, (SELECT count(*) FROM channel) AS channels;'
+
+# outputUrl rewrite matches what relink-renders.ts actually did. Compare this
+# count to the "N row(s) re-pointed" number Step 6.4's relink-renders.ts run
+# printed — they must be equal. If it's lower, some rows didn't make it in
+# (check for errors in that run's output); it can never be higher, since
+# nothing else in this migration ever writes a `renders/...` outputUrl.
+docker compose exec postgres psql -U "$POSTGRES_USER" -d framecast \
+  -c "SELECT count(*) FROM render_job WHERE \"outputUrl\" LIKE 'renders/%';"
 
 # Objects arrived.
 find /srv/framecast/prod/storage -type f ! -name '*.type' | wc -l

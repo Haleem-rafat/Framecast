@@ -16,13 +16,15 @@ config({ path: ".env" });
 // One-shot migration script (see Task 10 of the OVH migration): reads every
 // `RenderJob.outputUrl` that still holds a Vercel Blob URL, downloads that
 // render, and writes it under RENDER_ROOT at the path `renderPath(videoId)`
-// produces. It is deleted, along with migrate-storage.ts, once it has run for
-// real — see Task 12. This script only reads from Postgres and Blob; it never
-// writes RenderJob.outputUrl itself — that rewrite is the SQL migration
-// (prisma/migrations/20260813120000_output_url_to_path), which needs this
-// script's printed videoId list pasted into it first. See that file's own
-// comments and docs/vps-deployment.md's Step 6.4 for why. Never deletes or
-// modifies anything in Blob.
+// produces. It is deleted, along with migrate-storage.ts and
+// relink-renders.ts, once it has run for real — see Task 12. This script
+// only reads from Postgres and Blob; it never writes RenderJob.outputUrl
+// itself. That's `scripts/relink-renders.ts`'s job, run after this script
+// and after the SQL migration (prisma/migrations/20260813120000_output_url_to_path)
+// — it works entirely from what's on disk at RENDER_ROOT, so it doesn't need
+// anything from this script beyond the files this script wrote. See that
+// script's own comments and docs/vps-deployment.md's Step 6.4 for why the
+// rewrite is split out that way. Never deletes or modifies anything in Blob.
 //
 // BLOB_READ_WRITE_TOKEN and RENDER_ROOT are read directly from process.env,
 // not from `@/config/env` for the token (same treatment Task 6 gave the
@@ -43,8 +45,9 @@ config({ path: ".env" });
 //
 // This step requires the Blob store to be un-suspended (readable) to copy
 // anything it hasn't already copied. If the operator chooses not to restore
-// billing, this script is simply not run — the SQL migration's second
-// UPDATE nulls the rows it would have filled in.
+// billing, this script is simply not run — the SQL migration nulls every
+// row's outputUrl unconditionally, and relink-renders.ts simply finds
+// nothing on disk to re-point.
 
 const BLOB_URL_PATTERN = /^https:\/\/[^/]+\.blob\.vercel-storage\.com\//i;
 
@@ -106,12 +109,6 @@ async function main(): Promise<void> {
   console.log(`Found ${targets.length} render(s) referencing Blob.`);
 
   const counts: CopyCounts = { copied: 0, skipped: 0, blocked: 0, failed: 0 };
-  // Every videoId whose render is confirmed present at RENDER_ROOT right
-  // now — copied this run, verified already-present, or (see below)
-  // present but unverifiable because Blob couldn't be reached. This is the
-  // list the SQL migration's first statement needs pasted into it: the only
-  // rows it's safe to point at a path instead of nulling.
-  const presentVideoIds: string[] = [];
   let sawSuspension = false;
 
   function processed(): number {
@@ -145,7 +142,6 @@ async function main(): Promise<void> {
         // that's already safely on disk as a failure would tell the
         // operator to worry about something that isn't actually wrong.
         counts.skipped += 1;
-        presentVideoIds.push(row.videoId);
         const reason =
           error instanceof BlobStoreSuspendedError
             ? "Blob store unreadable"
@@ -189,7 +185,6 @@ async function main(): Promise<void> {
     // already copied and is skipped without re-downloading it.
     if (existing && existing.sizeBytes === remote.size) {
       counts.skipped += 1;
-      presentVideoIds.push(row.videoId);
       console.log(
         `[${processed()}/${targets.length}] skip (already present, ` +
           `${formatMegabytes(existing.sizeBytes)}): video ${row.videoId}`,
@@ -220,7 +215,6 @@ async function main(): Promise<void> {
       );
 
       counts.copied += 1;
-      presentVideoIds.push(row.videoId);
       console.log(
         `[${processed()}/${targets.length}] copied (${formatMegabytes(result.blob.size)}): ` +
           `video ${row.videoId}`,
@@ -254,22 +248,11 @@ async function main(): Promise<void> {
     );
   }
 
-  if (presentVideoIds.length > 0) {
-    console.log(
-      "\nPaste the following into " +
-        "prisma/migrations/20260813120000_output_url_to_path/migration.sql's ARRAY[...] list " +
-        "(statement 1) before running `prisma migrate deploy` — do not commit the edit, these " +
-        "are real production video ids and this repository is public:\n",
-    );
-    for (const videoId of presentVideoIds) {
-      console.log(`  '${videoId}',`);
-    }
-  } else {
-    console.log(
-      "\nNo renders are present locally yet. Leave the migration's videoId list empty — " +
-        "every affected row will be nulled by statement 2.",
-    );
-  }
+  console.log(
+    "\nNext: run scripts/relink-renders.ts (after the SQL migration has nulled outputUrl) to " +
+      "point RenderJob rows at whatever this script copied — it works from what's on disk, so " +
+      "nothing here needs to be passed to it.",
+  );
 
   if (counts.failed > 0 || counts.blocked > 0) {
     process.exitCode = 1;

@@ -21,6 +21,7 @@
     "worker": "tsx --conditions=react-server worker/index.ts",
     "migrate:storage": "tsx --conditions=react-server scripts/migrate-storage.ts",
     "migrate:renders": "tsx --conditions=react-server scripts/migrate-renders.ts",
+    "migrate:relink": "tsx --conditions=react-server scripts/relink-renders.ts",
     "postinstall": "prisma generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },
