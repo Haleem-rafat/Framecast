@@ -627,13 +627,22 @@ threshold alone is easy to satisfy without the dump containing anything
 worth restoring — a schema with enough tables produces a compressed file
 well past any size threshold even with zero rows in every one of them.
 `backup.sh` keeps a size check as a cheap first pass (catches a dump that's
-essentially empty output), but the real guard is reading the archive's own
-table of contents with `pg_restore -l` — no live database connection
-required, just the file — and refusing to upload anything with no `TABLE
-DATA` entries at all. A dump of a real, populated database always has at
-least one; a dump that quietly targeted the wrong thing, or ran against a
-database that turned out to be empty, does not, regardless of how large the
-schema makes the file.
+essentially empty output), but the real guard reads the archive's own table
+of contents with `pg_restore -l` — no live database connection required,
+just the file. An earlier version of this guard only required *some* `TABLE
+DATA` entry to exist anywhere in the archive; that's satisfiable by a dump
+that carries some inconsequential table's data while missing the ones this
+backup exists to protect. It now requires a `TABLE DATA` entry by name for
+each of `user`, `video`, `script` and `provider_credential` — the tables
+holding this system's only irreplaceable data: accounts, encrypted provider
+credentials, and every script and video record (clips can be re-downloaded,
+renders re-rendered; none of this can be reconstructed). Table names are
+`prisma/schema.prisma`'s `@@map` values, read from the schema rather than
+assumed from the model names. This still doesn't prove the *row counts* are
+right — `pg_dump` writes a `TABLE DATA` entry for a table whether it holds
+one row or a million — only that the tables that matter were actually
+included in the dump at all. Step 7.4's periodic restore-and-compare is the
+check that goes that one level deeper, against real data, on a schedule.
 
 **`TimeoutStartSec=1800` on the service unit.** systemd's system-wide
 default start timeout is 90 seconds. Two `pg_dump`s, the integrity check,
@@ -652,13 +661,19 @@ sit unnoticed in `journalctl` until the day they matter. `backup.sh`
 supports an optional `HEALTHCHECK_PING_URL` (a
 [healthchecks.io](https://healthchecks.io)-style ping URL, or any compatible
 service) — set, it pings `<url>/start` on begin, bare `<url>` once both
-uploads succeed, and `<url>/fail` on any failure. Pointed at a check
-configured with a grace period past 03:00 UTC, a night where the timer never
-runs at all is caught by the monitoring service's own missed-check-in alert,
-not only failures that happen to run and then error out loudly. It's
-optional — unset, every ping call is a silent no-op and the backup behaves
-identically, just unobserved. **Recommended, not yet configured as of this
-writing** — see Status below.
+uploads succeed, and `<url>/fail` on any failure. The failure trap is
+registered before `backup.sh` even checks that `R2_BUCKET`/`POSTGRES_USER`/
+etc. are set, deliberately — a `backup.env` missing one of those pings
+`/fail` too, rather than dying silently before monitoring engages. That
+still has one blind spot the script itself can't close: if `backup.env` is
+missing outright, or malformed enough that systemd refuses to start the
+service at all, `backup.sh` never runs and can't ping anything itself. A
+grace period past 03:00 UTC on the monitoring check is what catches that
+residual case — a night the timer never runs at all is caught by the
+monitoring service's own missed-check-in alert, not only by failures that
+happen to run and then error out loudly. It's optional — unset, every ping
+call is a silent no-op and the backup behaves identically, just unobserved.
+**Recommended, not yet configured as of this writing** — see Status below.
 
 ### Step 7.3: Set the retention rule
 
