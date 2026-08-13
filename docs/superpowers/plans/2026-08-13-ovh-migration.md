@@ -1928,8 +1928,9 @@ du -sh /srv/framecast/prod
 Then, from the app container, confirm the thing that cannot be checked any other way:
 
 ```bash
-docker compose exec app-prod node -e "
-  const { credentialService } = require('./dist/services/credential.service');
+# The app image carries no schema or scripts (see the migration route note
+# above), so anything that needs them runs in the worker.
+docker compose exec worker-prod npx tsx --conditions=react-server -e "
   // Prove a stored provider key still decrypts under the carried key.
 "
 ```
