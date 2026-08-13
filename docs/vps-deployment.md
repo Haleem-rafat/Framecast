@@ -88,6 +88,22 @@ is empty, as a backstop — but that check only proves a key file exists, not
 that login with it actually works, which is why the manual confirmation
 above still comes first.
 
+**Watch for the SSH verification at the end of Step 1's output.** The script
+writes its hardening to `/etc/ssh/sshd_config.d/00-framecast.conf` rather
+than editing `/etc/ssh/sshd_config`, because Ubuntu 26.04's shipped config
+begins with `Include /etc/ssh/sshd_config.d/*.conf` and OpenSSH keeps the
+**first** value it reads for a keyword — a cloud-init or OVH drop-in
+carrying `PasswordAuthentication yes` would otherwise win over anything
+written to the main file, leaving password login on with nothing saying so.
+The file is `00-` for the same reason: the glob expands in lexical order, so
+a `99-` name would lose to a `50-cloud-init.conf`. After reloading `sshd`,
+the script runs `sshd -T` — the effective configuration, every `Include`
+resolved — and **exits non-zero** unless it reads back
+`passwordauthentication no` and `permitrootlogin prohibit-password`, listing
+every file that sets either so you can see which one won. If that check
+fails, password login is still enabled: fix it before going any further, and
+do not close the second terminal.
+
 Two things the script deliberately leaves for you to do by hand, and why:
 
 1. **`dpkg-reconfigure -plow unattended-upgrades`** — this is an interactive

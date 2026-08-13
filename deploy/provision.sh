@@ -59,9 +59,59 @@ if [ ! -s /root/.ssh/authorized_keys ]; then
   exit 1
 fi
 
+# Written as a drop-in, not as a sed against /etc/ssh/sshd_config, because on
+# Ubuntu 26.04 that sed is very likely a no-op. The shipped sshd_config opens
+# with `Include /etc/ssh/sshd_config.d/*.conf`, and OpenSSH keeps the FIRST
+# value it sees for a keyword — so a cloud-init or OVH drop-in carrying
+# `PasswordAuthentication yes` is read before anything in the main file and
+# silently wins, no matter what the sed wrote.
+#
+# The same first-wins rule is why this file is 00-, not 99-: the Include glob
+# expands in lexical order, so `99-framecast.conf` would lose to a
+# `50-cloud-init.conf` exactly the way the main file does. 00- sorts ahead of
+# every numeric drop-in these images ship.
+#
+# The main file is still sed'ed below, for a box whose sshd_config has no
+# Include line at all. Neither mechanism is trusted: the `sshd -T` assertion
+# after the reload is what actually decides whether this step succeeded.
+install -d -m 755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/00-framecast.conf <<'SSHD'
+# Managed by deploy/provision.sh — see docs/vps-deployment.md, Step 1.
+# Named 00- deliberately: OpenSSH honours the first value it reads for a
+# keyword, and Include expands this directory in lexical order.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+SSHD
+chmod 644 /etc/ssh/sshd_config.d/00-framecast.conf
+
 sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+
+# Refuse to reload a config sshd itself rejects — a reload onto a syntax error
+# is how a box ends up with no listening sshd and no way back in.
+sshd -t
 systemctl reload ssh
+
+# The actual check. `sshd -T` prints the *effective* configuration after every
+# Include has been resolved, which is the only thing that answers "did the
+# hardening take". Anything else — grepping the file we just wrote, trusting
+# the sed — confirms what we asked for, not what sshd will do.
+echo "==> Verifying the effective SSH config"
+EFFECTIVE="$(sshd -T | grep -E '^(passwordauthentication|permitrootlogin|kbdinteractiveauthentication) ')"
+echo "$EFFECTIVE"
+
+if ! grep -qx 'passwordauthentication no' <<<"$EFFECTIVE" ||
+   ! grep -qx 'permitrootlogin prohibit-password' <<<"$EFFECTIVE"; then
+  echo "ERROR: SSH hardening did not take effect." >&2
+  echo "Expected 'passwordauthentication no' and 'permitrootlogin prohibit-password'." >&2
+  echo "Something is setting these earlier than /etc/ssh/sshd_config.d/00-framecast.conf." >&2
+  echo "Find it — OpenSSH keeps the first value it reads:" >&2
+  grep -rniE '^[[:space:]]*(PasswordAuthentication|PermitRootLogin)' \
+    /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ >&2 || true
+  echo "Password login is still enabled on this box. Fix this before continuing." >&2
+  exit 1
+fi
 
 echo "==> Step 1e: unattended-upgrades"
 echo "    Not scripted — 'dpkg-reconfigure -plow unattended-upgrades' is an"
