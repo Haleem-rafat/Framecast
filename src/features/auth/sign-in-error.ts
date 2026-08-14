@@ -7,11 +7,11 @@ const MESSAGES: Record<string, string> = {
   access_denied:
     "Google refused the sign-in. If this project is still in Testing, add your address under Test users on the OAuth consent screen.",
   signup_disabled:
-    "That Google account is not an authorised operator, so no account was created.",
+    "Registration through Google is turned off for this studio. Create an account with an email and password instead.",
   account_not_linked:
     "That email already has a password account. Sign in with your password first, then link Google.",
   unable_to_create_user:
-    "That Google account is not on the operator allowlist.",
+    "No account could be created for that Google account. Try registering with an email and password instead.",
   invalid_state:
     "The sign-in attempt expired before it completed. Please try again.",
 };

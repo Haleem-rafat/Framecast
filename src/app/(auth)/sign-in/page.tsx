@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { LogoMark } from "@/components/brand/logo-mark";
 import {
   Card,
   CardContent,
@@ -12,9 +12,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { env } from "@/config/env";
+import { AuthShell } from "@/features/auth/components/auth-shell";
 import { SignInForm } from "@/features/auth/components/sign-in-form";
 import { signInErrorMessage } from "@/features/auth/sign-in-error";
-import { getSession } from "@/server/session";
+import { getAccountStatus } from "@/server/session";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -31,64 +32,51 @@ function safeRedirectTo(value: string | undefined): string {
 }
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
-  const session = await getSession();
+  // `getAccountStatus()` rather than `getSession()`: to the gated accessor an
+  // unapproved account looks signed out, so this page would show the form to
+  // someone who is already signed in and send them round the loop again.
+  const status = await getAccountStatus();
   const { redirectTo, error } = await searchParams;
   const destination = safeRedirectTo(redirectTo);
 
-  if (session) {
-    redirect(destination);
+  if (status) {
+    redirect(status.approval === "APPROVED" ? destination : "/pending");
   }
 
   const errorMessage = signInErrorMessage(error);
 
   return (
-    <div className="relative flex min-h-svh items-center justify-center overflow-hidden p-6">
-      {/* Ambient wash. Purely decorative, so it stays out of the a11y tree. */}
-      <div
-        aria-hidden="true"
-        className="from-primary/10 pointer-events-none absolute inset-0 bg-gradient-to-b via-transparent to-transparent"
-      />
+    <AuthShell
+      subtitle="Sign in to reach your studio."
+      footer={
+        <>
+          New here?{" "}
+          <Link href="/sign-up" className="hover:text-foreground underline">
+            Create an account
+          </Link>
+          . Every account is reviewed by an operator before it can be used.
+        </>
+      }
+    >
+      {errorMessage && (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
 
-      <div className="relative w-full max-w-sm space-y-6">
-        <div className="flex flex-col items-center gap-3 text-center">
-          <div className="bg-primary text-primary-foreground flex size-11 items-center justify-center rounded-xl shadow-sm">
-            <LogoMark className="size-5" />
-          </div>
-          <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">Framecast</h1>
-            <p className="text-muted-foreground text-sm">
-              Sign in to reach your studio.
-            </p>
-          </div>
-        </div>
-
-        {errorMessage && (
-          <Alert variant="destructive">
-            <TriangleAlert />
-            <AlertDescription>{errorMessage}</AlertDescription>
-          </Alert>
-        )}
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Welcome back</CardTitle>
-            <CardDescription>
-              Enter your credentials to continue.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <SignInForm
-              redirectTo={destination}
-              googleEnabled={Boolean(env.GOOGLE_CLIENT_ID)}
-            />
-          </CardContent>
-        </Card>
-
-        <p className="text-muted-foreground text-center text-xs text-balance">
-          Framecast is a single-operator studio. Accounts are provisioned, not
-          self-registered.
-        </p>
-      </div>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Welcome back</CardTitle>
+          <CardDescription>Enter your credentials to continue.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <SignInForm
+            redirectTo={destination}
+            googleEnabled={Boolean(env.GOOGLE_CLIENT_ID)}
+          />
+        </CardContent>
+      </Card>
+    </AuthShell>
   );
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -12,16 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GoogleSignInButton } from "@/features/auth/components/google-sign-in-button";
-import { signIn } from "@/lib/auth-client";
-import { signInSchema, type SignInInput } from "@/schemas/auth.schema";
+import { signUp } from "@/lib/auth-client";
+import {
+  MIN_PASSWORD_LENGTH,
+  signUpSchema,
+  type SignUpInput,
+} from "@/schemas/auth.schema";
 
-export function SignInForm({
-  redirectTo,
-  googleEnabled,
-}: {
-  redirectTo: string;
-  googleEnabled: boolean;
-}) {
+export function SignUpForm({ googleEnabled }: { googleEnabled: boolean }) {
   const router = useRouter();
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -29,26 +26,37 @@ export function SignInForm({
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
-  } = useForm<SignInInput>({
-    resolver: zodResolver(signInSchema),
-    defaultValues: { email: "", password: "" },
+  } = useForm<SignUpInput>({
+    resolver: zodResolver(signUpSchema),
+    defaultValues: {
+      name: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+    },
   });
 
-  async function onSubmit(values: SignInInput) {
+  async function onSubmit(values: SignUpInput) {
     setFormError(null);
 
-    const { error } = await signIn.email({
+    const { error } = await signUp.email({
+      name: values.name,
       email: values.email,
       password: values.password,
     });
 
     if (error) {
-      // Deliberately not distinguishing unknown-email from wrong-password.
-      setFormError(error.message ?? "Invalid email or password.");
+      setFormError(error.message ?? "That account could not be created.");
       return;
     }
 
-    router.push(redirectTo);
+    /**
+     * Better Auth signs the new account in immediately, but the account is
+     * PENDING, so every studio route will bounce it. Going straight to
+     * /pending is the honest destination — /dashboard would redirect there
+     * anyway, one wasted round trip later.
+     */
+    router.push("/pending");
     router.refresh();
   }
 
@@ -60,6 +68,20 @@ export function SignInForm({
           <AlertDescription>{formError}</AlertDescription>
         </Alert>
       )}
+
+      <div className="space-y-2">
+        <Label htmlFor="name">Name</Label>
+        <Input
+          id="name"
+          autoComplete="name"
+          placeholder="Alex Rivera"
+          aria-invalid={Boolean(errors.name)}
+          {...register("name")}
+        />
+        {errors.name && (
+          <p className="text-destructive text-xs">{errors.name.message}</p>
+        )}
+      </div>
 
       <div className="space-y-2">
         <Label htmlFor="email">Email</Label>
@@ -77,30 +99,42 @@ export function SignInForm({
       </div>
 
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label htmlFor="password">Password</Label>
-          <Link
-            href="/forgot-password"
-            className="text-muted-foreground hover:text-foreground text-xs underline"
-          >
-            Forgot password?
-          </Link>
-        </div>
+        <Label htmlFor="password">Password</Label>
         <Input
           id="password"
           type="password"
-          autoComplete="current-password"
+          autoComplete="new-password"
           aria-invalid={Boolean(errors.password)}
           {...register("password")}
         />
-        {errors.password && (
+        {errors.password ? (
           <p className="text-destructive text-xs">{errors.password.message}</p>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            At least {MIN_PASSWORD_LENGTH} characters.
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="confirmPassword">Confirm password</Label>
+        <Input
+          id="confirmPassword"
+          type="password"
+          autoComplete="new-password"
+          aria-invalid={Boolean(errors.confirmPassword)}
+          {...register("confirmPassword")}
+        />
+        {errors.confirmPassword && (
+          <p className="text-destructive text-xs">
+            {errors.confirmPassword.message}
+          </p>
         )}
       </div>
 
       <Button type="submit" className="w-full" disabled={isSubmitting}>
         {isSubmitting && <Loader2 className="animate-spin" />}
-        {isSubmitting ? "Signing in…" : "Sign in"}
+        {isSubmitting ? "Creating account…" : "Create account"}
       </Button>
 
       {googleEnabled && (
@@ -111,7 +145,9 @@ export function SignInForm({
             <span className="bg-border h-px flex-1" />
           </div>
 
-          <GoogleSignInButton redirectTo={redirectTo} />
+          {/* Same button as sign-in: Google's flow creates the account if it
+              does not exist, and that account waits for approval too. */}
+          <GoogleSignInButton redirectTo="/pending" />
         </>
       )}
     </form>
