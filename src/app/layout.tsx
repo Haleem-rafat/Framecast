@@ -4,9 +4,11 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { SiteStructuredData } from "@/components/seo/structured-data";
 import {
   SITE_DESCRIPTION,
+  SITE_LOCALE,
   SITE_NAME,
   SITE_TAGLINE,
   SITE_URL,
+  TITLE_TEMPLATE,
 } from "@/config/site";
 import { AppProviders } from "@/providers/app-providers";
 
@@ -41,7 +43,7 @@ export const metadata: Metadata = {
     : undefined,
   title: {
     default: SITE_TAGLINE,
-    template: `%s · ${SITE_NAME}`,
+    template: TITLE_TEMPLATE,
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
@@ -61,12 +63,12 @@ export const metadata: Metadata = {
   category: "technology",
   // The canonical URL every page inherits unless it declares its own.
   //
-  // `/privacy`, `/terms` and `/contact` each override this with a
-  // self-referencing canonical. The auth and dashboard routes cannot (they are
-  // owned by other route groups), so they inherit `/` — which happens to be
-  // the outcome we want for them anyway: there is no public self-registration
-  // here, so a sign-in form has no business ranking as a page of its own, and
-  // pointing it at the homepage consolidates it rather than competing with it.
+  // `/privacy`, `/terms` and `/contact` each override it with a
+  // self-referencing canonical via `pageMetadata()`. The auth and dashboard
+  // routes do not, so they inherit `/` — which happens to be the outcome we
+  // want for them anyway: there is no public self-registration here, so a
+  // sign-in form has no business ranking as a page of its own, and pointing it
+  // at the homepage consolidates it rather than competing with it.
   alternates: {
     canonical: "/",
   },
@@ -76,10 +78,14 @@ export const metadata: Metadata = {
     url: SITE_URL,
     title: SITE_TAGLINE,
     description: SITE_DESCRIPTION,
-    locale: "en_GB",
+    locale: SITE_LOCALE,
     // The image itself is supplied by the `opengraph-image.tsx` file
     // convention, which also fills in `twitter:image`. Listing it here as well
     // would emit it twice.
+    //
+    // `url` above is the homepage, and this whole block is inherited rather
+    // than derived, so a sub-page that does not restate it would share as the
+    // homepage. `pageMetadata()` is what restates it — see the note there.
   },
   twitter: {
     card: "summary_large_image",

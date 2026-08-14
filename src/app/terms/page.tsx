@@ -1,17 +1,18 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 
+import { pageMetadata } from "@/components/seo/page-metadata";
 import {
   LegalDocument,
   LegalSection,
 } from "@/features/marketing/components/legal-document";
 import { MarketingShell } from "@/features/marketing/components/marketing-shell";
 
-export const metadata: Metadata = {
+export const metadata = pageMetadata({
   title: "Terms of service",
   description:
     "The terms under which Framecast, a private video production tool, may be used.",
-};
+  path: "/terms",
+});
 
 export default function TermsPage() {
   return (

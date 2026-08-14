@@ -1,7 +1,7 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 import { KeyRound, LifeBuoy, Mail, ShieldCheck, Trash2 } from "lucide-react";
 
+import { pageMetadata } from "@/components/seo/page-metadata";
 import {
   LegalDocument,
   LegalSection,
@@ -10,11 +10,14 @@ import {
 /** The address already published in the privacy policy. Kept in one place. */
 const OPERATOR_EMAIL = "eramdevteam@gmail.com";
 
-export const metadata: Metadata = {
+// This is the page a Safe Browsing reviewer is most likely to look for, so it
+// must not canonicalise away to the homepage.
+export const metadata = pageMetadata({
   title: "Contact",
   description:
     "How to reach the operator of Framecast — for account requests, data deletion, security reports and anything else.",
-};
+  path: "/contact",
+});
 
 const ROUTES = [
   {

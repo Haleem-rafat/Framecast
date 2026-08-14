@@ -1,16 +1,18 @@
-import type { Metadata } from "next";
-
+import { pageMetadata } from "@/components/seo/page-metadata";
 import {
   LegalDocument,
   LegalSection,
 } from "@/features/marketing/components/legal-document";
 import { MarketingShell } from "@/features/marketing/components/marketing-shell";
 
-export const metadata: Metadata = {
+// Google's OAuth review fetches this URL specifically, so it has to be
+// self-canonical rather than inheriting the layout's `/`.
+export const metadata = pageMetadata({
   title: "Privacy policy",
   description:
     "What data Framecast collects, how Google and YouTube data is used, and how to revoke access.",
-};
+  path: "/privacy",
+});
 
 /**
  * Google's OAuth review requires this page to state, specifically, which Google
