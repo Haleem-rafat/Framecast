@@ -11,6 +11,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { AuthPasswordInput } from "@/features/auth/components/auth-password-input";
 import { cn } from "@/lib/utils";
 
 /**
@@ -92,6 +93,14 @@ export function AuthField({
       ? `${id}-description`
       : undefined;
 
+  /**
+   * Every password field in the app gets the reveal toggle by being a password
+   * field, rather than by each form remembering to ask for one. There are five
+   * of them across three forms and that is five chances to forget.
+   */
+  const InputComponent =
+    inputProps.type === "password" ? AuthPasswordInput : Input;
+
   return (
     <Field className="group/auth-field gap-1.5">
       <div className="flex items-center justify-between gap-3">
@@ -104,7 +113,7 @@ export function AuthField({
         {labelAction}
       </div>
 
-      <Input
+      <InputComponent
         id={id}
         aria-invalid={Boolean(error)}
         aria-describedby={messageId}
