@@ -717,8 +717,17 @@ describe("scheduleService — a scheduled run never publishes", () => {
       include: { publication: true, script: { include: { activeVersion: true } } },
     });
 
-    // Gate 1 crossed on the operator's behalf, as the guided flow does.
-    expect(video.status).toBe("QUEUED");
+    // Gate 1 crossed on the operator's behalf, as the guided flow does —
+    // asserted through the append-only transition row rather than
+    // `Video.status`. This database is shared with a live render worker, which
+    // is entitled to claim the video the instant it is queued and (with these
+    // fixtures' fake ElevenLabs key) fail it at narration seconds later. The
+    // DRAFT -> QUEUED row is permanent; the column is a UI hint.
+    expect(
+      await prisma.videoStatusEvent.findFirst({
+        where: { videoId: video.id, from: "DRAFT", to: "QUEUED" },
+      }),
+    ).not.toBeNull();
     expect(video.script?.activeVersion?.content).toBe(SCRIPT);
 
     // Gate 2 emphatically not crossed.

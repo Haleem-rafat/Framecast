@@ -133,6 +133,41 @@ async function cleanupProviderUsage(): Promise<void> {
   await prisma.providerUsage.deleteMany({ where: { model: FAKE_MODEL } });
 }
 
+/**
+ * Asserts that Gate 1 was crossed for each video — the DRAFT -> QUEUED
+ * transition this flow performs on the operator's behalf.
+ *
+ * Deliberately *not* `expect(video.status).toBe("QUEUED")`, which is what these
+ * tests used to do and what made them flake.
+ *
+ * The database these tests run against is shared (see the file header), and it
+ * is shared with a live render worker as well as with the operator's own data.
+ * The instant `approveScript` commits, that worker's `claimNext` is entitled to
+ * pick the video up: it sets GENERATING, increments `attempts`, and — because
+ * these fixtures deliberately store a fake ElevenLabs key — fails at the
+ * narration stage and releases the video as FAILED. So by the time the
+ * assertion runs, a video this flow queued perfectly correctly can legitimately
+ * read GENERATING, RENDERING, READY or FAILED. Nothing is wrong; the test was
+ * simply reading a column schema.prisma itself describes as "denormalised only
+ * as a UI hint".
+ *
+ * `VideoStatusEvent` is the durable half of that same sentence — append-only,
+ * one row per transition, never updated — so the DRAFT -> QUEUED row is
+ * permanent proof that this flow approved the script, whatever the worker does
+ * to `Video.status` afterwards. That transition is exactly the property these
+ * tests are about, and it is written inside `approveScript`'s own transaction,
+ * so it cannot exist unless the approval genuinely committed.
+ */
+async function expectGate1Crossed(videoIds: string[]): Promise<void> {
+  for (const videoId of videoIds) {
+    const approval = await prisma.videoStatusEvent.findFirst({
+      where: { videoId, from: "DRAFT", to: "QUEUED" },
+    });
+
+    expect(approval, `video ${videoId} never crossed DRAFT -> QUEUED`).not.toBeNull();
+  }
+}
+
 let userId: string;
 let projectId: string;
 
@@ -293,7 +328,9 @@ describe("automationService.start — the one-click path", () => {
 
     // Gate 1 crossed without a human: DRAFT -> QUEUED is what makes the video
     // eligible for the paid stages, and nothing here waited for a click.
-    expect(video.status).toBe("QUEUED");
+    // Asserted through the transition row rather than `status` — see
+    // `expectGate1Crossed` for why the column cannot be trusted here.
+    await expectGate1Crossed([video.id]);
     expect(video.topic).toBe("how index funds took over the stock market");
     expect(video.script?.activeVersion?.content).toBe(SCRIPT);
   });
@@ -655,7 +692,7 @@ describe("automationService.start — double submission", () => {
     const live = await prisma.video.findMany({ where: { userId, deletedAt: null } });
     expect(live).toHaveLength(1);
     expect(live[0].id).toBe(result.videoId);
-    expect(live[0].status).toBe("QUEUED");
+    await expectGate1Crossed([live[0].id]);
   });
 
   it("still allows a genuinely different topic in the same project", async () => {
@@ -666,6 +703,6 @@ describe("automationService.start — double submission", () => {
 
     const live = await prisma.video.findMany({ where: { userId, deletedAt: null } });
     expect(live).toHaveLength(2);
-    expect(live.every((video) => video.status === "QUEUED")).toBe(true);
+    await expectGate1Crossed(live.map((video) => video.id));
   });
 });
