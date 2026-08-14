@@ -45,13 +45,19 @@ export function CommandPalette() {
 
   return (
     <>
+      {/* Below `sm` this is the icon alone at a 44px target: the phone topbar
+       * has room for a control, not for a search field that would push the
+       * page title off the bar. The dialog it opens is identical either way,
+       * and on a phone it is the only way to reach the pages the dock's four
+       * slots could not hold. */}
       <Button
         variant="outline"
         onClick={() => setOpen(true)}
-        className="text-muted-foreground relative h-9 w-full justify-start gap-2 pr-2 sm:w-64"
+        aria-label="Search"
+        className="text-muted-foreground relative size-11 justify-center gap-0 p-0 sm:h-9 sm:w-64 sm:justify-start sm:gap-2 sm:px-3 sm:pr-2"
       >
         <Search className="size-4" />
-        <span className="text-sm">Search…</span>
+        <span className="hidden text-sm sm:inline">Search…</span>
         <kbd className="bg-muted text-muted-foreground pointer-events-none ml-auto hidden h-5 items-center gap-0.5 rounded border px-1.5 font-mono text-[10px] font-medium sm:flex">
           <span className="text-xs">⌘</span>K
         </kbd>
@@ -64,7 +70,10 @@ export function CommandPalette() {
         description="Jump to a page or run a command"
       >
         <CommandInput placeholder="Search pages and commands…" />
-        <CommandList>
+        {/* One rule rather than a class on twenty items: on a touch device
+         * every result is a 44px target, and the desktop list keeps the
+         * compact rows a keyboard-driven palette wants. */}
+        <CommandList className="[@media(pointer:coarse)]:[&_[data-slot=command-item]]:h-11">
           <CommandEmpty>No results found.</CommandEmpty>
 
           {navigation.map((group) => {

@@ -15,7 +15,17 @@ export function AppProviders({ children }: { children: ReactNode }) {
       <QueryProvider>
         <TooltipProvider delayDuration={200}>
           {children}
-          <Toaster position="bottom-right" richColors closeButton />
+          {/* Toasts land bottom-right, which on a phone is exactly where the
+           * studio's floating dock lives — a toast would cover the navigation
+           * for as long as it is on screen, and its close button would be
+           * fighting the dock's items for the same taps. `mobileOffset` lifts
+           * them clear of the dock and the home indicator below it. */}
+          <Toaster
+            position="bottom-right"
+            richColors
+            closeButton
+            mobileOffset={{ bottom: "calc(5.5rem + env(safe-area-inset-bottom))" }}
+          />
         </TooltipProvider>
       </QueryProvider>
     </ThemeProvider>

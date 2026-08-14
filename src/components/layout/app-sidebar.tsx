@@ -17,6 +17,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { navigation } from "@/config/navigation";
 import { UserMenu } from "@/components/layout/user-menu";
@@ -32,6 +33,17 @@ function isActive(pathname: string, href: string): boolean {
 
 export function AppSidebar({ user }: AppSidebarProps) {
   const pathname = usePathname();
+  const { isMobile } = useSidebar();
+
+  // Below `md` the floating dock is the navigation, so the sidebar does not
+  // render at all — not even as the off-canvas Sheet `Sidebar` would otherwise
+  // give it. Two navigations for one app is how you end up with an item that
+  // exists in one and not the other, and the Sheet's trigger is gone from the
+  // topbar on phones anyway, so leaving it mounted would only mean shipping a
+  // panel nothing can open. The desktop sidebar is untouched.
+  if (isMobile) {
+    return null;
+  }
 
   return (
     <Sidebar collapsible="icon">

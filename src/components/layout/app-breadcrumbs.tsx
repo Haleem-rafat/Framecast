@@ -50,6 +50,27 @@ function buildCrumbs(pathname: string): Crumb[] {
   });
 }
 
+/**
+ * The last crumb on its own, for the phone topbar.
+ *
+ * A trail is a desktop affordance: it earns its width by showing where you are
+ * *and* offering the way back up. At 375px it shows neither well — "Videos /
+ * Details" truncates into noise beside the controls it shares the bar with —
+ * while the leaf alone still answers the only question the bar is asked, which
+ * is which page this is. Going back up is what the dock is for.
+ */
+export function AppPageTitle() {
+  const pathname = usePathname();
+  const crumbs = useMemo(() => buildCrumbs(pathname), [pathname]);
+  const current = crumbs.at(-1);
+
+  if (!current) return null;
+
+  return (
+    <span className="truncate text-sm font-medium">{current.label}</span>
+  );
+}
+
 export function AppBreadcrumbs() {
   const pathname = usePathname();
   const crumbs = useMemo(() => buildCrumbs(pathname), [pathname]);
