@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { LogoMark } from "@/components/brand/logo-mark";
 import { Spotlight } from "@/components/ui/spotlight-new";
+import { AuthReveal } from "@/features/auth/components/auth-motion";
 
 interface AuthShellProps {
   /** One line under the wordmark saying what this page is for. */
@@ -11,17 +12,6 @@ interface AuthShellProps {
   /** Fine print below the card — links to the other auth pages, usually. */
   footer?: ReactNode;
 }
-
-/**
- * The card every (auth) page puts its form in, styled once so the five pages
- * cannot drift apart. Slightly translucent over a blur so the wash behind it
- * reads *through* the card instead of stopping dead at its edge, and lifted off
- * the page with a soft shadow rather than a heavier border — on a page this
- * empty, elevation is what separates the form from the ground, and a second
- * strong line would just compete with the fields inside it.
- */
-export const authCardClassName =
-  "bg-card/85 shadow-2xl shadow-black/[0.06] backdrop-blur-md [--card-spacing:--spacing(5)] dark:shadow-black/25";
 
 /**
  * The centered card layout every page under (auth) shares. Extracted when the
@@ -38,6 +28,10 @@ export const authCardClassName =
  * automated reviewer, and honestly to a careful person — from a phishing page.
  * The marketing page carries all of this; the sign-in page is the one a
  * stranger actually lands on, and it carried none of it.
+ *
+ * The entrance is three `AuthReveal`s in sequence — mark, card, fine print —
+ * and that is the whole motion budget for the page beyond the backdrop. See
+ * that component for why it is this short and how reduced motion is handled.
  *
  * Visually it is the landing page's shell with the volume down. `marketing` on
  * the root is the same colour boundary MarketingShell sets — the tokens are
@@ -75,20 +69,25 @@ export function AuthShell({ subtitle, children, footer }: AuthShellProps) {
       </div>
 
       <div className="relative w-full max-w-sm space-y-6">
-        <div className="flex flex-col items-center gap-3 text-center">
+        <AuthReveal className="flex flex-col items-center gap-3 text-center">
+          {/* The mark links home. It is the only way off this page that is not
+              another auth page, and a credential form with no route back to
+              the site it belongs to is a phishing tell. */}
           <h1 className="text-lg font-semibold tracking-tight">
             <Link
               href="/"
               aria-label="Framecast home"
-              className="ring-offset-background focus-visible:ring-ring inline-flex items-center gap-2.5 rounded-lg focus-visible:ring-2 focus-visible:ring-offset-4 focus-visible:outline-none"
+              className="ring-offset-background focus-visible:ring-ring group/mark inline-flex items-center gap-2.5 rounded-lg focus-visible:ring-2 focus-visible:ring-offset-4 focus-visible:outline-none"
             >
               <span className="relative inline-flex">
                 {/* The one piece of brand colour in the composition that is not
                     the backdrop: a soft violet-to-cyan bloom under the mark,
-                    the same two stops the landing headline is painted with. */}
+                    the same two stops the landing headline is painted with. It
+                    warms very slightly on hover, which is the only reward for
+                    pointing at the one link that leaves. */}
                 <span
                   aria-hidden="true"
-                  className="from-brand-violet to-brand-cyan absolute -inset-1.5 rounded-2xl bg-gradient-to-br opacity-20 blur-md"
+                  className="from-brand-violet to-brand-cyan absolute -inset-1.5 rounded-2xl bg-gradient-to-br opacity-20 blur-md transition-opacity duration-300 group-hover/mark:opacity-35"
                 />
                 <span className="bg-primary text-primary-foreground relative flex size-10 items-center justify-center rounded-xl shadow-sm">
                   <LogoMark className="size-5" />
@@ -100,18 +99,23 @@ export function AuthShell({ subtitle, children, footer }: AuthShellProps) {
           <p className="text-muted-foreground text-sm text-balance">
             {subtitle}
           </p>
-        </div>
+        </AuthReveal>
 
-        {children}
+        <AuthReveal delay={0.06} className="space-y-4">
+          {children}
+        </AuthReveal>
 
         {footer && (
-          <div className="text-muted-foreground text-center text-xs text-balance">
+          <AuthReveal
+            delay={0.1}
+            className="text-muted-foreground text-center text-xs text-balance"
+          >
             {footer}
-          </div>
+          </AuthReveal>
         )}
       </div>
 
-      <div className="relative mt-10 w-full max-w-sm space-y-4">
+      <AuthReveal delay={0.1} className="relative mt-10 w-full max-w-sm space-y-4">
         <div className="via-border h-px bg-gradient-to-r from-transparent to-transparent" />
 
         <p className="text-muted-foreground/80 text-center text-xs leading-relaxed text-balance">
@@ -143,7 +147,7 @@ export function AuthShell({ subtitle, children, footer }: AuthShellProps) {
             Terms
           </Link>
         </div>
-      </div>
+      </AuthReveal>
     </div>
   );
 }

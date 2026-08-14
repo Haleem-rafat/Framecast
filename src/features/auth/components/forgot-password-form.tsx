@@ -3,12 +3,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  AuthField,
+  AuthFieldGroup,
+  AuthFormAlert,
+  AuthSubmitButton,
+} from "@/features/auth/components/auth-form";
 import { authClient } from "@/lib/auth-client";
 import {
   forgotPasswordSchema,
@@ -55,7 +58,7 @@ export function ForgotPasswordForm() {
    */
   if (isSent) {
     return (
-      <Alert>
+      <Alert className="animate-in fade-in slide-in-from-top-1 border-border/70 duration-200 motion-reduce:animate-none">
         <CheckCircle2 />
         <AlertDescription>
           If that address has an account, a reset link has been issued for it.
@@ -65,33 +68,24 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-      {formError && (
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
-      )}
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
+      {formError && <AuthFormAlert>{formError}</AuthFormAlert>}
 
-      <div className="space-y-2">
-        <Label htmlFor="email">Email</Label>
-        <Input
+      <AuthFieldGroup>
+        <AuthField
           id="email"
+          label="Email"
           type="email"
           autoComplete="email"
           placeholder="you@example.com"
-          aria-invalid={Boolean(errors.email)}
+          error={errors.email?.message}
           {...register("email")}
         />
-        {errors.email && (
-          <p className="text-destructive text-xs">{errors.email.message}</p>
-        )}
-      </div>
+      </AuthFieldGroup>
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
-        {isSubmitting && <Loader2 className="animate-spin" />}
-        {isSubmitting ? "Requesting…" : "Request reset link"}
-      </Button>
+      <AuthSubmitButton isSubmitting={isSubmitting} pendingLabel="Requesting…">
+        Request reset link
+      </AuthSubmitButton>
     </form>
   );
 }

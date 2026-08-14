@@ -3,17 +3,14 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import {
-  Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { env } from "@/config/env";
-import {
-  AuthShell,
-  authCardClassName,
-} from "@/features/auth/components/auth-shell";
+import { AuthCard } from "@/features/auth/components/auth-card";
+import { AuthShell } from "@/features/auth/components/auth-shell";
 import { SignUpForm } from "@/features/auth/components/sign-up-form";
 import { getAccountStatus } from "@/server/session";
 
@@ -40,7 +37,7 @@ export default async function SignUpPage() {
         </>
       }
     >
-      <Card className={authCardClassName}>
+      <AuthCard>
         <CardHeader>
           <CardTitle>Create your account</CardTitle>
           <CardDescription>
@@ -51,7 +48,7 @@ export default async function SignUpPage() {
         <CardContent>
           <SignUpForm googleEnabled={Boolean(env.GOOGLE_CLIENT_ID)} />
         </CardContent>
-      </Card>
+      </AuthCard>
     </AuthShell>
   );
 }

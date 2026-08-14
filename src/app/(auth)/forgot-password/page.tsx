@@ -2,16 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import {
-  Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  AuthShell,
-  authCardClassName,
-} from "@/features/auth/components/auth-shell";
+import { AuthCard } from "@/features/auth/components/auth-card";
+import { AuthShell } from "@/features/auth/components/auth-shell";
 import { ForgotPasswordForm } from "@/features/auth/components/forgot-password-form";
 
 export const metadata: Metadata = { title: "Forgot password" };
@@ -26,7 +23,7 @@ export default function ForgotPasswordPage() {
         </Link>
       }
     >
-      <Card className={authCardClassName}>
+      <AuthCard>
         <CardHeader>
           <CardTitle>Forgot your password?</CardTitle>
           <CardDescription>
@@ -49,7 +46,7 @@ export default function ForgotPasswordPage() {
             it on to you.
           </p>
         </CardContent>
-      </Card>
+      </AuthCard>
     </AuthShell>
   );
 }

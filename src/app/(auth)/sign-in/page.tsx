@@ -5,17 +5,14 @@ import { TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
-  Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { env } from "@/config/env";
-import {
-  AuthShell,
-  authCardClassName,
-} from "@/features/auth/components/auth-shell";
+import { AuthCard } from "@/features/auth/components/auth-card";
+import { AuthShell } from "@/features/auth/components/auth-shell";
 import { SignInForm } from "@/features/auth/components/sign-in-form";
 import { signInErrorMessage } from "@/features/auth/sign-in-error";
 import { safeRedirectTo } from "@/lib/safe-redirect";
@@ -61,7 +58,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
         </Alert>
       )}
 
-      <Card className={authCardClassName}>
+      <AuthCard>
         <CardHeader>
           <CardTitle>Welcome back</CardTitle>
           {/*
@@ -83,7 +80,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
             googleEnabled={Boolean(env.GOOGLE_CLIENT_ID)}
           />
         </CardContent>
-      </Card>
+      </AuthCard>
     </AuthShell>
   );
 }

@@ -5,12 +5,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { Loader2, TriangleAlert } from "lucide-react";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  AuthDivider,
+  AuthField,
+  AuthFieldGroup,
+  AuthFormAlert,
+  AuthSubmitButton,
+} from "@/features/auth/components/auth-form";
 import { GoogleSignInButton } from "@/features/auth/components/google-sign-in-button";
 import { signIn } from "@/lib/auth-client";
 import { signInSchema, type SignInInput } from "@/schemas/auth.schema";
@@ -53,66 +55,50 @@ export function SignInForm({
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-      {formError && (
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
-      )}
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
+      {formError && <AuthFormAlert>{formError}</AuthFormAlert>}
 
-      <div className="space-y-2">
-        <Label htmlFor="email">Email</Label>
-        <Input
+      <AuthFieldGroup>
+        <AuthField
           id="email"
+          label="Email"
           type="email"
           autoComplete="email"
           placeholder="you@example.com"
-          aria-invalid={Boolean(errors.email)}
+          error={errors.email?.message}
           {...register("email")}
         />
-        {errors.email && (
-          <p className="text-destructive text-xs">{errors.email.message}</p>
-        )}
-      </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label htmlFor="password">Password</Label>
-          <Link
-            href="/forgot-password"
-            className="text-muted-foreground hover:text-foreground text-xs underline"
-          >
-            Forgot password?
-          </Link>
-        </div>
-        <Input
+        <AuthField
           id="password"
+          label="Password"
           type="password"
           autoComplete="current-password"
-          aria-invalid={Boolean(errors.password)}
+          error={errors.password?.message}
+          labelAction={
+            <Link
+              href="/forgot-password"
+              className="text-muted-foreground hover:text-foreground rounded-xs text-xs underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              Forgot password?
+            </Link>
+          }
           {...register("password")}
         />
-        {errors.password && (
-          <p className="text-destructive text-xs">{errors.password.message}</p>
-        )}
-      </div>
+      </AuthFieldGroup>
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
-        {isSubmitting && <Loader2 className="animate-spin" />}
-        {isSubmitting ? "Signing in…" : "Sign in"}
-      </Button>
+      <AuthSubmitButton isSubmitting={isSubmitting} pendingLabel="Signing in…">
+        Sign in
+      </AuthSubmitButton>
 
       {googleEnabled && (
-        <>
-          <div className="flex items-center gap-3">
-            <span className="bg-border h-px flex-1" />
-            <span className="text-muted-foreground text-xs">or</span>
-            <span className="bg-border h-px flex-1" />
-          </div>
+        // The divider and the button it introduces are one block, closer to
+        // each other than the block is to the credential form above it.
+        <div className="space-y-4">
+          <AuthDivider>or</AuthDivider>
 
           <GoogleSignInButton redirectTo={redirectTo} />
-        </>
+        </div>
       )}
     </form>
   );

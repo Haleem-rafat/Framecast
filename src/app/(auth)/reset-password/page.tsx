@@ -5,17 +5,16 @@ import { TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  AuthShell,
-  authCardClassName,
-} from "@/features/auth/components/auth-shell";
+import { AuthCard } from "@/features/auth/components/auth-card";
+import { authControlClassName } from "@/features/auth/components/auth-form";
+import { AuthShell } from "@/features/auth/components/auth-shell";
 import { ResetPasswordForm } from "@/features/auth/components/reset-password-form";
+import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Set a new password" };
 
@@ -45,9 +44,12 @@ export default async function ResetPasswordPage({
       <AuthShell subtitle="Set a new password." footer={footer}>
         {/* Same card surface as the working path, so the dead-end link does not
             land the visitor on a page that looks like a different site. */}
-        <Card className={authCardClassName}>
-          <CardContent className="space-y-4">
-            <Alert variant="destructive">
+        <AuthCard>
+          <CardContent className="space-y-5">
+            <Alert
+              variant="destructive"
+              className="border-destructive/30 bg-destructive/5 dark:bg-destructive/10"
+            >
               <TriangleAlert />
               <AlertDescription>
                 This reset link is invalid or has expired. Reset links are good
@@ -55,18 +57,23 @@ export default async function ResetPasswordPage({
               </AlertDescription>
             </Alert>
 
-            <Button asChild className="w-full">
+            {/* Cut to the same block as every other action under (auth) — see
+                authControlClassName for why that block is the size it is. */}
+            <Button
+              asChild
+              className={cn(authControlClassName, "text-sm leading-5 shadow-sm")}
+            >
               <Link href="/forgot-password">Request a new link</Link>
             </Button>
           </CardContent>
-        </Card>
+        </AuthCard>
       </AuthShell>
     );
   }
 
   return (
     <AuthShell subtitle="Set a new password." footer={footer}>
-      <Card className={authCardClassName}>
+      <AuthCard>
         <CardHeader>
           <CardTitle>Choose a new password</CardTitle>
           <CardDescription>
@@ -76,7 +83,7 @@ export default async function ResetPasswordPage({
         <CardContent>
           <ResetPasswordForm token={token} />
         </CardContent>
-      </Card>
+      </AuthCard>
     </AuthShell>
   );
 }

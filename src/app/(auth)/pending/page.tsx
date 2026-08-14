@@ -3,16 +3,13 @@ import { redirect } from "next/navigation";
 import { Hourglass, ShieldX } from "lucide-react";
 
 import {
-  Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  AuthShell,
-  authCardClassName,
-} from "@/features/auth/components/auth-shell";
+import { AuthCard } from "@/features/auth/components/auth-card";
+import { AuthShell } from "@/features/auth/components/auth-shell";
 import { PendingAccountActions } from "@/features/auth/components/pending-account-actions";
 import { getAccountStatus } from "@/server/session";
 
@@ -48,7 +45,7 @@ export default async function PendingPage() {
           : "Approvals are done by hand, so this can take a little while."
       }
     >
-      <Card className={authCardClassName}>
+      <AuthCard>
         <CardHeader>
           <div className="bg-muted text-muted-foreground mb-1 flex size-10 items-center justify-center rounded-full">
             {isRejected ? (
@@ -71,7 +68,7 @@ export default async function PendingPage() {
         <CardContent>
           <PendingAccountActions />
         </CardContent>
-      </Card>
+      </AuthCard>
     </AuthShell>
   );
 }

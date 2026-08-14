@@ -4,13 +4,14 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { Loader2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  AuthField,
+  AuthFieldGroup,
+  AuthFormAlert,
+  AuthSubmitButton,
+} from "@/features/auth/components/auth-form";
 import { authClient } from "@/lib/auth-client";
 import {
   MIN_PASSWORD_LENGTH,
@@ -57,52 +58,33 @@ export function ResetPasswordForm({ token }: { token: string }) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-      {formError && (
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
-      )}
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
+      {formError && <AuthFormAlert>{formError}</AuthFormAlert>}
 
-      <div className="space-y-2">
-        <Label htmlFor="password">New password</Label>
-        <Input
+      <AuthFieldGroup>
+        <AuthField
           id="password"
+          label="New password"
           type="password"
           autoComplete="new-password"
-          aria-invalid={Boolean(errors.password)}
+          description={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+          error={errors.password?.message}
           {...register("password")}
         />
-        {errors.password ? (
-          <p className="text-destructive text-xs">{errors.password.message}</p>
-        ) : (
-          <p className="text-muted-foreground text-xs">
-            At least {MIN_PASSWORD_LENGTH} characters.
-          </p>
-        )}
-      </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="confirmPassword">Confirm new password</Label>
-        <Input
+        <AuthField
           id="confirmPassword"
+          label="Confirm new password"
           type="password"
           autoComplete="new-password"
-          aria-invalid={Boolean(errors.confirmPassword)}
+          error={errors.confirmPassword?.message}
           {...register("confirmPassword")}
         />
-        {errors.confirmPassword && (
-          <p className="text-destructive text-xs">
-            {errors.confirmPassword.message}
-          </p>
-        )}
-      </div>
+      </AuthFieldGroup>
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
-        {isSubmitting && <Loader2 className="animate-spin" />}
-        {isSubmitting ? "Updating…" : "Set new password"}
-      </Button>
+      <AuthSubmitButton isSubmitting={isSubmitting} pendingLabel="Updating…">
+        Set new password
+      </AuthSubmitButton>
     </form>
   );
 }

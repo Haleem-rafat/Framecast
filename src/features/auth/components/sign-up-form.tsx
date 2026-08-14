@@ -4,12 +4,14 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { Loader2, TriangleAlert } from "lucide-react";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  AuthDivider,
+  AuthField,
+  AuthFieldGroup,
+  AuthFormAlert,
+  AuthSubmitButton,
+} from "@/features/auth/components/auth-form";
 import { GoogleSignInButton } from "@/features/auth/components/google-sign-in-button";
 import { signUp } from "@/lib/auth-client";
 import {
@@ -61,94 +63,64 @@ export function SignUpForm({ googleEnabled }: { googleEnabled: boolean }) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-      {formError && (
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
-      )}
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
+      {formError && <AuthFormAlert>{formError}</AuthFormAlert>}
 
-      <div className="space-y-2">
-        <Label htmlFor="name">Name</Label>
-        <Input
+      <AuthFieldGroup>
+        <AuthField
           id="name"
+          label="Name"
           autoComplete="name"
           placeholder="Alex Rivera"
-          aria-invalid={Boolean(errors.name)}
+          error={errors.name?.message}
           {...register("name")}
         />
-        {errors.name && (
-          <p className="text-destructive text-xs">{errors.name.message}</p>
-        )}
-      </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="email">Email</Label>
-        <Input
+        <AuthField
           id="email"
+          label="Email"
           type="email"
           autoComplete="email"
           placeholder="you@example.com"
-          aria-invalid={Boolean(errors.email)}
+          error={errors.email?.message}
           {...register("email")}
         />
-        {errors.email && (
-          <p className="text-destructive text-xs">{errors.email.message}</p>
-        )}
-      </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="password">Password</Label>
-        <Input
+        <AuthField
           id="password"
+          label="Password"
           type="password"
           autoComplete="new-password"
-          aria-invalid={Boolean(errors.password)}
+          description={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+          error={errors.password?.message}
           {...register("password")}
         />
-        {errors.password ? (
-          <p className="text-destructive text-xs">{errors.password.message}</p>
-        ) : (
-          <p className="text-muted-foreground text-xs">
-            At least {MIN_PASSWORD_LENGTH} characters.
-          </p>
-        )}
-      </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="confirmPassword">Confirm password</Label>
-        <Input
+        <AuthField
           id="confirmPassword"
+          label="Confirm password"
           type="password"
           autoComplete="new-password"
-          aria-invalid={Boolean(errors.confirmPassword)}
+          error={errors.confirmPassword?.message}
           {...register("confirmPassword")}
         />
-        {errors.confirmPassword && (
-          <p className="text-destructive text-xs">
-            {errors.confirmPassword.message}
-          </p>
-        )}
-      </div>
+      </AuthFieldGroup>
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
-        {isSubmitting && <Loader2 className="animate-spin" />}
-        {isSubmitting ? "Creating account…" : "Create account"}
-      </Button>
+      <AuthSubmitButton
+        isSubmitting={isSubmitting}
+        pendingLabel="Creating account…"
+      >
+        Create account
+      </AuthSubmitButton>
 
       {googleEnabled && (
-        <>
-          <div className="flex items-center gap-3">
-            <span className="bg-border h-px flex-1" />
-            <span className="text-muted-foreground text-xs">or</span>
-            <span className="bg-border h-px flex-1" />
-          </div>
+        <div className="space-y-4">
+          <AuthDivider>or</AuthDivider>
 
           {/* Same button as sign-in: Google's flow creates the account if it
               does not exist, and that account waits for approval too. */}
           <GoogleSignInButton redirectTo="/pending" />
-        </>
+        </div>
       )}
     </form>
   );

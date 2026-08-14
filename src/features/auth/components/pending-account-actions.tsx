@@ -36,11 +36,14 @@ export function PendingAccountActions() {
   }
 
   return (
+    // Both cut to the same 40px block as every other control under (auth), so
+    // this page's buttons line up with the ones on the four form pages.
     <div className="flex flex-col gap-2 sm:flex-row">
       <Button
         variant="outline"
-        className="flex-1"
+        className="h-10 flex-1 rounded-[4px] text-sm leading-5"
         disabled={isRefreshing}
+        aria-busy={isRefreshing}
         onClick={() => startRefresh(() => router.refresh())}
       >
         {isRefreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
@@ -49,8 +52,9 @@ export function PendingAccountActions() {
 
       <Button
         variant="ghost"
-        className="flex-1"
+        className="h-10 flex-1 rounded-[4px] text-sm leading-5"
         disabled={isSigningOut}
+        aria-busy={isSigningOut}
         onClick={handleSignOut}
       >
         <LogOut />
