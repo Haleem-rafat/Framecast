@@ -30,7 +30,14 @@ export function LandingHero() {
             signal not to send. */}
         <h1 className="mt-6 text-[2.25rem] leading-[1.06] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl">
           Type a topic. Get a{" "}
-          <span className="from-brand-violet via-brand-blue to-brand-cyan bg-gradient-to-r bg-clip-text text-transparent">
+          {/* Ink stops, not decorative ones. `bg-clip-text` makes the gradient
+              the text's actual colour, so its pale end has to be readable: the
+              decorative cyan scored 2.18:1 on the light ground, under even the
+              3:1 large-text floor, and "video" was the faintest word in the
+              largest sentence on the page. The ink triple is 5.17/4.74/4.83,
+              and in the dark theme ink and decoration are the same values, so
+              nothing there changes. */}
+          <span className="from-brand-violet-ink via-brand-blue-ink to-brand-cyan-ink bg-gradient-to-r bg-clip-text text-transparent">
             finished video
           </span>
           .

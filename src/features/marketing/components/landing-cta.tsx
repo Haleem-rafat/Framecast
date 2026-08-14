@@ -63,7 +63,7 @@ export function LandingCta() {
           <dl className="space-y-6">
             {FACTS.map((fact) => (
               <div key={fact.title} className="flex gap-4">
-                <fact.icon className="text-brand-violet mt-0.5 size-5 shrink-0" />
+                <fact.icon className="text-brand-violet-ink mt-0.5 size-5 shrink-0" />
                 <div className="min-w-0">
                   <dt className="text-sm font-medium">{fact.title}</dt>
                   <dd className="text-muted-foreground mt-1 text-sm text-pretty">

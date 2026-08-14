@@ -98,7 +98,7 @@ function findPackingBreak(features: Feature[], columns = 3): number {
 
 const FEATURES: Feature[] = [
   {
-    icon: <SlidersHorizontal className="text-brand-violet size-5" />,
+    icon: <SlidersHorizontal className="text-brand-violet-ink size-5" />,
     title: "Prompt templates you own",
     description:
       "The template that shapes every script is a document you write, version and edit, with your own variables in it. The model fills the template in; it does not get to rewrite it.",
@@ -108,13 +108,13 @@ const FEATURES: Feature[] = [
         <div className="w-full space-y-2 font-mono text-[10px] sm:text-[11px]">
           <p className="text-muted-foreground">You are writing a {"{{style}}"} script about {"{{topic}}"}.</p>
           <p className="text-muted-foreground">Open on a concrete image, never a definition.</p>
-          <p className="text-brand-violet">Cite a source for every claim you make.</p>
+          <p className="text-brand-violet-ink">Cite a source for every claim you make.</p>
         </div>
       </Tile>
     ),
   },
   {
-    icon: <FileSearch className="text-brand-blue size-5" />,
+    icon: <FileSearch className="text-brand-blue-ink size-5" />,
     title: "Sourced scripts",
     description:
       "Claims come back with the citation attached, so checking one is reading a line rather than re-researching the topic.",
@@ -133,7 +133,7 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <AudioLines className="text-brand-cyan size-5" />,
+    icon: <AudioLines className="text-brand-cyan-ink size-5" />,
     title: "ElevenLabs narration",
     description:
       "The approved script is read back in the voice you picked, and the length of that read becomes the length of every shot after it.",
@@ -152,7 +152,7 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <Film className="text-brand-violet size-5" />,
+    icon: <Film className="text-brand-violet-ink size-5" />,
     title: "Footage matched line by line",
     description:
       "Every line gets its own stock clip chosen for that line, so the picture changes when the subject does instead of looping one montage for nine minutes.",
@@ -175,7 +175,7 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <Captions className="text-brand-amber size-5" />,
+    icon: <Captions className="text-brand-amber-ink size-5" />,
     title: "Captions burned in",
     description:
       "Drawn into the picture rather than shipped as a subtitle track, so they survive a re-upload and are still there on silent autoplay.",
@@ -188,7 +188,7 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <Music4 className="text-brand-violet size-5" />,
+    icon: <Music4 className="text-brand-violet-ink size-5" />,
     title: "Music, effects and motion",
     description:
       "FFmpeg lays a music bed under the narration, drops sound effects against it, and pushes a slow Ken Burns move across every clip so a still frame is never a still frame.",
@@ -215,7 +215,7 @@ const FEATURES: Feature[] = [
   {
     // The approval gates are a feature of the product, not a disclaimer about
     // it, so they get a tile in the box rather than a footnote under it.
-    icon: <Hand className="text-brand-amber size-5" />,
+    icon: <Hand className="text-brand-amber-ink size-5" />,
     title: "Two places it stops and waits for you",
     description:
       "The script is yours to approve before a single paid stage runs, and the finished cut is yours to watch before anything reaches your channel. Neither gate can be skipped, and not approving is a complete answer.",
@@ -233,19 +233,22 @@ const FEATURES: Feature[] = [
             <div key={step.label} className="flex flex-1 flex-col items-center gap-1.5">
               <div
                 className={`h-1.5 w-full rounded-full ${
-                  step.gated ? "bg-brand-amber" : "bg-foreground/20"
+                  // `-ink`: on these two bars the colour *is* the information
+                  // — amber means "this is where it waits for you" — so it has
+                  // to clear 3:1 rather than merely look warm.
+                  step.gated ? "bg-brand-amber-ink" : "bg-foreground/20"
                 }`}
               />
               <span
                 className={`font-mono text-[9px] ${
-                  step.gated ? "text-brand-amber" : "text-muted-foreground"
+                  step.gated ? "text-brand-amber-ink" : "text-muted-foreground"
                 }`}
               >
                 {step.label}
               </span>
               {/* A non-breaking space on the ungated steps, so all five labels
                   keep one baseline instead of the two "you" columns growing. */}
-              <span className="text-brand-amber text-[9px] tracking-wide uppercase">
+              <span className="text-brand-amber-ink text-[9px] tracking-wide uppercase">
                 {step.gated ? "you" : " "}
               </span>
             </div>
@@ -255,7 +258,7 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <Crop className="text-brand-cyan size-5" />,
+    icon: <Crop className="text-brand-cyan-ink size-5" />,
     title: "Shorts from the same render",
     description:
       "Pick a stretch of a video you have already finished and it is reframed to vertical and re-captioned from that same master.",
@@ -269,7 +272,7 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <MonitorPlay className="text-brand-amber size-5" />,
+    icon: <MonitorPlay className="text-brand-amber-ink size-5" />,
     title: "Publishes with its metadata",
     description:
       "The title, description, tags and thumbnail are written from the same script the video was, and go up to the connected channel with it.",
@@ -289,25 +292,25 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <Coins className="text-brand-blue size-5" />,
+    icon: <Coins className="text-brand-blue-ink size-5" />,
     title: "Every generation costed",
     description:
       "Each script, voice and image call is priced as it runs and totalled against the video it went into, so a video's cost is a number you can look up rather than a provider bill you reconcile later.",
     header: (
       <Tile>
-        <span className="text-brand-blue font-mono text-2xl font-semibold">$0.00</span>
+        <span className="text-brand-blue-ink font-mono text-2xl font-semibold">$0.00</span>
       </Tile>
     ),
   },
   {
-    icon: <ServerCog className="text-brand-violet size-5" />,
+    icon: <ServerCog className="text-brand-violet-ink size-5" />,
     title: "One machine, your keys",
     description:
       "App, renderer and database run on a single server you control, driven by API keys you supply and that are encrypted before they are stored.",
     header: (
       <Tile>
         <div className="border-brand-violet/40 flex size-14 items-center justify-center rounded-lg border-2 border-dashed">
-          <ServerCog className="text-brand-violet/70 size-6" />
+          <ServerCog className="text-brand-violet-ink/70 size-6" />
         </div>
       </Tile>
     ),
@@ -338,7 +341,7 @@ const FEATURES: Feature[] = [
 const INCLUDED = [
   { label: "A script from your template", accent: "bg-brand-violet" },
   { label: "Sources for its claims", accent: "bg-brand-violet" },
-  { label: "Your approval of that script", accent: "bg-brand-amber" },
+  { label: "Your approval of that script", accent: "bg-brand-amber-ink" },
   { label: "ElevenLabs narration", accent: "bg-brand-cyan" },
   { label: "Footage matched per line", accent: "bg-brand-violet" },
   { label: "Captions burned into frame", accent: "bg-brand-cyan" },
@@ -346,7 +349,7 @@ const INCLUDED = [
   { label: "Ken Burns motion on every clip", accent: "bg-brand-blue" },
   { label: "A 1920 × 1080 master", accent: "bg-brand-blue" },
   { label: "Title, description, tags, thumbnail", accent: "bg-brand-cyan" },
-  { label: "Your approval of the finished cut", accent: "bg-brand-amber" },
+  { label: "Your approval of the finished cut", accent: "bg-brand-amber-ink" },
   { label: "The upload to your channel", accent: "bg-brand-cyan" },
 ];
 

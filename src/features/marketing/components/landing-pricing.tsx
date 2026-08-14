@@ -69,15 +69,16 @@ const PLANS = [
 ];
 
 /**
- * The card's ground is fixed-dark in both themes because the lamp behind it is
- * (see `lamp.tsx`), so this is the one place that overrides CardSpotlight's
- * theme-aware tokens with values tuned for that ground. The surface classes are
- * translucent white over `--lamp-bg` rather than a hard-coded hex, so the card
- * still sits *in* the lit room instead of on top of it.
+ * Every colour here is a token. It used to be whites and neutrals, because the
+ * lamp behind these cards was pinned dark in both themes and a card on it had
+ * to be hand-painted to stay legible. That pinning was the bug — the section
+ * ignored the theme switch entirely — and with the lamp on `--background` the
+ * hand-painting is not just unnecessary, it is what would break the light
+ * theme: `text-white` on a near-white ground is an invisible heading.
+ *
+ * `CardSpotlight`'s own `--card-spotlight-*` tokens are theme-aware, so the
+ * override that used to sit here is gone too.
  */
-const SPOTLIGHT_ON_LAMP =
-  "[--card-spotlight-wash:oklch(0.72_0.18_285/22%)] [--card-spotlight-dot:oklch(0.85_0.1_285/28%)]";
-
 function PlanCard({ plan }: { plan: (typeof PLANS)[number] }) {
   return (
     <CardSpotlight
@@ -86,21 +87,21 @@ function PlanCard({ plan }: { plan: (typeof PLANS)[number] }) {
       // uniformly, which is a hover state, not a spotlight.
       radius={260}
       contentClassName="flex flex-col p-6"
-      className={`h-full ${SPOTLIGHT_ON_LAMP} ${
+      className={`h-full ${
         plan.featured
-          ? "ring-brand-violet/50 border-white/25 bg-white/10 ring-1"
+          ? "ring-brand-violet/50 bg-card ring-1"
           : plan.available
-            ? "border-white/10 bg-white/[0.04]"
-            : "border-white/10 bg-transparent"
+            ? "bg-card/60"
+            : "bg-transparent"
       }`}
     >
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-medium text-white">{plan.name}</h3>
+        <h3 className="text-base font-medium">{plan.name}</h3>
         <span
           className={`rounded-full px-2 py-0.5 text-[11px] ${
             plan.available
-              ? "bg-brand-cyan/20 text-brand-cyan"
-              : "bg-white/10 text-neutral-400"
+              ? "bg-brand-cyan/20 text-brand-cyan-ink"
+              : "bg-muted text-muted-foreground"
           }`}
         >
           {plan.note}
@@ -109,20 +110,24 @@ function PlanCard({ plan }: { plan: (typeof PLANS)[number] }) {
 
       <p
         className={`mt-4 text-3xl font-semibold tracking-tight ${
-          plan.available ? "text-white" : "text-neutral-500"
+          plan.available ? "text-foreground" : "text-muted-foreground"
         }`}
       >
         {plan.price}
       </p>
 
-      <p className="mt-3 text-sm text-pretty text-neutral-400">{plan.summary}</p>
+      <p className="text-muted-foreground mt-3 text-sm text-pretty">
+        {plan.summary}
+      </p>
 
       <ul className="mt-6 space-y-3">
         {plan.lines.map((line) => (
-          <li key={line.text} className="flex gap-3 text-sm text-neutral-300">
+          <li key={line.text} className="flex gap-3 text-sm">
             <line.icon
               className={`mt-0.5 size-4 shrink-0 ${
-                plan.available ? "text-brand-cyan" : "text-neutral-600"
+                // Full `--muted-foreground`, not `/60`: faded to 60% it scored
+                // 2.61:1 on the light ground, under the 3:1 an icon needs.
+                plan.available ? "text-brand-cyan-ink" : "text-muted-foreground"
               }`}
             />
             <span className="text-pretty">{line.text}</span>
@@ -132,25 +137,24 @@ function PlanCard({ plan }: { plan: (typeof PLANS)[number] }) {
 
       <div className="mt-8 flex-1 content-end">
         {plan.featured ? (
-          // The lamp's ground is dark in both themes, so this one button cannot
-          // use `--primary`: in the light theme that is near-black, and a
-          // near-black button on a near-black section is an invisible button.
-          <Button
-            asChild
-            size="lg"
-            className="w-full bg-white text-neutral-900 hover:bg-neutral-200"
-          >
+          // Plain `--primary` again. The white-on-dark override this used to
+          // carry only existed because the ground was pinned dark; on a ground
+          // that follows the theme it would be a white button on a white page.
+          <Button asChild size="lg" className="w-full">
             <Link href="/sign-up">
               Create an account
               <ArrowRight />
             </Link>
           </Button>
         ) : (
-          <p className="text-xs text-neutral-500">
+          <p className="text-muted-foreground text-xs">
             {plan.available ? (
               <>
                 See the{" "}
-                <Link href="/terms" className="text-neutral-300 underline underline-offset-4">
+                <Link
+                  href="/terms"
+                  className="text-foreground underline underline-offset-4"
+                >
                   terms
                 </Link>{" "}
                 for how third-party costs are handled.
@@ -171,10 +175,10 @@ export function LandingPricing() {
       <LampSection>
         <div className="mx-auto w-full max-w-6xl px-6 pb-20 sm:pb-28 lg:pb-36">
           <div className="mx-auto max-w-2xl text-center">
-            <h2 className="text-3xl font-semibold tracking-tight text-balance text-white sm:text-4xl lg:text-[2.75rem] lg:leading-[1.1]">
+            <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl lg:text-[2.75rem] lg:leading-[1.1]">
               What it costs
             </h2>
-            <p className="mt-4 text-base text-pretty text-neutral-400 sm:text-lg">
+            <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
               Framecast cannot charge you. There is no payment system in it —
               the section below is the whole truth about money, including the
               part where there is nothing to sell.

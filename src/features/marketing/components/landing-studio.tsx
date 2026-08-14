@@ -25,7 +25,7 @@ const SURFACES: {
 }[] = [
   {
     icon: FileCheck2,
-    accent: "text-brand-violet",
+    accent: "text-brand-violet-ink",
     chip: "from-brand-violet/20 to-brand-violet/5",
     title: "Read the script before it spends",
     body: "The draft arrives on the video's own page, with every earlier version kept beside it. Approving is a deliberate click, and it is the click that unlocks the paid stages.",
@@ -33,7 +33,7 @@ const SURFACES: {
   },
   {
     icon: Activity,
-    accent: "text-brand-blue",
+    accent: "text-brand-blue-ink",
     chip: "from-brand-blue/20 to-brand-blue/5",
     title: "Watch the run as it happens",
     body: "Each stage reports in as it starts, finishes or fails, and the log streams into the page rather than making you reload it. When a render breaks you get the reason, not a red badge.",
@@ -41,7 +41,7 @@ const SURFACES: {
   },
   {
     icon: Coins,
-    accent: "text-brand-amber",
+    accent: "text-brand-amber-ink",
     chip: "from-brand-amber/20 to-brand-amber/5",
     title: "See what it cost, per video",
     body: "Script, voice and image generations are priced as they run and totalled against the video they went into. Render times and failures are on the same page.",
@@ -49,7 +49,7 @@ const SURFACES: {
   },
   {
     icon: MonitorPlay,
-    accent: "text-brand-cyan",
+    accent: "text-brand-cyan-ink",
     chip: "from-brand-cyan/20 to-brand-cyan/5",
     title: "Connect a channel, or take it back",
     body: "A YouTube channel is connected through Google's own consent screen and can be disconnected from the same page at any time, which deletes the stored tokens then and there.",

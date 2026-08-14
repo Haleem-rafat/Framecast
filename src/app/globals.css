@@ -46,6 +46,22 @@
   --color-brand-blue: var(--brand-blue);
   --color-brand-cyan: var(--brand-cyan);
   --color-brand-amber: var(--brand-amber);
+  /*
+   * The same four hues at a lightness that can carry meaning rather than just
+   * fill a shape. Use `-ink` for anything a reader has to *read* or decode —
+   * an icon, a label, a status dot whose colour is the status. Use the plain
+   * token for washes, gradients and bars, where the hue is decoration.
+   *
+   * They exist because a grade tuned for glow is not a grade you can write in.
+   * Measured against the light theme's card, the decorative hues score
+   * cyan 2.18:1, amber 2.14:1 and blue 3.64:1 — all below the 4.5:1 text floor
+   * and two of them below the 3:1 floor for icons. On the dark theme the same
+   * values are 10.03, 9.67 and 6.75, which is why this only ever looked fine.
+   */
+  --color-brand-violet-ink: var(--brand-violet-ink);
+  --color-brand-blue-ink: var(--brand-blue-ink);
+  --color-brand-cyan-ink: var(--brand-cyan-ink);
+  --color-brand-amber-ink: var(--brand-amber-ink);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --radius-sm: calc(var(--radius) * 0.6);
@@ -165,6 +181,14 @@
   --brand-cyan: oklch(0.74 0.13 205);
   --brand-amber: oklch(0.77 0.15 65);
 
+  /* Darkened until each clears 4.5:1 on `--card`: violet 5.24, blue 4.81,
+     cyan 5.53, amber 5.02. Cyan is pulled furthest because it also has to be
+     legible on its own `bg-brand-cyan/20` badge, where it scores 4.66. */
+  --brand-violet-ink: oklch(0.55 0.2 285);
+  --brand-blue-ink: oklch(0.55 0.17 250);
+  --brand-cyan-ink: oklch(0.49 0.13 205);
+  --brand-amber-ink: oklch(0.55 0.15 65);
+
   --background: oklch(0.995 0.004 285);
   --foreground: oklch(0.19 0.025 285);
   --card: oklch(1 0.002 285);
@@ -208,6 +232,14 @@
   --brand-blue: oklch(0.7 0.15 250);
   --brand-cyan: oklch(0.8 0.12 205);
   --brand-amber: oklch(0.81 0.14 65);
+
+  /* On a dark card the decorative hues are already 5.89–10.03:1, so ink and
+     decoration are the same colour here. The split is a light-theme problem;
+     restating the values keeps it one lookup rather than a conditional. */
+  --brand-violet-ink: oklch(0.68 0.18 285);
+  --brand-blue-ink: oklch(0.7 0.15 250);
+  --brand-cyan-ink: oklch(0.8 0.12 205);
+  --brand-amber-ink: oklch(0.81 0.14 65);
 
   /* Deep indigo rather than neutral black: the single biggest reason the old
      page read as flat was that its darkest colour had no hue in it at all. */

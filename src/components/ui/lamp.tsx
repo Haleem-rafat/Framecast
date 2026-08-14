@@ -17,11 +17,20 @@ import { cn } from "@/lib/utils";
  *   `-translate-y-80`, a pair of numbers that only agree at one viewport. This
  *   version sizes the fixture in its own right and lets the content sit under
  *   it in normal flow, so it works from 375px up without a magic offset.
- * - Ground. Upstream hard-codes `bg-slate-950` in eight places, which is fine
- *   on their dark site and a black hole on ours in light mode. The ground is a
- *   token here (`--lamp-bg`), and the section is *deliberately* dark in both
- *   themes: a lamp needs a dark room, and a dark band partway down a light page
- *   reads as a cinema rather than a bug.
+ * - Ground. Upstream hard-codes `bg-slate-950` in eight places. This version
+ *   drove all eight from one `--lamp-bg`, but pinned that variable to a fixed
+ *   near-black so the section stayed dark in both themes — the argument being
+ *   that a lamp needs a dark room. That was wrong, and it shipped as a bug: on
+ *   a light page the pricing section was the one band that ignored the theme
+ *   entirely, and every card inside it had to be hand-painted in whites and
+ *   neutrals to stay legible against a ground nothing else shared.
+ *
+ *   `--lamp-bg` is `var(--background)` now, so the room is whatever the page
+ *   is. The fixture still reads as a fixture, because what makes it one is the
+ *   two conic beams meeting at a hot filament, not the darkness behind them.
+ *   In the light theme those beams are turned down (`--lamp-beam:0.45`) —
+ *   at full strength a saturated cyan-to-violet wash over a near-white ground
+ *   goes muddy rather than luminous.
  * - Colour. `cyan-400/500` becomes the marketing palette's cyan and violet, so
  *   the beam is the same grade as the rest of the page.
  * - `bg-gradient-conic` is a Tailwind v3 utility with no v4 equivalent. It was
@@ -61,16 +70,19 @@ export function LampSection({
   return (
     <div
       className={cn(
-        "relative isolate w-full overflow-hidden [--lamp-bg:oklch(0.16_0.02_285)]",
+        // Every `bg-[var(--lamp-bg)]` below is a mask that blends a beam back
+        // into the ground, so the ground and the masks have to be the same
+        // colour. Driving both from one variable is what lets that stay true
+        // when the theme flips.
+        "bg-background relative isolate w-full overflow-hidden [--lamp-beam:0.45] [--lamp-bg:var(--background)] dark:[--lamp-beam:1]",
         className,
       )}
-      style={{ backgroundColor: "var(--lamp-bg)" }}
     >
       {/* The fixture. Decorative in full: it carries no information the heading
           below does not already give in text. */}
       <div
         aria-hidden="true"
-        className="relative isolate flex h-40 w-full items-center justify-center sm:h-52"
+        className="relative isolate flex h-40 w-full items-center justify-center opacity-[var(--lamp-beam)] sm:h-52"
       >
         <motion.div
           {...grow("15rem", "30rem")}
@@ -112,10 +124,9 @@ export function LampSection({
         <div className="absolute inset-auto z-40 h-44 w-full -translate-y-[12.5rem] bg-[var(--lamp-bg)]" />
       </div>
 
-      {/* Lit content. Fixed light-on-dark, because the ground above is fixed. */}
-      <div className="relative z-50 -mt-16 text-neutral-100 sm:-mt-20">
-        {children}
-      </div>
+      {/* Lit content. No colour of its own — it inherits `--foreground`, so it
+          is light-on-dark or dark-on-light exactly as the rest of the page is. */}
+      <div className="relative z-50 -mt-16 sm:-mt-20">{children}</div>
     </div>
   );
 }
