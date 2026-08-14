@@ -24,14 +24,14 @@ export default async function VideosPage({ searchParams }: VideosPageProps) {
   const { status } = await searchParams;
   const statusFilter = status && VALID_STATUSES.has(status) ? (status as VideoStatus) : undefined;
 
-  const [videos, projects] = await Promise.all([
-    videoService.list(user.id),
+  // The status filter goes to Postgres rather than to `Array.filter` here:
+  // `@@index([userId, status, deletedAt])` covers it exactly, so a narrowed
+  // list reads only the matching rows instead of fetching the operator's
+  // whole back catalogue and throwing most of it away.
+  const [filtered, projects] = await Promise.all([
+    videoService.list(user.id, statusFilter),
     projectService.list(user.id),
   ]);
-
-  const filtered = statusFilter
-    ? videos.filter((video) => video.status === statusFilter)
-    : videos;
 
   const activeProjects = projects
     .filter((project) => project.status === "ACTIVE")

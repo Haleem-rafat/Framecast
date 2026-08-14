@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { VideoStatus } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { CreateVideoInput } from "@/schemas/video.schema";
@@ -31,9 +32,18 @@ function isActivelyLeased(
 }
 
 export class VideoService {
-  async list(userId: string) {
+  /**
+   * The video list, optionally narrowed to one status.
+   *
+   * `status` is applied here rather than by the caller filtering the returned
+   * array: `@@index([userId, status, deletedAt])` already exists and matches
+   * this predicate exactly, so the filtered read is an index scan that returns
+   * only the rows the page will render, instead of every video the operator
+   * has ever made followed by a discard in JavaScript.
+   */
+  async list(userId: string, status?: VideoStatus) {
     return prisma.video.findMany({
-      where: { userId, deletedAt: null },
+      where: { userId, deletedAt: null, ...(status ? { status } : {}) },
       orderBy: { updatedAt: "desc" },
       select: {
         id: true,
@@ -62,10 +72,39 @@ export class VideoService {
             channel: { select: { id: true, title: true } },
           },
         },
+        // `select`, not `include`. An `include` here pulled every column of
+        // every `ScriptVersion` — `content`, `prompt`, `cues` and `sources`
+        // are all large, and the history list renders none of them. On a
+        // video regenerated eight times that was 65kB fetched to draw eight
+        // one-line rows totalling 376 bytes, and because `VersionHistory` is
+        // a client component the whole 65kB was serialised into the RSC
+        // payload and shipped to the browser as well.
+        //
+        // The two consumers want different shapes, so they get different
+        // selects: `ScriptPanel` loads `activeVersion.content` into its
+        // editor and genuinely needs it; `VersionHistory` renders only the
+        // five fields below.
         script: {
-          include: {
-            versions: { orderBy: { version: "desc" } },
-            activeVersion: true,
+          select: {
+            activeVersionId: true,
+            versions: {
+              orderBy: { version: "desc" },
+              select: {
+                id: true,
+                version: true,
+                wordCount: true,
+                createdAt: true,
+                model: true,
+              },
+            },
+            activeVersion: {
+              select: {
+                id: true,
+                content: true,
+                version: true,
+                wordCount: true,
+              },
+            },
           },
         },
         statusEvents: { orderBy: { createdAt: "desc" }, take: 10 },
