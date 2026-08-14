@@ -367,6 +367,129 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
   ];
 }
 
+export interface ShortInput {
+  /** The finished 16:9 render this clip is cut out of. */
+  sourcePath: string;
+  /** Where the clip starts in `sourcePath`, in seconds. */
+  startSeconds: number;
+  /** How long the clip runs. */
+  durationSeconds: number;
+  /** Captions for the clip alone, already rebased so its first word starts at
+   *  0 — see `sliceAlignment` in shorts-plan.ts. */
+  srtPath: string;
+  outputPath: string;
+  /** Already adapted for a 9:16 frame by `verticalCaptionStyle`. Passing the
+   *  landscape style straight through would work and render captions roughly
+   *  1.8x too large, so the type deliberately does not distinguish them —
+   *  the one caller does, and its own comment says so. */
+  captions?: CaptionStyle;
+}
+
+/** Shorts are 9:16. Kept alongside WIDTH/HEIGHT above rather than imported from
+ *  shorts-plan.ts, for the same reason those two are local constants: this file
+ *  is the one that decides what pixels FFmpeg is asked to produce. */
+const SHORT_WIDTH = 1080;
+const SHORT_HEIGHT = 1920;
+
+/**
+ * One vertical short, cut out of an already-finished render.
+ *
+ * ## Why this is one pass and not two
+ *
+ * The two-pass split at the top of this file exists for one reason: a filter
+ * graph holds every input open at once, and joining thirty-eight clips that way
+ * meant thirty-eight live h264 decoders inside a 1GB container. That cause does
+ * not exist here. A short has exactly ONE input — a single local MP4 this
+ * codebase produced itself — so there is one decoder and one encoder no matter
+ * how long the clip is or how many shorts the video has. Splitting it in two
+ * would not lower the peak by a byte; it would double the encode and add a
+ * generation of loss to a clip that is already a second-generation encode of
+ * the source footage.
+ *
+ * The memory *discipline* is reused in full even though the split is not: the
+ * decoder thread pool is capped before `-i` (see `buildSegmentArgs` for the
+ * SIGKILL that taught this codebase that lesson), and the encoder and filter
+ * pools are capped after it. Peak memory is a handful of 1080x1920 frames plus
+ * x264's own window, and it is flat in both clip length and clip count —
+ * shorts are claimed and rendered one at a time by the worker, never batched.
+ *
+ * ## What the filter chain does
+ *
+ * `scale=...:force_original_aspect_ratio=increase` then `crop` is the same
+ * idiom `buildVideoFilter` uses for the landscape case, run the other way: the
+ * 1920x1080 source is scaled up until it covers a 1080x1920 frame (3413x1920)
+ * and the centre 1080 columns are kept. That is the centre crop — the middle
+ * ~608 columns of the original, upscaled. It is written as scale-then-crop
+ * rather than crop-then-scale so that a source which is not exactly 1920x1080
+ * (an older render, a future resolution change) still produces exactly
+ * 1080x1920 rather than whatever its own aspect ratio implies.
+ *
+ * `setpts=PTS-STARTPTS` is not cosmetic. `-ss` before `-i` seeks accurately but
+ * leaves the first output frame carrying a presentation timestamp up to one
+ * frame past zero, so the muxed stream starts at 0.033s while the audio starts
+ * at 0. The `subtitles` filter matches cues against frame timestamps, so the
+ * rebased SRT would be read against a timeline offset by that amount, and the
+ * container would report a duration a frame short of the window it was asked
+ * for. Rebasing both streams to zero makes the clip's timeline exactly
+ * [0, durationSeconds], which is what the SRT was rebased to.
+ *
+ * `subtitles` runs last, after the crop, so libass renders text at the output
+ * resolution rather than having it scaled and re-sampled by the crop above it.
+ */
+export function buildShortArgs(input: ShortInput): string[] {
+  const videoFilter = [
+    `scale=${SHORT_WIDTH}:${SHORT_HEIGHT}:force_original_aspect_ratio=increase`,
+    `crop=${SHORT_WIDTH}:${SHORT_HEIGHT}`,
+    `fps=${FPS}`,
+    "setsar=1",
+    "setpts=PTS-STARTPTS",
+    buildSubtitleFilter(input.srtPath, input.captions),
+  ].join(",");
+
+  return [
+    "-y",
+    // Input-side thread cap, and the position matters — see `buildSegmentArgs`.
+    "-threads", DECODER_THREADS,
+    // Before `-i`, so FFmpeg seeks the container instead of decoding and
+    // discarding everything up to the cut. Accurate seeking is on by default,
+    // so this lands on the exact requested second rather than the preceding
+    // keyframe — verified against a real encode, since the alternative would
+    // silently start every short up to several seconds early.
+    "-ss", String(input.startSeconds),
+    // Input-side `-t` bounds how much is decoded at all; the output-side one
+    // below is the guard that the clip cannot come out longer than its own
+    // recorded window.
+    "-t", String(input.durationSeconds),
+    "-i", input.sourcePath,
+    "-vf", videoFilter,
+    // The video's counterpart to `setpts` above. The source's audio is already
+    // the finished mix — narration, music bed and effects, loudness-normalised
+    // by the assemble pass — so it is re-encoded and nothing more. Running
+    // `loudnorm` again over an already-normalised mix would pump it.
+    "-af", "asetpts=PTS-STARTPTS",
+    "-map", "0:v:0",
+    "-map", "0:a:0",
+    "-filter_threads", THREADS,
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", FINAL_CRF,
+    "-pix_fmt", "yuv420p",
+    "-threads", THREADS,
+    "-c:a", "aac",
+    "-b:a", "128k",
+    // The operator reviews these in a browser before uploading them by hand,
+    // and a player cannot start until it has the moov atom — at the end of the
+    // file by default, which over a range-request stream means downloading the
+    // whole clip before the first frame appears.
+    "-movflags", "+faststart",
+    "-t", String(input.durationSeconds),
+    // Machine-readable progress, same as the assemble pass.
+    "-progress", "pipe:1",
+    "-nostats",
+    input.outputPath,
+  ];
+}
+
 export interface TransitionJob {
   fromPath: string;
   toPath: string;

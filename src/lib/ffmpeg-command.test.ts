@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildAssembleArgs,
   buildSegmentArgs,
+  buildShortArgs,
   buildTransitionArgs,
   concatListLine,
   planRender,
 } from "@/lib/ffmpeg-command";
+import { verticalCaptionStyle } from "@/lib/shorts-plan";
+import { DEFAULT_STYLE } from "@/lib/video-style";
 
 const assembleBase = {
   concatListPath: "/tmp/segments.txt",
@@ -525,5 +528,96 @@ describe("buildAssembleArgs audio chain", () => {
     // without this the finished video is mono and the stereo music and
     // effects are silently downmixed into it.
     expect(graph).toContain("aformat=channel_layouts=stereo");
+  });
+});
+
+describe("buildShortArgs", () => {
+  const shortBase = {
+    sourcePath: "/tmp/render.mp4",
+    startSeconds: 92.5,
+    durationSeconds: 34,
+    srtPath: "/tmp/short.srt",
+    outputPath: "/tmp/short.mp4",
+  };
+
+  it("produces a 1080x1920 frame by covering then centre-cropping", () => {
+    const filter = valueOf(buildShortArgs(shortBase), "-vf") ?? "";
+
+    // Scale-then-crop, not crop-then-scale: a source that is not exactly
+    // 1920x1080 still has to come out exactly 1080x1920 rather than whatever
+    // its own aspect ratio implies.
+    expect(filter).toContain(
+      "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+    );
+  });
+
+  it("seeks before the input, not after it", () => {
+    const args = buildShortArgs(shortBase);
+
+    // After `-i` this would decode and discard 92.5 seconds of 1080p before
+    // emitting a frame — minutes of CPU per short on a two-core box.
+    expect(args.indexOf("-ss")).toBeLessThan(args.indexOf("-i"));
+    expect(valueOf(args, "-ss")).toBe("92.5");
+  });
+
+  it("bounds the decode as well as the output", () => {
+    const args = buildShortArgs(shortBase);
+
+    // Two `-t`s, one either side of `-i`: the input one stops the decoder, the
+    // output one guarantees the clip cannot outrun its own recorded window.
+    const durations = args.filter((_, index) => args[index - 1] === "-t");
+    expect(durations).toEqual(["34", "34"]);
+  });
+
+  it("rebases both streams so the clip starts at zero", () => {
+    const args = buildShortArgs(shortBase);
+
+    // `-ss` leaves the first frame carrying a PTS up to one frame past zero.
+    // The SRT is rebased to zero, and `subtitles` matches cues against frame
+    // timestamps, so without this the captions run against an offset timeline.
+    expect(valueOf(args, "-vf")).toContain("setpts=PTS-STARTPTS");
+    expect(valueOf(args, "-af")).toBe("asetpts=PTS-STARTPTS");
+  });
+
+  it("caps the decoder pool before the input and the encoder after it", () => {
+    const args = buildShortArgs(shortBase);
+
+    // The same lesson buildSegmentArgs records: a `-threads` after `-i` caps
+    // only the encoder, leaving the h264 decoder to size its pool from the
+    // host's core count — which is what SIGKILLed a render inside the
+    // container.
+    const firstThreads = args.indexOf("-threads");
+    expect(firstThreads).toBeLessThan(args.indexOf("-i"));
+    expect(args[firstThreads + 1]).toBe("1");
+    expect(args.lastIndexOf("-threads")).toBeGreaterThan(args.indexOf("-i"));
+  });
+
+  it("re-encodes the source's finished mix without touching its loudness", () => {
+    const args = buildShortArgs(shortBase);
+
+    // The source audio is already narration + music + effects, loudness
+    // normalised by the assemble pass. Running loudnorm over it again pumps it.
+    expect(args.join(" ")).not.toContain("loudnorm");
+    expect(valueOf(args, "-c:a")).toBe("aac");
+  });
+
+  it("burns captions last, at the output resolution", () => {
+    const filter =
+      valueOf(
+        buildShortArgs({
+          ...shortBase,
+          captions: verticalCaptionStyle(DEFAULT_STYLE.captions),
+        }),
+        "-vf",
+      ) ?? "";
+
+    // After the crop, so libass draws text at 1080x1920 rather than having it
+    // scaled and resampled by a filter above it.
+    expect(filter.indexOf("subtitles=")).toBeGreaterThan(filter.indexOf("crop="));
+    expect(filter).toContain("force_style='FontName=DejaVu Sans,FontSize=15.5");
+  });
+
+  it("front-loads the moov atom so the panel can play it before it downloads", () => {
+    expect(buildShortArgs(shortBase)).toContain("+faststart");
   });
 });
