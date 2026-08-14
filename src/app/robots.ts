@@ -23,13 +23,16 @@ import { SITE_URL } from "@/config/site";
 const OPERATOR_ROUTES = [
   "/analytics",
   "/approvals",
+  "/automation",
   "/channels",
   "/dashboard",
   "/logs",
   "/projects",
   "/prompts",
   "/providers",
+  "/publishing",
   "/settings",
+  "/studio",
   "/videos",
   "/api",
 ];
