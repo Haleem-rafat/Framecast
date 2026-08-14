@@ -69,7 +69,15 @@ export function AppSidebar({ user }: AppSidebarProps) {
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent>
+      {/* `Sidebar` is a stack of plain `<div>`s, so the studio's primary
+       * desktop navigation was reaching assistive tech as unlabelled generic
+       * content — no landmark to jump to, nothing in the landmarks list. The
+       * role goes here rather than on the `Sidebar` root because the root also
+       * wraps the header wordmark and the account menu in the footer, neither
+       * of which is navigation. A label is mandatory rather than nicety: the
+       * breadcrumb ("breadcrumb") and the mobile dock ("Primary") are already
+       * navigation landmarks, and three unnamed ones are worse than none. */}
+      <SidebarContent role="navigation" aria-label="Studio">
         {navigation.map((group) => (
           <SidebarGroup key={group.label}>
             <SidebarGroupLabel>{group.label}</SidebarGroupLabel>

@@ -49,13 +49,26 @@ export function MobileNavDrawer({
           <DrawerDescription>Every page in the studio.</DrawerDescription>
         </DrawerHeader>
 
-        <div className="flex-1 overflow-y-auto px-4 pb-4">
+        {/* This is the complete site map on a phone — the counterpart to the
+         * desktop sidebar — so it earns a navigation landmark of its own. The
+         * label distinguishes it from the dock's "Primary", which is on screen
+         * behind this drawer at the same time. */}
+        <nav
+          aria-label="All pages"
+          className="flex-1 overflow-y-auto px-4 pb-4"
+        >
           {navigation.map((group) => (
             <div key={group.label} className="mb-4 last:mb-0">
-              <p className="text-muted-foreground px-1 pb-1 text-xs font-medium">
+              {/* Tied to its own list rather than left floating above it, so
+               * the group name is announced when entering the list instead of
+               * being read as a stray line of text before it. */}
+              <p
+                id={`mobile-nav-${group.label}`}
+                className="text-muted-foreground px-1 pb-1 text-xs font-medium"
+              >
                 {group.label}
               </p>
-              <ul>
+              <ul aria-labelledby={`mobile-nav-${group.label}`}>
                 {group.items.map((item) => {
                   const active =
                     pathname === item.href ||
@@ -81,7 +94,15 @@ export function MobileNavDrawer({
                           {item.title}
                         </Link>
                       ) : (
-                        <span className="text-muted-foreground/60 flex h-12 items-center gap-3 px-3 text-sm [&_svg]:size-4">
+                        // Full `text-muted-foreground`, not `/60`. The token is
+                        // already close to the 4.5:1 floor against this
+                        // surface; at 60% alpha it composites to roughly 2.5:1,
+                        // which is a failure on what is still a real page name.
+                        // The "Soon" badge beside it already carries the
+                        // "you cannot go here" meaning, so the extra fade was
+                        // saying the same thing a second time in the one
+                        // register that costs legibility.
+                        <span className="text-muted-foreground flex h-12 items-center gap-3 px-3 text-sm [&_svg]:size-4">
                           <item.icon />
                           {item.title}
                           <Badge variant="secondary" className="ml-auto">
@@ -102,7 +123,7 @@ export function MobileNavDrawer({
             Appearance
             <ThemeToggle />
           </div>
-        </div>
+        </nav>
       </DrawerContent>
     </Drawer>
   );

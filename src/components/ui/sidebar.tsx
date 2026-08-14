@@ -301,9 +301,24 @@ function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
   )
 }
 
-function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
+/**
+ * A `<div>`, not the `<main>` upstream shipped.
+ *
+ * This element is the whole right-hand column: the sticky topbar *and* the page
+ * body. The dashboard layout puts its own `<main>` inside it around the page
+ * body alone, which is the correct boundary — a `<header>` has no business
+ * being inside the main landmark, and "skip to content" has to land past the
+ * topbar to be worth anything. Leaving this as `<main>` gave the document two
+ * main landmarks, one nested in the other, which is two separate axe failures
+ * and leaves a screen reader's "jump to main" ambiguous.
+ *
+ * The prop type moves with the element so `ComponentProps` keeps describing
+ * what is actually rendered; both resolve to the same HTML attribute set, so no
+ * call site changes.
+ */
+function SidebarInset({ className, ...props }: React.ComponentProps<"div">) {
   return (
-    <main
+    <div
       data-slot="sidebar-inset"
       className={cn(
         "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
@@ -509,6 +524,16 @@ function SidebarMenuButton({
       data-sidebar="menu-button"
       data-size={size}
       data-active={isActive}
+      // `data-active` styles the row, but styling is all it does: the active
+      // item is otherwise distinguished from its neighbours by a background
+      // tint and a font weight, which is colour alone and reaches a screen
+      // reader as nothing at all. `aria-current="page"` is the programmatic
+      // half of the same statement, and it is what the mobile drawer and the
+      // dock already say for the very same routes — without it the desktop
+      // sidebar is the one navigation in the app that cannot answer "where am
+      // I". Left undefined rather than set to "false" when inactive, so the
+      // attribute is absent instead of present-and-negative.
+      aria-current={isActive ? "page" : undefined}
       className={cn(sidebarMenuButtonVariants({ variant, size }), className)}
       {...props}
     />

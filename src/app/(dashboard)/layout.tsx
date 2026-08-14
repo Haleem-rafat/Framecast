@@ -1,4 +1,4 @@
-import type { Viewport } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
 import { AppSidebar } from "@/components/layout/app-sidebar";
@@ -22,6 +22,38 @@ import { settingsService } from "@/services/settings.service";
  */
 export const viewport: Viewport = {
   viewportFit: "cover",
+};
+
+/**
+ * Every operator route says "do not index me", in its own markup.
+ *
+ * robots.ts already disallows these paths, but a `Disallow` is an instruction
+ * not to *crawl*, and Google is explicit that a disallowed URL can still be
+ * indexed — URL only, no snippet — on the strength of inbound links alone. The
+ * two directives are also mutually defeating in the obvious way: a crawler told
+ * not to fetch the page never sees a `noindex` in it. So this is not a
+ * duplicate of robots.ts, it is the half that applies to a crawler that reached
+ * the page some other way, and the pair only works because the paths are
+ * genuinely reachable — an unauthenticated fetch here redirects to sign-in and
+ * carries this header with it.
+ *
+ * Declared on the layout rather than on each of the fourteen pages below it:
+ * Next.js merges metadata field by field down the tree, and none of those pages
+ * declares `robots`, so every one of them inherits this. A route added under
+ * this group is noindex the moment it exists, which is the opposite of the
+ * hand-maintenance robots.ts needs.
+ *
+ * `nocache` and the googleBot block undo the root layout's opt-in to large
+ * image previews and unlimited snippets — settings that only make sense for the
+ * marketing pages that granted them.
+ */
+export const metadata: Metadata = {
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true,
+    googleBot: { index: false, follow: false },
+  },
 };
 
 /**
@@ -52,6 +84,24 @@ export default async function DashboardLayout({
           ahead of every pixel they affect. Renders nothing visible. */}
       <Appearance theme={appearance.theme} accent={appearance.accent} />
 
+      {/* First focusable thing in the document, and invisible until it is
+       * focused. Without it a keyboard or switch user arrives on every page
+       * behind the sidebar's fifteen nav items plus the topbar's controls, and
+       * has to tab past all of them again on the next page — the sidebar is
+       * persistent, so the cost is paid per navigation, forever.
+       *
+       * `sr-only` with a `focus:` escape rather than the usual off-screen
+       * `-top-full` trick: `sr-only` already keeps it out of layout without
+       * removing it from the accessibility tree, and `focus:not-sr-only` is the
+       * one-class undo. z-50 puts it over the sticky topbar, which would
+       * otherwise cover it at the moment it becomes visible. */}
+      <a
+        href="#main-content"
+        className="bg-background text-foreground ring-ring sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:ring-2"
+      >
+        Skip to content
+      </a>
+
       <AppSidebar
         user={{ name: user.name, email: user.email, image: user.image ?? null }}
       />
@@ -64,6 +114,12 @@ export default async function DashboardLayout({
           }}
         />
         <main
+          id="main-content"
+          // The skip link above lands here, and a heading-less landing point is
+          // a dead end for anyone who cannot see where focus went. -1 makes the
+          // element focusable by script and by that link without inserting it
+          // into the tab order.
+          tabIndex={-1}
           className={[
             "flex min-w-0 flex-1 flex-col gap-6 p-4 md:p-6",
             // The dock is fixed, so it is out of flow and would otherwise sit
