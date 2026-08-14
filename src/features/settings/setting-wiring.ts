@@ -1,14 +1,17 @@
 /**
  * Which `UserSetting` columns the pipeline actually reads.
  *
- * At the time of writing: none of them. `UserSetting` is a fully-formed model
- * with no consumer anywhere in `src/` — every value it stores is decided
- * somewhere else, by an environment variable, a hardcoded literal, a per-video
- * form field, or a different table's flag. The page still reads and writes the
- * row, because a preference an operator saved is worth keeping and because
- * wiring each one up later is a small change. But a control that silently does
- * nothing is worse than no control at all, so every field carries the sentence
- * below saying where its value really comes from today.
+ * `theme` and `accent` are read: the dashboard layout resolves both on every
+ * authenticated render and puts them into the page before it paints (see
+ * `Appearance`). The other six are not. `UserSetting` was until recently a
+ * fully-formed model with no consumer anywhere in `src/` — every value it
+ * stored was decided somewhere else, by an environment variable, a hardcoded
+ * literal, a per-video form field, or a different table's flag. The page still
+ * reads and writes those, because a preference an operator saved is worth
+ * keeping and because wiring each one up later is a small change. But a control
+ * that silently does nothing is worse than no control at all, so every
+ * unapplied field carries the sentence below saying where its value really
+ * comes from today.
  *
  * When a setting is genuinely wired up, flip `applied` and delete its
  * `actualSource`. The page's banner keys off these flags, so it disappears on
@@ -27,6 +30,7 @@ export interface SettingWiring {
 
 export type SettingKey =
   | "theme"
+  | "accent"
   | "defaultScriptProvider"
   | "defaultVoiceProvider"
   | "defaultVoiceId"
@@ -36,11 +40,12 @@ export type SettingKey =
   | "defaultScriptPromptId";
 
 export const SETTING_WIRING: Record<SettingKey, SettingWiring> = {
-  theme: {
-    applied: false,
-    actualSource:
-      "The theme toggle in the top bar decides this, and stores it in your browser. Because it never reaches the server, this preference does not follow you to another device.",
-  },
+  // Read by the dashboard layout on every authenticated render, applied before
+  // first paint, and written by the top-bar toggle as well as by this form —
+  // so the choice follows the operator between browsers rather than living in
+  // one browser's localStorage. `actualSource` is gone with the disclaimer.
+  theme: { applied: true },
+  accent: { applied: true },
   defaultScriptProvider: {
     applied: false,
     actualSource:

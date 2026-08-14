@@ -28,6 +28,15 @@ export const viewport: Viewport = {
  * Auth gate for every authenticated surface. Because this is a server
  * component, unauthenticated users are redirected before any page below it
  * renders or fetches.
+ *
+ * It is also where per-operator appearance enters the page, and this layout is
+ * the right place for it on both counts. It is the narrowest thing that wraps
+ * the whole studio: the root layout would have to resolve a session to do the
+ * same job, turning every static marketing page dynamic. And it is exactly the
+ * boundary the accent must not cross — `/`, `/privacy` and the auth screens
+ * carry their own fixed brand palette under `.marketing`, and never render this
+ * layout, so they never see an operator's accent. See `Appearance` for how the
+ * two values reach the first painted frame.
  */
 export default async function DashboardLayout({
   children,
@@ -35,9 +44,14 @@ export default async function DashboardLayout({
   children: ReactNode;
 }) {
   const user = await requireUser();
+  const appearance = await settingsService.appearance(user.id);
 
   return (
     <SidebarProvider>
+      {/* First in the tree, so the accent stylesheet and the theme sync land
+          ahead of every pixel they affect. Renders nothing visible. */}
+      <Appearance theme={appearance.theme} accent={appearance.accent} />
+
       <AppSidebar
         user={{ name: user.name, email: user.email, image: user.image ?? null }}
       />

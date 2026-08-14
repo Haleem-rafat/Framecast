@@ -1,6 +1,7 @@
 import "server-only";
 
 import type {
+  AccentColour,
   AiProviderType,
   PublishVisibility,
   ThemePreference,
@@ -18,6 +19,7 @@ import type { UpdateSettingsInput } from "@/schemas/settings.schema";
  */
 export interface UserSettingsView {
   theme: ThemePreference;
+  accent: AccentColour;
   defaultScriptProvider: AiProviderType;
   defaultVoiceProvider: AiProviderType;
   defaultVoiceId: string | null;
@@ -37,6 +39,9 @@ export interface UserSettingsView {
  */
 export const SETTINGS_DEFAULTS: UserSettingsView = {
   theme: "SYSTEM",
+  // GRAPHITE is not a colour, it is the monochrome the studio already renders
+  // — so an operator who has never opened Settings sees no change at all.
+  accent: "GRAPHITE",
   defaultScriptProvider: "OPENAI",
   defaultVoiceProvider: "ELEVENLABS",
   defaultVoiceId: null,
@@ -51,6 +56,7 @@ export const SETTINGS_DEFAULTS: UserSettingsView = {
 function toView(row: UserSetting): UserSettingsView {
   return {
     theme: row.theme,
+    accent: row.accent,
     defaultScriptProvider: row.defaultScriptProvider,
     defaultVoiceProvider: row.defaultVoiceProvider,
     defaultVoiceId: row.defaultVoiceId,
@@ -61,6 +67,21 @@ function toView(row: UserSetting): UserSettingsView {
     updatedAt: row.updatedAt,
   };
 }
+
+/**
+ * The two columns that decide what the studio looks like, and the only part of
+ * `UserSetting` that is read on *every* dashboard page rather than on the
+ * settings page alone.
+ */
+export interface AppearanceView {
+  theme: ThemePreference;
+  accent: AccentColour;
+}
+
+export const APPEARANCE_DEFAULTS: AppearanceView = {
+  theme: SETTINGS_DEFAULTS.theme,
+  accent: SETTINGS_DEFAULTS.accent,
+};
 
 export class SettingsService {
   /**
@@ -73,6 +94,47 @@ export class SettingsService {
     const row = await prisma.userSetting.findUnique({ where: { userId } });
 
     return row ? toView(row) : SETTINGS_DEFAULTS;
+  }
+
+  /**
+   * What the dashboard layout needs to paint the first frame correctly.
+   *
+   * A separate, two-column read rather than `get()` because this one is on the
+   * critical path of every authenticated page render, and the rest of the row —
+   * tag arrays, bucket names, provider defaults — is of no interest to a
+   * stylesheet. Same "reading is not consent to write" rule as `get()`: an
+   * operator who has never saved gets the defaults and no row.
+   */
+  async appearance(userId: string): Promise<AppearanceView> {
+    const row = await prisma.userSetting.findUnique({
+      where: { userId },
+      select: { theme: true, accent: true },
+    });
+
+    return row ?? APPEARANCE_DEFAULTS;
+  }
+
+  /**
+   * Persists a theme change made from the top-bar toggle.
+   *
+   * Deliberately narrower than `update()`: the toggle knows one field and must
+   * not be able to write the other eight, which is what sending the whole
+   * `UpdateSettingsInput` would let it do. The upsert is what makes the toggle
+   * work for an operator who has never opened Settings — until now their row
+   * did not exist, which is a large part of why `theme` was never read back.
+   */
+  async updateTheme(
+    userId: string,
+    theme: ThemePreference,
+  ): Promise<AppearanceView> {
+    const row = await prisma.userSetting.upsert({
+      where: { userId },
+      create: { userId, theme },
+      update: { theme },
+      select: { theme: true, accent: true },
+    });
+
+    return row;
   }
 
   async update(

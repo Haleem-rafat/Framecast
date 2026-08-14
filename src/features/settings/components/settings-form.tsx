@@ -1,9 +1,11 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 
 import { updateSettingsAction } from "@/actions/settings.action";
@@ -24,6 +26,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { AccentPicker } from "@/features/settings/components/accent-picker";
+import { AccentPreview } from "@/features/settings/components/accent-preview";
+import { previewAccent } from "@/features/settings/components/appearance-preview";
 import {
   SETTING_WIRING,
   type SettingKey,
@@ -46,6 +51,17 @@ const THEME_LABELS: Record<(typeof themePreferences)[number], string> = {
   LIGHT: "Light",
   DARK: "Dark",
   SYSTEM: "Match the system",
+};
+
+/**
+ * The stored enum as next-themes names it. next-themes is the thing that
+ * actually flips the class on `<html>`, so previewing a theme means speaking
+ * its vocabulary rather than inventing a parallel one.
+ */
+const NEXT_THEMES_NAME: Record<(typeof themePreferences)[number], string> = {
+  LIGHT: "light",
+  DARK: "dark",
+  SYSTEM: "system",
 };
 
 const VISIBILITY_LABELS: Record<(typeof publishVisibilities)[number], string> = {
@@ -88,6 +104,7 @@ function WiringNote({ setting }: { setting: SettingKey }) {
 function toDefaultValues(settings: UserSettingsView): SettingsFormValues {
   return {
     theme: settings.theme,
+    accent: settings.accent,
     // The column is typed as the full provider enum but the form offers a
     // narrowed list, so a value saved before that list existed (or seeded
     // directly) may not be one of the options. Falling back keeps the select
@@ -136,6 +153,48 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
     defaultValues: toDefaultValues(settings),
   });
 
+  const { setTheme } = useTheme();
+  const accent = useWatch({ control, name: "accent" });
+  const theme = useWatch({ control, name: "theme" });
+
+  /**
+   * Whatever is currently *persisted*, as opposed to whatever the form is
+   * showing. Held in a ref rather than read from the `settings` prop inside the
+   * cleanup below, because an effect cleanup closes over the render it was
+   * scheduled in — after a save, `router.refresh()` gives this component new
+   * props, and a cleanup holding the pre-save values would "restore" the studio
+   * to an appearance the operator has already replaced.
+   */
+  const persisted = useRef(settings);
+  persisted.current = settings;
+
+  /**
+   * The preview.
+   *
+   * Appearance is the one group of settings whose effect is the page you are
+   * looking at, so the honest preview is the studio itself: click a swatch and
+   * the sidebar, the buttons and the focus rings all change, which is both a
+   * better answer than a thumbnail and impossible to get wrong, because it goes
+   * through the same `accentStyleSheet()` the server used.
+   *
+   * The cleanup is what keeps that from being a lie in the other direction. An
+   * operator who previews Plum and then navigates away without saving must not
+   * be left in a studio that is Plum until the next full page load, so unmount
+   * puts back whatever is actually stored. After a successful save those are
+   * the same value and the restore is a no-op.
+   */
+  useEffect(() => {
+    previewAccent(accent);
+
+    return () => previewAccent(persisted.current.accent);
+  }, [accent]);
+
+  useEffect(() => {
+    setTheme(NEXT_THEMES_NAME[theme]);
+
+    return () => setTheme(NEXT_THEMES_NAME[persisted.current.theme]);
+  }, [theme, setTheme]);
+
   async function onSubmit(values: UpdateSettingsInput) {
     const result = await updateSettingsAction(values);
 
@@ -160,29 +219,60 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
       <Card>
         <CardHeader>
           <CardTitle>Appearance</CardTitle>
-          <CardDescription>How the studio looks to you.</CardDescription>
+          <CardDescription>
+            How the studio looks to you. Both settings are yours alone — they
+            follow your account to any browser you sign in from, and change
+            nothing for anyone else.
+          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2">
-          <Label htmlFor="theme">Theme</Label>
-          <Controller
-            control={control}
-            name="theme"
-            render={({ field }) => (
-              <Select value={field.value} onValueChange={field.onChange}>
-                <SelectTrigger id="theme" className="w-full sm:w-64">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {themePreferences.map((one) => (
-                    <SelectItem key={one} value={one}>
-                      {THEME_LABELS[one]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <WiringNote setting="theme" />
+        <CardContent className="space-y-6">
+          <div className="space-y-2">
+            <Label htmlFor="theme">Theme</Label>
+            <Controller
+              control={control}
+              name="theme"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger id="theme" className="w-full sm:w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {themePreferences.map((one) => (
+                      <SelectItem key={one} value={one}>
+                        {THEME_LABELS[one]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+            <WiringNote setting="theme" />
+          </div>
+
+          <div className="space-y-3">
+            {/* Not a <Label>: the control below is a radio group whose
+                accessible name comes from its own <legend>, and a second label
+                pointing at nothing would just be a duplicate for a screen
+                reader to read out. */}
+            <div className="space-y-1">
+              <p className="text-sm leading-none font-medium">Accent colour</p>
+              <p className="text-muted-foreground text-xs">
+                Used for buttons, links, focus rings and the active sidebar
+                item. Graphite is the studio&rsquo;s original monochrome.
+              </p>
+            </div>
+
+            <Controller
+              control={control}
+              name="accent"
+              render={({ field }) => (
+                <AccentPicker value={field.value} onChange={field.onChange} />
+              )}
+            />
+
+            <AccentPreview />
+            <WiringNote setting="accent" />
+          </div>
         </CardContent>
       </Card>
 

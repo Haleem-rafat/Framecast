@@ -4,6 +4,45 @@ import { TAGS_MAX } from "@/lib/youtube-limits";
 
 export const themePreferences = ["LIGHT", "DARK", "SYSTEM"] as const;
 
+/**
+ * The accent swatches, in the order the picker draws them.
+ *
+ * Written out rather than derived from `ACCENT_ORDER` in src/lib/accent.ts, for
+ * the same reason `themePreferences` above is written out rather than derived
+ * from the Prisma enum: a schema is the boundary, and a boundary that defines
+ * itself in terms of the thing it is guarding validates nothing. Exhaustiveness
+ * is enforced on the other side — `ACCENTS` is typed `Record<AccentColour, …>`,
+ * so a member added to the enum and forgotten here still fails to compile
+ * there, and the settings-service test round-trips every value in this tuple.
+ */
+export const accentColours = [
+  "GRAPHITE",
+  "BLUE",
+  "INDIGO",
+  "VIOLET",
+  "PLUM",
+  "ROSE",
+  "ORANGE",
+  "AMBER",
+  "LIME",
+  "EMERALD",
+  "TEAL",
+] as const;
+
+/**
+ * The top-bar theme toggle's payload.
+ *
+ * Its own schema, not a `.pick()` of the settings schema: the toggle writes one
+ * column on click with no form around it, and reusing a schema whose other
+ * eight fields are required would force the toggle to send — and therefore be
+ * able to overwrite — settings it knows nothing about.
+ */
+export const updateThemeSchema = z.object({
+  theme: z.enum(themePreferences),
+});
+
+export type UpdateThemeInput = z.infer<typeof updateThemeSchema>;
+
 export const publishVisibilities = ["PUBLIC", "UNLISTED", "PRIVATE"] as const;
 
 /**
@@ -58,6 +97,7 @@ const TOO_MANY_TAGS = `At most ${MAX_DEFAULT_TAGS} tags`;
  */
 export const updateSettingsSchema = z.object({
   theme: z.enum(themePreferences),
+  accent: z.enum(accentColours),
   defaultScriptProvider: z.enum(scriptProviderOptions),
   defaultVoiceProvider: z.enum(voiceProviderOptions),
   // ElevenLabs voice ids are 20-character opaque handles; 64 leaves room for
@@ -96,6 +136,9 @@ function optionalText(max: number) {
  */
 export const settingsFormSchema = z.object({
   theme: z.enum(themePreferences),
+  // No transform: the picker's value is already the stored enum member, so this
+  // field's form input and form output are the same shape.
+  accent: z.enum(accentColours),
   defaultScriptProvider: z.enum(scriptProviderOptions),
   defaultVoiceProvider: z.enum(voiceProviderOptions),
   defaultVoiceId: optionalText(64),

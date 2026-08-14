@@ -877,9 +877,43 @@ enum ThemePreference {
   SYSTEM
 }
 
+/// The operator's chosen accent, Windows-11 style: one colour that the whole
+/// studio adopts for primary buttons, focus rings, links and the active sidebar
+/// item.
+///
+/// A curated set rather than a free hex/oklch column, deliberately. An accent
+/// lands on `--primary` (which carries `--primary-foreground` text) and on
+/// `--ring` (which has to be visible against the page), so every value has to
+/// clear WCAG 4.5:1 in *both* light and dark — and a single stored colour cannot
+/// do that, because the lightness that passes on white fails on near-black and
+/// vice versa. Each member below therefore expands to a *pair* of derived
+/// colours, one per theme, whose ratios are computed and asserted in
+/// src/lib/accent.test.ts. A free-colour column would have to do that derivation
+/// and rejection at input time on every save, forever, for a range of choice no
+/// operator has asked for; Windows itself ships a fixed swatch grid for the same
+/// reason.
+///
+/// GRAPHITE is the absence of an accent, not a colour: it is exactly the
+/// monochrome the studio ships today, so it is the column default and every
+/// existing row keeps the appearance it has now.
+enum AccentColour {
+  GRAPHITE
+  BLUE
+  INDIGO
+  VIOLET
+  PLUM
+  ROSE
+  ORANGE
+  AMBER
+  LIME
+  EMERALD
+  TEAL
+}
+
 model UserSetting {
   id                    String            @id @default(uuid()) @db.Uuid
   theme                 ThemePreference   @default(SYSTEM)
+  accent                AccentColour      @default(GRAPHITE)
   defaultScriptProvider AiProviderType    @default(OPENAI)
   defaultVoiceProvider  AiProviderType    @default(ELEVENLABS)
   defaultVoiceId        String?
