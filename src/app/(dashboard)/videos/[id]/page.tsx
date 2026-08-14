@@ -86,11 +86,23 @@ async function PipelineSection({ userId, videoId }: { userId: string; videoId: s
     pipelineService.getLogStream(userId, videoId),
   ]);
 
+  // Laid out the way a CI run is: the list of stages down the left, the log
+  // for the run beside it on the right. Stacked, the log sat below a panel
+  // tall enough to push it off screen, so watching a render meant scrolling
+  // down to the output and back up to see which stage produced it — the two
+  // halves of one question, kept apart.
+  //
+  // Collapses to a single column below `lg`, where side-by-side would give the
+  // log about forty characters a line and make it unreadable.
   return (
-    <>
-      <PipelinePanel videoId={videoId} initialState={state} />
-      <LogStream videoId={videoId} initialLogs={logs} initialPipelineState={state} />
-    </>
+    <div className="grid gap-4 lg:grid-cols-5">
+      <div className="lg:col-span-2">
+        <PipelinePanel videoId={videoId} initialState={state} />
+      </div>
+      <div className="lg:col-span-3">
+        <LogStream videoId={videoId} initialLogs={logs} initialPipelineState={state} />
+      </div>
+    </div>
   );
 }
 
@@ -122,14 +134,19 @@ type SectionKey =
  * everyone whose video had already been written.
  */
 const ORDERED_SECTIONS: Record<"writing" | "running" | "finished", SectionKey[]> = {
+  // The run leads every arrangement — it is the status line for the whole
+  // video, and an operator opening this page usually wants to know where it
+  // got to before anything else. A draft's is an empty state saying nothing
+  // has started, which is itself the answer to that question.
+  //
   // Nothing to watch and no run to inspect. Writing is the only move.
-  writing: ["script", "pipeline", "preview", "timeline", "shorts", "events"],
+  writing: ["pipeline", "script", "preview", "timeline", "shorts", "events"],
   // Mid-flight: the run is the only part still changing, and the player will
   // not have anything in it until the render lands.
   running: ["pipeline", "preview", "script", "timeline", "shorts", "events"],
-  // Terminal: watching it is the point, and the timeline is how you find the
-  // moment you disliked.
-  finished: ["preview", "timeline", "shorts", "script", "pipeline", "events"],
+  // Terminal: the run says "done" at a glance, then watching it is the point,
+  // and the timeline is how you find the moment you disliked.
+  finished: ["pipeline", "preview", "timeline", "shorts", "script", "events"],
 };
 
 function sectionOrderFor(status: VideoStatus): keyof typeof ORDERED_SECTIONS {
