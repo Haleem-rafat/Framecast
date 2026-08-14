@@ -550,18 +550,33 @@ describe("automationService.start — refusing to spend money", () => {
     // manual Approve button already handles.
     const service = makeService();
     const forced = new ConflictError("approval blew up");
+
+    // `start()` opens exactly three transactions, in this order:
+    //   1. videoService.create        (video.service.ts:107)
+    //   2. scriptService.generate     (script.service.ts:97)
+    //   3. videoService.approveScript (video.service.ts:153)
+    // Only the third is forced to fail — the first two must commit, because
+    // the whole point of this test is that a *paid-for* script survives an
+    // approval that did not.
+    //
+    // Counting explicitly rather than chaining `mockImplementationOnce`: the
+    // chained form scheduled the next rejection from inside the first call and
+    // then invoked `prisma.$transaction` again, which is the spy — so the
+    // rejection meant for call 2 fired on call 1, rolled back the video
+    // creation, and left nothing for the assertions to find.
+    const realTransaction = prisma.$transaction.bind(prisma) as typeof prisma.$transaction;
+    let transactionCalls = 0;
     const spy = vi
       .spyOn(prisma, "$transaction")
-      // The first transaction belongs to scriptService.generate and must run
-      // for real; only approveScript's own transaction is forced to fail.
-      .mockImplementationOnce((...args: Parameters<typeof prisma.$transaction>) => {
-        spy.mockImplementationOnce(async () => {
-          throw forced;
-        });
-        return (prisma.$transaction as unknown as (
-          ...inner: Parameters<typeof prisma.$transaction>
-        ) => ReturnType<typeof prisma.$transaction>).apply(prisma, args);
-      });
+      .mockImplementation(((...args: Parameters<typeof prisma.$transaction>) => {
+        transactionCalls += 1;
+
+        if (transactionCalls === 3) {
+          return Promise.reject(forced);
+        }
+
+        return realTransaction(...(args as Parameters<typeof realTransaction>));
+      }) as typeof prisma.$transaction);
 
     await expect(
       service.start(userId, {
