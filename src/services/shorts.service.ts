@@ -717,7 +717,10 @@ export class ShortsService {
         endSeconds: true,
         status: true,
         videoId: true,
-        video: { select: { userId: true } },
+        // `status` is read only to explain a missing render: a PUBLISHED video
+        // had its file reclaimed on purpose, which is a different message from a
+        // render that vanished for any other reason.
+        video: { select: { userId: true, status: true } },
       },
     });
 
@@ -739,9 +742,25 @@ export class ShortsService {
     // surfacing as "ffmpeg exited with code 1".
     const renderStat = await statRenderFile(timeline.renderLocation);
     if (!renderStat) {
+      // The overwhelmingly common way to reach this is publishing: publish.service
+      // reclaims the local render once YouTube confirms the upload, because a
+      // ~170MB file per video fills the disk and YouTube then holds the copy that
+      // matters. So the operator did nothing wrong, and — importantly — cannot
+      // put it right: `runPipeline` returns "video is already READY — skipped"
+      // and `JobService.requeue` will not take a terminal video, so there is no
+      // re-render to offer. Telling them to re-render, as this used to, sent
+      // them looking for a button that does not exist and would refuse them if
+      // it did.
+      const published = short.video.status === "PUBLISHED";
+
       throw new ConflictError(
-        "This video's render is no longer on disk, so no short can be cut from it. " +
-          "Re-render the video first.",
+        published
+          ? "This video was published, and publishing deletes the local render to " +
+            "reclaim disk — so there is no file left to cut a short from. Shorts " +
+            "have to be generated before a video is published."
+          : "This video's render is no longer on disk, so no short can be cut " +
+            "from it. Only a video that has not finished rendering can be run " +
+            "again, so this one cannot be recovered.",
       );
     }
 
