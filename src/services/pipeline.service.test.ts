@@ -379,6 +379,45 @@ describe("pipelineService.getState — isFailed / attempts", () => {
   });
 });
 
+describe("pipelineService.getState — queuedSeconds", () => {
+  it("dates the wait from the row's last write while QUEUED", async () => {
+    const queuedAt = new Date(Date.now() - 300_000);
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "QUEUED", updatedAt: queuedAt },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    // Five minutes ago, allowing for the seconds the test itself takes.
+    expect(state.queuedSeconds).toBeGreaterThanOrEqual(299);
+    expect(state.queuedSeconds).toBeLessThan(360);
+  });
+
+  it("is null for every status other than QUEUED", async () => {
+    // A RENDERING video rewrites its row on every progress tick, so its
+    // updatedAt measures the last progress write and not a queue wait.
+    // Reporting that as "queued for 2 seconds" would be a number that resets
+    // constantly and describes nothing.
+    for (const status of ["DRAFT", "GENERATING", "RENDERING", "READY", "FAILED"] as const) {
+      await setVideoStatus(status);
+      const state = await service.getState(userId, videoId);
+      expect(state.queuedSeconds, `status ${status}`).toBeNull();
+    }
+  });
+
+  it("is never negative when the clock and the row disagree", async () => {
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { status: "QUEUED", updatedAt: new Date(Date.now() + 60_000) },
+    });
+
+    const state = await service.getState(userId, videoId);
+
+    expect(state.queuedSeconds).toBe(0);
+  });
+});
+
 describe("pipelineService.getState — stage derivation", () => {
   it("marks every stage pending for a DRAFT video with no rows yet", async () => {
     const state = await service.getState(userId, videoId);

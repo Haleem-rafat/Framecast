@@ -38,6 +38,98 @@ import { cn } from "@/lib/utils";
 import type { PipelineStage, PipelineState } from "@/services/pipeline.service";
 import { formatDuration } from "@/utils/format";
 
+/** How long a video may sit unclaimed before the panel stops calling it a
+ * queue and starts calling it an outage.
+ *
+ * A render worker polls every five seconds, so a healthy queue moves in
+ * seconds — the only thing that makes a wait long is other videos ahead of
+ * this one, and even a full queue clears faster than this. Two minutes is
+ * therefore well past "busy" and safely short of leaving someone staring at a
+ * spinner for a service that is not running. Erring long is deliberate: a
+ * false "offline" sends an operator to check a machine that is fine. */
+const QUEUE_STALLED_AFTER_SECONDS = 120;
+
+/**
+ * What a queued video says about itself while nothing is happening to it.
+ *
+ * Three genuinely different situations share one screen, and telling an
+ * operator the wrong one costs them either a wasted wait or a wasted
+ * investigation:
+ *
+ *   - out of attempts — a worker took this video, failed, and has now used
+ *     every retry the queue allows. Nothing will pick it up again, ever. This
+ *     one has to be said outright, because it is indistinguishable from a
+ *     normal wait and never resolves on its own.
+ *   - waiting far too long — the queue is not moving. A worker polls every few
+ *     seconds, so this means the render service is not running.
+ *   - waiting — ordinary, expected, and about to resolve.
+ */
+function QueuedNotice({
+  attempts,
+  maxAttempts,
+  attemptsExhausted,
+  queuedSeconds,
+}: {
+  attempts: number;
+  maxAttempts: number;
+  attemptsExhausted: boolean;
+  queuedSeconds: number | null;
+}) {
+  if (attemptsExhausted) {
+    return (
+      <Alert variant="destructive">
+        <CircleX />
+        <AlertTitle>This video will not start again</AlertTitle>
+        <AlertDescription>
+          It was picked up {attempts} times and failed each time, which is every
+          attempt the queue allows. It will not be tried again on its own, and
+          waiting will not change that. Open the logs below to see how the last
+          attempt failed — whatever stopped it will stop it again until it is
+          fixed.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  const stalled =
+    queuedSeconds !== null && queuedSeconds >= QUEUE_STALLED_AFTER_SECONDS;
+
+  if (stalled) {
+    return (
+      <Alert variant="destructive">
+        <Clock />
+        <AlertTitle>Nothing has picked this up</AlertTitle>
+        <AlertDescription>
+          Queued {formatDuration(queuedSeconds)} ago and still unclaimed. The
+          render service checks for new work every few seconds, so a wait this
+          long means it is not running rather than busy. The video is safe and
+          will start by itself the moment the service comes back — nothing here
+          needs to be re-run.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <Alert>
+      <Hourglass />
+      <AlertTitle>Waiting for the render service</AlertTitle>
+      <AlertDescription>
+        {queuedSeconds !== null && queuedSeconds > 0
+          ? `Queued ${formatDuration(queuedSeconds)} ago. `
+          : null}
+        This starts automatically as soon as the render service picks it up.
+        Rendering runs on its own machine because it needs FFmpeg and several
+        minutes per video, so nothing here needs to stay open — close this page
+        and come back.
+        {attempts > 0
+          ? ` This is attempt ${attempts + 1} of ${maxAttempts}; earlier ones failed.`
+          : null}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 /** A render spans several minutes; frequent enough that the panel reads as
  * live, far below query-provider.tsx's 30s staleTime so every tick is a real
  * request rather than a served-from-cache no-op. Only used while
@@ -320,18 +412,12 @@ export function PipelinePanel({
           // A row of pending-grey dots reads as "broken", not "waiting" — say
           // plainly what's actually going on instead of leaving the operator
           // to guess whether this is stuck or just hasn't been picked up yet.
-          <Alert>
-            <Hourglass />
-            <AlertTitle>Waiting for the render service</AlertTitle>
-            <AlertDescription>
-              This video is queued and will start automatically as soon as the
-              render service picks it up. Rendering runs on its own machine
-              because it needs FFmpeg and several minutes per video, so nothing
-              here needs to stay open — you can close this page and come back.
-              If a video stays queued for a long time, the render service is
-              offline.
-            </AlertDescription>
-          </Alert>
+          <QueuedNotice
+            attempts={state.attempts}
+            maxAttempts={state.maxAttempts}
+            attemptsExhausted={state.attemptsExhausted}
+            queuedSeconds={state.queuedSeconds}
+          />
         ) : (
           <div className="space-y-3">
             {state.stages.map((stage) => (

@@ -44,11 +44,16 @@ type Template = {
 };
 
 /**
- * `topic` is never declared as a variable: `script.service.ts:74-78` injects it
- * from the video's own topic (falling back to its title) before rendering, so
- * declaring it would only let an operator override the video they are working
- * on with a stale default.
+ * `topic` MUST be declared on every template whose content uses `{{topic}}`,
+ * even though `script.service.ts:74-78` supplies its value automatically.
+ * `renderTemplate` treats the declared variables as authoritative and leaves
+ * any placeholder without a definition untouched (`prompt-template.ts:33-37`),
+ * so an undeclared `{{topic}}` reaches the model verbatim — which produced a
+ * real generated script whose subject was the missing placeholder itself.
+ * Supplying a value is not enough; the declaration is what permits the
+ * substitution.
  */
+const TOPIC_VARIABLE: Variable = { key: "topic", label: "Topic", required: true };
 const TEMPLATES: Template[] = [
   {
     name: "Default script",
@@ -74,6 +79,7 @@ const TEMPLATES: Template[] = [
       "For each section also give a cue: a short stock-footage search query describing what the viewer should SEE while that line is read. Describe the picture, not the concept — 'printing press running', not 'monetary expansion'.",
     ].join("\n"),
     variables: [
+      TOPIC_VARIABLE,
       { key: "duration", label: "Duration (minutes)", defaultValue: "8" },
       { key: "audience", label: "Audience", defaultValue: "curious general viewers" },
       { key: "tone", label: "Tone", defaultValue: "clear, direct and energetic" },
@@ -96,6 +102,7 @@ const TEMPLATES: Template[] = [
       "Never render any text, letters, numbers, words, logos, watermarks or captions in the image. The headline is added afterwards.",
     ].join("\n"),
     variables: [
+      TOPIC_VARIABLE,
       { key: "subject", label: "Subject", defaultValue: "a single person reacting" },
       { key: "mood", label: "Mood", defaultValue: "tense and urgent" },
       { key: "subject_side", label: "Subject side", defaultValue: "right" },
@@ -115,7 +122,7 @@ const TEMPLATES: Template[] = [
       "- No ALL CAPS words, no clickbait brackets, no emoji.",
       "- Each option should take a genuinely different angle, not reword the same one.",
     ].join("\n"),
-    variables: [{ key: "count", label: "How many options", defaultValue: "5" }],
+    variables: [TOPIC_VARIABLE, { key: "count", label: "How many options", defaultValue: "5" }],
   },
   {
     name: "Default description",
@@ -131,7 +138,7 @@ const TEMPLATES: Template[] = [
       "",
       "Plain sentences. No hashtag walls, no 'smash that like button', no timestamps unless supplied.",
     ].join("\n"),
-    variables: [],
+    variables: [TOPIC_VARIABLE],
   },
   {
     name: "Default tags",
@@ -146,7 +153,7 @@ const TEMPLATES: Template[] = [
       "- Lowercase. No hashes. No duplicates and no near-duplicates.",
       "- Return them comma separated on one line and nothing else.",
     ].join("\n"),
-    variables: [{ key: "count", label: "How many tags", defaultValue: "15" }],
+    variables: [TOPIC_VARIABLE, { key: "count", label: "How many tags", defaultValue: "15" }],
   },
   {
     name: "Default scene",

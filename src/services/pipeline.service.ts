@@ -109,6 +109,16 @@ export interface PipelineState {
    * claim this video again, so Retry has nothing left to offer and the panel
    * must say so instead of rendering a button that does nothing. */
   attemptsExhausted: boolean;
+  /** Seconds this video has sat in `QUEUED` without a worker claiming it,
+   * measured from the row's last write — which for a queued video is the
+   * moment it entered the queue. `null` for every other status.
+   *
+   * Exists because "queued" and "queued and nothing is coming" look identical
+   * on screen, and the difference is the whole question an operator has. A
+   * render worker polls every few seconds, so a video still queued minutes
+   * later is not waiting its turn — the worker is offline, and the panel can
+   * only say so if it knows how long the wait has been. */
+  queuedSeconds: number | null;
   /** Most recent `RenderLog` lines for the latest `RenderJob`, oldest first.
    * Only ever populated while that job is `RUNNING` or after it `FAILED` —
    * the only times the tail is shown or useful — so an idle poll never pays
@@ -299,6 +309,11 @@ export class PipelineService {
         id: true,
         status: true,
         attempts: true,
+        // Only read to date the queue wait (see `queuedSeconds`). Safe as that
+        // clock precisely because a QUEUED video is one nothing is touching:
+        // the row stops being written the moment it is queued and stays still
+        // until a worker claims it, so its last write *is* the queue entry.
+        updatedAt: true,
         // Read purely to detect `isFinalizing` (see that field's own doc
         // comment): a live lease on an otherwise-`READY` video is what tells
         // this apart from a video that has already had its one chance at
@@ -570,6 +585,14 @@ export class PipelineService {
       attempts: video.attempts,
       maxAttempts: MAX_ATTEMPTS,
       attemptsExhausted: video.attempts >= MAX_ATTEMPTS,
+      // Only meaningful for a video actually sitting in the queue. A RENDERING
+      // video's `updatedAt` moves with every progress write, so reporting it
+      // as a queue wait would show a number that resets constantly and means
+      // nothing.
+      queuedSeconds:
+        video.status === "QUEUED"
+          ? Math.max(0, Math.floor((Date.now() - video.updatedAt.getTime()) / 1000))
+          : null,
       // Queried newest-first to respect LOG_LIMIT; reversed here so the
       // panel can render top-to-bottom like a terminal without re-sorting.
       logs: [...logs].reverse(),
