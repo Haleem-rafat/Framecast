@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 
-import { LandingApproval } from "@/features/marketing/components/landing-approval";
 import { LandingCta } from "@/features/marketing/components/landing-cta";
 import { LandingFaq } from "@/features/marketing/components/landing-faq";
 import { LandingFeatures } from "@/features/marketing/components/landing-features";
@@ -30,9 +29,20 @@ export default function HomePage() {
     <MarketingShell width="wide">
       <LandingHero />
       <LandingPipeline />
-      {/* Directly after the pipeline: that section promises the run halts for
-          a person, and this is the screenshot of it halted. */}
-      <LandingApproval />
+      {/*
+        There was a section here that put the approval gate on screen as a
+        screenshot of the studio waiting on it. Removed at the owner's request.
+
+        The *claim* is not removed with it, because it is the most
+        trust-building thing this product can say and the main line between it
+        and "an AI posts to my channel unsupervised". It is still made, in
+        plain text, in four places: the hero's own box under the subheading,
+        this pipeline section's heading and its second and sixth stages, the
+        "Two places it stops and waits for you" tile in the features grid with
+        both gates marked in the inventory beneath it, and the first question
+        in the FAQ. Anyone editing those should keep at least the hero and the
+        pipeline saying it.
+      */}
       <LandingFeatures />
       <LandingOutput />
       <LandingStudio />
