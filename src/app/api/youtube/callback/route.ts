@@ -1,8 +1,11 @@
 import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { STATE_COOKIE_NAME } from "@/app/api/youtube/connect/route";
-import { exchangeCode, fetchChannel } from "@/lib/youtube-oauth";
+import {
+  STATE_COOKIE_NAME,
+  exchangeCode,
+  fetchChannel,
+} from "@/lib/youtube-oauth";
 import { channelService } from "@/services/channel.service";
 import { requireSession } from "@/server/session";
 

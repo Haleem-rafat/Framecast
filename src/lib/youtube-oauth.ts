@@ -19,6 +19,17 @@ export const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
 ];
 
+/**
+ * Set by the connect route and read (then cleared) by the callback route to
+ * verify `state`. httpOnly so a page script can't read or forge it.
+ *
+ * It lives here rather than in `connect/route.ts` because Next.js type-checks
+ * every `route.ts` against a fixed set of allowed exports and rejects the file
+ * outright for exporting anything else — the build fails with "STATE_COOKIE_NAME
+ * is not a valid Route export field" rather than anything about the import.
+ */
+export const STATE_COOKIE_NAME = "yt_oauth_state";
+
 export interface YouTubeTokens {
   accessToken: string;
   refreshToken: string;
