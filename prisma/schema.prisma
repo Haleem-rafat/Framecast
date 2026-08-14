@@ -294,6 +294,7 @@ model Video {
   renderJobs   RenderJob[]
   publication  Publication?
   statusEvents VideoStatusEvent[]
+  shorts       Short[]
 
   @@index([userId, status, deletedAt])
   @@index([projectId, deletedAt])
@@ -543,6 +544,106 @@ model RenderLog {
 
   @@index([renderJobId, createdAt])
   @@map("render_log")
+}
+
+// ---------------------------------------------------------------------------
+// Shorts
+// ---------------------------------------------------------------------------
+
+/// Mirrors the useful half of `VideoStatus` rather than `RenderStatus`, because
+/// a Short has a lifecycle of its own — it is claimed, leased and released by
+/// the same worker loop a Video is (see shorts.service.ts's claimNext/heartbeat/
+/// release), not merely a record of one FFmpeg invocation the way a RenderJob is.
+///
+/// There is no PUBLISHED member and no CANCELLED member, both deliberately.
+/// Shorts are never auto-published — generation produces drafts an operator
+/// reviews — so nothing in this codebase may move a Short past READY. And a
+/// short is at most a minute of already-rendered footage re-encoded from one
+/// local file, which takes seconds; cooperative cancellation exists for the
+/// ten-minute full render, and adding a `cancelRequestedAt` here would be a
+/// second cancellation protocol guarding something that finishes before an
+/// operator could press the button.
+enum ShortStatus {
+  QUEUED
+  RENDERING
+  READY
+  FAILED
+}
+
+/// One vertical clip cut out of a finished video.
+///
+/// The time window is stored in *source-video seconds*, not as a character
+/// range into the script, even though ShortsService picks the moment by
+/// choosing script sections. Seconds are what survives: the rendered MP4 this
+/// window indexes into is immutable once written, whereas `ScriptVersion.content`
+/// can be edited afterwards, which would silently re-point a stored character
+/// offset at different words while the picture it describes never moved. The
+/// caption slice needed at render time is recovered from these same seconds
+/// against the narration alignment (see `sliceAlignment` in shorts-plan.ts), so
+/// nothing downstream needs the character offsets either.
+///
+/// No `deletedAt`, unlike Channel/Project/Video/Asset. Every other child of
+/// Video — Scene, RenderJob, Publication, VideoStatusEvent — likewise has none,
+/// and soft deletion would actively hurt here: `@@unique([videoId, index])` is
+/// what stops a double-clicked "Generate" writing two overlapping sets, and a
+/// soft-deleted row still occupies its slot, so regeneration would be blocked by
+/// rows that every query already filters out. Regeneration therefore hard-deletes
+/// the previous set (and its files) and writes a fresh one.
+model Short {
+  id    String @id @default(uuid()) @db.Uuid
+  /// Position in the generated set, 0-based. Also the play order the panel
+  /// lists them in, so a regenerated set is stable rather than ordered by
+  /// whichever insert happened to land first.
+  index Int
+
+  /// The window into the *source video's* timeline, in seconds. Both come from
+  /// the narration alignment, which is the same timeline the finished render
+  /// uses — see shorts-plan.ts's `planShortWindow` for why those two are the
+  /// same timeline and not merely similar ones.
+  startSeconds Float
+  endSeconds   Float
+
+  /// Written by the same model that chose the window, in the same structured
+  /// response. Kept nullable because a short is renderable and reviewable
+  /// without them — they are for the operator's eventual manual upload, and
+  /// nothing in this codebase publishes a short.
+  title       String?
+  description String?
+  /// One sentence on why this moment was picked, shown in the panel. The
+  /// operator's only way to judge a selection without watching all three.
+  reason      String?
+
+  status ShortStatus @default(QUEUED)
+  /// Path relative to RENDER_ROOT, e.g. `shorts/<id>.mp4` — the same "a path,
+  /// never a URL" arrangement as `RenderJob.outputUrl` (see render-storage.ts).
+  /// Named `outputPath` rather than repeating that column's misleading name.
+  outputPath String?
+  error      String?
+
+  /// Same lease model as Video's, for the same reason: a worker that dies
+  /// mid-encode must not strand this row forever. A lock would; a lease that
+  /// lapses lets the next worker retake it. See shorts.service.ts.
+  leaseExpiresAt DateTime?
+  /// Bounded by the same MAX_ATTEMPTS a Video is, so a short that fails
+  /// deterministically stops re-encoding on every poll.
+  attempts       Int       @default(0)
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  videoId String @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  /// Doubles as the panel's list index: "every short for one video, in play
+  /// order" is a prefix scan of this same b-tree, so no second `@@index`
+  /// on `[videoId, index]` is added for it.
+  @@unique([videoId, index])
+  /// `claimNext`'s candidate scan — queued-and-unleased, or leased by a worker
+  /// that died. Mirrors Video's own `@@index([status, leaseExpiresAt])`.
+  @@index([status, leaseExpiresAt])
+  @@map("short")
 }
 
 // ---------------------------------------------------------------------------
