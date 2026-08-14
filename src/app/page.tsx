@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { LandingApproval } from "@/features/marketing/components/landing-approval";
 import { LandingCta } from "@/features/marketing/components/landing-cta";
 import { LandingFaq } from "@/features/marketing/components/landing-faq";
 import { LandingFeatures } from "@/features/marketing/components/landing-features";
@@ -29,6 +30,9 @@ export default function HomePage() {
     <MarketingShell width="wide">
       <LandingHero />
       <LandingPipeline />
+      {/* Directly after the pipeline: that section promises the run halts for
+          a person, and this is the screenshot of it halted. */}
+      <LandingApproval />
       <LandingFeatures />
       <LandingOutput />
       <LandingStudio />
