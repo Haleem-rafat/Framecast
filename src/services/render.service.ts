@@ -770,7 +770,18 @@ export class RenderService {
         stderrBuffer = "";
         pendingWrites.push(
           prisma.renderLog
-            .create({ data: { renderJobId: jobId, level: "ERROR", message } })
+            // DEBUG, not ERROR. ffmpeg writes *everything* to stderr — its
+            // banner, the input and output stream descriptions, the per-frame
+            // progress counter, the x264 statistics — because stdout is
+            // reserved for piped media. Recording all of that at ERROR meant a
+            // completely successful eight-minute render produced thousands of
+            // lines an operator had every reason to read as a catastrophe, and
+            // buried any line that was genuinely an error among them.
+            //
+            // The real outcome is the exit code, which the caller already turns
+            // into a ProviderError with ffmpeg's own tail attached. This stream
+            // is diagnostics for when that happens.
+            .create({ data: { renderJobId: jobId, level: "DEBUG", message } })
             .catch(() => {
               // Best-effort logging; must never mask the real ffmpeg outcome.
             }),
