@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createGateway, generateObject } from "ai";
+import { createGateway, generateObject, NoObjectGeneratedError } from "ai";
 import { z } from "zod";
 
 import { env } from "@/config/env";
@@ -34,6 +34,11 @@ import {
 } from "@/lib/shorts-plan";
 import { deleteShortFile, writeShortFile } from "@/lib/shorts-storage";
 import { getObject } from "@/lib/storage";
+import {
+  describeProviderFailure,
+  isRetryableProviderFailure,
+  repairDoubleEncodedObject,
+} from "@/lib/structured-output";
 import { brandService } from "@/services/brand.service";
 import { MAX_ATTEMPTS } from "@/services/job.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
@@ -179,8 +184,11 @@ const momentSchema = z.object({
  * per-request `apiKey` override and the `ProviderError` wrapping are copied
  * from it deliberately, so an operator's own stored Anthropic key is honoured
  * here exactly as it is everywhere else.
+ *
+ * Exported for `shorts.service.selector.test.ts`, which is the only way to
+ * cover the parts of this feature that live between the schema and the SDK.
  */
-const gatewayMomentSelector: MomentSelector = async (input) => {
+export const gatewayMomentSelector: MomentSelector = async (input) => {
   const apiKey = input.apiKey ?? env.AI_GATEWAY_API_KEY;
 
   if (!apiKey) {
@@ -213,19 +221,42 @@ const gatewayMomentSelector: MomentSelector = async (input) => {
       model: createGateway({ apiKey }).languageModel(env.AI_SCRIPT_MODEL),
       schema: momentSchema,
       prompt,
+      // The one repair this call needs, and the reason it needs it at all is
+      // in `repairDoubleEncodedObject`: this exact prompt and schema made
+      // `anthropic/claude-sonnet-5` serialise its whole answer into the string
+      // slot of its own `moments` property, every single time, which is why
+      // shorts never once succeeded in production. The SDK only calls this
+      // after validation has already failed, so on a well-formed answer it
+      // costs nothing.
+      repairText: async ({ text }) => repairDoubleEncodedObject(text),
     });
 
     return result.object.moments;
   } catch (cause) {
+    // The provider's own words, server-side, before anything is wrapped. The
+    // wrapper below is written for an operator and cannot carry a rejected
+    // model answer or a gateway response body; without this line the next
+    // failure here is another investigation rather than one `docker compose
+    // logs`.
+    console.error(
+      `gatewayMomentSelector: ${env.AI_SCRIPT_MODEL} could not choose moments — ` +
+        describeProviderFailure(cause),
+    );
+
+    // A model that answered in the wrong shape is a different fault from a
+    // provider that never answered, and only one of them is worth clicking
+    // again. Telling an operator "the model provider failed" when the provider
+    // answered fine leaves them retrying against a platform problem that isn't
+    // there — or, as here, waiting for an outage to end that never began.
+    const answeredButUnusable = NoObjectGeneratedError.isInstance(cause);
+
     throw new ProviderError(
       "ANTHROPIC",
-      "The model provider failed to choose moments for shorts.",
-      // 429 and 5xx are transient; everything else means the request itself is
-      // wrong. Same rule as `isRetryable` in gateway.provider.ts.
-      (() => {
-        const status = (cause as { statusCode?: number })?.statusCode;
-        return status === 429 || (status !== undefined && status >= 500);
-      })(),
+      answeredButUnusable
+        ? "The model answered, but not in a shape shorts can be cut from, so no " +
+            "moments could be read out of it. Try generating again."
+        : "The model provider failed to choose moments for shorts.",
+      isRetryableProviderFailure(cause),
       { cause },
     );
   }
