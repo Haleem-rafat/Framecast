@@ -248,12 +248,17 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
        * needs writing, a running video needs watching, a finished one needs
        * reviewing. */}
       <Tabs defaultValue={openingTabFor(video.status)} className="gap-4">
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="script">Script</TabsTrigger>
-          <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
-          <TabsTrigger value="shorts">Shorts</TabsTrigger>
-        </TabsList>
+        {/* Four tabs just fit a 375px screen and would not survive a fifth or
+         * a longer label, and `TabsList` has no scroll container of its own —
+         * an over-wide strip pushes the document sideways instead. */}
+        <div className="-mx-4 overflow-x-auto px-4 md:mx-0 md:overflow-visible md:px-0">
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="script">Script</TabsTrigger>
+            <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+            <TabsTrigger value="shorts">Shorts</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="overview" className="space-y-4">
           <Suspense fallback={<PreviewFallback />}>

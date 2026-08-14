@@ -149,7 +149,10 @@ export default async function AnalyticsPage() {
                 and a finish, so there is nothing to time.
               </p>
             ) : (
-              <dl className="grid grid-cols-3 gap-4 text-sm">
+              // Three columns of "90th percentile" over a monospace duration
+              // need about 110px each; a 375px screen has 343px of content box
+              // minus the card's padding, so they stack there instead.
+              <dl className="grid gap-3 text-sm sm:grid-cols-3 sm:gap-4">
                 <div className="space-y-1">
                   <dt className="text-muted-foreground text-xs">Median</dt>
                   <dd className="font-mono text-lg">

@@ -65,7 +65,10 @@ export function ActivityLogFilters({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Select value={action} onValueChange={(value) => push({ action: value })}>
-        <SelectTrigger className="w-64">
+        {/* 256px + 160px of fixed triggers is wider than a 375px screen's
+         * content box, so on a phone each one takes the full width and they
+         * stack — the flex-wrap above was only ever going to half-solve it. */}
+        <SelectTrigger className="w-full sm:w-64">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -79,7 +82,7 @@ export function ActivityLogFilters({
       </Select>
 
       <Select value={level} onValueChange={(value) => push({ level: value })}>
-        <SelectTrigger className="w-40">
+        <SelectTrigger className="w-full sm:w-40">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

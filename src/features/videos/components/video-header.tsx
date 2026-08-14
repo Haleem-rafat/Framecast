@@ -35,8 +35,10 @@ export function VideoHeader({
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
       <div className="space-y-1.5">
-        <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-xl font-semibold tracking-tight text-balance sm:text-2xl">
+            {title}
+          </h1>
           <VideoStatusBadge status={status} />
         </div>
         <p className="text-muted-foreground flex items-center gap-3 text-sm">
@@ -50,7 +52,9 @@ export function VideoHeader({
         </p>
       </div>
 
-      <div className="flex items-start gap-2">
+      {/* Delete, Approve and Publish come to more than 343px together, and a
+       * row that cannot wrap takes the page with it. */}
+      <div className="flex flex-wrap items-start gap-2">
         <DeleteVideoButton
           videoId={videoId}
           title={title}

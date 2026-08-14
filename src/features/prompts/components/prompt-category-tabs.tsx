@@ -16,13 +16,21 @@ export function PromptCategoryTabs({
 }) {
   return (
     <Tabs defaultValue={promptCategories[0]}>
-      <TabsList>
-        {promptCategories.map((category) => (
-          <TabsTrigger key={category} value={category}>
-            {PROMPT_CATEGORY_LABELS[category]}
-          </TabsTrigger>
-        ))}
-      </TabsList>
+      {/* Six categories come to roughly 460px of tabs. Without this the strip
+       * was the widest thing on the page at 375px, so the whole document
+       * scrolled sideways to accommodate it. Scrolling the strip instead keeps
+       * every category reachable and the page itself still. The negative
+       * margin lets it run to the screen edge, which is the cue that there is
+       * more of it off to the right. */}
+      <div className="-mx-4 overflow-x-auto px-4 md:mx-0 md:overflow-visible md:px-0">
+        <TabsList>
+          {promptCategories.map((category) => (
+            <TabsTrigger key={category} value={category}>
+              {PROMPT_CATEGORY_LABELS[category]}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </div>
 
       {promptCategories.map((category) => {
         const inCategory = templates.filter((one) => one.category === category);

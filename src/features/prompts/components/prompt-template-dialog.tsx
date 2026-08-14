@@ -10,15 +10,15 @@ import type { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  ResponsiveDialog,
+  ResponsiveDialogBody,
+  ResponsiveDialogContent,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+  ResponsiveDialogTrigger,
+} from "@/components/shared/responsive-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -144,7 +144,7 @@ export function PromptTemplateDialog({
   }
 
   return (
-    <Dialog
+    <ResponsiveDialog
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -153,19 +153,19 @@ export function PromptTemplateDialog({
         }
       }}
     >
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-2xl">
+      <ResponsiveDialogTrigger asChild>{trigger}</ResponsiveDialogTrigger>
+      <ResponsiveDialogContent className="sm:max-w-2xl">
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
-          <DialogHeader>
-            <DialogTitle>{isEdit ? "Edit template" : "New template"}</DialogTitle>
-            <DialogDescription>
+          <ResponsiveDialogHeader>
+            <ResponsiveDialogTitle>{isEdit ? "Edit template" : "New template"}</ResponsiveDialogTitle>
+            <ResponsiveDialogDescription>
               Prompts use <code>{"{{variable}}"}</code> placeholders resolved
               from the table below when a script, thumbnail, or scene is
               generated.
-            </DialogDescription>
-          </DialogHeader>
+            </ResponsiveDialogDescription>
+          </ResponsiveDialogHeader>
 
-          <DialogBody>
+          <ResponsiveDialogBody>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
@@ -245,7 +245,12 @@ export function PromptTemplateDialog({
 
             {fields.length > 0 && (
               <div className="space-y-2 rounded-lg border p-2">
-                <div className="text-muted-foreground grid grid-cols-[1fr_1fr_1fr_auto_auto] gap-2 px-1 text-xs">
+                {/* Five tracks inside a dialog leaves each input about 55px
+                 * wide on a phone, which is not a field anyone can type a
+                 * variable key into. Below `sm` a variable becomes a stacked
+                 * card instead, and this header — which only makes sense
+                 * above aligned columns — goes with the columns. */}
+                <div className="text-muted-foreground hidden grid-cols-[1fr_1fr_1fr_auto_auto] gap-2 px-1 text-xs sm:grid">
                   <span>Key</span>
                   <span>Label</span>
                   <span>Default</span>
@@ -255,40 +260,55 @@ export function PromptTemplateDialog({
                 {fields.map((field, index) => (
                   <div
                     key={field.id}
-                    className="grid grid-cols-[1fr_1fr_1fr_auto_auto] items-center gap-2"
+                    className="grid gap-2 rounded-md border p-2 sm:grid-cols-[1fr_1fr_1fr_auto_auto] sm:items-center sm:rounded-none sm:border-0 sm:p-0"
                   >
+                    {/* The column header is gone below `sm`, so each field
+                     * carries its own name for anyone who cannot infer it
+                     * from a placeholder — a screen reader included. */}
                     <Input
                       placeholder="topic"
+                      aria-label="Variable key"
                       aria-invalid={Boolean(errors.variables?.[index]?.key)}
                       {...register(`variables.${index}.key` as const)}
                     />
                     <Input
                       placeholder="Topic"
+                      aria-label="Variable label"
                       {...register(`variables.${index}.label` as const)}
                     />
                     <Input
                       placeholder="(none)"
+                      aria-label="Default value"
                       {...register(`variables.${index}.defaultValue` as const)}
                     />
-                    <Controller
-                      control={control}
-                      name={`variables.${index}.required` as const}
-                      render={({ field: requiredField }) => (
-                        <Switch
-                          checked={requiredField.value}
-                          onCheckedChange={requiredField.onChange}
-                        />
-                      )}
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => remove(index)}
-                    >
-                      <Trash2 />
-                      <span className="sr-only">Remove variable</span>
-                    </Button>
+                    {/* `sm:contents` dissolves this wrapper back into the grid
+                     * on a desktop, so the switch and the delete button stay
+                     * the last two columns there and become one row here. */}
+                    <div className="flex items-center justify-between gap-2 sm:contents">
+                      <span className="text-muted-foreground text-xs sm:hidden">
+                        Required
+                      </span>
+                      <Controller
+                        control={control}
+                        name={`variables.${index}.required` as const}
+                        render={({ field: requiredField }) => (
+                          <Switch
+                            checked={requiredField.value}
+                            onCheckedChange={requiredField.onChange}
+                            aria-label="Required"
+                          />
+                        )}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => remove(index)}
+                      >
+                        <Trash2 />
+                        <span className="sr-only">Remove variable</span>
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -311,17 +331,17 @@ export function PromptTemplateDialog({
               Make this the default template for its category
             </Label>
           </div>
-          </DialogBody>
+          </ResponsiveDialogBody>
 
 
-          <DialogFooter>
+          <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="animate-spin" />}
               Save template
             </Button>
-          </DialogFooter>
+          </ResponsiveDialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

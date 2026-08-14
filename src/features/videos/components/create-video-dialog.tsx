@@ -9,15 +9,15 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  ResponsiveDialog,
+  ResponsiveDialogBody,
+  ResponsiveDialogContent,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+  ResponsiveDialogTrigger,
+} from "@/components/shared/responsive-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -67,30 +67,30 @@ export function CreateVideoDialog({
   }
 
   return (
-    <Dialog
+    <ResponsiveDialog
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) reset();
       }}
     >
-      <DialogTrigger asChild>
+      <ResponsiveDialogTrigger asChild>
         <Button size="sm" disabled={projects.length === 0}>
           <Plus />
           New video
         </Button>
-      </DialogTrigger>
-      <DialogContent>
+      </ResponsiveDialogTrigger>
+      <ResponsiveDialogContent>
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
-          <DialogHeader>
-            <DialogTitle>New video</DialogTitle>
-            <DialogDescription>
+          <ResponsiveDialogHeader>
+            <ResponsiveDialogTitle>New video</ResponsiveDialogTitle>
+            <ResponsiveDialogDescription>
               Starts as a draft. Nothing is generated until you ask for a
               script on the video page.
-            </DialogDescription>
-          </DialogHeader>
+            </ResponsiveDialogDescription>
+          </ResponsiveDialogHeader>
 
-          <DialogBody>
+          <ResponsiveDialogBody>
 
           <div className="space-y-2">
             <Label htmlFor="projectId">Project</Label>
@@ -144,17 +144,17 @@ export function CreateVideoDialog({
               <p className="text-destructive text-xs">{errors.topic.message}</p>
             )}
           </div>
-          </DialogBody>
+          </ResponsiveDialogBody>
 
 
-          <DialogFooter>
+          <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="animate-spin" />}
               Create video
             </Button>
-          </DialogFooter>
+          </ResponsiveDialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

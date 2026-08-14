@@ -49,7 +49,12 @@ export function EnvironmentProviderTable({
                 Not configured
               </Badge>
             )}
-            <span className="text-muted-foreground text-xs">
+            {/* `TableCell` is `whitespace-nowrap`, which is right for the
+             * short values every other cell holds and very wrong for a
+             * sentence: this row alone was ~700px wide, making the table
+             * scroll sideways on a phone to reach columns that would
+             * otherwise have fitted. */}
+            <span className="text-muted-foreground block max-w-sm text-xs whitespace-normal">
               Set as {status.envVar} in the environment — managed by the
               deployment, not editable here.
             </span>

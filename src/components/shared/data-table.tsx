@@ -183,7 +183,7 @@ export function DataTable<Row>({
   return (
     <div className="space-y-3">
       {(showSearch || showColumnToggle) && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {showSearch && (
             <Input
               type="search"
@@ -316,7 +316,7 @@ export function DataTable<Row>({
       </Table>
 
       {pageSize !== undefined && sortedRows.length > pageSize && (
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           {/* Announced on page change: the buttons keep focus, so without this
               a screen-reader user gets no confirmation the rows moved. */}
           <p className="text-muted-foreground text-sm" aria-live="polite">

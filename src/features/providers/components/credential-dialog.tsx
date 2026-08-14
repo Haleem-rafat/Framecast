@@ -9,15 +9,15 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  ResponsiveDialog,
+  ResponsiveDialogBody,
+  ResponsiveDialogContent,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+  ResponsiveDialogTrigger,
+} from "@/components/shared/responsive-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { upsertCredentialAction } from "@/actions/provider.action";
@@ -78,7 +78,7 @@ export function CredentialDialog({
   }
 
   return (
-    <Dialog
+    <ResponsiveDialog
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -87,25 +87,25 @@ export function CredentialDialog({
         }
       }}
     >
-      <DialogTrigger asChild>
+      <ResponsiveDialogTrigger asChild>
         <Button variant={isReplace ? "outline" : "default"} size="sm">
           <KeyRound />
           {isReplace ? "Replace key" : "Add key"}
         </Button>
-      </DialogTrigger>
-      <DialogContent>
+      </ResponsiveDialogTrigger>
+      <ResponsiveDialogContent>
         <form onSubmit={handleSubmit(onSubmit)} noValidate>
-          <DialogHeader>
-            <DialogTitle>
+          <ResponsiveDialogHeader>
+            <ResponsiveDialogTitle>
               {isReplace ? "Replace" : "Add"} {PROVIDER_LABELS[provider]} key
-            </DialogTitle>
-            <DialogDescription>
+            </ResponsiveDialogTitle>
+            <ResponsiveDialogDescription>
               Stored encrypted at rest. Framecast only ever displays the last
               four characters back to you.
-            </DialogDescription>
-          </DialogHeader>
+            </ResponsiveDialogDescription>
+          </ResponsiveDialogHeader>
 
-          <DialogBody>
+          <ResponsiveDialogBody>
 
           <div className="space-y-4 py-2">
             <div className="space-y-2">
@@ -140,17 +140,17 @@ export function CredentialDialog({
               )}
             </div>
           </div>
-          </DialogBody>
+          </ResponsiveDialogBody>
 
 
-          <DialogFooter>
+          <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="animate-spin" />}
               {isReplace ? "Replace key" : "Save key"}
             </Button>
-          </DialogFooter>
+          </ResponsiveDialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

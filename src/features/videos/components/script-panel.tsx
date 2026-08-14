@@ -136,7 +136,7 @@ export function ScriptPanel({
     return (
       <Card>
         <CardContent className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="space-y-1">
               <p className="text-sm font-medium">Import a script</p>
               <p className="text-muted-foreground text-xs">
@@ -217,11 +217,14 @@ export function ScriptPanel({
   return (
     <Card>
       <CardContent className="space-y-3">
-        <div className="flex items-center justify-between">
+        {/* Import, Regenerate and Save edit do not fit beside the version
+         * line at 375px, and an unwrapped row would scroll the page rather
+         * than itself. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-muted-foreground text-sm">
             Version {activeVersion.version} · {activeVersion.wordCount} words
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
               size="sm"
