@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { LogStream } from "@/features/videos/components/log-stream";
 import { PipelinePanel } from "@/features/videos/components/pipeline-panel";
 import { ScriptPanel } from "@/features/videos/components/script-panel";
+import { ShortsPanel } from "@/features/videos/components/shorts-panel";
 import { StatusEventsList } from "@/features/videos/components/status-events-list";
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
@@ -17,7 +18,9 @@ import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
+import { shortsService } from "@/services/shorts.service";
 import { videoService } from "@/services/video.service";
+import type { VideoStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = { title: "Video" };
 
@@ -111,6 +114,28 @@ async function PreviewSection({
   ]);
 
   return <VideoPreview render={render} audio={audio} durationSeconds={durationSeconds} />;
+}
+
+/**
+ * The shorts panel, with its list resolved on the server so it paints with
+ * real rows instead of flashing an empty state the client's first poll would
+ * immediately replace. `list` throws for a video this user does not own, which
+ * cannot happen here — the page has already resolved the video for this user —
+ * so a failure is an infrastructure one and falls back to an empty list rather
+ * than taking the page down.
+ */
+async function ShortsSection({
+  userId,
+  videoId,
+  status,
+}: {
+  userId: string;
+  videoId: string;
+  status: VideoStatus;
+}) {
+  const shorts = await shortsService.list(userId, videoId).catch(() => []);
+
+  return <ShortsPanel videoId={videoId} status={status} initialShorts={shorts} />;
 }
 
 /** Mirrors PipelinePanel's card so the layout doesn't jump when it lands. */
@@ -212,6 +237,14 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         </div>
 
         <div className="space-y-4">
+          {/* Shorts are cut out of a finished render, so this is only ever
+            * useful once one exists; the panel itself explains that rather
+            * than vanishing, so an operator can see the feature is there. Its
+            * list is fetched inside its own boundary for the same reason
+            * everything else below the header streams. */}
+          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+            <ShortsSection userId={user.id} videoId={video.id} status={video.status} />
+          </Suspense>
           <VersionHistory
             videoId={video.id}
             status={video.status}
