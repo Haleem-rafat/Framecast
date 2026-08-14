@@ -22,15 +22,15 @@ config({ path: ".env.local" });
 config({ path: ".env" });
 
 const SCRIPT = [
-  "In two thousand and one, Apple was a computer company with four per cent of the market.",
-  "Today it moves more money in a quarter than most countries make in a year.",
-  "The interesting part is not the phone. It is what Apple built around it.",
-  "Every device sold pulls the buyer further into a system they cannot easily leave.",
-  "A watch that only pairs with an iPhone. Messages that break when a friend switches.",
-  "Photographs that live in a library you rent by the month.",
-  "None of this is an accident. It is the product.",
-  "Analysts call it an ecosystem. Economists call it a switching cost.",
-  "The difference between those two words is worth about two trillion dollars.",
+  "In nineteen hundred and one, sponge divers off a Greek island pulled a lump of corroded bronze out of a shipwreck.",
+  "It sat in a museum drawer for fifty years before anyone worked out what it was.",
+  "Inside were at least thirty interlocking gears, cut by hand, some with teeth barely a millimetre across.",
+  "It predicted eclipses. It tracked the moon's irregular orbit. It marked the four-year cycle of the games at Olympia.",
+  "Nothing of comparable complexity appears again for well over a thousand years.",
+  "The obvious question is who built it, and the honest answer is that we do not know.",
+  "What we do know is that a device this refined is never the first attempt.",
+  "Somewhere behind it sits a workshop, a tradition, and a great many failures nobody kept.",
+  "That is the part engineers still find unsettling. Not the object. The silence around it.",
 ].join(" ");
 
 async function main() {
@@ -58,7 +58,7 @@ async function main() {
   });
 
   const project = await prisma.project.create({
-    data: { userId: user.id, name: "Money Mechanics" },
+    data: { userId: user.id, name: "Machines & Makers" },
   });
 
   // DRAFT deliberately: that is the state where the script panel and the
@@ -68,8 +68,8 @@ async function main() {
     data: {
       userId: user.id,
       projectId: project.id,
-      title: "The Trillion-Dollar Ecosystem: How Apple Prints Money",
-      topic: "how Apple's ecosystem creates switching costs",
+      title: "Why the Antikythera mechanism still puzzles engineers",
+      topic: "the Antikythera mechanism and what it implies about lost engineering",
       status: "DRAFT",
     },
   });
