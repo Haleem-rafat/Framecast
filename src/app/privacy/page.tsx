@@ -4,6 +4,8 @@ import {
   LegalSection,
 } from "@/features/marketing/components/legal-document";
 import { MarketingShell } from "@/features/marketing/components/marketing-shell";
+import { Fragment } from "react";
+import { OPERATOR_EMAILS } from "@/config/site";
 
 // Google's OAuth review fetches this URL specifically, so it has to be
 // self-canonical rather than inheriting the layout's `/`.
@@ -163,13 +165,19 @@ export default function PrivacyPage() {
 
         <LegalSection id="contact" heading="Contact">
           <p className="text-muted-foreground text-sm text-pretty">
-            Questions about this policy, or requests to delete data, can be sent to{" "}
-            <a
-              href="mailto:eramdevteam@gmail.com"
-              className="text-foreground underline underline-offset-4"
-            >
-              eramdevteam@gmail.com
-            </a>
+            Questions about this policy, or requests to delete data, can be sent
+            to either address below. Both reach the operator directly.{" "}
+            {OPERATOR_EMAILS.map((address, index) => (
+              <Fragment key={address}>
+                {index > 0 ? " or " : ""}
+                <a
+                  href={`mailto:${address}`}
+                  className="text-foreground underline underline-offset-4"
+                >
+                  {address}
+                </a>
+              </Fragment>
+            ))}
             .
           </p>
         </LegalSection>

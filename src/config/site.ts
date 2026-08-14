@@ -46,3 +46,16 @@ export const SITE_LOCALE = "en_GB";
  * desk that does not exist.
  */
 export const OPERATOR_EMAIL = "eramdevteam@gmail.com";
+
+/**
+ * The operator's second inbox, listed alongside the first everywhere a human
+ * is invited to write in. Both are real and both are read.
+ *
+ * Two addresses rather than one because a privacy policy's contact route is the
+ * one promise on the page that has to survive a mailbox going unread — a data
+ * deletion request that bounces is a compliance failure, not an inconvenience.
+ */
+export const OPERATOR_EMAIL_ALT = "haleem.rafat@gmail.com";
+
+/** Every address a visitor may use to reach the operator, in the order shown. */
+export const OPERATOR_EMAILS = [OPERATOR_EMAIL, OPERATOR_EMAIL_ALT] as const;
