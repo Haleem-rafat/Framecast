@@ -204,8 +204,8 @@ export function AutomationFlow({
    * state, precisely because it must be true *immediately* rather than on the
    * next render.
    *
-   * Cleared only on failure. A success leaves it set, and the form is replaced
-   * by the result panel anyway.
+   * Cleared only on failure. A success leaves it set, and navigates away from
+   * this form to the run's own URL anyway.
    */
   const submitted = useRef(false);
 
@@ -245,6 +245,19 @@ export function AutomationFlow({
       if (missing.length > 0) {
         return `Your prompt needs: ${missing.map((field) => field.label).join(", ")}.`;
       }
+    }
+
+    // Same rule as the direction fields. Unusual — a `duration` variable
+    // almost always declares a default — but a template can mark it required
+    // with none, and the server would then refuse the submission after the
+    // operator had answered every other question.
+    if (
+      step === "length" &&
+      prompt.duration?.required &&
+      !prompt.duration.defaultValue &&
+      !durationValue.trim()
+    ) {
+      return `Your prompt needs: ${prompt.duration.label}.`;
     }
 
     return null;
