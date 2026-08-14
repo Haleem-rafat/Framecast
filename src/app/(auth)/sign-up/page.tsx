@@ -10,7 +10,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { env } from "@/config/env";
-import { AuthShell } from "@/features/auth/components/auth-shell";
+import {
+  AuthShell,
+  authCardClassName,
+} from "@/features/auth/components/auth-shell";
 import { SignUpForm } from "@/features/auth/components/sign-up-form";
 import { getAccountStatus } from "@/server/session";
 
@@ -37,7 +40,7 @@ export default async function SignUpPage() {
         </>
       }
     >
-      <Card>
+      <Card className={authCardClassName}>
         <CardHeader>
           <CardTitle>Create your account</CardTitle>
           <CardDescription>

@@ -8,7 +8,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AuthShell } from "@/features/auth/components/auth-shell";
+import {
+  AuthShell,
+  authCardClassName,
+} from "@/features/auth/components/auth-shell";
 import { ForgotPasswordForm } from "@/features/auth/components/forgot-password-form";
 
 export const metadata: Metadata = { title: "Forgot password" };
@@ -23,7 +26,7 @@ export default function ForgotPasswordPage() {
         </Link>
       }
     >
-      <Card>
+      <Card className={authCardClassName}>
         <CardHeader>
           <CardTitle>Forgot your password?</CardTitle>
           <CardDescription>

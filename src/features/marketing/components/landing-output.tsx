@@ -9,7 +9,7 @@ import { FocusCards, type FocusCard } from "@/components/ui/focus-cards";
 
 /** The soft wash that stands in for footage inside each frame. */
 const FOOTAGE =
-  "bg-gradient-to-br from-foreground/10 via-foreground/5 to-foreground/10";
+  "bg-gradient-to-br from-brand-violet/25 via-brand-blue/15 to-brand-cyan/25";
 
 function Frame({
   className,
@@ -32,7 +32,7 @@ function Frame({
           placeholder rectangle. */}
       <div
         aria-hidden="true"
-        className="via-foreground/8 absolute -inset-x-1/3 -top-1/3 h-[170%] rotate-12 bg-gradient-to-r from-transparent to-transparent"
+        className="via-brand-amber/15 absolute -inset-x-1/3 -top-1/3 h-[170%] rotate-12 bg-gradient-to-r from-transparent to-transparent"
       />
 
       <span className="text-muted-foreground bg-background/60 absolute top-2 left-2 rounded px-1.5 py-0.5 font-mono text-[9px]">
@@ -49,10 +49,10 @@ function Frame({
 
       <div
         aria-hidden="true"
-        className="bg-foreground/10 absolute inset-x-0 bottom-0 h-0.5"
+        className="bg-foreground/15 absolute inset-x-0 bottom-0 h-0.5"
       >
         <div
-          className="bg-foreground/50 h-full"
+          className="from-brand-violet to-brand-cyan h-full bg-gradient-to-r"
           style={{ width: `${progress * 100}%` }}
         />
       </div>
@@ -125,18 +125,18 @@ const CARDS: FocusCard[] = [
 export function LandingOutput() {
   return (
     <section className="border-b">
-      <div className="mx-auto w-full max-w-6xl px-6 py-16 sm:py-24">
+      <div className="mx-auto w-full max-w-6xl px-6 py-20 sm:py-28 lg:py-36">
         <div className="max-w-2xl">
-          <h2 className="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">
+          <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl lg:text-[2.75rem] lg:leading-[1.1]">
             What a finished run leaves behind
           </h2>
-          <p className="text-muted-foreground mt-3 text-base text-pretty">
+          <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
             One long video, the Shorts you choose to cut from it, and the
             listing that goes up with it — all from the same script.
           </p>
         </div>
 
-        <FocusCards cards={CARDS} className="mt-12" />
+        <FocusCards cards={CARDS} className="mt-14 sm:mt-16" />
 
         <p className="text-muted-foreground mt-6 text-xs">
           Illustrations, not screenshots. The topic and copy above are an

@@ -1,72 +1,71 @@
-import { cn } from "@/lib/utils";
-import React from "react";
-import { motion } from "motion/react";
+"use client";
 
-export const BackgroundGradient = ({
+import { motion } from "motion/react";
+import type { ReactNode } from "react";
+
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import { cn } from "@/lib/utils";
+
+const GRADIENT = [
+  "radial-gradient(circle farthest-side at 0 100%, var(--brand-cyan), transparent)",
+  "radial-gradient(circle farthest-side at 100% 0, var(--brand-violet), transparent)",
+  "radial-gradient(circle farthest-side at 100% 100%, var(--brand-amber), transparent)",
+  "radial-gradient(circle farthest-side at 0 0, var(--brand-blue), transparent)",
+].join(",");
+
+/**
+ * Aceternity's BackgroundGradient: a card sitting on a soft, slowly shifting
+ * halo of colour. Used once, on the plan that is actually available, so the eye
+ * lands on the only thing on the pricing section a visitor can act on.
+ *
+ * Adapted from upstream:
+ * - The four hard-coded hexes (`#00ccb1`, `#7b61ff`, `#ffc414`, `#1ca0fb`)
+ *   become the four `--brand-*` tokens, and the opaque `#141316` backstop in
+ *   the last stop becomes `transparent` — on a light page an almost-black
+ *   corner in the halo looks like a rendering fault.
+ * - Upstream renders the gradient twice, once blurred and once sharp. Only the
+ *   blurred halo is kept. The sharp copy sits directly behind the card where
+ *   nothing can see it except as a hard rim at the corners.
+ * - `animate` now defaults to following the visitor's motion preference rather
+ *   than being unconditionally on. The prop is still there to force it off.
+ */
+export function BackgroundGradient({
   children,
   className,
   containerClassName,
   animate = true,
 }: {
-  children?: React.ReactNode;
+  children?: ReactNode;
   className?: string;
   containerClassName?: string;
   animate?: boolean;
-}) => {
-  const variants = {
-    initial: {
-      backgroundPosition: "0 50%",
-    },
-    animate: {
-      backgroundPosition: ["0, 50%", "100% 50%", "0 50%"],
-    },
-  };
+}) {
+  const reduceMotion = usePrefersReducedMotion();
+  const moving = animate && !reduceMotion;
+
   return (
-    <div className={cn("relative p-[4px] group", containerClassName)}>
+    <div className={cn("group relative p-1", containerClassName)}>
       <motion.div
-        variants={animate ? variants : undefined}
-        initial={animate ? "initial" : undefined}
-        animate={animate ? "animate" : undefined}
+        aria-hidden="true"
+        initial={moving ? { backgroundPosition: "0 50%" } : undefined}
+        animate={
+          moving
+            ? { backgroundPosition: ["0 50%", "100% 50%", "0 50%"] }
+            : undefined
+        }
         transition={
-          animate
-            ? {
-                duration: 5,
-                repeat: Infinity,
-                repeatType: "reverse",
-              }
+          moving
+            ? { duration: 12, repeat: Infinity, repeatType: "reverse" }
             : undefined
         }
         style={{
-          backgroundSize: animate ? "400% 400%" : undefined,
+          backgroundImage: GRADIENT,
+          backgroundSize: moving ? "400% 400%" : undefined,
         }}
-        className={cn(
-          "absolute inset-0 rounded-3xl z-[1] opacity-60 group-hover:opacity-100 blur-xl  transition duration-500 will-change-transform",
-          " bg-[radial-gradient(circle_farthest-side_at_0_100%,#00ccb1,transparent),radial-gradient(circle_farthest-side_at_100%_0,#7b61ff,transparent),radial-gradient(circle_farthest-side_at_100%_100%,#ffc414,transparent),radial-gradient(circle_farthest-side_at_0_0,#1ca0fb,#141316)]"
-        )}
-      />
-      <motion.div
-        variants={animate ? variants : undefined}
-        initial={animate ? "initial" : undefined}
-        animate={animate ? "animate" : undefined}
-        transition={
-          animate
-            ? {
-                duration: 5,
-                repeat: Infinity,
-                repeatType: "reverse",
-              }
-            : undefined
-        }
-        style={{
-          backgroundSize: animate ? "400% 400%" : undefined,
-        }}
-        className={cn(
-          "absolute inset-0 rounded-3xl z-[1] will-change-transform",
-          "bg-[radial-gradient(circle_farthest-side_at_0_100%,#00ccb1,transparent),radial-gradient(circle_farthest-side_at_100%_0,#7b61ff,transparent),radial-gradient(circle_farthest-side_at_100%_100%,#ffc414,transparent),radial-gradient(circle_farthest-side_at_0_0,#1ca0fb,#141316)]"
-        )}
+        className="absolute inset-0 z-0 rounded-[inherit] opacity-50 blur-xl transition-opacity duration-500 will-change-transform group-hover:opacity-80"
       />
 
       <div className={cn("relative z-10", className)}>{children}</div>
     </div>
   );
-};
+}

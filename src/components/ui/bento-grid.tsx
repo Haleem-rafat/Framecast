@@ -1,25 +1,48 @@
+import type { ReactNode } from "react";
+
+import { GlowingEffect } from "@/components/ui/glowing-effect";
 import { cn } from "@/lib/utils";
 
-export const BentoGrid = ({
+/**
+ * Aceternity's BentoGrid. Chosen over the fancier card components precisely
+ * because it has no JavaScript in it at all — it stays a server component, so a
+ * nine-item feature grid costs the bundle nothing.
+ *
+ * Adapted from upstream:
+ * - `border-neutral-200 bg-white dark:border-white/[0.2] dark:bg-black` and the
+ *   two hard-coded `text-neutral-*` values are replaced by `--card`/`--border`
+ *   /`--muted-foreground`, so the grid takes the marketing palette.
+ * - The registry lists `@tabler/icons-react` as a dependency, but only its demo
+ *   ever imported it. It was uninstalled again; icons here are lucide, like the
+ *   rest of the project.
+ * - The hover state is a colour lift rather than upstream's
+ *   `group-hover:translate-x-2`, which nudges the text sideways and makes the
+ *   whole grid feel loose.
+ * - Each tile carries a `GlowingEffect`, so the border lights up in the
+ *   marketing palette and points back at the cursor. That component only does
+ *   work while a pointer is over the tile it belongs to, so an idle grid costs
+ *   nothing.
+ */
+export function BentoGrid({
   className,
   children,
 }: {
   className?: string;
-  children?: React.ReactNode;
-}) => {
+  children?: ReactNode;
+}) {
   return (
     <div
       className={cn(
-        "mx-auto grid max-w-7xl grid-cols-1 gap-4 md:auto-rows-[18rem] md:grid-cols-3",
+        "grid grid-cols-1 gap-4 md:auto-rows-[17rem] md:grid-cols-3",
         className,
       )}
     >
       {children}
     </div>
   );
-};
+}
 
-export const BentoGridItem = ({
+export function BentoGridItem({
   className,
   title,
   description,
@@ -27,28 +50,28 @@ export const BentoGridItem = ({
   icon,
 }: {
   className?: string;
-  title?: string | React.ReactNode;
-  description?: string | React.ReactNode;
-  header?: React.ReactNode;
-  icon?: React.ReactNode;
-}) => {
+  title?: ReactNode;
+  description?: ReactNode;
+  /** The visual half of the tile, above the words. */
+  header?: ReactNode;
+  icon?: ReactNode;
+}) {
   return (
     <div
       className={cn(
-        "group/bento shadow-input row-span-1 flex flex-col justify-between space-y-4 rounded-xl border border-neutral-200 bg-white p-4 transition duration-200 hover:shadow-xl dark:border-white/[0.2] dark:bg-black dark:shadow-none",
+        "group/bento bg-card hover:border-brand-violet/40 relative flex flex-col justify-between gap-4 rounded-xl border p-4 transition-colors duration-300",
         className,
       )}
     >
+      <GlowingEffect />
       {header}
-      <div className="transition duration-200 group-hover/bento:translate-x-2">
+      <div>
         {icon}
-        <div className="mt-2 mb-2 font-sans font-bold text-neutral-600 dark:text-neutral-200">
-          {title}
-        </div>
-        <div className="font-sans text-xs font-normal text-neutral-600 dark:text-neutral-300">
+        <h3 className="mt-2 text-sm font-medium">{title}</h3>
+        <p className="text-muted-foreground mt-1 text-sm text-pretty">
           {description}
-        </div>
+        </p>
       </div>
     </div>
   );
-};
+}

@@ -9,7 +9,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AuthShell } from "@/features/auth/components/auth-shell";
+import {
+  AuthShell,
+  authCardClassName,
+} from "@/features/auth/components/auth-shell";
 import { PendingAccountActions } from "@/features/auth/components/pending-account-actions";
 import { getAccountStatus } from "@/server/session";
 
@@ -45,7 +48,7 @@ export default async function PendingPage() {
           : "Approvals are done by hand, so this can take a little while."
       }
     >
-      <Card>
+      <Card className={authCardClassName}>
         <CardHeader>
           <div className="bg-muted text-muted-foreground mb-1 flex size-10 items-center justify-center rounded-full">
             {isRejected ? (

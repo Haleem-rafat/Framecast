@@ -53,7 +53,7 @@ export function Timeline({
       {reduceMotion ? (
         <div
           aria-hidden="true"
-          className="bg-primary/40 absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
+          className="from-brand-violet via-brand-blue to-brand-cyan absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 bg-gradient-to-b [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
         />
       ) : (
         <TimelineBeam containerRef={containerRef} />
@@ -67,7 +67,7 @@ export function Timeline({
           >
             <span
               aria-hidden="true"
-              className="bg-background text-muted-foreground ring-border flex size-9 items-center justify-center rounded-full ring-1 [&_svg]:size-4"
+              className="bg-background text-brand-violet ring-border flex size-9 items-center justify-center rounded-full ring-1 [&_svg]:size-4"
             >
               {entry.icon}
             </span>
@@ -104,7 +104,7 @@ function TimelineBeam({
     <motion.div
       aria-hidden="true"
       style={{ scaleY: scrollYProgress, transformOrigin: "top" }}
-      className="from-primary/70 to-primary/20 absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 bg-gradient-to-b [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
+      className="from-brand-violet via-brand-blue to-brand-cyan absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 bg-gradient-to-b [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
     />
   );
 }

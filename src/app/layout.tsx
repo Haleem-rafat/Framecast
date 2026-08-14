@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
-import { SITE_NAME, SITE_URL } from "@/config/site";
+import { SiteStructuredData } from "@/components/seo/structured-data";
+import {
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_TAGLINE,
+  SITE_URL,
+} from "@/config/site";
 import { AppProviders } from "@/providers/app-providers";
 
 import "./globals.css";
@@ -15,11 +21,6 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
-
-const DESCRIPTION =
-  "Framecast turns a topic into a finished YouTube video — script, narration, " +
-  "footage and burnt-in captions — and holds it for your review before anything " +
-  "is published.";
 
 export const metadata: Metadata = {
   // `metadataBase` is what lets every relative OpenGraph and icon path below
@@ -39,10 +40,10 @@ export const metadata: Metadata = {
     ? { google: process.env.GOOGLE_SITE_VERIFICATION }
     : undefined,
   title: {
-    default: `${SITE_NAME} — automated YouTube video production`,
+    default: SITE_TAGLINE,
     template: `%s · ${SITE_NAME}`,
   },
-  description: DESCRIPTION,
+  description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
   keywords: [
     "automated video production",
@@ -51,25 +52,57 @@ export const metadata: Metadata = {
     "faceless YouTube channel",
     "text to video",
     "AI narration",
+    "YouTube Shorts automation",
+    "self-hosted video pipeline",
   ],
-  authors: [{ name: SITE_NAME }],
+  authors: [{ name: SITE_NAME, url: SITE_URL }],
+  creator: SITE_NAME,
+  publisher: SITE_NAME,
+  category: "technology",
+  // The canonical URL every page inherits unless it declares its own.
+  //
+  // `/privacy`, `/terms` and `/contact` each override this with a
+  // self-referencing canonical. The auth and dashboard routes cannot (they are
+  // owned by other route groups), so they inherit `/` — which happens to be
+  // the outcome we want for them anyway: there is no public self-registration
+  // here, so a sign-in form has no business ranking as a page of its own, and
+  // pointing it at the homepage consolidates it rather than competing with it.
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
     type: "website",
     siteName: SITE_NAME,
     url: SITE_URL,
-    title: `${SITE_NAME} — automated YouTube video production`,
-    description: DESCRIPTION,
+    title: SITE_TAGLINE,
+    description: SITE_DESCRIPTION,
+    locale: "en_GB",
+    // The image itself is supplied by the `opengraph-image.tsx` file
+    // convention, which also fills in `twitter:image`. Listing it here as well
+    // would emit it twice.
   },
   twitter: {
     card: "summary_large_image",
-    title: `${SITE_NAME} — automated YouTube video production`,
-    description: DESCRIPTION,
+    title: SITE_TAGLINE,
+    description: SITE_DESCRIPTION,
+    // No `site`/`creator`: Framecast has no X account. An @handle that does not
+    // resolve is a fabricated claim in the one place a scraper checks it.
   },
   // The dashboard is operator-only and blocked in robots.ts; this is the
-  // belt-and-braces for the public pages that *should* be indexed.
+  // belt-and-braces for the public pages that *should* be indexed. The
+  // `googleBot` block is what actually earns the large thumbnail in Search and
+  // Discover — the default is a 0-pixel preview for image and video, so the
+  // OpenGraph card below would never be shown at size without it.
   robots: {
     index: true,
     follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+      "max-video-preview": -1,
+    },
   },
 };
 
@@ -85,6 +118,7 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="antialiased">
+        <SiteStructuredData />
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 
 import {
-  MarketingHeading,
-  MarketingShell,
-} from "@/features/marketing/components/marketing-shell";
+  LegalDocument,
+  LegalSection,
+} from "@/features/marketing/components/legal-document";
+import { MarketingShell } from "@/features/marketing/components/marketing-shell";
 
 export const metadata: Metadata = {
   title: "Privacy policy",
@@ -18,24 +19,30 @@ export const metadata: Metadata = {
  */
 export default function PrivacyPage() {
   return (
-    <MarketingShell>
-      <article className="space-y-8">
-        <MarketingHeading
-          title="Privacy policy"
-          subtitle="Last updated 13 August 2026"
-        />
+    <MarketingShell width="wide">
+      <LegalDocument
+        title="Privacy policy"
+        updated="Last updated 13 August 2026"
+        contents={[
+        { id: "what-framecast-is", label: "What Framecast is" },
+        { id: "data-collected-when-you-sign-in", label: "Data collected when you sign in" },
+        { id: "youtube-data-when-you-connect-a-channel", label: "YouTube data, when you connect a channel" },
+        { id: "where-data-is-stored", label: "Where data is stored" },
+        { id: "third-party-services", label: "Third-party services" },
+        { id: "retention-and-deletion", label: "Retention and deletion" },
+        { id: "contact", label: "Contact" },
+        ]}
+      >
 
-        <section className="space-y-3">
-          <h2 className="font-medium">What Framecast is</h2>
+        <LegalSection id="what-framecast-is" heading="What Framecast is">
           <p className="text-muted-foreground text-sm text-pretty">
             Framecast is a private video production tool operated by its owner. It
             is not a public service and has no self-registration. Accounts exist
             only for people the operator has explicitly authorised.
           </p>
-        </section>
+        </LegalSection>
 
-        <section className="space-y-3">
-          <h2 className="font-medium">Data collected when you sign in</h2>
+        <LegalSection id="data-collected-when-you-sign-in" heading="Data collected when you sign in">
           <p className="text-muted-foreground text-sm text-pretty">
             Signing in with Google gives Framecast your email address, name and
             profile picture. These are used only to identify your account and to
@@ -43,10 +50,9 @@ export default function PrivacyPage() {
             stores that address and a hashed password — the password itself is never
             stored.
           </p>
-        </section>
+        </LegalSection>
 
-        <section className="space-y-3">
-          <h2 className="font-medium">YouTube data, when you connect a channel</h2>
+        <LegalSection id="youtube-data-when-you-connect-a-channel" heading="YouTube data, when you connect a channel">
           <p className="text-muted-foreground text-sm text-pretty">
             Connecting a YouTube channel is a separate, optional step with its own
             consent screen. Framecast requests two permissions:
@@ -98,10 +104,9 @@ export default function PrivacyPage() {
             sold, never shared with third parties, never used for advertising, and
             never used to train machine-learning models.
           </p>
-        </section>
+        </LegalSection>
 
-        <section className="space-y-3">
-          <h2 className="font-medium">Where data is stored</h2>
+        <LegalSection id="where-data-is-stored" heading="Where data is stored">
           <p className="text-muted-foreground text-sm text-pretty">
             The application and its private PostgreSQL database both run on a
             single dedicated server rented from OVH, in London. The database
@@ -122,20 +127,18 @@ export default function PrivacyPage() {
             contain the same data as the database, including the encrypted values
             described above, and are deleted after 30 days.
           </p>
-        </section>
+        </LegalSection>
 
-        <section className="space-y-3">
-          <h2 className="font-medium">Third-party services</h2>
+        <LegalSection id="third-party-services" heading="Third-party services">
           <p className="text-muted-foreground text-sm text-pretty">
             Producing a video sends the topic and script text you create to the AI
             providers configured by the operator, in order to generate the script,
             narration audio and thumbnail image. It does not send your Google
             account details or your YouTube channel data to those providers.
           </p>
-        </section>
+        </LegalSection>
 
-        <section className="space-y-3">
-          <h2 className="font-medium">Retention and deletion</h2>
+        <LegalSection id="retention-and-deletion" heading="Retention and deletion">
           <p className="text-muted-foreground text-sm text-pretty">
             Data is kept while the account exists. You can disconnect a YouTube
             channel at any time from the studio, which deletes the stored tokens.
@@ -152,10 +155,9 @@ export default function PrivacyPage() {
             . To have an account and all associated data deleted, contact the
             operator at the address below.
           </p>
-        </section>
+        </LegalSection>
 
-        <section className="space-y-3">
-          <h2 className="font-medium">Contact</h2>
+        <LegalSection id="contact" heading="Contact">
           <p className="text-muted-foreground text-sm text-pretty">
             Questions about this policy, or requests to delete data, can be sent to{" "}
             <a
@@ -166,8 +168,8 @@ export default function PrivacyPage() {
             </a>
             .
           </p>
-        </section>
-      </article>
+        </LegalSection>
+      </LegalDocument>
     </MarketingShell>
   );
 }

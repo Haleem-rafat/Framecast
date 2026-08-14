@@ -1,61 +1,69 @@
 "use client";
+
+import type { ReactNode } from "react";
+
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
-import React, { ReactNode } from "react";
 
-interface AuroraBackgroundProps extends React.HTMLProps<HTMLDivElement> {
-  children: ReactNode;
-  showRadialGradient?: boolean;
-}
-
-export const AuroraBackground = ({
-  className,
+/**
+ * Aceternity's AuroraBackground: two stacked repeating gradients, one striped
+ * and one coloured, drifting across each other behind the content.
+ *
+ * Adapted in four ways.
+ *
+ * 1. Tailwind v4. Upstream needs an `animate-aurora` utility that came from
+ *    `keyframes` in `tailwind.config.js`. That file does not exist here, so the
+ *    animation is declared as `--animate-aurora` plus `@keyframes aurora` in
+ *    globals.css — the v4 equivalent — rather than reintroducing a v3 config.
+ * 2. Palette. The hard-coded blue/indigo/violet hexes are replaced by the
+ *    `--brand-*` marketing tokens, which are defined per theme, so the wash is
+ *    the same grade as the rest of the page in both light and dark.
+ * 3. Cost. Upstream renders the layer at `-inset-[10px]` with `blur(10px)` over
+ *    a full viewport and animates it forever. The blur is halved and the whole
+ *    thing is masked down to the top of its container, so the browser is
+ *    compositing a band rather than a screen. It is still the most expensive
+ *    thing on the page, which is why it appears exactly once.
+ * 4. Reduced motion stops the drift. The gradients stay — the colour is the
+ *    point, the movement is not — so the composition does not change.
+ *
+ * Upstream's `invert dark:invert-0` is kept, and it is load-bearing: the
+ * coloured layer is composited with `mix-blend-difference`, which on a white
+ * ground returns each hue's complement — violet and cyan come back as a muddy
+ * pink and orange. Inverting in light mode differences against black instead
+ * and the intended hues survive. This was worth rediscovering the hard way.
+ *
+ * Upstream also wrapped itself in a `<main>` element, which would have put a
+ * second `<main>` inside the shell's. It renders a plain `<div>` now.
+ */
+export function AuroraBackground({
   children,
-  showRadialGradient = true,
-  ...props
-}: AuroraBackgroundProps) => {
+  className,
+  containerClassName,
+}: {
+  children: ReactNode;
+  /** Applied to the aurora layer itself, for masking or opacity. */
+  className?: string;
+  containerClassName?: string;
+}) {
+  const reduceMotion = usePrefersReducedMotion();
+
   return (
-    <main>
-      <div
-        className={cn(
-          "transition-bg relative flex h-[100vh] flex-col items-center justify-center bg-zinc-50 text-slate-950 dark:bg-zinc-900",
-          className,
-        )}
-        {...props}
-      >
+    <div className={cn("relative isolate overflow-hidden", containerClassName)}>
+      <div aria-hidden="true" className="absolute inset-0 overflow-hidden">
         <div
-          className="absolute inset-0 overflow-hidden"
-          style={
-            {
-              "--aurora":
-                "repeating-linear-gradient(100deg,#3b82f6_10%,#a5b4fc_15%,#93c5fd_20%,#ddd6fe_25%,#60a5fa_30%)",
-              "--dark-gradient":
-                "repeating-linear-gradient(100deg,#000_0%,#000_7%,transparent_10%,transparent_12%,#000_16%)",
-              "--white-gradient":
-                "repeating-linear-gradient(100deg,#fff_0%,#fff_7%,transparent_10%,transparent_12%,#fff_16%)",
-
-              "--blue-300": "#93c5fd",
-              "--blue-400": "#60a5fa",
-              "--blue-500": "#3b82f6",
-              "--indigo-300": "#a5b4fc",
-              "--violet-200": "#ddd6fe",
-              "--black": "#000",
-              "--white": "#fff",
-              "--transparent": "transparent",
-            } as React.CSSProperties
-          }
-        >
-          <div
-            //   I'm sorry but this is what peak developer performance looks like // trigger warning
-            className={cn(
-              `after:animate-aurora pointer-events-none absolute -inset-[10px] [background-image:var(--white-gradient),var(--aurora)] [background-size:300%,_200%] [background-position:50%_50%,50%_50%] opacity-50 blur-[10px] invert filter will-change-transform [--aurora:repeating-linear-gradient(100deg,var(--blue-500)_10%,var(--indigo-300)_15%,var(--blue-300)_20%,var(--violet-200)_25%,var(--blue-400)_30%)] [--dark-gradient:repeating-linear-gradient(100deg,var(--black)_0%,var(--black)_7%,var(--transparent)_10%,var(--transparent)_12%,var(--black)_16%)] [--white-gradient:repeating-linear-gradient(100deg,var(--white)_0%,var(--white)_7%,var(--transparent)_10%,var(--transparent)_12%,var(--white)_16%)] after:absolute after:inset-0 after:[background-image:var(--white-gradient),var(--aurora)] after:[background-size:200%,_100%] after:[background-attachment:fixed] after:mix-blend-difference after:content-[""] dark:[background-image:var(--dark-gradient),var(--aurora)] dark:invert-0 after:dark:[background-image:var(--dark-gradient),var(--aurora)]`,
-
-              showRadialGradient &&
-                `[mask-image:radial-gradient(ellipse_at_100%_0%,black_10%,var(--transparent)_70%)]`,
-            )}
-          ></div>
-        </div>
-        {children}
+          className={cn(
+            "pointer-events-none absolute -inset-[10px] opacity-40 blur-[8px] invert will-change-transform dark:invert-0",
+            "[--aurora:repeating-linear-gradient(100deg,var(--brand-violet)_10%,var(--brand-blue)_16%,var(--brand-cyan)_22%,var(--brand-blue)_28%,var(--brand-violet)_34%)]",
+            "[--stripes:repeating-linear-gradient(100deg,var(--background)_0%,var(--background)_7%,transparent_10%,transparent_12%,var(--background)_16%)]",
+            "[background-image:var(--stripes),var(--aurora)] [background-position:50%_50%,50%_50%] [background-size:300%,_200%]",
+            "after:absolute after:inset-0 after:content-[''] after:[background-image:var(--stripes),var(--aurora)] after:[background-size:200%,_100%] after:mix-blend-difference",
+            !reduceMotion && "after:animate-aurora",
+            className,
+          )}
+        />
       </div>
-    </main>
+
+      <div className="relative">{children}</div>
+    </div>
   );
-};
+}

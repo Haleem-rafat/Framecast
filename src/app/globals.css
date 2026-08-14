@@ -37,6 +37,15 @@
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
+  /*
+   * The marketing grade, exposed as real colour utilities so `from-brand-cyan`,
+   * `bg-brand-violet/40` and friends work. The values behind them are only
+   * defined inside `.marketing`, which is what keeps the studio monochrome.
+   */
+  --color-brand-violet: var(--brand-violet);
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-cyan: var(--brand-cyan);
+  --color-brand-amber: var(--brand-amber);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --radius-sm: calc(var(--radius) * 0.6);
@@ -130,6 +139,129 @@
   --spotlight-core: oklch(0.985 0 0 / 14%);
   --spotlight-mid: oklch(0.985 0 0 / 7%);
   --spotlight-edge: oklch(0.985 0 0 / 4%);
+}
+
+/* ---------------------------------------------------------------------------
+ * Marketing palette
+ *
+ * The studio is deliberately monochrome — every token above is chroma 0 — and
+ * it stays that way. Colour belongs to the pages a stranger sees, so the whole
+ * palette is redefined under a single `.marketing` class that only
+ * `MarketingShell` sets. Nothing under /dashboard, /videos, /projects and the
+ * rest is inside that class, so none of it changes.
+ *
+ * Because these are the same variable *names*, every shadcn component rendered
+ * inside the shell — Button, Accordion, Badge — picks the colour up without
+ * being told about it.
+ *
+ * The grade is teal-and-orange rotated towards violet: a cool indigo for the
+ * ground and the primary action, a cyan mid, and a tungsten amber to warm the
+ * highlights. It is two hues and a spark, not a rainbow, which is what a colour
+ * grade actually is.
+ * ------------------------------------------------------------------------- */
+.marketing {
+  --brand-violet: oklch(0.55 0.2 285);
+  --brand-blue: oklch(0.62 0.17 250);
+  --brand-cyan: oklch(0.74 0.13 205);
+  --brand-amber: oklch(0.77 0.15 65);
+
+  --background: oklch(0.995 0.004 285);
+  --foreground: oklch(0.19 0.025 285);
+  --card: oklch(1 0.002 285);
+  --card-foreground: oklch(0.19 0.025 285);
+  --popover: oklch(1 0.002 285);
+  --popover-foreground: oklch(0.19 0.025 285);
+  /*
+   * `--primary` is deliberately NOT redefined, here or in the dark block. It
+   * stays the studio's near-black / near-white, so every Button on the page
+   * keeps the solid monochrome it always had — a violet button read as cheap
+   * against this grade, and a single high-contrast action is easier to find on
+   * a page this long than a coloured one competing with the artwork. The colour
+   * lives in the artwork; the thing you click stays plain.
+   */
+  --secondary: oklch(0.965 0.012 285);
+  --secondary-foreground: oklch(0.28 0.04 285);
+  --muted: oklch(0.965 0.012 285);
+  --muted-foreground: oklch(0.49 0.025 285);
+  --accent: oklch(0.955 0.02 285);
+  --accent-foreground: oklch(0.3 0.06 285);
+  --border: oklch(0.9 0.014 285);
+  --input: oklch(0.9 0.014 285);
+  --ring: oklch(0.45 0.06 285);
+
+  --spotlight-core: oklch(0.55 0.2 285 / 14%);
+  --spotlight-mid: oklch(0.62 0.17 250 / 8%);
+  --spotlight-edge: oklch(0.74 0.13 205 / 5%);
+}
+
+.dark .marketing {
+  --brand-violet: oklch(0.68 0.18 285);
+  --brand-blue: oklch(0.7 0.15 250);
+  --brand-cyan: oklch(0.8 0.12 205);
+  --brand-amber: oklch(0.81 0.14 65);
+
+  /* Deep indigo rather than neutral black: the single biggest reason the old
+     page read as flat was that its darkest colour had no hue in it at all. */
+  --background: oklch(0.155 0.018 285);
+  --foreground: oklch(0.97 0.006 285);
+  --card: oklch(0.205 0.022 285);
+  --card-foreground: oklch(0.97 0.006 285);
+  --popover: oklch(0.205 0.022 285);
+  --popover-foreground: oklch(0.97 0.006 285);
+  --secondary: oklch(0.26 0.03 285);
+  --secondary-foreground: oklch(0.97 0.006 285);
+  --muted: oklch(0.26 0.03 285);
+  --muted-foreground: oklch(0.74 0.025 285);
+  --accent: oklch(0.29 0.04 285);
+  --accent-foreground: oklch(0.97 0.006 285);
+  --border: oklch(0.85 0.05 285 / 16%);
+  --input: oklch(0.85 0.05 285 / 20%);
+  --ring: oklch(0.7 0.05 285);
+
+  --spotlight-core: oklch(0.72 0.18 285 / 22%);
+  --spotlight-mid: oklch(0.75 0.15 250 / 12%);
+  --spotlight-edge: oklch(0.82 0.12 205 / 7%);
+}
+
+/*
+ * Aceternity's Aurora expects an `animate-aurora` utility, which on Tailwind v3
+ * came from `keyframes` in `tailwind.config.js`. This project has no such file
+ * and is not getting one: on v4 the equivalent is a `--animate-*` theme
+ * variable plus the keyframes, declared in CSS. Both live in a plain `@theme`
+ * block rather than the `@theme inline` one above, because `inline` would
+ * substitute the variable at use-site and the keyframes would be dropped.
+ */
+@theme {
+  --animate-aurora: aurora 60s linear infinite;
+  --animate-meteor: meteor linear infinite;
+
+  @keyframes aurora {
+    from {
+      background-position:
+        50% 50%,
+        50% 50%;
+    }
+    to {
+      background-position:
+        350% 50%,
+        350% 50%;
+    }
+  }
+
+  /* Aceternity's Meteors, ported off `tailwind.config.js` for the same reason. */
+  @keyframes meteor {
+    0% {
+      transform: rotate(45deg) translateX(0);
+      opacity: 1;
+    }
+    70% {
+      opacity: 1;
+    }
+    100% {
+      transform: rotate(45deg) translateX(-500px);
+      opacity: 0;
+    }
+  }
 }
 
 @layer base {

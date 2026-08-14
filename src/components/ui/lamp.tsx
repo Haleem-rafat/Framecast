@@ -1,104 +1,121 @@
 "use client";
-import React from "react";
+
 import { motion } from "motion/react";
+import type { ReactNode } from "react";
+
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 
-export default function LampDemo() {
-  return (
-    <LampContainer>
-      <motion.h1
-        initial={{ opacity: 0.5, y: 100 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        transition={{
-          delay: 0.3,
-          duration: 0.8,
-          ease: "easeInOut",
-        }}
-        className="mt-8 bg-gradient-to-br from-slate-300 to-slate-500 py-4 bg-clip-text text-center text-4xl font-medium tracking-tight text-transparent md:text-7xl"
-      >
-        Build lamps <br /> the right way
-      </motion.h1>
-    </LampContainer>
-  );
-}
-
-export const LampContainer = ({
+/**
+ * Aceternity's LampContainer — two conic gradients meeting at a hot filament,
+ * so the section looks lit from a fixture above it. On a page about video that
+ * is not decoration: it is a practical light, and it is the one component here
+ * that could not be replaced with a gradient and a shrug.
+ *
+ * Adapted from upstream:
+ * - Height. Upstream is `min-h-screen` with the content pulled up by
+ *   `-translate-y-80`, a pair of numbers that only agree at one viewport. This
+ *   version sizes the fixture in its own right and lets the content sit under
+ *   it in normal flow, so it works from 375px up without a magic offset.
+ * - Ground. Upstream hard-codes `bg-slate-950` in eight places, which is fine
+ *   on their dark site and a black hole on ours in light mode. The ground is a
+ *   token here (`--lamp-bg`), and the section is *deliberately* dark in both
+ *   themes: a lamp needs a dark room, and a dark band partway down a light page
+ *   reads as a cinema rather than a bug.
+ * - Colour. `cyan-400/500` becomes the marketing palette's cyan and violet, so
+ *   the beam is the same grade as the rest of the page.
+ * - `bg-gradient-conic` is a Tailwind v3 utility with no v4 equivalent. It was
+ *   always redundant — the component sets `background-image: conic-gradient(…)`
+ *   inline anyway — so it is simply dropped, and `from-*`/`to-*` still supply
+ *   `--tw-gradient-stops` to that inline value.
+ * - Every animation is `whileInView` with `once`, i.e. one-shot on arrival, and
+ *   is skipped entirely under reduced motion — the lamp is then simply already
+ *   on.
+ */
+export function LampSection({
   children,
   className,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   className?: string;
-}) => {
+}) {
+  const reduceMotion = usePrefersReducedMotion();
+
+  // Upstream animates `width`, which is a layout property. Kept as-is because
+  // it fires once on arrival rather than on every scroll frame, and because the
+  // conic gradients are anchored to the element's own box — scaling instead
+  // would smear the beam's angle.
+  // The final width always lives in `className`, so the reduced-motion branch
+  // can return nothing at all and still render a fully-open lamp — no `style`
+  // to collide with the `backgroundImage` two of these elements also need.
+  const grow = (from: string, to: string) =>
+    reduceMotion
+      ? {}
+      : {
+          initial: { width: from, opacity: 0.5 },
+          whileInView: { width: to, opacity: 1 },
+          viewport: { once: true, amount: 0.3 },
+          transition: { delay: 0.2, duration: 0.8, ease: "easeInOut" as const },
+        };
+
   return (
     <div
       className={cn(
-        "relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-slate-950 w-full rounded-md z-0",
-        className
+        "relative isolate w-full overflow-hidden [--lamp-bg:oklch(0.16_0.02_285)]",
+        className,
       )}
+      style={{ backgroundColor: "var(--lamp-bg)" }}
     >
-      <div className="relative flex w-full flex-1 scale-y-125 items-center justify-center isolate z-0 ">
+      {/* The fixture. Decorative in full: it carries no information the heading
+          below does not already give in text. */}
+      <div
+        aria-hidden="true"
+        className="relative isolate flex h-40 w-full items-center justify-center sm:h-52"
+      >
         <motion.div
-          initial={{ opacity: 0.5, width: "15rem" }}
-          whileInView={{ opacity: 1, width: "30rem" }}
-          transition={{
-            delay: 0.3,
-            duration: 0.8,
-            ease: "easeInOut",
-          }}
+          {...grow("15rem", "30rem")}
           style={{
-            backgroundImage: `conic-gradient(var(--conic-position), var(--tw-gradient-stops))`,
+            backgroundImage:
+              "conic-gradient(var(--conic-position), var(--tw-gradient-stops))",
           }}
-          className="absolute inset-auto right-1/2 h-56 overflow-visible w-[30rem] bg-gradient-conic from-cyan-500 via-transparent to-transparent text-white [--conic-position:from_70deg_at_center_top]"
+          className="from-brand-cyan absolute inset-auto right-1/2 h-56 w-[30rem] overflow-visible via-transparent to-transparent [--conic-position:from_70deg_at_center_top]"
         >
-          <div className="absolute  w-[100%] left-0 bg-slate-950 h-40 bottom-0 z-20 [mask-image:linear-gradient(to_top,white,transparent)]" />
-          <div className="absolute  w-40 h-[100%] left-0 bg-slate-950  bottom-0 z-20 [mask-image:linear-gradient(to_right,white,transparent)]" />
+          <div className="absolute bottom-0 left-0 z-20 h-40 w-full bg-[var(--lamp-bg)] [mask-image:linear-gradient(to_top,white,transparent)]" />
+          <div className="absolute bottom-0 left-0 z-20 h-full w-40 bg-[var(--lamp-bg)] [mask-image:linear-gradient(to_right,white,transparent)]" />
         </motion.div>
-        <motion.div
-          initial={{ opacity: 0.5, width: "15rem" }}
-          whileInView={{ opacity: 1, width: "30rem" }}
-          transition={{
-            delay: 0.3,
-            duration: 0.8,
-            ease: "easeInOut",
-          }}
-          style={{
-            backgroundImage: `conic-gradient(var(--conic-position), var(--tw-gradient-stops))`,
-          }}
-          className="absolute inset-auto left-1/2 h-56 w-[30rem] bg-gradient-conic from-transparent via-transparent to-cyan-500 text-white [--conic-position:from_290deg_at_center_top]"
-        >
-          <div className="absolute  w-40 h-[100%] right-0 bg-slate-950  bottom-0 z-20 [mask-image:linear-gradient(to_left,white,transparent)]" />
-          <div className="absolute  w-[100%] right-0 bg-slate-950 h-40 bottom-0 z-20 [mask-image:linear-gradient(to_top,white,transparent)]" />
-        </motion.div>
-        <div className="absolute top-1/2 h-48 w-full translate-y-12 scale-x-150 bg-slate-950 blur-2xl"></div>
-        <div className="absolute top-1/2 z-50 h-48 w-full bg-transparent opacity-10 backdrop-blur-md"></div>
-        <div className="absolute inset-auto z-50 h-36 w-[28rem] -translate-y-1/2 rounded-full bg-cyan-500 opacity-50 blur-3xl"></div>
-        <motion.div
-          initial={{ width: "8rem" }}
-          whileInView={{ width: "16rem" }}
-          transition={{
-            delay: 0.3,
-            duration: 0.8,
-            ease: "easeInOut",
-          }}
-          className="absolute inset-auto z-30 h-36 w-64 -translate-y-[6rem] rounded-full bg-cyan-400 blur-2xl"
-        ></motion.div>
-        <motion.div
-          initial={{ width: "15rem" }}
-          whileInView={{ width: "30rem" }}
-          transition={{
-            delay: 0.3,
-            duration: 0.8,
-            ease: "easeInOut",
-          }}
-          className="absolute inset-auto z-50 h-0.5 w-[30rem] -translate-y-[7rem] bg-cyan-400 "
-        ></motion.div>
 
-        <div className="absolute inset-auto z-40 h-44 w-full -translate-y-[12.5rem] bg-slate-950 "></div>
+        <motion.div
+          {...grow("15rem", "30rem")}
+          style={{
+            backgroundImage:
+              "conic-gradient(var(--conic-position), var(--tw-gradient-stops))",
+          }}
+          className="to-brand-violet absolute inset-auto left-1/2 h-56 w-[30rem] from-transparent via-transparent [--conic-position:from_290deg_at_center_top]"
+        >
+          <div className="absolute right-0 bottom-0 z-20 h-full w-40 bg-[var(--lamp-bg)] [mask-image:linear-gradient(to_left,white,transparent)]" />
+          <div className="absolute right-0 bottom-0 z-20 h-40 w-full bg-[var(--lamp-bg)] [mask-image:linear-gradient(to_top,white,transparent)]" />
+        </motion.div>
+
+        <div className="absolute top-1/2 h-48 w-full translate-y-12 scale-x-150 bg-[var(--lamp-bg)] blur-2xl" />
+        <div className="bg-brand-violet absolute inset-auto z-50 h-36 w-[28rem] -translate-y-1/2 rounded-full opacity-40 blur-3xl" />
+
+        <motion.div
+          {...grow("8rem", "16rem")}
+          className="bg-brand-cyan absolute inset-auto z-30 h-36 w-64 -translate-y-24 rounded-full opacity-60 blur-2xl"
+        />
+        {/* The filament itself. */}
+        <motion.div
+          {...grow("15rem", "30rem")}
+          className="bg-brand-cyan absolute inset-auto z-50 h-px w-[30rem] -translate-y-28"
+        />
+
+        <div className="absolute inset-auto z-40 h-44 w-full -translate-y-[12.5rem] bg-[var(--lamp-bg)]" />
       </div>
 
-      <div className="relative z-50 flex -translate-y-80 flex-col items-center px-5">
+      {/* Lit content. Fixed light-on-dark, because the ground above is fixed. */}
+      <div className="relative z-50 -mt-16 text-neutral-100 sm:-mt-20">
         {children}
       </div>
     </div>
   );
-};
+}

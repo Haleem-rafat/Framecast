@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
  * these pages are reachable — and are meant to be readable — by anyone,
  * including Google's OAuth reviewers and Safe Browsing crawlers.
  *
+ * The `marketing` class on the root is the colour boundary — see globals.css.
+ *
  * `width` exists so the landing page can run full-bleed sections without
  * dragging the privacy policy and terms out of the ~65-character measure that
  * makes a wall of legal text readable. Those two pages take the default and are
@@ -32,7 +34,12 @@ export function MarketingShell({
   );
 
   return (
-    <div className="flex min-h-svh flex-col">
+    // `marketing` is what switches the whole CSS-variable palette from the
+    // studio's chroma-0 neutrals to the colour grade in globals.css. It is set
+    // here and nowhere else, so /dashboard and the rest stay monochrome. The
+    // explicit bg/text pair repaints the ground with the tokens this class has
+    // just redefined — `body` is outside it and keeps the studio's.
+    <div className="marketing bg-background text-foreground flex min-h-svh flex-col">
       <header className="bg-background/80 sticky top-0 z-50 border-b backdrop-blur-sm">
         <div className={cn(bar, "flex items-center justify-between gap-4 py-3")}>
           <Link href="/" className="flex items-center gap-2 font-semibold">

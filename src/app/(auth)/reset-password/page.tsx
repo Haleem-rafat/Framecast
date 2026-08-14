@@ -11,7 +11,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AuthShell } from "@/features/auth/components/auth-shell";
+import {
+  AuthShell,
+  authCardClassName,
+} from "@/features/auth/components/auth-shell";
 import { ResetPasswordForm } from "@/features/auth/components/reset-password-form";
 
 export const metadata: Metadata = { title: "Set a new password" };
@@ -40,24 +43,30 @@ export default async function ResetPasswordPage({
   if (!token || error) {
     return (
       <AuthShell subtitle="Set a new password." footer={footer}>
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertDescription>
-            This reset link is invalid or has expired. Reset links are good for
-            two hours.
-          </AlertDescription>
-        </Alert>
+        {/* Same card surface as the working path, so the dead-end link does not
+            land the visitor on a page that looks like a different site. */}
+        <Card className={authCardClassName}>
+          <CardContent className="space-y-4">
+            <Alert variant="destructive">
+              <TriangleAlert />
+              <AlertDescription>
+                This reset link is invalid or has expired. Reset links are good
+                for two hours.
+              </AlertDescription>
+            </Alert>
 
-        <Button asChild className="w-full">
-          <Link href="/forgot-password">Request a new link</Link>
-        </Button>
+            <Button asChild className="w-full">
+              <Link href="/forgot-password">Request a new link</Link>
+            </Button>
+          </CardContent>
+        </Card>
       </AuthShell>
     );
   }
 
   return (
     <AuthShell subtitle="Set a new password." footer={footer}>
-      <Card>
+      <Card className={authCardClassName}>
         <CardHeader>
           <CardTitle>Choose a new password</CardTitle>
           <CardDescription>

@@ -12,7 +12,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { env } from "@/config/env";
-import { AuthShell } from "@/features/auth/components/auth-shell";
+import {
+  AuthShell,
+  authCardClassName,
+} from "@/features/auth/components/auth-shell";
 import { SignInForm } from "@/features/auth/components/sign-in-form";
 import { signInErrorMessage } from "@/features/auth/sign-in-error";
 import { safeRedirectTo } from "@/lib/safe-redirect";
@@ -58,7 +61,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
         </Alert>
       )}
 
-      <Card>
+      <Card className={authCardClassName}>
         <CardHeader>
           <CardTitle>Welcome back</CardTitle>
           {/*

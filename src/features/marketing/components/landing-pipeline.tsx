@@ -117,14 +117,14 @@ const STAGES: TimelineEntry[] = [
 export function LandingPipeline() {
   return (
     <section id="pipeline" className="border-b">
-      <div className="mx-auto grid w-full max-w-6xl gap-10 px-6 py-16 sm:py-24 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-16">
+      <div className="mx-auto grid w-full max-w-6xl gap-10 px-6 py-20 sm:py-28 lg:py-36 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:gap-20">
         {/* Pinned beside the rail on wide screens, so the claim the section is
             making stays on screen while you read the stages that back it up. */}
         <div className="lg:sticky lg:top-28 lg:self-start">
-          <h2 className="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">
+          <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl lg:text-[2.75rem] lg:leading-[1.1]">
             Six stages. It stops twice, on purpose.
           </h2>
-          <p className="text-muted-foreground mt-3 text-base text-pretty">
+          <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
             A run goes end to end on its own, but it is built to halt and wait
             for a person — once before it starts spending, once before it
             publishes.
