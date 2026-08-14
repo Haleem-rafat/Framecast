@@ -32,10 +32,12 @@ export default function TermsPage() {
 
         <LegalSection id="who-may-use-framecast" heading="Who may use Framecast">
           <p className="text-muted-foreground text-sm text-pretty">
-            Framecast is a private tool. Access is granted by the operator to
-            specific, named accounts. Attempting to access it without
-            authorisation is not permitted. There is no public sign-up, and no
-            account is created automatically.
+            Anyone may register for a Framecast account. Registration alone does
+            not grant access: every new account is held until the operator
+            approves it, and an unapproved account can sign in and see that it is
+            waiting but can do nothing else. Approval is at the operator&apos;s
+            discretion and may be withdrawn. Attempting to reach the studio
+            without an approved account is not permitted.
           </p>
         </LegalSection>
 

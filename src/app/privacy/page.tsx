@@ -38,9 +38,11 @@ export default function PrivacyPage() {
 
         <LegalSection id="what-framecast-is" heading="What Framecast is">
           <p className="text-muted-foreground text-sm text-pretty">
-            Framecast is a private video production tool operated by its owner. It
-            is not a public service and has no self-registration. Accounts exist
-            only for people the operator has explicitly authorised.
+            Framecast is a video production tool operated by its owner. Anyone may
+            register for an account, and every new account is held for approval
+            before it can be used: until the operator approves it, a registered
+            account can sign in and see that it is waiting, and nothing else. It is
+            not affiliated with, endorsed by, or operated by Google or YouTube.
           </p>
         </LegalSection>
 
