@@ -75,11 +75,21 @@ export function ProviderTable({
         cell: (row) =>
           row.credential?.lastTestedAt ? (
             <div className="flex items-center gap-1.5 text-sm">
+              {/* Pass and fail were a tick vs a cross in green vs red and
+                * nothing else, so this column read as a bare timestamp to a
+                * screen reader — "2 hours ago", with the part that says
+                * whether the key actually works missing entirely. */}
               {row.credential.lastTestOk ? (
-                <CircleCheck className="text-emerald-600 dark:text-emerald-400 size-3.5" />
+                <CircleCheck
+                  aria-hidden="true"
+                  className="text-emerald-700 dark:text-emerald-400 size-3.5"
+                />
               ) : (
-                <CircleX className="text-destructive size-3.5" />
+                <CircleX aria-hidden="true" className="text-destructive size-3.5" />
               )}
+              <span className="sr-only">
+                {row.credential.lastTestOk ? "Passed" : "Failed"},{" "}
+              </span>
               <RelativeTime date={row.credential.lastTestedAt} />
             </div>
           ) : row.credential ? (

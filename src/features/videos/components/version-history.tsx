@@ -75,10 +75,24 @@ export function VersionHistory({
               <button
                 key={version.id}
                 type="button"
+                // Which version is loaded was shown by a tick glyph and a
+                // background tint — both invisible to a screen reader, which
+                // heard an identical row per version. `aria-pressed` is the
+                // state this control actually has.
+                aria-pressed={isActive}
                 onClick={() => onSelect(version.id)}
                 disabled={isPending || !isDraft}
                 className={cn(
-                  "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50 disabled:pointer-events-none disabled:opacity-50",
+                  // `disabled:opacity-50` used to dim these rows permanently:
+                  // the list is disabled for the whole life of any video past
+                  // draft, so version numbers and dates — still the useful
+                  // record of what happened — were left under 3:1 forever. The
+                  // fade now applies only while a request is in flight, which
+                  // is the transient case it was meant for. Focus ring added
+                  // because this is a hand-rolled button with no `Button`
+                  // styling behind it, so it had none.
+                  "focus-visible:ring-ring/50 flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none hover:bg-accent/50 focus-visible:ring-3 disabled:pointer-events-none",
+                  isPending && "opacity-50",
                   isActive && "bg-accent/50",
                 )}
               >
@@ -90,7 +104,7 @@ export function VersionHistory({
                   )}
                   <span>v{version.version}</span>
                   {isActive && (
-                    <Badge variant="outline" className="text-[10px]">
+                    <Badge variant="outline" className="text-xs">
                       Active
                     </Badge>
                   )}

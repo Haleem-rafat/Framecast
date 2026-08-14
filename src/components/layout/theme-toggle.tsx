@@ -66,8 +66,21 @@ export function ThemeToggle() {
 
       <DropdownMenuContent align="end">
         {THEMES.map((option) => (
+          // `data-active` tints the row and says nothing else, so which theme
+          // is in force was communicated by a background colour alone — the one
+          // cue unavailable to a screen reader and the least reliable one for
+          // anyone else, given the tint is `bg-accent` on a menu that is itself
+          // accent-tinted on hover. `menuitemradio` + `aria-checked` is the
+          // role that actually means "one of these three is selected", and it
+          // makes the state announced rather than merely painted.
+          //
+          // `aria-checked` cannot be left undefined before mount — the role
+          // requires it — so an unresolved theme reads as unchecked, which is
+          // true for the one frame it lasts.
           <DropdownMenuItem
             key={option.value}
+            role="menuitemradio"
+            aria-checked={mounted && theme === option.value}
             onSelect={() => choose(option)}
             data-active={mounted && theme === option.value}
             className="data-[active=true]:bg-accent"

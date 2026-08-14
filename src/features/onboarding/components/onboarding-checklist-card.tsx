@@ -41,10 +41,11 @@ export function OnboardingChecklistCard({
             const row = (
               <div className="flex items-center gap-3 px-2 py-3">
                 <Icon
+                  aria-hidden="true"
                   className={cn(
                     "size-5 shrink-0",
                     step.complete
-                      ? "text-emerald-600 dark:text-emerald-400"
+                      ? "text-emerald-700 dark:text-emerald-400"
                       : "text-muted-foreground",
                   )}
                 />
@@ -55,6 +56,13 @@ export function OnboardingChecklistCard({
                       step.complete && "text-muted-foreground",
                     )}
                   >
+                    {/* Done vs not-done was carried entirely by which glyph
+                      * rendered and what colour it was, so the single fact this
+                      * whole card exists to convey never reached a screen
+                      * reader — it heard six step titles and no progress. */}
+                    <span className="sr-only">
+                      {step.complete ? "Completed: " : "Not started: "}
+                    </span>
                     {step.title}
                   </p>
                   <p className="text-muted-foreground truncate text-xs">
