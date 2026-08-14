@@ -1,6 +1,3 @@
-import { Film } from "lucide-react";
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TimelinePanel } from "@/features/videos/components/timeline-panel";
 import { timelineService } from "@/services/timeline.service";
@@ -32,20 +29,10 @@ export async function TimelineSection({
 
   if (!timeline) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <Film className="size-4" />
-            Timeline
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground text-sm">
-            Couldn&apos;t work out this video&apos;s timeline. Reloading the page tries
-            again — nothing about the video itself has changed.
-          </p>
-        </CardContent>
-      </Card>
+      <p className="text-muted-foreground text-sm">
+        Couldn&apos;t work out this video&apos;s timeline. Reloading the page tries
+        again — nothing about the video itself has changed.
+      </p>
     );
   }
 
@@ -53,26 +40,19 @@ export async function TimelineSection({
 }
 
 /** Mirrors the panel — a 16:9 player over a strip over a few rows — so the
- *  page does not jump when the real card lands. */
+ *  page does not jump when the real content lands. No card of its own: the
+ *  section around it already drew one before this fallback existed. */
 export function TimelineFallback() {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
-        <div className="space-y-2">
-          <Skeleton className="h-5 w-24" />
-          <Skeleton className="h-4 w-64" />
-        </div>
-        <Skeleton className="h-6 w-14" />
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <Skeleton className="aspect-video w-full" />
-        <Skeleton className="h-12 w-full" />
-        <div className="space-y-2">
-          {Array.from({ length: 3 }, (_unused, index) => (
-            <Skeleton key={index} className="h-20 w-full" />
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <Skeleton className="h-4 w-64" />
+      <Skeleton className="aspect-video w-full" />
+      <Skeleton className="h-12 w-full" />
+      <div className="space-y-2">
+        {Array.from({ length: 3 }, (_unused, index) => (
+          <Skeleton key={index} className="h-20 w-full" />
+        ))}
+      </div>
+    </div>
   );
 }

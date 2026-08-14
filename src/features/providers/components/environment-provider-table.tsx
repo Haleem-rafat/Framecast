@@ -34,7 +34,11 @@ export function EnvironmentProviderTable({
         id: "status",
         header: "Status",
         cell: (status) => (
-          <div className="flex items-center gap-2">
+          // Wraps rather than staying one line: below `md` this cell is the
+          // value half of a card's label/value pair, roughly 200px wide, and
+          // unwrapped the sentence ran straight out of the card — which clips
+          // it silently, since `Card` is `overflow-hidden`.
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {status.configured ? (
               <Badge
                 variant="outline"
@@ -55,8 +59,10 @@ export function EnvironmentProviderTable({
              * short values every other cell holds and very wrong for a
              * sentence: this row alone was ~700px wide, making the table
              * scroll sideways on a phone to reach columns that would
-             * otherwise have fitted. */}
-            <span className="text-muted-foreground block max-w-sm text-xs whitespace-normal">
+             * otherwise have fitted. `break-words` covers the one token that
+             * cannot wrap on its own — the env var name, which has no break
+             * opportunity in it at all. */}
+            <span className="text-muted-foreground block max-w-sm text-xs break-words whitespace-normal">
               Set as {status.envVar} in the environment — managed by the
               deployment, not editable here.
             </span>

@@ -39,13 +39,19 @@ function CommandDialog({
   children,
   className,
   showCloseButton = false,
+  shouldFilter,
+  filter,
+  loop,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string
   description?: string
   className?: string
   showCloseButton?: boolean
-}) {
+} & Pick<
+    React.ComponentProps<typeof Command>,
+    "shouldFilter" | "filter" | "loop"
+  >) {
   return (
     <Dialog {...props}>
       <DialogContent
@@ -69,7 +75,33 @@ function CommandDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        {children}
+        {/* The cmdk root, and the reason ⌘K did nothing at all.
+         *
+         * Every other export in this file is a `CommandPrimitive.*` that reads
+         * cmdk's context — `CommandInput`'s very first hook is
+         * `useSyncExternalStore(store.subscribe, …)`. With no provider above
+         * them that store is `undefined`, so the *first render* of an opened
+         * palette threw "Cannot read properties of undefined (reading
+         * 'subscribe')". React then unwound the whole client subtree, which is
+         * why the symptom read as "the shortcut opens nothing" — and, with the
+         * product tour mounted, as "the shortcut closes the tour": the tour was
+         * a casualty of the same teardown, not a component competing for the
+         * keystroke.
+         *
+         * It went missing when the sr-only header was moved inside
+         * `DialogContent` to fix a separate a11y defect; the header landed in
+         * the root's place rather than inside it. Nothing caught it because a
+         * missing provider is a runtime fault, not a type error, and this is
+         * the only `CommandDialog` call site in the app.
+         *
+         * `shouldFilter`/`filter`/`loop` are forwarded because the palette
+         * drives its own matching: server-side search results have already been
+         * matched by Postgres and must not be re-scored by cmdk's fuzzy filter,
+         * which would drop a result whose match lives in a script snippet
+         * rather than in its visible title. */}
+        <Command shouldFilter={shouldFilter} filter={filter} loop={loop}>
+          {children}
+        </Command>
       </DialogContent>
     </Dialog>
   )

@@ -2,11 +2,18 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Loader2, RotateCw, Save, Sparkles, Upload, X } from "lucide-react";
+import {
+  FileText,
+  Loader2,
+  RotateCw,
+  Save,
+  Sparkles,
+  Upload,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -74,7 +81,9 @@ export function ScriptPanel({
         return;
       }
 
-      toast.success(`Imported v${result.data.version} (${result.data.wordCount} words)`);
+      toast.success(
+        `Imported v${result.data.version} (${result.data.wordCount} words)`,
+      );
       setImportDraft(null);
       router.refresh();
     });
@@ -91,7 +100,9 @@ export function ScriptPanel({
         return;
       }
 
-      toast.success(`Generated v${result.data.version} (${result.data.wordCount} words)`);
+      toast.success(
+        `Generated v${result.data.version} (${result.data.wordCount} words)`,
+      );
       router.refresh();
     });
   }
@@ -134,158 +145,160 @@ export function ScriptPanel({
 
   if (isImporting) {
     return (
-      <Card>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div className="space-y-1">
-              <h2 className="text-sm font-medium">Import a script</h2>
-              <p className="text-muted-foreground text-xs">
-                Paste narration only — every word is read aloud exactly as
-                written. Footage is matched to the video&apos;s topic rather
-                than to each line, because an imported script carries no
-                per-section visual cues.
-              </p>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setImportDraft(null)}
-              disabled={isPending}
-            >
-              <X />
-              Cancel
-            </Button>
+      // Bare, like every panel on this page: the collapsible `VideoSection`
+      // around it supplies the card and the "Script" heading.
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="space-y-1">
+            <h2 className="text-sm font-medium">Import a script</h2>
+            <p className="text-muted-foreground text-xs">
+              Paste narration only — every word is read aloud exactly as
+              written. Footage is matched to the video&apos;s topic rather than
+              to each line, because an imported script carries no per-section
+              visual cues.
+            </p>
           </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setImportDraft(null)}
+            disabled={isPending}
+          >
+            <X />
+            Cancel
+          </Button>
+        </div>
 
-          {/* A placeholder is not a label — it is gone the moment anything is
+        {/* A placeholder is not a label — it is gone the moment anything is
               typed, and it is not what assistive tech reads for the field's
               name. This is the only control in the panel, so there is nothing
               else for it to be labelled by. */}
-          <Textarea
-            aria-label="Script to import"
-            value={importDraft ?? ""}
-            onChange={(event) => setImportDraft(event.target.value)}
-            rows={20}
-            // `field-sizing-content` grows the box to its text, with min/max as the
-          // bounds. Pinned at 480px it reserved half a screen of empty dark for a
-          // 147-word script — and this panel sits above everything else on the
-          // page, so that emptiness pushed the rest of the video down with it.
-          className="max-h-[70vh] min-h-[14rem] font-mono text-sm field-sizing-content"
-            disabled={isPending}
-            placeholder="Paste your script here"
-            autoFocus
-          />
-
-          <div className="flex items-center justify-between">
-            <p className="text-muted-foreground text-xs">
-              {countWordsInDraft(importDraft)} words
-            </p>
-            <Button
-              onClick={onImport}
-              disabled={!isDraft || isPending || (importDraft ?? "").trim().length === 0}
-            >
-              {isPending ? <Loader2 className="animate-spin" /> : <Upload />}
-              Import script
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!activeVersion) {
-    return (
-      <Card>
-        <CardContent className="py-10">
-          <EmptyState
-            icon={FileText}
-            title="No script yet"
-            description="Generate one from the video's topic using your default script prompt, or import a script you already wrote."
-            action={
-              <div className="flex items-center gap-2">
-                <Button onClick={onGenerate} disabled={!isDraft || isPending}>
-                  {isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}
-                  Generate script
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setImportDraft("")}
-                  disabled={!isDraft || isPending}
-                >
-                  <Upload />
-                  Import script
-                </Button>
-              </div>
-            }
-          />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <CardContent className="space-y-3">
-        {/* Import, Regenerate and Save edit do not fit beside the version
-         * line at 375px, and an unwrapped row would scroll the page rather
-         * than itself. */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-muted-foreground text-sm">
-            Version {activeVersion.version} · {activeVersion.wordCount} words
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setImportDraft("")}
-              disabled={!isDraft || isPending}
-            >
-              <Upload />
-              Import
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onGenerate}
-              disabled={!isDraft || isPending}
-            >
-              {isPending ? <Loader2 className="animate-spin" /> : <RotateCw />}
-              Regenerate
-            </Button>
-            <Button
-              size="sm"
-              onClick={onSaveEdit}
-              disabled={!isDraft || !isDirty || !content.trim() || isPending}
-            >
-              {isPending ? <Loader2 className="animate-spin" /> : <Save />}
-              Save edit
-            </Button>
-          </div>
-        </div>
-
-        {/* Named after the version it is showing, because the panel's whole
-            point is that you can switch between versions — an unqualified
-            "Script content" would read identically whichever one is loaded. */}
         <Textarea
-          aria-label={`Script content, version ${activeVersion.version}`}
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
+          aria-label="Script to import"
+          value={importDraft ?? ""}
+          onChange={(event) => setImportDraft(event.target.value)}
           rows={20}
           // `field-sizing-content` grows the box to its text, with min/max as the
           // bounds. Pinned at 480px it reserved half a screen of empty dark for a
           // 147-word script — and this panel sits above everything else on the
           // page, so that emptiness pushed the rest of the video down with it.
           className="max-h-[70vh] min-h-[14rem] font-mono text-sm field-sizing-content"
-          disabled={!isDraft || isPending}
-          placeholder="Script content"
+          disabled={isPending}
+          placeholder="Paste your script here"
+          autoFocus
         />
 
-        {!isDraft && (
+        <div className="flex items-center justify-between">
           <p className="text-muted-foreground text-xs">
-            This video is past the draft stage, so the script is locked.
+            {countWordsInDraft(importDraft)} words
           </p>
-        )}
-      </CardContent>
-    </Card>
+          <Button
+            onClick={onImport}
+            disabled={
+              !isDraft || isPending || (importDraft ?? "").trim().length === 0
+            }
+          >
+            {isPending ? <Loader2 className="animate-spin" /> : <Upload />}
+            Import script
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!activeVersion) {
+    return (
+      <div className="py-6">
+        <EmptyState
+          icon={FileText}
+          title="No script yet"
+          description="Generate one from the video's topic using your default script prompt, or import a script you already wrote."
+          action={
+            <div className="flex items-center gap-2">
+              <Button onClick={onGenerate} disabled={!isDraft || isPending}>
+                {isPending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Sparkles />
+                )}
+                Generate script
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setImportDraft("")}
+                disabled={!isDraft || isPending}
+              >
+                <Upload />
+                Import script
+              </Button>
+            </div>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Import, Regenerate and Save edit do not fit beside the version
+       * line at 375px, and an unwrapped row would scroll the page rather
+       * than itself. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-muted-foreground text-sm">
+          Version {activeVersion.version} · {activeVersion.wordCount} words
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setImportDraft("")}
+            disabled={!isDraft || isPending}
+          >
+            <Upload />
+            Import
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onGenerate}
+            disabled={!isDraft || isPending}
+          >
+            {isPending ? <Loader2 className="animate-spin" /> : <RotateCw />}
+            Regenerate
+          </Button>
+          <Button
+            size="sm"
+            onClick={onSaveEdit}
+            disabled={!isDraft || !isDirty || !content.trim() || isPending}
+          >
+            {isPending ? <Loader2 className="animate-spin" /> : <Save />}
+            Save edit
+          </Button>
+        </div>
+      </div>
+
+      {/* Named after the version it is showing, because the panel's whole
+            point is that you can switch between versions — an unqualified
+            "Script content" would read identically whichever one is loaded. */}
+      <Textarea
+        aria-label={`Script content, version ${activeVersion.version}`}
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        rows={20}
+        // `field-sizing-content` grows the box to its text, with min/max as the
+        // bounds. Pinned at 480px it reserved half a screen of empty dark for a
+        // 147-word script — and this panel sits above everything else on the
+        // page, so that emptiness pushed the rest of the video down with it.
+        className="max-h-[70vh] min-h-[14rem] font-mono text-sm field-sizing-content"
+        disabled={!isDraft || isPending}
+        placeholder="Script content"
+      />
+
+      {!isDraft && (
+        <p className="text-muted-foreground text-xs">
+          This video is past the draft stage, so the script is locked.
+        </p>
+      )}
+    </div>
   );
 }

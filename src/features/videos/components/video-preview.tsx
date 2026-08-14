@@ -1,7 +1,6 @@
 import { Download, Mic, Video as VideoIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes, formatDuration } from "@/utils/format";
 
 /** Renders always land at 1920x1080 — WIDTH/HEIGHT are hardcoded in
@@ -24,7 +23,8 @@ function metaLine(parts: Array<string | null>): string {
 function UnavailableNotice() {
   return (
     <p className="text-muted-foreground text-sm">
-      Couldn&apos;t load the preview link. Reloading the page will generate a fresh one.
+      Couldn&apos;t load the preview link. Reloading the page will generate a
+      fresh one.
     </p>
   );
 }
@@ -82,107 +82,111 @@ export function VideoPreview({
     return null;
   }
 
-  const durationLabel = durationSeconds != null ? formatDuration(durationSeconds) : null;
+  const durationLabel =
+    durationSeconds != null ? formatDuration(durationSeconds) : null;
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       {(render || youtubeVideoId) && (
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <VideoIcon className="size-4" />
-              Rendered video
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {render?.url ? (
-              <>
-                {/* No <track> — captions are burned into the render itself.
-                 *
-                 * `preload="metadata"` because the default is `auto`: opening
-                 * this page began streaming a finished render — hundreds of
-                 * megabytes — before anyone pressed play, competing with the
-                 * page's own requests for bandwidth. Metadata is all the
-                 * player needs to show a duration and a scrub bar.
-                 *
-                 * `aria-label` because a bare <video> has no accessible name;
-                 * the card's heading is a sibling, which is not an association
-                 * a screen reader can make. */}
-                <video
-                  controls
-                  preload="metadata"
-                  aria-label="Rendered video"
-                  className="aspect-video w-full rounded-md bg-black"
-                  src={render.url}
-                />
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-muted-foreground text-xs">
-                    {metaLine([
-                      durationLabel,
-                      RENDER_RESOLUTION,
-                      render.sizeBytes != null ? formatBytes(render.sizeBytes) : null,
-                    ])}
-                  </p>
-                  <Button asChild variant="outline" size="sm">
-                    {/* `render.url` is this app's own streaming route
-                     * (/api/videos/[id]/file), not a signed Supabase URL —
-                     * same-origin, so `download` triggers a real save
-                     * instead of just opening the file in a new tab. */}
-                    <a href={render.url} download target="_blank" rel="noopener noreferrer">
-                      <Download />
-                      Download
-                    </a>
-                  </Button>
-                </div>
-              </>
-            ) : youtubeVideoId ? (
-              <>
-                <YouTubeEmbed youtubeVideoId={youtubeVideoId} />
+        <div className="space-y-3 lg:col-span-2">
+          <h3 className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
+            <VideoIcon aria-hidden="true" className="size-3.5" />
+            Rendered video
+          </h3>
+          {render?.url ? (
+            <>
+              {/* No <track> — captions are burned into the render itself.
+               *
+               * `preload="metadata"` because the default is `auto`: opening
+               * this page began streaming a finished render — hundreds of
+               * megabytes — before anyone pressed play, competing with the
+               * page's own requests for bandwidth. Metadata is all the
+               * player needs to show a duration and a scrub bar.
+               *
+               * `aria-label` because a bare <video> has no accessible name;
+               * the card's heading is a sibling, which is not an association
+               * a screen reader can make. */}
+              <video
+                controls
+                preload="metadata"
+                aria-label="Rendered video"
+                className="aspect-video w-full rounded-md bg-black"
+                src={render.url}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-muted-foreground text-xs">
                   {metaLine([
                     durationLabel,
                     RENDER_RESOLUTION,
-                    "playing from YouTube — the local render was reclaimed after publishing",
+                    render.sizeBytes != null
+                      ? formatBytes(render.sizeBytes)
+                      : null,
                   ])}
                 </p>
-              </>
-            ) : (
-              <UnavailableNotice />
-            )}
-          </CardContent>
-        </Card>
+                <Button asChild variant="outline" size="sm">
+                  {/* `render.url` is this app's own streaming route
+                   * (/api/videos/[id]/file), not a signed Supabase URL —
+                   * same-origin, so `download` triggers a real save
+                   * instead of just opening the file in a new tab. */}
+                  <a
+                    href={render.url}
+                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Download />
+                    Download
+                  </a>
+                </Button>
+              </div>
+            </>
+          ) : youtubeVideoId ? (
+            <>
+              <YouTubeEmbed youtubeVideoId={youtubeVideoId} />
+              <p className="text-muted-foreground text-xs">
+                {metaLine([
+                  durationLabel,
+                  RENDER_RESOLUTION,
+                  "playing from YouTube — the local render was reclaimed after publishing",
+                ])}
+              </p>
+            </>
+          ) : (
+            <UnavailableNotice />
+          )}
+        </div>
       )}
 
       {audio && (
-        <Card className={render ? undefined : "lg:col-span-3"}>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <Mic className="size-4" />
-              Narration
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {audio.url ? (
-              <>
-                <audio
-                  controls
-                  preload="metadata"
-                  aria-label="Narration audio"
-                  className="w-full"
-                  src={audio.url}
-                />
-                <p className="text-muted-foreground text-xs">
-                  {metaLine([
-                    durationLabel,
-                    audio.sizeBytes != null ? formatBytes(audio.sizeBytes) : null,
-                  ])}
-                </p>
-              </>
-            ) : (
-              <UnavailableNotice />
-            )}
-          </CardContent>
-        </Card>
+        <div
+          className={
+            render || youtubeVideoId ? "space-y-3" : "space-y-3 lg:col-span-3"
+          }
+        >
+          <h3 className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
+            <Mic aria-hidden="true" className="size-3.5" />
+            Narration
+          </h3>
+          {audio.url ? (
+            <>
+              <audio
+                controls
+                preload="metadata"
+                aria-label="Narration audio"
+                className="w-full"
+                src={audio.url}
+              />
+              <p className="text-muted-foreground text-xs">
+                {metaLine([
+                  durationLabel,
+                  audio.sizeBytes != null ? formatBytes(audio.sizeBytes) : null,
+                ])}
+              </p>
+            </>
+          ) : (
+            <UnavailableNotice />
+          )}
+        </div>
       )}
     </div>
   );

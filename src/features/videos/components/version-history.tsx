@@ -6,7 +6,6 @@ import { Check, History } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { setActiveVersionAction } from "@/actions/script.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
@@ -57,15 +56,17 @@ export function VersionHistory({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm font-medium">
-          <History className="size-4" />
-          Version history
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-1">
-        {versions.length === 0 ? (
+    // Bare, like every other panel on this page: the collapsible
+    // `VideoSection` around the script supplies the card. This one keeps its
+    // own sub-heading because the section holds two distinct things — the
+    // script and its history — and dropping the heading would leave a
+    // freestanding list of version numbers with nothing saying what they are.
+    <div className="space-y-1">
+      <h3 className="text-muted-foreground flex items-center gap-2 pb-1 text-xs font-medium">
+        <History aria-hidden="true" className="size-3.5" />
+        Version history
+      </h3>
+      {versions.length === 0 ? (
           <p className="text-muted-foreground text-sm">No versions yet.</p>
         ) : (
           versions.map((version) => {
@@ -116,12 +117,11 @@ export function VersionHistory({
             );
           })
         )}
-        {!isDraft && versions.length > 0 && (
-          <p className="text-muted-foreground pt-1 text-xs">
-            This video is past the draft stage, so the active version is locked.
-          </p>
-        )}
-      </CardContent>
-    </Card>
+      {!isDraft && versions.length > 0 && (
+        <p className="text-muted-foreground pt-1 text-xs">
+          This video is past the draft stage, so the active version is locked.
+        </p>
+      )}
+    </div>
   );
 }

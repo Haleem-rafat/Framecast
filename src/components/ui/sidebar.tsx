@@ -321,7 +321,17 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="sidebar-inset"
       className={cn(
-        "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        // `min-w-0` is the one addition to the stock shadcn class list, and it
+        // is load-bearing. A flex item's `min-width` defaults to `auto`, which
+        // means "never shrink below my content's minimum" — so any page whose
+        // content had a wide min-content width (the videos table, at the time
+        // of writing) pushed this panel wider than the viewport and took the
+        // sticky header, the search box and the page padding out with it.
+        // Measured at 1280px on /videos: 231px of horizontal document
+        // overflow, gone with this. The table already scrolls inside its own
+        // container; without this, that container was never allowed to be
+        // narrow enough to need to.
+        "relative flex w-full min-w-0 flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
         className
       )}
       {...props}

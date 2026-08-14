@@ -1,9 +1,16 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3 } from "lucide-react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronsUpDown, Columns3 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -13,6 +20,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -33,9 +47,11 @@ export interface DataTableColumn<Row> {
   id: string;
   /**
    * Plain text rather than a node: this one string is the `<th>` copy, the
-   * sort button's accessible name, and the column-toggle label, and keeping
+   * sort button's accessible name, the column-toggle label, the `<dt>` label
+   * on the card layout and the small-screen sort picker's entry, and keeping
    * them in sync by construction is worth more than the freedom to put
-   * markup in a header none of our tables needs.
+   * markup in a header none of our tables needs. It should therefore read as
+   * a label for a single value — "Last tested", not "Key status".
    */
   header: string;
   cell: (row: Row) => ReactNode;
@@ -76,6 +92,15 @@ interface DataTableProps<Row> {
 }
 
 /**
+ * Radix's `Select` treats the empty string as "no value chosen" and throws if
+ * an item claims it, so the "leave the rows in the server's order" entry needs
+ * a value of its own. A sentinel string rather than rendering that entry
+ * conditionally: the operator needs a way *back* to the unsorted order on
+ * small screens, where there is no header to click a third time.
+ */
+const UNSORTED_VALUE = "__unsorted__";
+
+/**
  * Client-side sorting, searching and pagination over rows a server component
  * has already fetched in full. Every table in the app is small enough that
  * round-tripping to the server to re-sort would be slower and more code than
@@ -113,6 +138,20 @@ export function DataTable<Row>({
     () => columns.filter((column) => !hiddenColumnIds.includes(column.id)),
     [columns, hiddenColumnIds],
   );
+
+  // The card layout reads the same `visibleColumns`, so hiding a column from
+  // the toggle menu hides it in both places without a second visibility rule.
+  // The first visible column is the identifying one by convention — every
+  // table puts its name/title first — and becomes the card's heading; what is
+  // left splits into labelled detail rows and a pinned action row.
+  const [headingColumn, ...secondaryColumns] = visibleColumns;
+  const actionColumns = secondaryColumns.filter(isActionColumn);
+  const detailColumns = secondaryColumns.filter((column) => !isActionColumn(column));
+
+  // Sortable *and* visible: hiding a column already clears a sort applied to
+  // it (see `onToggleColumn`), and offering it in the mobile picker would be
+  // the same glitch by another route — rows reordered by something off screen.
+  const sortableColumns = visibleColumns.filter((column) => column.sortValue);
 
   const filterAccessors = useMemo(
     () =>
@@ -166,6 +205,36 @@ export function DataTable<Row>({
     });
   }
 
+  /**
+   * The small-screen picker writes the *same* `sort` state the headers do, so
+   * a sort chosen on a phone is still applied if the viewport widens — nothing
+   * here is a parallel mode. It deliberately does not reproduce the headers'
+   * third-click-clears cycle: choosing a column from a list is not a repeated
+   * click, and "Default order" is already an entry in that list.
+   */
+  function onSelectSortColumn(value: string) {
+    setPageIndex(0);
+    if (value === UNSORTED_VALUE) {
+      setSort(null);
+      return;
+    }
+
+    const column = columns.find((one) => one.id === value);
+    setSort({ columnId: value, direction: column?.firstSortDirection ?? "asc" });
+  }
+
+  function onToggleSortDirection() {
+    setPageIndex(0);
+    setSort((current) =>
+      current
+        ? {
+            columnId: current.columnId,
+            direction: current.direction === "asc" ? "desc" : "asc",
+          }
+        : current,
+    );
+  }
+
   function onToggleColumn(columnId: string, shown: boolean) {
     setHiddenColumnIds((current) =>
       shown ? current.filter((id) => id !== columnId) : [...current, columnId],
@@ -179,11 +248,30 @@ export function DataTable<Row>({
 
   const showSearch = Boolean(searchPlaceholder) && filterAccessors.length > 0;
   const showColumnToggle = columnToggle && toggleableColumns.length > 0;
+  const showSortControl = sortableColumns.length > 0;
+
+  // Shared by both layouts so the two can never drift into saying different
+  // things about the same empty result.
+  const emptyMessage = query ? (
+    <>
+      No rows match <span className="text-foreground font-medium">{query}</span>
+    </>
+  ) : (
+    "Nothing to show"
+  );
 
   return (
     <div className="space-y-3">
-      {(showSearch || showColumnToggle) && (
-        <div className="flex flex-wrap items-center gap-2">
+      {(showSearch || showColumnToggle || showSortControl) && (
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            // A table whose only toolbar control is the mobile sort picker —
+            // the provider table — would otherwise leave an empty flex row
+            // above it on desktop, and `space-y-3` would still space it.
+            !showSearch && !showColumnToggle && "md:hidden",
+          )}
+        >
           {showSearch && (
             <Input
               type="search"
@@ -196,6 +284,50 @@ export function DataTable<Row>({
               aria-label={searchPlaceholder}
               className="max-w-xs"
             />
+          )}
+          {showSortControl && (
+            // Only below `md`, where the cards replace the header row: above
+            // it the `<th>` buttons are the sort control, and a second one
+            // beside them would be two widgets fighting over one state.
+            <div className="flex items-center gap-2 md:hidden">
+              <Select
+                value={sort?.columnId ?? UNSORTED_VALUE}
+                onValueChange={onSelectSortColumn}
+              >
+                {/* Labelled rather than given a visible caption: the toolbar
+                    is tight at 375px, and the trigger already reads out the
+                    column it is sorting by. */}
+                <SelectTrigger size="sm" aria-label="Sort rows by">
+                  <ArrowUpDown className="text-muted-foreground" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={UNSORTED_VALUE}>Default order</SelectItem>
+                  {sortableColumns.map((column) => (
+                    <SelectItem key={column.id} value={column.id}>
+                      {column.header}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={onToggleSortDirection}
+                disabled={!sort}
+                // Cards carry no `aria-sort`, so this label is the only place
+                // the current direction is announced — hence state *and*
+                // action, rather than the bare "Reverse sort" the visual
+                // arrow already implies.
+                aria-label={
+                  sort
+                    ? `Sorted ${sort.direction === "asc" ? "ascending" : "descending"}, activate to reverse`
+                    : "Sort direction"
+                }
+              >
+                {sort?.direction === "desc" ? <ArrowDown /> : <ArrowUp />}
+              </Button>
+            </div>
           )}
           {showColumnToggle && (
             <DropdownMenu>
@@ -231,89 +363,202 @@ export function DataTable<Row>({
         </div>
       )}
 
-      <Table>
-        <TableCaption className="sr-only">{caption}</TableCaption>
-        <TableHeader>
-          <TableRow>
-            {visibleColumns.map((column) => {
-              const sorted = sort?.columnId === column.id ? sort.direction : null;
+      {showSortControl && (
+        // VoiceOver and TalkBack announce neither `aria-sort` nor the arrow in
+        // the header, so without this the only feedback for a sort is the rows
+        // silently moving. Scoped to the sort state alone — the pagination
+        // summary below is already a live region and already reports counts,
+        // and two regions repeating each other on every keystroke is worse
+        // than one saying slightly less.
+        <p role="status" className="sr-only">
+          {sort
+            ? `Sorted by ${columns.find((one) => one.id === sort.columnId)?.header ?? sort.columnId}, ${sort.direction === "asc" ? "ascending" : "descending"}.`
+            : "Default order."}
+        </p>
+      )}
 
-              return (
-                <TableHead
-                  key={column.id}
-                  scope="col"
-                  aria-sort={
-                    column.sortValue
-                      ? sorted === "asc"
+      {/* Two layouts over one `pageRows`, rather than one table reflowed into
+          cards with CSS: overriding `display` on rows and cells used to strip
+          the grid's semantics outright, and while current browsers repair
+          that, a second structure has no exposure to the bug class at all —
+          the real table survives untouched above `md`, the cards live below
+          it. Both branches sit in the DOM at every width, so each cell renders
+          twice; `display: none` already takes the inactive branch out of the
+          accessibility tree and out of the tab order, so no `aria-hidden` or
+          `inert` is needed, but the render cost is real and is affordable only
+          because a page here is at most 25 rows. */}
+      <div className="hidden md:block">
+        <Table>
+          <TableCaption className="sr-only">{caption}</TableCaption>
+          <TableHeader>
+            <TableRow>
+              {visibleColumns.map((column) => {
+                const sorted = sort?.columnId === column.id ? sort.direction : null;
+
+                return (
+                  <TableHead
+                    key={column.id}
+                    scope="col"
+                    // Only the sorted column carries `aria-sort`. Marking every
+                    // sortable column `"none"` is legal but noisy: `none` is
+                    // the default, so it adds nothing except a second thing
+                    // for the operator to hear on each header they pass.
+                    aria-sort={
+                      sorted === "asc"
                         ? "ascending"
                         : sorted === "desc"
                           ? "descending"
-                          : "none"
-                      : undefined
-                  }
-                  className={cn(
-                    column.align === "right" && "text-right",
-                    column.headClassName,
-                  )}
-                >
-                  {column.sortValue ? (
-                    <button
-                      type="button"
-                      onClick={() => onSort(column)}
-                      className="group/sort focus-visible:ring-ring/50 -mx-1 inline-flex h-7 items-center gap-1 rounded-md px-1 font-medium outline-none focus-visible:ring-3"
-                    >
-                      {column.header}
-                      {sorted === "asc" ? (
-                        <ArrowUp className="size-3.5" />
-                      ) : sorted === "desc" ? (
-                        <ArrowDown className="size-3.5" />
-                      ) : (
-                        <ChevronsUpDown className="size-3.5 opacity-0 transition-opacity group-hover/sort:opacity-60 group-focus-visible/sort:opacity-60" />
-                      )}
-                    </button>
-                  ) : (
-                    column.header
-                  )}
-                </TableHead>
-              );
-            })}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {pageRows.length === 0 ? (
-            <TableRow>
-              <TableCell
-                colSpan={visibleColumns.length}
-                className="text-muted-foreground h-24 text-center"
-              >
-                {query ? (
-                  <>
-                    No rows match <span className="text-foreground font-medium">{query}</span>
-                  </>
-                ) : (
-                  "Nothing to show"
-                )}
-              </TableCell>
-            </TableRow>
-          ) : (
-            pageRows.map((row) => (
-              <TableRow key={getRowId(row)}>
-                {visibleColumns.map((column) => (
-                  <TableCell
-                    key={column.id}
+                          : undefined
+                    }
                     className={cn(
                       column.align === "right" && "text-right",
-                      column.cellClassName,
+                      column.headClassName,
                     )}
                   >
-                    {column.cell(row)}
-                  </TableCell>
-                ))}
+                    {column.sortValue ? (
+                      <button
+                        type="button"
+                        onClick={() => onSort(column)}
+                        className="group/sort focus-visible:ring-ring/50 -mx-1 inline-flex h-7 items-center gap-1 rounded-md px-1 font-medium outline-none focus-visible:ring-3"
+                      >
+                        {column.header}
+                        {sorted === "asc" ? (
+                          <ArrowUp className="size-3.5" />
+                        ) : sorted === "desc" ? (
+                          <ArrowDown className="size-3.5" />
+                        ) : (
+                          <ChevronsUpDown className="size-3.5 opacity-0 transition-opacity group-hover/sort:opacity-60 group-focus-visible/sort:opacity-60" />
+                        )}
+                      </button>
+                    ) : (
+                      column.header
+                    )}
+                  </TableHead>
+                );
+              })}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pageRows.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={visibleColumns.length}
+                  className="text-muted-foreground h-24 text-center"
+                >
+                  {emptyMessage}
+                </TableCell>
               </TableRow>
-            ))
-          )}
-        </TableBody>
-      </Table>
+            ) : (
+              pageRows.map((row) => (
+                <TableRow key={getRowId(row)}>
+                  {visibleColumns.map((column) => (
+                    <TableCell
+                      key={column.id}
+                      className={cn(
+                        column.align === "right" && "text-right",
+                        column.cellClassName,
+                      )}
+                    >
+                      {column.cell(row)}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      <div className="md:hidden">
+        {pageRows.length === 0 ? (
+          <Card size="sm">
+            <CardContent className="text-muted-foreground py-4 text-center text-sm">
+              {emptyMessage}
+            </CardContent>
+          </Card>
+        ) : (
+          // A list, not a stack of `<div>`s: the table it stands in for
+          // announces how many rows there are, and `<ul>` is the only way to
+          // keep that on a phone. `aria-label` carries the same string as the
+          // table's `<caption>`, which is hidden along with the table here.
+          <ul aria-label={caption} className="space-y-3">
+            {pageRows.map((row) => {
+              // Cells that render nothing are normal — the project table drops
+              // its archive button once a project is archived — and a footer
+              // rule above nothing looks like a broken card, so the action row
+              // is decided per row rather than per table.
+              const actions = actionColumns
+                .map((column) => ({ column, node: column.cell(row) }))
+                .filter((entry) => entry.node !== null && entry.node !== undefined);
+
+              return (
+                <li key={getRowId(row)}>
+                  <Card size="sm">
+                    <CardHeader>
+                      {/* A heading, so the cards can be walked with a screen
+                          reader's heading shortcut the way the rows of a
+                          table can be walked with its table keys. `role` and
+                          `aria-level` rather than a real `<h3>` because the
+                          heading content is a consumer's `cell` output, and
+                          two of them render paragraphs inside a link —
+                          flow content an `<h3>` may not legally contain. */}
+                      <CardTitle
+                        role="heading"
+                        aria-level={3}
+                        // `min-w-0` because `CardHeader` is a grid and a grid
+                        // item's automatic minimum size is its content's: the
+                        // video title cell has a `truncate` second line, whose
+                        // nowrap text pushed the whole header 490px wider than
+                        // the card and was then silently cut off by the card's
+                        // own `overflow-hidden` instead of ellipsised.
+                        className={cn("min-w-0", headingColumn.cellClassName)}
+                      >
+                        {headingColumn.cell(row)}
+                      </CardTitle>
+                    </CardHeader>
+                    {detailColumns.length > 0 && (
+                      <CardContent>
+                        {/* `<dl>` rather than two stacked lines per column:
+                            the `header` string is genuinely the term for the
+                            value beneath it, and the pairing is what a screen
+                            reader loses when the `<th>` disappears. Empty
+                            values keep their label, exactly as an empty cell
+                            keeps its column. */}
+                        <dl className="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] gap-x-3 gap-y-2">
+                          {detailColumns.map((column) => (
+                            <Fragment key={column.id}>
+                              <dt className="text-muted-foreground text-xs">
+                                {column.header}
+                              </dt>
+                              {/* `align` is dropped on purpose: a right-edge
+                                  value only reads as aligned against a column
+                                  of its peers, and in a card it just floats
+                                  away from the label it belongs to. */}
+                              <dd className={cn("min-w-0 text-sm", column.cellClassName)}>
+                                {column.cell(row)}
+                              </dd>
+                            </Fragment>
+                          ))}
+                        </dl>
+                      </CardContent>
+                    )}
+                    {actions.length > 0 && (
+                      // Pinned to the bottom and unlabelled: buttons say what
+                      // they do, and "Actions" above them would be a heading
+                      // for something already self-describing.
+                      <CardFooter className="flex-wrap justify-end gap-2">
+                        {actions.map((entry) => (
+                          <Fragment key={entry.column.id}>{entry.node}</Fragment>
+                        ))}
+                      </CardFooter>
+                    )}
+                  </Card>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
 
       {pageSize !== undefined && sortedRows.length > pageSize && (
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -345,6 +590,21 @@ export function DataTable<Row>({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Which columns are controls rather than data, and so belong at the foot of a
+ * card instead of in its `<dl>`. Inferred rather than declared with a new
+ * `role: "actions"` field: `id === "actions"` is the convention all three
+ * tables with buttons already follow, and the right-aligned-and-always-visible
+ * pair is what an actions column looks like even when it is named something
+ * else — adding a flag would mean four call sites could forget to set it.
+ */
+function isActionColumn<Row>(column: DataTableColumn<Row>): boolean {
+  return (
+    column.id === "actions" ||
+    (column.align === "right" && column.alwaysVisible === true)
   );
 }
 

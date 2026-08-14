@@ -1,21 +1,19 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { Workflow } from "lucide-react";
-
-import { EmptyState } from "@/components/shared/empty-state";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-import { LogStream } from "@/features/videos/components/log-stream";
-import { PipelinePanel } from "@/features/videos/components/pipeline-panel";
+import { PipelineRun } from "@/features/videos/components/pipeline-run";
 import { ScriptPanel } from "@/features/videos/components/script-panel";
-import { ShortsPanel } from "@/features/videos/components/shorts-panel";
+import { ShortsSection } from "@/features/videos/components/shorts-panel";
 import {
   TimelineFallback,
   TimelineSection,
 } from "@/features/videos/components/timeline-section";
-import { VideoSection } from "@/features/videos/components/video-section";
+import {
+  VideoSection,
+  type VideoSectionKey,
+} from "@/features/videos/components/video-section";
 import { StatusEventsList } from "@/features/videos/components/status-events-list";
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
@@ -27,6 +25,7 @@ import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
 import { shortsService } from "@/services/shorts.service";
 import { videoService } from "@/services/video.service";
+import { formatDuration } from "@/utils/format";
 import type { VideoStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = { title: "Video" };
@@ -75,65 +74,53 @@ async function resolveRenderPreview(
 }
 
 /**
- * The pipeline panel and its log stream, streamed in rather than blocking the
- * page. Both are fetched here on the server so the panel paints with real
- * stages and real log lines — the client's poll then takes over from that
+ * The pipeline section, streamed in rather than blocking the page. Both the
+ * state and the log are fetched here on the server so the panel paints with
+ * real stages and real log lines — the client's poll then takes over from that
  * state instead of flashing a placeholder that immediately flips.
+ *
+ * `PipelineRun` owns the section wrapper rather than the page, because the
+ * section's header has to stay live while the section is folded and only a
+ * client component can subscribe to the poll that makes it so. See its own
+ * comment.
  */
-async function PipelineSection({ userId, videoId }: { userId: string; videoId: string }) {
+async function PipelineSection({
+  userId,
+  videoId,
+  defaultOpen,
+}: {
+  userId: string;
+  videoId: string;
+  defaultOpen: boolean;
+}) {
   const [state, logs] = await Promise.all([
     pipelineService.getState(userId, videoId),
     pipelineService.getLogStream(userId, videoId),
   ]);
 
-  // Laid out the way a CI run is: the list of stages down the left, the log
-  // for the run beside it on the right. Stacked, the log sat below a panel
-  // tall enough to push it off screen, so watching a render meant scrolling
-  // down to the output and back up to see which stage produced it — the two
-  // halves of one question, kept apart.
-  //
-  // Collapses to a single column below `lg`, where side-by-side would give the
-  // log about forty characters a line and make it unreadable.
   return (
-    <div className="grid gap-4 lg:grid-cols-5">
-      <div className="lg:col-span-2">
-        <PipelinePanel videoId={videoId} initialState={state} />
-      </div>
-      <div className="lg:col-span-3">
-        <LogStream videoId={videoId} initialLogs={logs} initialPipelineState={state} />
-      </div>
-    </div>
+    <PipelineRun
+      videoId={videoId}
+      initialState={state}
+      initialLogs={logs}
+      defaultOpen={defaultOpen}
+    />
   );
 }
 
 /**
- * The player. Its render source resolves via a disk `stat` (`statRenderFile`
- * above), which is why this is behind its own boundary rather than holding
- * up the page.
- *
- * Both paths stay on the server: the browser is handed this app's own
- * streaming route for the render and this app's own narration route for the
- * audio, never a raw storage path. Passing a storage path to the client is
- * how private storage ends up de facto public.
- */
-type SectionKey =
-  | "pipeline"
-  | "preview"
-  | "script"
-  | "timeline"
-  | "shorts"
-  | "events";
-
-/**
  * The page's section order, keyed by what the video is currently doing.
  *
- * Every arrangement contains the same six sections — nothing is hidden — but
- * the one an operator opened the page for goes first. The alternative, a fixed
+ * Every arrangement contains the same sections — nothing is hidden — but the
+ * one an operator opened the page for goes first. The alternative, a fixed
  * order, means somebody always scrolls past two things they do not want; and
  * because the script panel is the tallest block on the page, "somebody" was
  * everyone whose video had already been written.
  */
-const ORDERED_SECTIONS: Record<"writing" | "running" | "finished", SectionKey[]> = {
+const ORDERED_SECTIONS: Record<
+  "writing" | "running" | "finished",
+  VideoSectionKey[]
+> = {
   // The run leads every arrangement — it is the status line for the whole
   // video, and an operator opening this page usually wants to know where it
   // got to before anything else. A draft's is an empty state saying nothing
@@ -149,9 +136,43 @@ const ORDERED_SECTIONS: Record<"writing" | "running" | "finished", SectionKey[]>
   finished: ["pipeline", "preview", "timeline", "shorts", "script", "events"],
 };
 
+/**
+ * Which sections start open, by the same reasoning the order above uses.
+ *
+ * Ordering solved half the problem — the section you came for is at the top —
+ * and this is the other half: it is also already open, and the five you did
+ * not come for are one line each instead of a screen each. The rule that makes
+ * this safe rather than annoying is that folding must never add a click to the
+ * common path, so every arrangement opens exactly the section its ordering
+ * already decided to lead with.
+ *
+ * An operator's own choice, once they make one, outranks all of this — see
+ * `VideoSection`'s localStorage handling.
+ */
+const DEFAULT_OPEN_SECTIONS: Record<
+  keyof typeof ORDERED_SECTIONS,
+  VideoSectionKey[]
+> = {
+  // A draft's pipeline has nothing in it and its player is empty, so writing
+  // is the only thing that can happen and the script is the only thing worth
+  // opening.
+  writing: ["script"],
+  // Mid-flight the run is the only part still changing. Note that the pipeline
+  // section also forces itself open whenever a run starts, so this default
+  // only matters for the first paint.
+  running: ["pipeline"],
+  // Watching it is the point, and the timeline is how you find the moment you
+  // disliked — the two things a finished video is opened for.
+  finished: ["preview", "timeline"],
+};
+
 function sectionOrderFor(status: VideoStatus): keyof typeof ORDERED_SECTIONS {
   if (status === "DRAFT") return "writing";
-  if (status === "QUEUED" || status === "GENERATING" || status === "RENDERING") {
+  if (
+    status === "QUEUED" ||
+    status === "GENERATING" ||
+    status === "RENDERING"
+  ) {
     return "running";
   }
 
@@ -174,7 +195,9 @@ async function PreviewSection({
   youtubeVideoId: string | null;
 }) {
   const [render, audio] = await Promise.all([
-    renderOutputUrl ? resolveRenderPreview(videoId, renderOutputUrl) : Promise.resolve(null),
+    renderOutputUrl
+      ? resolveRenderPreview(videoId, renderOutputUrl)
+      : Promise.resolve(null),
     audioPath ? resolvePreviewAsset(videoId, audioPath) : Promise.resolve(null),
   ]);
 
@@ -189,52 +212,67 @@ async function PreviewSection({
 }
 
 /**
- * The shorts panel, with its list resolved on the server so it paints with
- * real rows instead of flashing an empty state the client's first poll would
- * immediately replace. `list` throws for a video this user does not own, which
- * cannot happen here — the page has already resolved the video for this user —
- * so a failure is an infrastructure one and falls back to an empty list rather
- * than taking the page down.
+ * The shorts list, resolved on the server so the panel paints with real rows
+ * instead of flashing an empty state the client's first poll would immediately
+ * replace. `list` throws for a video this user does not own, which cannot
+ * happen here — the page has already resolved the video for this user — so a
+ * failure is an infrastructure one and falls back to an empty list rather than
+ * taking the page down.
  */
-async function ShortsSection({
+async function ShortsSectionData({
   userId,
   videoId,
   status,
+  defaultOpen,
 }: {
   userId: string;
   videoId: string;
   status: VideoStatus;
+  defaultOpen: boolean;
 }) {
   const shorts = await shortsService.list(userId, videoId).catch(() => []);
 
-  return <ShortsPanel videoId={videoId} status={status} initialShorts={shorts} />;
-}
-
-/** Mirrors PipelinePanel's card so the layout doesn't jump when it lands. */
-function PipelineFallback() {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
-        <div className="space-y-2">
-          <Skeleton className="h-5 w-40" />
-          <Skeleton className="h-4 w-56" />
-        </div>
-        <Skeleton className="h-8 w-24" />
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {Array.from({ length: 5 }, (_, index) => (
-          <div key={index} className="flex items-center gap-3">
-            <Skeleton className="size-4 rounded-full" />
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-4 flex-1" />
-          </div>
-        ))}
-      </CardContent>
-    </Card>
+    <ShortsSection
+      videoId={videoId}
+      status={status}
+      initialShorts={shorts}
+      defaultOpen={defaultOpen}
+    />
   );
 }
 
-/** Mirrors VideoPreview: a 16:9 player beside the narration card. */
+/**
+ * Mirrors the pipeline section closely enough that the page does not jump when
+ * the real one lands: the same header bar, then the stage rail beside the log.
+ * The stage placeholders are deliberately inert grey — a shimmer here would be
+ * animating over stages whose status is not merely unknown to the operator but
+ * unknown to this process.
+ */
+function PipelineFallback() {
+  return (
+    <div className="bg-card ring-foreground/10 overflow-hidden rounded-xl ring-1">
+      <div className="flex items-center gap-2.5 px-4 py-3">
+        <Skeleton className="size-4 rounded-sm" />
+        <Skeleton className="h-4 w-20" />
+        <Skeleton className="ml-auto h-3 w-28" />
+      </div>
+      <div className="border-foreground/10 grid gap-4 border-t px-4 py-4 lg:grid-cols-5">
+        <div className="space-y-3 lg:col-span-2">
+          {Array.from({ length: 5 }, (_unused, index) => (
+            <div key={index} className="flex items-center gap-3">
+              <Skeleton className="size-4 rounded-full" />
+              <Skeleton className="h-4 w-24" />
+            </div>
+          ))}
+        </div>
+        <Skeleton className="h-40 w-full lg:col-span-3" />
+      </div>
+    </div>
+  );
+}
+
+/** Mirrors VideoPreview: a 16:9 player beside the narration block. */
 function PreviewFallback() {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
@@ -244,7 +282,16 @@ function PreviewFallback() {
   );
 }
 
-export default async function VideoDetailPage({ params }: VideoDetailPageProps) {
+/** Renders always land at 1920x1080 — WIDTH/HEIGHT are hardcoded in the render
+ * pipeline (ffmpeg-command.ts), so this is a fixed label rather than per-video
+ * metadata pulled from a column. Duplicated from `VideoPreview` deliberately:
+ * the section header needs it before that component is even reached, and one
+ * shared constant would mean this server component importing a client one. */
+const RENDER_RESOLUTION = "1920×1080";
+
+export default async function VideoDetailPage({
+  params,
+}: VideoDetailPageProps) {
   const user = await requireUser();
   const { id } = await params;
 
@@ -261,7 +308,22 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
   const activeVersion = script?.activeVersion ?? null;
   const versions = script?.versions ?? [];
 
-  const renderOutputUrl = video.renderJobs[0]?.outputUrl;
+  const renderOutputUrl = video.renderJobs[0]?.outputUrl ?? null;
+  const audioPath = video.voiceOver?.audioUrl ?? null;
+  const youtubeVideoId = video.publication?.youtubeVideoId ?? null;
+  const durationSeconds = video.voiceOver?.durationSeconds ?? null;
+  const durationLabel =
+    durationSeconds != null ? formatDuration(durationSeconds) : null;
+
+  // Whether there is anything at all to play. Checked here rather than left to
+  // `VideoPreview` returning null, because a section whose header says
+  // "Preview" and whose body is empty is worse than no section: the whole
+  // point of a folded header is that it is a promise about what is inside.
+  const hasPreview = Boolean(renderOutputUrl || audioPath || youtubeVideoId);
+
+  const arrangement = sectionOrderFor(video.status);
+  const defaultOpen = DEFAULT_OPEN_SECTIONS[arrangement];
+  const isOpenByDefault = (key: VideoSectionKey) => defaultOpen.includes(key);
 
   return (
     <>
@@ -272,70 +334,84 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         projectName={video.project.name}
         wordCount={activeVersion?.wordCount ?? 0}
         channelName={video.project.channel?.title ?? null}
-        youtubeVideoId={video.publication?.youtubeVideoId ?? null}
+        youtubeVideoId={youtubeVideoId}
       />
 
-      {/* Everything about the video on one page, in the order its current state
-       * makes useful: a draft leads with the script because writing is the only
-       * thing that can happen to it; a running video leads with the pipeline
-       * because that is the only part still changing; a finished one leads with
-       * the player because watching it is the point.
+      {/* Everything about the video on one page, folded, in the order its
+       * current state makes useful: a draft leads with the script because
+       * writing is the only thing that can happen to it; a running video leads
+       * with the pipeline because that is the only part still changing; a
+       * finished one leads with the player because watching it is the point.
        *
-       * This replaced a tabbed version. Tabs did solve a real problem — a 480px
-       * script textarea sat between the pipeline and the shorts panel, so
-       * checking a render meant scrolling past a script nobody was editing —
-       * and simply removing them would bring that straight back. Two things
-       * stop it: the order below moves the section you came for to the top, and
-       * `ScriptPanel` collapses to a summary once the script is locked, which is
-       * exactly when that textarea was costing everyone else their place.
+       * This replaced a tabbed version, and then a stack of six always-open
+       * cards. Tabs solved a real problem — a 480px script textarea sat between
+       * the pipeline and the shorts panel, so checking a render meant scrolling
+       * past a script nobody was editing — but they hid five sixths of the video
+       * behind a click each. The six open cards brought the scrolling back. What
+       * is here now is the pair that actually works together: the section you
+       * came for is both first *and* already open, and the other five cost one
+       * line each while still saying enough in that line to be worth not
+       * opening.
        *
-       * Every section is in the DOM from the first byte. `VideoSection` only
-       * animates the arrival, so find-in-page, screen readers and crawlers see
-       * a whole page regardless of whether the animation runs at all. */}
+       * Every section is in the DOM from the first byte whether open or shut
+       * (see `VideoSection` on `hidden="until-found"`), so find-in-page, screen
+       * readers and crawlers see a whole page regardless. */}
       <div className="flex flex-col gap-4">
-        {ORDERED_SECTIONS[sectionOrderFor(video.status)].map((key, index) => {
-          // The first two blocks are what the operator came for, so they are
-          // present immediately rather than fading in under their eyes.
-          const immediate = index < 2;
-
+        {ORDERED_SECTIONS[arrangement].map((key) => {
           if (key === "pipeline") {
-            return (
-              <VideoSection key={key} immediate={immediate}>
-                {video.status === "DRAFT" ? (
-                  // One line, not a full EmptyState. A draft's pipeline has
-                  // nothing to report and this sits at the top of the page, so
-                  // a centred icon-and-paragraph card spent 360px of the first
-                  // screen saying "nothing here" and pushed the script — the
-                  // only thing an operator can act on — below the fold.
-                  <Card>
-                    <CardContent className="text-muted-foreground flex items-center gap-3 py-4 text-sm">
-                      <Workflow className="size-4 shrink-0" />
-                      <p className="text-pretty">
-                        Nothing has run yet. Approving the script starts
-                        narration, footage and the render, and their progress
-                        appears here.
-                      </p>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  <Suspense fallback={<PipelineFallback />}>
-                    <PipelineSection userId={user.id} videoId={video.id} />
-                  </Suspense>
-                )}
+            return video.status === "DRAFT" ? (
+              // A draft's pipeline has nothing to report, so the section says
+              // so in its own header and has a single sentence behind it. The
+              // alternative — a centred icon-and-paragraph empty state — spent
+              // 360px of the first screen saying "nothing here".
+              <VideoSection
+                key={key}
+                id="pipeline"
+                title="Pipeline"
+                summary="Not started"
+                defaultOpen={isOpenByDefault(key)}
+              >
+                <p className="text-muted-foreground max-w-prose text-sm text-pretty">
+                  Nothing has run yet. Approving the script starts narration,
+                  footage and the render, and their progress appears here.
+                </p>
               </VideoSection>
+            ) : (
+              <Suspense key={key} fallback={<PipelineFallback />}>
+                <PipelineSection
+                  userId={user.id}
+                  videoId={video.id}
+                  defaultOpen={isOpenByDefault(key)}
+                />
+              </Suspense>
             );
           }
 
           if (key === "preview") {
+            // Dropped entirely rather than rendered empty — see `hasPreview`.
+            if (!hasPreview) return null;
+
             return (
-              <VideoSection key={key} immediate={immediate}>
+              <VideoSection
+                key={key}
+                id="preview"
+                title="Preview"
+                summary={
+                  renderOutputUrl || youtubeVideoId
+                    ? [durationLabel, RENDER_RESOLUTION]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : "Narration only"
+                }
+                defaultOpen={isOpenByDefault(key)}
+              >
                 <Suspense fallback={<PreviewFallback />}>
                   <PreviewSection
                     videoId={video.id}
-                    renderOutputUrl={renderOutputUrl ?? null}
-                    audioPath={video.voiceOver?.audioUrl ?? null}
-                    durationSeconds={video.voiceOver?.durationSeconds ?? null}
-                    youtubeVideoId={video.publication?.youtubeVideoId ?? null}
+                    renderOutputUrl={renderOutputUrl}
+                    audioPath={audioPath}
+                    durationSeconds={durationSeconds}
+                    youtubeVideoId={youtubeVideoId}
                   />
                 </Suspense>
               </VideoSection>
@@ -344,10 +420,23 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
 
           if (key === "script") {
             return (
-              // The script keeps its two-thirds column rather than going full
-              // width: a monospace textarea spanning an ultrawide monitor gives
-              // lines far too long to read back as spoken prose.
-              <VideoSection key={key} immediate={immediate} className="grid gap-4 lg:grid-cols-3">
+              <VideoSection
+                key={key}
+                id="script"
+                title="Script"
+                summary={
+                  activeVersion
+                    ? `v${activeVersion.version} · ${activeVersion.wordCount} words${
+                        video.status === "DRAFT" ? "" : " · locked"
+                      }`
+                    : "Not written"
+                }
+                defaultOpen={isOpenByDefault(key)}
+                // The script keeps its two-thirds column rather than going full
+                // width: a monospace textarea spanning an ultrawide monitor
+                // gives lines far too long to read back as spoken prose.
+                bodyClassName="grid gap-4 lg:grid-cols-3"
+              >
                 <div className="lg:col-span-2">
                   <ScriptPanel
                     videoId={video.id}
@@ -367,7 +456,24 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
 
           if (key === "timeline") {
             return (
-              <VideoSection key={key} immediate={immediate}>
+              <VideoSection
+                key={key}
+                id="timeline"
+                title="Timeline"
+                // The section count would be the better summary, but it only
+                // exists inside `timelineService.get`, which this page
+                // deliberately does not await — the whole reason the timeline
+                // is behind its own Suspense boundary is that it reads storage
+                // and stats the render. The duration is what the page already
+                // knows for free, and it answers the same question: every
+                // timing on the timeline is derived from the narration's
+                // alignment, so a video with no narration has no timings yet
+                // and this says which of the two it is. Never left blank — a
+                // header with nothing in it is the one thing a collapsed
+                // section must not be.
+                summary={durationLabel ?? "Awaiting narration"}
+                defaultOpen={isOpenByDefault(key)}
+              >
                 <Suspense fallback={<TimelineFallback />}>
                   <TimelineSection userId={user.id} videoId={video.id} />
                 </Suspense>
@@ -377,19 +483,32 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
 
           if (key === "shorts") {
             return (
-              // Shorts are cut out of a finished render, so this is only ever
-              // useful once one exists; the panel explains that rather than
-              // vanishing, so an operator can see the feature is there.
-              <VideoSection key={key} immediate={immediate}>
-                <Suspense fallback={<Skeleton className="h-40 w-full" />}>
-                  <ShortsSection userId={user.id} videoId={video.id} status={video.status} />
-                </Suspense>
-              </VideoSection>
+              <Suspense
+                key={key}
+                fallback={<Skeleton className="h-12 w-full rounded-xl" />}
+              >
+                <ShortsSectionData
+                  userId={user.id}
+                  videoId={video.id}
+                  status={video.status}
+                  defaultOpen={isOpenByDefault(key)}
+                />
+              </Suspense>
             );
           }
 
           return (
-            <VideoSection key={key} immediate={immediate}>
+            <VideoSection
+              key={key}
+              id="events"
+              title="Activity"
+              summary={
+                video.statusEvents.length > 0
+                  ? `${video.statusEvents.length} event${video.statusEvents.length === 1 ? "" : "s"}`
+                  : "No events"
+              }
+              defaultOpen={isOpenByDefault(key)}
+            >
               <StatusEventsList events={video.statusEvents} />
             </VideoSection>
           );

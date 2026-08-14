@@ -1,32 +1,24 @@
 "use client";
 
-import { useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Ban,
   Circle,
   CircleCheck,
-  CircleDashed,
+  CircleSlash,
   CircleX,
   Clock,
   Hourglass,
   Loader2,
   Play,
   RotateCw,
-  Terminal,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
   cancelPipelineAction,
@@ -34,6 +26,7 @@ import {
   retryPipelineAction,
   startPipelineAction,
 } from "@/actions/video.action";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 import type { PipelineStage, PipelineState } from "@/services/pipeline.service";
 import { formatDuration } from "@/utils/format";
@@ -83,9 +76,9 @@ function QueuedNotice({
         <AlertDescription>
           It was picked up {attempts} times and failed each time, which is every
           attempt the queue allows. It will not be tried again on its own, and
-          waiting will not change that. Open the logs below to see how the last
-          attempt failed — whatever stopped it will stop it again until it is
-          fixed.
+          waiting will not change that. Open the logs beside this to see how the
+          last attempt failed — whatever stopped it will stop it again until it
+          is fixed.
         </AlertDescription>
       </Alert>
     );
@@ -157,12 +150,13 @@ async function fetchPipelineState(videoId: string): Promise<PipelineState> {
 
 /**
  * The one place `["pipeline-state", videoId]` is fetched and polled.
- * Exported so the log stream (log-stream.tsx) can read the same `isActive`/
- * `isTerminal` signal to gate its own poll instead of re-deriving them or
- * running an independently-tuned interval — see that file's comment. Calling
- * this from two components does not mean two competing polling loops: React
- * Query keys a single underlying query by `queryKey`, so both observers share
- * one in-flight fetch and one scheduled refetch per tick, not one each.
+ * Exported so the log stream (log-stream.tsx) and the section header
+ * (pipeline-run.tsx) can read the same `isActive`/`isTerminal` signal to gate
+ * their own behaviour instead of re-deriving it or running an
+ * independently-tuned interval. Calling this from several components does not
+ * mean several competing polling loops: React Query keys a single underlying
+ * query by `queryKey`, so every observer shares one in-flight fetch and one
+ * scheduled refetch per tick, not one each.
  */
 export function usePipelineState(videoId: string, initialState: PipelineState) {
   return useQuery({
@@ -193,6 +187,44 @@ export function usePipelineState(videoId: string, initialState: PipelineState) {
   });
 }
 
+/**
+ * The render's elapsed time, advancing between polls.
+ *
+ * `elapsedSeconds` arrives every two seconds and then sits still, so a clock
+ * driven straight off it visibly stutters — it is the one number on the page
+ * an operator watches second by second, and a two-second step reads as the
+ * page having frozen. This adds the wall-clock time since that number arrived,
+ * which is not an estimate: the server said "N seconds as of `dataUpdatedAt`",
+ * and time has genuinely passed since.
+ *
+ * Deliberately *not* a second polling loop. `setInterval` here only re-renders
+ * this component; it never touches the network, and it stops the moment the
+ * run does — a finished render's elapsed time is frozen, which is the truth.
+ */
+function useLiveElapsedSeconds(
+  elapsedSeconds: number | null,
+  dataUpdatedAt: number,
+  ticking: boolean,
+): number | null {
+  const [now, setNow] = useState(dataUpdatedAt);
+
+  useEffect(() => {
+    if (!ticking) return;
+
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+
+    return () => clearInterval(id);
+  }, [ticking]);
+
+  if (elapsedSeconds === null) return null;
+  if (!ticking) return elapsedSeconds;
+
+  // `Math.max(0, …)` because a clock skew between this browser and the server
+  // must never make the timer run backwards.
+  return elapsedSeconds + Math.max(0, Math.floor((now - dataUpdatedAt) / 1000));
+}
+
 const STATUS_ICON: Record<PipelineStage["status"], typeof Circle> = {
   pending: Circle,
   running: Loader2,
@@ -202,66 +234,234 @@ const STATUS_ICON: Record<PipelineStage["status"], typeof Circle> = {
   // `PipelineStageStatus`'s own comment on `skipped`) — visually distinct
   // from both `pending` (implies more is coming) and `failed` (implies an
   // error worth investigating), since it's neither.
-  skipped: CircleDashed,
+  skipped: CircleSlash,
 };
 
 const STATUS_ICON_CLASS: Record<PipelineStage["status"], string> = {
-  pending: "text-muted-foreground",
+  // A third of the way to the foreground: enough to read as an outline in the
+  // rail, quiet enough that seven of them do not compete with the one stage
+  // that is actually doing something.
+  pending: "text-muted-foreground/60",
   running: "text-sky-600 dark:text-sky-400",
   done: "text-emerald-600 dark:text-emerald-400",
   failed: "text-destructive",
-  skipped: "text-muted-foreground",
+  skipped: "text-muted-foreground/60",
 };
 
+/** What a screen reader hears in place of the glyph. The icons are the only
+ * thing distinguishing seven otherwise identical rows, and an icon is not
+ * text. */
+const STATUS_LABEL: Record<PipelineStage["status"], string> = {
+  pending: "Not started",
+  running: "Running",
+  done: "Done",
+  failed: "Failed",
+  skipped: "Skipped",
+};
+
+/**
+ * The bar under the running render.
+ *
+ * Rendered for exactly one condition: a stage that is running *and* has a real
+ * percentage behind it, which today means the render and nothing else
+ * (`RenderJob.progress`). There is deliberately no indeterminate counterpart
+ * for the other six stages. A bar that sweeps still reads as a bar — people
+ * take a horizontal indicator to mean "this far along", and an animated one to
+ * additionally mean "at this rate" — so putting one under a stage with no
+ * progress signal invents both. What replaces it is what every CI tool
+ * actually does: the spinning glyph on the row says *this* one is working, and
+ * the list of seven with three ticked says how far the run has got. Both are
+ * facts the server sent.
+ */
+function StageProgress({ label, progress }: { label: string; progress: number }) {
+  return (
+    // Radix renders this as `role="progressbar"`, and a progressbar with no
+    // accessible name is announced as a bare percentage with nothing to
+    // attach it to. The bar is visually tied to the stage row above it by
+    // its indent alone, which is exactly the association a screen reader
+    // cannot see. `aria-valuetext` overrides the default "N percent" with
+    // wording that says what is at N percent.
+    //
+    // Note this is not a live region and must not become one: a progressbar's
+    // value changes are not announced, by design. The one spoken update on
+    // this panel is the stage-transition `role="status"` at the bottom.
+    <Progress
+      value={progress}
+      aria-label={`${label} progress`}
+      aria-valuetext={`${label}: ${Math.round(progress)}% complete`}
+      className="h-1"
+    />
+  );
+}
+
+/**
+ * One stage of the run, laid out the way every CI tool lays a step out: a
+ * status glyph on a vertical rail, the step name beside it, and whatever that
+ * step knows about itself trailing off to the right.
+ *
+ * The rail matters more than it looks. Seven flat rows of icon-and-label read
+ * as a checklist — a set of independent things — when what they actually are
+ * is one ordered run, where a stage cannot start until the one above it
+ * finished. The connecting line is what says so, and colouring the segment
+ * above a completed stage is what turns it into a progress indicator that
+ * cannot be wrong: it is drawn from the stage statuses themselves.
+ */
 function StageRow({
   stage,
+  isLast,
+  isPrecededByDone,
   progress,
   elapsedSeconds,
+  reduced,
 }: {
   stage: PipelineStage;
+  isLast: boolean;
+  isPrecededByDone: boolean;
+  /** The render's percentage, or null when there is no live percentage to
+   * show. Only ever meaningful for the render stage — every other stage is
+   * handed `null` by the caller rather than an inherited number. */
   progress: number | null;
+  /** The render's elapsed seconds, live. Same rule: only the render stage
+   * has a real start timestamp behind it, so only the render stage is given
+   * one. Inventing a duration for the others by timing the poll that first
+   * showed them running would be a number about this browser, not the run. */
   elapsedSeconds: number | null;
+  reduced: boolean;
 }) {
   const Icon = STATUS_ICON[stage.status];
-  // Only the render row has anything to show here — it's the only stage with
-  // a live progress signal (RenderJob.progress) and a real start timestamp.
-  const showRenderExtras = stage.key === "render";
+  const isRunning = stage.status === "running";
+  // The render stage's server-side `detail` is built from exactly these two
+  // numbers — it reads "42% · 5:29 elapsed" (see pipeline.service.ts) — so
+  // showing it alongside the bar and the timer prints the same fact three
+  // times. Worse, the detail is frozen between polls while the timer ticks, so
+  // the row showed "5:29 elapsed" beside a clock reading 5:30 and invited the
+  // question of which one was lying. The richer pair wins and the sentence
+  // goes.
+  const showsOwnProgress = progress !== null && elapsedSeconds !== null;
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2 text-sm">
-        <Icon
+    <li className={cn("relative flex gap-3", !isLast && "pb-3")}>
+      {!isLast && (
+        <span
+          aria-hidden="true"
           className={cn(
-            "size-4 shrink-0",
-            STATUS_ICON_CLASS[stage.status],
-            stage.status === "running" && "animate-spin",
+            "absolute top-5 bottom-0 left-[7.5px] w-px",
+            // Green below a finished stage, muted below anything else. Drawn
+            // from the stage's own status so this can never disagree with the
+            // glyph sitting on it.
+            isPrecededByDone ? "bg-emerald-600/40 dark:bg-emerald-400/30" : "bg-foreground/10",
           )}
         />
-        <span className="font-medium">{stage.label}</span>
-        {stage.detail && (
-          <span className="text-muted-foreground text-xs">{stage.detail}</span>
+      )}
+
+      <span className="relative mt-0.5 flex size-4 shrink-0 items-center justify-center">
+        {isRunning && !reduced && (
+          // A halo on the glyph, not a shimmer over the row: it sits on the
+          // one stage the server says is running, so it can only ever be
+          // visible while something really is.
+          <span
+            aria-hidden="true"
+            className="absolute inline-flex size-4 animate-ping rounded-full bg-sky-500/40 dark:bg-sky-400/40"
+          />
         )}
-        {showRenderExtras && elapsedSeconds != null && (
-          <span className="text-muted-foreground ml-auto flex items-center gap-1 text-xs tabular-nums">
-            <Clock className="size-3" />
-            {formatDuration(elapsedSeconds)}
+        <Icon
+          aria-hidden="true"
+          className={cn(
+            "relative size-4",
+            STATUS_ICON_CLASS[stage.status],
+            // Both branches are tied to the same single condition —
+            // `status === "running"`, straight off the server's read model.
+            //
+            // Reduced motion swaps rotation for a slow opacity fade rather
+            // than freezing the glyph. A stationary spinner is exactly what a
+            // hung process looks like, so removing the animation outright
+            // trades a vestibular risk for a correctness bug; luminance change
+            // is not the kind of motion that causes the problem.
+            isRunning && (reduced ? "animate-pulse" : "animate-spin"),
+          )}
+        />
+      </span>
+
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span
+            className={cn(
+              "text-sm font-medium",
+              // A stage nothing has reached yet is context, not content. Full
+              // contrast on all seven made the row that mattered impossible to
+              // pick out at a glance, which is the whole job of this list.
+              stage.status === "pending" && "text-muted-foreground",
+            )}
+          >
+            {stage.label}
           </span>
+          <span className="sr-only">{STATUS_LABEL[stage.status]}</span>
+          {stage.detail && !showsOwnProgress && (
+            <span className="text-muted-foreground min-w-0 text-xs break-words">
+              {stage.detail}
+            </span>
+          )}
+          {isRunning && progress !== null && (
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {Math.round(progress)}%
+            </span>
+          )}
+          {elapsedSeconds != null && (
+            // `role="timer"` carries an implicit `aria-live: off`, which is
+            // the point: this number changes every second and a screen reader
+            // announcing each tick would make the page unusable. It stays
+            // queryable on demand, and `aria-atomic` means querying it reads
+            // "4:12" rather than whichever digit last changed.
+            <span
+              role="timer"
+              aria-atomic="true"
+              className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1 text-xs tabular-nums"
+            >
+              <Clock aria-hidden="true" className="size-3" />
+              <span className="sr-only">Elapsed </span>
+              {formatDuration(elapsedSeconds)}
+            </span>
+          )}
+        </div>
+
+        {isRunning && progress !== null && (
+          <StageProgress label={stage.label} progress={progress} />
         )}
       </div>
-      {showRenderExtras && stage.status === "running" && (
-        // Radix renders this as `role="progressbar"`, and a progressbar with no
-        // accessible name is announced as a bare percentage with nothing to
-        // attach it to. The bar is visually tied to the stage row above it by
-        // its indent alone, which is exactly the association a screen reader
-        // cannot see. `aria-valuetext` overrides the default "N percent" with
-        // wording that says what is at N percent.
-        <Progress
-          value={progress ?? 0}
-          aria-label={`${stage.label} progress`}
-          aria-valuetext={`${stage.label}: ${Math.round(progress ?? 0)}% complete`}
-          className="ml-6 h-1.5"
+    </li>
+  );
+}
+
+/**
+ * The seven-segment strip above the stage list.
+ *
+ * Deliberately not a percentage bar. "Three of seven stages done" is real,
+ * but turning it into 43% would claim the stages are the same size, and they
+ * are not — the render alone routinely outlasts the other six put together.
+ * One segment per stage, coloured by that stage's own status, says exactly as
+ * much as the data supports and no more, and it stays readable at a glance
+ * from across a desk while a render runs.
+ */
+function StageStrip({ stages }: { stages: PipelineStage[] }) {
+  return (
+    // Not animated, even for the running segment. The spinning glyph on the
+    // stage row below is already the one thing on this panel saying "in
+    // flight"; a second animation for the same fact competes with it rather
+    // than reinforcing it, and two moving things on one card is how a status
+    // panel starts feeling like an advert.
+    <div aria-hidden="true" className="flex gap-1">
+      {stages.map((stage) => (
+        <span
+          key={stage.key}
+          className={cn(
+            "h-1 flex-1 rounded-full",
+            stage.status === "done" && "bg-emerald-600/70 dark:bg-emerald-400/60",
+            stage.status === "running" && "bg-sky-500 dark:bg-sky-400",
+            stage.status === "failed" && "bg-destructive",
+            (stage.status === "pending" || stage.status === "skipped") && "bg-foreground/10",
+          )}
         />
-      )}
+      ))}
     </div>
   );
 }
@@ -340,7 +540,7 @@ function PipelineControls({ videoId, state }: { videoId: string; state: Pipeline
   if (state.isFailed) {
     if (state.attemptsExhausted) {
       return (
-        <p className="text-destructive max-w-56 text-right text-xs">
+        <p className="text-destructive max-w-56 text-xs">
           Failed {state.attempts} time{state.attempts === 1 ? "" : "s"} — the maximum. Fix the
           issue before trying again.
         </p>
@@ -384,6 +584,24 @@ function PipelineControls({ videoId, state }: { videoId: string; state: Pipeline
   return null;
 }
 
+/** True while nothing is moving and nothing has claimed the video — the
+ * `QUEUED`-with-no-worker case. Excludes `isFinalizing` deliberately: that
+ * window has the same `!isTerminal && !isActive` shape, but showing "waiting
+ * for the render service" would be actively wrong — a worker already picked
+ * this video up and is finishing metadata/thumbnail, not waiting to start. */
+function isIdleQueued(state: PipelineState): boolean {
+  return !state.isTerminal && !state.isActive && !state.isFinalizing;
+}
+
+/**
+ * The run itself: the stage rail, its controls, and nothing else.
+ *
+ * The embedded "Render log" accordion that used to live at the bottom of this
+ * card is gone. It showed the same lines as the log panel now sitting directly
+ * beside it — two copies of one stream, one of them behind a click — and its
+ * only reason for existing was that the log used to be somewhere else on the
+ * page entirely.
+ */
 export function PipelinePanel({
   videoId,
   initialState,
@@ -391,25 +609,22 @@ export function PipelinePanel({
   videoId: string;
   initialState: PipelineState;
 }) {
-  const { data } = usePipelineState(videoId, initialState);
+  const reduced = usePrefersReducedMotion();
+  const { data, dataUpdatedAt } = usePipelineState(videoId, initialState);
 
   const state = data ?? initialState;
-  // Excludes `isFinalizing` deliberately: that window has the same
-  // `!isTerminal && !isActive` shape as an idle `QUEUED` video, but showing
-  // "waiting for the render service" would be actively wrong — a worker
-  // already picked this video up and is finishing metadata/thumbnail, not
-  // waiting to start. The stage list itself (below) is what should render
-  // for it, same as any other in-flight state.
-  const isIdleQueued = !state.isTerminal && !state.isActive && !state.isFinalizing;
+  const runningIndex = state.stages.findIndex((stage) => stage.status === "running");
+  const elapsedSeconds = useLiveElapsedSeconds(
+    state.elapsedSeconds,
+    dataUpdatedAt,
+    state.isActive,
+  );
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-        <div className="space-y-1">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <Terminal className="size-4" />
-            Pipeline progress
-          </CardTitle>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 space-y-1">
+          <RunHeadline state={state} elapsedSeconds={elapsedSeconds} reduced={reduced} />
           {state.attempts > 0 && (
             <p className="text-muted-foreground text-xs">
               Attempt {state.attempts} of {state.maxAttempts}
@@ -417,46 +632,195 @@ export function PipelinePanel({
           )}
         </div>
         <PipelineControls videoId={videoId} state={state} />
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {isIdleQueued ? (
-          // A row of pending-grey dots reads as "broken", not "waiting" — say
-          // plainly what's actually going on instead of leaving the operator
-          // to guess whether this is stuck or just hasn't been picked up yet.
-          <QueuedNotice
-            attempts={state.attempts}
-            maxAttempts={state.maxAttempts}
-            attemptsExhausted={state.attemptsExhausted}
-            queuedSeconds={state.queuedSeconds}
-          />
-        ) : (
-          <div className="space-y-3">
-            {state.stages.map((stage) => (
+      </div>
+
+      {isIdleQueued(state) ? (
+        // A row of pending-grey dots reads as "broken", not "waiting" — say
+        // plainly what's actually going on instead of leaving the operator
+        // to guess whether this is stuck or just hasn't been picked up yet.
+        <QueuedNotice
+          attempts={state.attempts}
+          maxAttempts={state.maxAttempts}
+          attemptsExhausted={state.attemptsExhausted}
+          queuedSeconds={state.queuedSeconds}
+        />
+      ) : (
+        <>
+          <StageStrip stages={state.stages} />
+          {/* A real list, because that is what seven ordered steps are, and
+              a screen reader announcing "list, 7 items" is the outline a
+              sighted operator gets from the rail. */}
+          <ol className="mt-3">
+            {state.stages.map((stage, index) => (
               <StageRow
                 key={stage.key}
                 stage={stage}
-                progress={state.progress}
-                elapsedSeconds={state.elapsedSeconds}
+                isLast={index === state.stages.length - 1}
+                isPrecededByDone={stage.status === "done"}
+                // Only the render stage carries a real percentage and a real
+                // start time; handing either to any other row would be this
+                // panel inventing data it does not have.
+                progress={stage.key === "render" ? state.progress : null}
+                elapsedSeconds={stage.key === "render" ? elapsedSeconds : null}
+                reduced={reduced}
               />
             ))}
-          </div>
-        )}
+          </ol>
+        </>
+      )}
 
-        {state.logs.length > 0 && (
-          <Accordion type="single" collapsible>
-            <AccordionItem value="logs" className="border-none">
-              <AccordionTrigger className="text-muted-foreground py-1.5 text-xs hover:no-underline">
-                Render log ({state.logs.length} lines)
-              </AccordionTrigger>
-              <AccordionContent>
-                <pre className="bg-muted/50 max-h-64 overflow-y-auto rounded-md p-2 font-mono text-xs whitespace-pre-wrap">
-                  {state.logs.map((line) => line.message).join("\n")}
-                </pre>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
+      {/* The one place this panel speaks. `role="status"` is implicitly a
+          polite, atomic live region with far better screen-reader support
+          than `role="log"`, and its content only changes when a stage does —
+          so an operator watching a ten-minute render hears one sentence per
+          transition rather than the log's firehose (see log-stream.tsx).
+          Rendered unconditionally, empty, because a live region has to be in
+          the DOM *before* it is written to for the update to be monitored;
+          mounting it at the moment a stage starts is how these silently never
+          announce anything. */}
+      <p role="status" aria-atomic="true" className="sr-only">
+        {runningIndex >= 0
+          ? `Stage ${runningIndex + 1} of ${state.stages.length}, ${state.stages[runningIndex].label}, running.`
+          : ""}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The one line that says where the run got to, in the panel and — through
+ * `PipelineSummary` below — in the section header when the section is folded
+ * away.
+ *
+ * Every branch is a distinct thing that happened, because the operator's next
+ * move differs for each: a failure needs the log, a stall needs the worker
+ * checking, a finished run needs nothing at all.
+ */
+function runHeadline(state: PipelineState, elapsedSeconds: number | null): {
+  text: string;
+  tone: "running" | "failed" | "done" | "idle";
+} {
+  if (state.isFailed) {
+    const failed = state.stages.find((stage) => stage.status === "failed");
+    return { text: failed ? `Failed at ${failed.label}` : "Failed", tone: "failed" };
+  }
+
+  const running = state.stages.find((stage) => stage.status === "running");
+
+  if (running) {
+    const parts = [running.label];
+    if (running.key === "render" && state.progress !== null) {
+      parts.push(`${Math.round(state.progress)}%`);
+    }
+    if (running.key === "render" && elapsedSeconds !== null) {
+      parts.push(formatDuration(elapsedSeconds));
+    }
+    return { text: parts.join(" · "), tone: "running" };
+  }
+
+  if (state.isFinalizing) {
+    return { text: "Finishing up", tone: "running" };
+  }
+
+  if (isIdleQueued(state)) {
+    return {
+      text:
+        state.queuedSeconds !== null && state.queuedSeconds > 0
+          ? `Queued ${formatDuration(state.queuedSeconds)} ago`
+          : "Queued",
+      tone: "idle",
+    };
+  }
+
+  const done = state.stages.filter((stage) => stage.status === "done").length;
+  const label = `${done} of ${state.stages.length} stages`;
+
+  return {
+    // The render's total is the number an operator actually quotes about a
+    // finished video, so it leads the summary whenever there is one.
+    text:
+      state.elapsedSeconds !== null
+        ? `${label} · rendered in ${formatDuration(state.elapsedSeconds)}`
+        : label,
+    tone: "done",
+  };
+}
+
+const TONE_DOT_CLASS: Record<"running" | "failed" | "done" | "idle", string> = {
+  running: "bg-sky-500 dark:bg-sky-400",
+  failed: "bg-destructive",
+  done: "bg-emerald-600 dark:bg-emerald-400",
+  idle: "bg-muted-foreground/50",
+};
+
+function RunHeadline({
+  state,
+  elapsedSeconds,
+  reduced,
+  className,
+}: {
+  state: PipelineState;
+  elapsedSeconds: number | null;
+  reduced: boolean;
+  className?: string;
+}) {
+  const { text, tone } = runHeadline(state, elapsedSeconds);
+
+  return (
+    <span className={cn("flex min-w-0 items-center gap-2", className)}>
+      <span className="relative flex size-2 shrink-0">
+        {tone === "running" && !reduced && (
+          // Pings only for `tone === "running"`, which `runHeadline` only
+          // returns when the server's own stage list has a running stage or
+          // the run is finalizing. Nothing here can pulse over a still run.
+          <span
+            aria-hidden="true"
+            className={cn(
+              "absolute inline-flex size-2 animate-ping rounded-full opacity-75",
+              TONE_DOT_CLASS[tone],
+            )}
+          />
         )}
-      </CardContent>
-    </Card>
+        <span
+          aria-hidden="true"
+          className={cn("relative inline-flex size-2 rounded-full", TONE_DOT_CLASS[tone])}
+        />
+      </span>
+      <span className="truncate text-sm tabular-nums">{text}</span>
+    </span>
+  );
+}
+
+/**
+ * The same headline, sized for a folded section header.
+ *
+ * Reads the shared `["pipeline-state", videoId]` query rather than being
+ * handed a snapshot, so a section an operator has folded away still tells the
+ * truth about a run that is moving underneath it — which is the entire reason
+ * a collapsed header is allowed to exist here at all.
+ */
+export function PipelineSummary({
+  videoId,
+  initialState,
+}: {
+  videoId: string;
+  initialState: PipelineState;
+}) {
+  const reduced = usePrefersReducedMotion();
+  const { data, dataUpdatedAt } = usePipelineState(videoId, initialState);
+  const state = data ?? initialState;
+  const elapsedSeconds = useLiveElapsedSeconds(
+    state.elapsedSeconds,
+    dataUpdatedAt,
+    state.isActive,
+  );
+
+  return (
+    <RunHeadline
+      state={state}
+      elapsedSeconds={elapsedSeconds}
+      reduced={reduced}
+      className="text-xs"
+    />
   );
 }

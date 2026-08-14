@@ -4,16 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CircleAlert,
   Clapperboard,
-  Film,
   Info,
   Replace,
   Unlink,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TimelineFootageDialog } from "@/features/videos/components/timeline-footage-dialog";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
@@ -87,7 +84,11 @@ function TimelineTrack({
   labelFor,
   onSeek,
 }: {
-  entries: { startSeconds: number; durationSeconds: number; visibleSeconds?: number }[];
+  entries: {
+    startSeconds: number;
+    durationSeconds: number;
+    visibleSeconds?: number;
+  }[];
   activeIndex: number;
   /** 0-1 through the active block. Drawn inside that block rather than as a
    *  playhead positioned along the whole strip, because a block widened to the
@@ -137,7 +138,9 @@ function TimelineTrack({
               className={cn(
                 "focus-visible:ring-ring/50 relative h-12 shrink-0 overflow-hidden rounded-sm",
                 "focus-visible:ring-[3px] focus-visible:outline-none",
-                isActive ? "bg-primary/25" : "bg-muted hover:bg-muted-foreground/20",
+                isActive
+                  ? "bg-primary/25"
+                  : "bg-muted hover:bg-muted-foreground/20",
                 unseen && "opacity-40",
                 !reducedMotion && "transition-colors",
               )}
@@ -152,9 +155,12 @@ function TimelineTrack({
                     // gap between ticks — and is dropped entirely for anyone
                     // who asked for less motion, leaving the same four honest
                     // steps a second.
-                    !reducedMotion && "transition-[width] duration-200 ease-linear",
+                    !reducedMotion &&
+                      "transition-[width] duration-200 ease-linear",
                   )}
-                  style={{ width: `${Math.min(100, Math.max(0, activeProgress * 100))}%` }}
+                  style={{
+                    width: `${Math.min(100, Math.max(0, activeProgress * 100))}%`,
+                  }}
                 />
               )}
               <span className="text-foreground/70 relative text-xs font-medium tabular-nums">
@@ -220,7 +226,8 @@ function SectionRow({
             {section.clip ? (
               <>
                 {clipName(section.clip)}
-                {section.clip.sizeBytes !== null && ` · ${formatBytes(section.clip.sizeBytes)}`}
+                {section.clip.sizeBytes !== null &&
+                  ` · ${formatBytes(section.clip.sizeBytes)}`}
               </>
             ) : clipsReclaimed ? (
               "clip deleted after publishing"
@@ -238,9 +245,10 @@ function SectionRow({
               <Unlink className="mt-0.5 size-3 shrink-0" aria-hidden />
               <span>
                 Also covers {section.absorbedOrphanCues.length} stretch
-                {section.absorbedOrphanCues.length === 1 ? "" : "es"} whose cue no longer
-                matches the script ({section.absorbedOrphanCues.join(", ")}) — this clip
-                plays under those words too.
+                {section.absorbedOrphanCues.length === 1 ? "" : "es"} whose cue
+                no longer matches the script (
+                {section.absorbedOrphanCues.join(", ")}) — this clip plays under
+                those words too.
               </span>
             </span>
           )}
@@ -249,9 +257,12 @@ function SectionRow({
             <span className="text-muted-foreground block text-xs">
               Same clip as section
               {section.clip.alsoUsedBySections.length === 1 ? " " : "s "}
-              {section.clip.alsoUsedBySections.map((other) => other + 1).join(", ")} — footage
-              collection copies a neighbour&apos;s clip when a section&apos;s own search finds
-              nothing, so this picture was not matched to these words.
+              {section.clip.alsoUsedBySections
+                .map((other) => other + 1)
+                .join(", ")}{" "}
+              — footage collection copies a neighbour&apos;s clip when a
+              section&apos;s own search finds nothing, so this picture was not
+              matched to these words.
             </span>
           )}
         </span>
@@ -304,7 +315,8 @@ function BlockRow({
           {clipName(block.clip)}
           <span className="text-muted-foreground block text-xs">
             {secondsLabel(block.durationSeconds)} on screen
-            {block.clip.sizeBytes !== null && ` · ${formatBytes(block.clip.sizeBytes)}`}
+            {block.clip.sizeBytes !== null &&
+              ` · ${formatBytes(block.clip.sizeBytes)}`}
             {block.visibleSeconds === 0 &&
               " · never seen — the render is cut to the narration's length before this plays"}
             {block.visibleSeconds > 0 &&
@@ -345,33 +357,39 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const reducedMotion = usePrefersReducedMotion();
   const [currentTime, setCurrentTime] = useState(0);
-  const [replacingSection, setReplacingSection] = useState<TimelineSection | null>(null);
+  const [replacingSection, setReplacingSection] =
+    useState<TimelineSection | null>(null);
 
-  const entries = timeline.mode === "pool" ? timeline.blocks : timeline.sections;
+  const entries =
+    timeline.mode === "pool" ? timeline.blocks : timeline.sections;
   const activeIndex = activeSectionAt(entries, currentTime);
   const activeEntry = activeIndex >= 0 ? entries[activeIndex] : null;
   const activeProgress = activeEntry
-    ? (currentTime - activeEntry.startSeconds) / Math.max(activeEntry.durationSeconds, 0.001)
+    ? (currentTime - activeEntry.startSeconds) /
+      Math.max(activeEntry.durationSeconds, 0.001)
     : 0;
 
-  const seekTo = useCallback((index: number) => {
-    const video = videoRef.current;
-    const entry = entries[index];
+  const seekTo = useCallback(
+    (index: number) => {
+      const video = videoRef.current;
+      const entry = entries[index];
 
-    if (!entry) {
-      return;
-    }
+      if (!entry) {
+        return;
+      }
 
-    // Optimistic, and only so the highlight moves the instant a section is
-    // clicked on a video that is paused — `seeked` below corrects it to
-    // whatever the element actually landed on, which for a keyframe-sparse
-    // encode is not always the second that was asked for.
-    setCurrentTime(entry.startSeconds);
+      // Optimistic, and only so the highlight moves the instant a section is
+      // clicked on a video that is paused — `seeked` below corrects it to
+      // whatever the element actually landed on, which for a keyframe-sparse
+      // encode is not always the second that was asked for.
+      setCurrentTime(entry.startSeconds);
 
-    if (video) {
-      video.currentTime = entry.startSeconds;
-    }
-  }, [entries]);
+      if (video) {
+        video.currentTime = entry.startSeconds;
+      }
+    },
+    [entries],
+  );
 
   const readTime = useCallback(() => {
     const video = videoRef.current;
@@ -396,30 +414,26 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
   );
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
-        <div className="space-y-1">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <Film className="size-4" />
-            Timeline
-          </CardTitle>
-          <p className="text-muted-foreground text-xs">
-            {timeline.mode === "sections"
-              ? "Every section of the script, sized by how long it holds the screen. Click one to jump there."
-              : timeline.mode === "pool"
-                ? "This video's clips, each holding the screen for an equal share of the narration."
-                : "Where each part of the script lands in the finished video."}
-          </p>
-        </div>
+    // Bare: the collapsible `VideoSection` around this supplies the card and
+    // the "Timeline" heading, so a card and title here would duplicate both.
+    <div className="space-y-4">
+      {/* Wraps rather than sitting on one row — at 375px the description and
+          the duration badge together overflow the screen. */}
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="text-muted-foreground max-w-prose text-xs">
+          {timeline.mode === "sections"
+            ? "Every section of the script, sized by how long it holds the screen. Click one to jump there."
+            : timeline.mode === "pool"
+              ? "This video's clips, each holding the screen for an equal share of the narration."
+              : "Where each part of the script lands in the finished video."}
+        </p>
 
-        {timeline.durationSeconds !== null && (
-          <Badge variant="outline" className="shrink-0 tabular-nums">
-            {formatDuration(timeline.durationSeconds)}
-          </Badge>
-        )}
-      </CardHeader>
+        {/* The duration badge that used to sit here is gone: the section
+            header above already carries it, and two copies of "3:20" one line
+            apart read as two different numbers that happen to match. */}
+      </div>
 
-      <CardContent className="space-y-4">
+      <div className="space-y-4">
         {timeline.renderUrl ? (
           // No <track>: captions are burned into the render itself.
           <video
@@ -445,7 +459,9 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
         )}
 
         {timeline.mode === "empty" ? (
-          <p className="text-muted-foreground text-sm">{timeline.emptyReason}</p>
+          <p className="text-muted-foreground text-sm">
+            {timeline.emptyReason}
+          </p>
         ) : (
           <>
             <TimelineTrack
@@ -460,13 +476,16 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
             {timeline.mode === "pool" && (
               <Alert>
                 <Info />
-                <AlertTitle>This video&apos;s footage is a shared pool</AlertTitle>
+                <AlertTitle>
+                  This video&apos;s footage is a shared pool
+                </AlertTitle>
                 <AlertDescription>
-                  Its clips were collected for the video&apos;s topic rather than for
-                  individual sections, which is how footage worked before per-section
-                  matching. Each clip simply holds the screen for an equal share of the
-                  narration and stands in no relation to what is being said, so there is
-                  no single section&apos;s clip to replace.
+                  Its clips were collected for the video&apos;s topic rather
+                  than for individual sections, which is how footage worked
+                  before per-section matching. Each clip simply holds the screen
+                  for an equal share of the narration and stands in no relation
+                  to what is being said, so there is no single section&apos;s
+                  clip to replace.
                 </AlertDescription>
               </Alert>
             )}
@@ -476,9 +495,10 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
                 <CircleAlert />
                 <AlertTitle>Some sections have no footage</AlertTitle>
                 <AlertDescription>
-                  Rendering is refused while that is true, and rightly — every section
-                  after a gap would play against the wrong words. Running footage
-                  collection again fills the gaps from the sections that did collect.
+                  Rendering is refused while that is true, and rightly — every
+                  section after a gap would play against the wrong words.
+                  Running footage collection again fills the gaps from the
+                  sections that did collect.
                 </AlertDescription>
               </Alert>
             )}
@@ -492,10 +512,11 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
                   {timeline.orphanedCueCount === 1 ? "es" : ""} the script
                 </AlertTitle>
                 <AlertDescription>
-                  A cue is found by the opening words of its section, so rewriting an
-                  opening drops that cue rather than guessing at where it went. Those
-                  stretches get no footage of their own — the section before them holds
-                  the screen through it. They are marked below.
+                  A cue is found by the opening words of its section, so
+                  rewriting an opening drops that cue rather than guessing at
+                  where it went. Those stretches get no footage of their own —
+                  the section before them holds the screen through it. They are
+                  marked below.
                 </AlertDescription>
               </Alert>
             )}
@@ -520,7 +541,8 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
                       reducedMotion={reducedMotion}
                       onSeek={() => seekTo(section.index)}
                       onReplace={
-                        timeline.swapBlockedReason === null && section.clip !== null
+                        timeline.swapBlockedReason === null &&
+                        section.clip !== null
                           ? () => setReplacingSection(section)
                           : null
                       }
@@ -529,9 +551,9 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
             </ul>
 
             {/* The one thing that must never be left implied. Every edit here is
-              * an edit to what the *next* render reads; the MP4 that exists is
-              * never touched, and the re-run is the pipeline's existing control,
-              * not one this card invents. */}
+             * an edit to what the *next* render reads; the MP4 that exists is
+             * never touched, and the re-run is the pipeline's existing control,
+             * not one this card invents. */}
             <p className="text-muted-foreground text-xs">
               {timeline.swapBlockedReason === null
                 ? `Replacing a section's footage changes what the next render uses — the video that exists now is unchanged until then. ${
@@ -543,7 +565,7 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
             </p>
           </>
         )}
-      </CardContent>
+      </div>
 
       {replacingSection && (
         <TimelineFootageDialog
@@ -556,6 +578,6 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
           }}
         />
       )}
-    </Card>
+    </div>
   );
 }
