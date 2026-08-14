@@ -9,6 +9,10 @@ import {
   Unlink,
 } from "lucide-react";
 
+import {
+  MediaPlayer,
+  type MediaPlayerHandle,
+} from "@/components/shared/media-player";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { TimelineFootageDialog } from "@/features/videos/components/timeline-footage-dialog";
@@ -346,7 +350,9 @@ function BlockRow({
  *
  * Playback position comes from the `<video>` element and nowhere else — no
  * interval, no parallel clock that could drift from what the operator is
- * actually watching. `timeupdate` is a coarse signal (roughly four a second),
+ * actually watching. The shared `MediaPlayer` publishes it through
+ * `onTimeChange` and takes seeks back through its `seek` handle, which is the
+ * entire contract between the two. `timeupdate` is a coarse signal (roughly four a second),
  * which is plenty for highlighting a section that lasts seconds and is smoothed
  * over with a CSS transition for anyone who has not asked for less motion.
  *
@@ -354,7 +360,7 @@ function BlockRow({
  * offered: a swap replaces the footage the *next* render will use.
  */
 export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<MediaPlayerHandle>(null);
   const reducedMotion = usePrefersReducedMotion();
   const [currentTime, setCurrentTime] = useState(0);
   const [replacingSection, setReplacingSection] =
@@ -371,32 +377,23 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
 
   const seekTo = useCallback(
     (index: number) => {
-      const video = videoRef.current;
       const entry = entries[index];
 
       if (!entry) {
         return;
       }
 
-      // Optimistic, and only so the highlight moves the instant a section is
-      // clicked on a video that is paused — `seeked` below corrects it to
-      // whatever the element actually landed on, which for a keyframe-sparse
-      // encode is not always the second that was asked for.
+      // Optimistic, and set here rather than left to the player because a
+      // video that never rendered has no player at all — the strip below is
+      // still browsable, and clicking a section still highlights it. When
+      // there *is* a player, its `seeked` corrects this to whatever the
+      // element actually landed on, which for a keyframe-sparse encode is not
+      // always the second that was asked for.
       setCurrentTime(entry.startSeconds);
-
-      if (video) {
-        video.currentTime = entry.startSeconds;
-      }
+      playerRef.current?.seek(entry.startSeconds);
     },
     [entries],
   );
-
-  const readTime = useCallback(() => {
-    const video = videoRef.current;
-    if (video) {
-      setCurrentTime(video.currentTime);
-    }
-  }, []);
 
   const labelFor = useCallback(
     (index: number) => {
@@ -435,16 +432,14 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
 
       <div className="space-y-4">
         {timeline.renderUrl ? (
-          // No <track>: captions are burned into the render itself.
-          <video
-            ref={videoRef}
-            controls
-            preload="metadata"
+          // `onTimeChange` is the whole sync: the element's own clock on
+          // `timeupdate`, `seeked` and `loadedmetadata`, and nothing else.
+          <MediaPlayer
+            ref={playerRef}
+            shape="landscape"
+            label="Rendered video"
             src={timeline.renderUrl}
-            onTimeUpdate={readTime}
-            onSeeked={readTime}
-            onLoadedMetadata={readTime}
-            className="aspect-video w-full rounded-md bg-black"
+            onTimeChange={setCurrentTime}
           />
         ) : (
           <Alert>

@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CircleAlert, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
+import { MediaPlayer } from "@/components/shared/media-player";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -48,10 +49,18 @@ function isSettled(shorts: ShortSummary[]): boolean {
 }
 
 /**
- * One generated short. Playable as soon as the worker has written its file —
- * `preload="none"` so a panel showing three of them does not pull three clips
- * off disk on every page load, which on a 4GB box competes with the encode
- * that is very likely still running beside it.
+ * One generated short.
+ *
+ * Stacked rather than the 112px-wide thumbnail beside its text this used to be:
+ * a real player needs a control bar, and a control bar does not fit in 112px.
+ * The picture is still bounded — `MediaPlayer`'s vertical shape is constrained
+ * by height, so a 9:16 clip is 144px wide however wide the column gets, and the
+ * controls take the full width of the card underneath it.
+ *
+ * The old `preload="none"` is now the shared player's `metadata`, which is
+ * still two ranged requests against a `+faststart` MP4 rather than a clip
+ * pulled off disk — and it is what makes the duration and the scrub bar real
+ * before anyone presses play.
  */
 function ShortCard({
   videoId,
@@ -61,39 +70,37 @@ function ShortCard({
   short: ShortSummary;
 }) {
   return (
-    <div className="flex gap-3 rounded-lg border p-3">
-      <div className="w-28 shrink-0">
-        {short.hasFile ? (
-          <video
-            className="aspect-[9/16] w-full rounded-md bg-black"
-            src={`/api/videos/${videoId}/shorts/${short.id}/file`}
-            controls
-            preload="none"
-          />
-        ) : (
-          <div className="bg-muted flex aspect-[9/16] w-full items-center justify-center rounded-md">
-            {short.status === "FAILED" ? (
-              <CircleAlert className="text-destructive size-5" />
-            ) : (
-              <Loader2 className="text-muted-foreground size-5 animate-spin" />
-            )}
-          </div>
-        )}
+    <div className="space-y-2 rounded-lg border p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-medium">
+          {short.title ?? `Short ${short.index + 1}`}
+        </p>
+        <Badge
+          variant="outline"
+          className={cn("shrink-0 text-xs", STATUS_CLASS[short.status])}
+        >
+          {STATUS_LABEL[short.status]}
+        </Badge>
       </div>
 
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-medium">
-            {short.title ?? `Short ${short.index + 1}`}
-          </p>
-          <Badge
-            variant="outline"
-            className={cn("shrink-0 text-xs", STATUS_CLASS[short.status])}
-          >
-            {STATUS_LABEL[short.status]}
-          </Badge>
+      {short.hasFile ? (
+        <MediaPlayer
+          shape="vertical"
+          label={short.title ?? `Short ${short.index + 1}`}
+          src={`/api/videos/${videoId}/shorts/${short.id}/file`}
+          errorMessage="This short's file is no longer on disk. Regenerating cuts it again from the render."
+        />
+      ) : (
+        <div className="bg-muted mx-auto flex aspect-[9/16] h-64 items-center justify-center rounded-md">
+          {short.status === "FAILED" ? (
+            <CircleAlert className="text-destructive size-5" />
+          ) : (
+            <Loader2 className="text-muted-foreground size-5 animate-spin" />
+          )}
         </div>
+      )}
 
+      <div className="min-w-0 space-y-1.5">
         <p className="text-muted-foreground text-xs">
           {formatDuration(short.startSeconds)}–
           {formatDuration(short.endSeconds)} ·{" "}

@@ -6,6 +6,7 @@ import { Mic, Play } from "lucide-react";
 
 import { DataTable, type DataTableColumn } from "@/components/shared/data-table";
 import { EmptyState } from "@/components/shared/empty-state";
+import { MediaPlayer } from "@/components/shared/media-player";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -141,20 +142,18 @@ export function NarrationLibrary({ narrations }: { narrations: NarrationEntry[] 
                   ` · ${formatDuration(playing.durationSeconds)}`}
               </p>
             </div>
-            {/* Keyed by the video so switching rows remounts the element.
+            {/* Keyed by the video so switching rows remounts the player.
               * Changing `src` on a live <audio> does not reliably reload it,
               * and a player that keeps playing the previous narration under a
               * new title is worse than one that visibly restarts. */}
-            <audio
+            <MediaPlayer
               key={playing.videoId}
-              controls
-              autoPlay
-              preload="metadata"
+              shape="audio"
+              label={`Narration for ${playing.videoTitle}`}
               src={`/api/videos/${playing.videoId}/narration`}
-              className="w-full"
-            >
-              Your browser cannot play this narration.
-            </audio>
+              autoPlay
+              errorMessage="This narration's audio could not be loaded. The file may have been removed since the row was written."
+            />
           </CardContent>
         </Card>
       )}

@@ -1,5 +1,9 @@
+"use client";
+
+import { useState } from "react";
 import { Download, Mic, Video as VideoIcon } from "lucide-react";
 
+import { MediaPlayer } from "@/components/shared/media-player";
 import { Button } from "@/components/ui/button";
 import { formatBytes, formatDuration } from "@/utils/format";
 
@@ -59,6 +63,11 @@ function YouTubeEmbed({ youtubeVideoId }: { youtubeVideoId: string }) {
   );
 }
 
+/** The reason the render's own route is the one route in this app that 404s
+ *  for a video that plainly exists. */
+const RECLAIMED_MESSAGE =
+  "The local render is no longer on disk. Publishing deletes it once YouTube confirms the upload — YouTube now holds the only copy.";
+
 export function VideoPreview({
   render,
   audio,
@@ -72,6 +81,17 @@ export function VideoPreview({
    * rather than a dead player after the local render has been reclaimed. */
   youtubeVideoId?: string | null;
 }) {
+  /**
+   * The reclaim can also land *after* this page rendered.
+   *
+   * `resolveRenderPreview` stats the file, so a `render.url` arriving here is a
+   * file that existed a moment ago — but publishing runs in a worker, and an
+   * operator who publishes in one tab and presses play in another gets a 404
+   * from a link the server had every reason to hand out. The player reports it,
+   * and the embed is the same fallback the server-side case already uses.
+   */
+  const [renderGone, setRenderGone] = useState(false);
+
   // Neither a RenderJob nor a VoiceOver exists yet — nothing to preview, and
   // no section-shaped hole where one would otherwise go.
   // A published video whose local render has been reclaimed has no `render`
@@ -93,25 +113,14 @@ export function VideoPreview({
             <VideoIcon aria-hidden="true" className="size-3.5" />
             Rendered video
           </h3>
-          {render?.url ? (
+          {render?.url && !(renderGone && youtubeVideoId) ? (
             <>
-              {/* No <track> — captions are burned into the render itself.
-               *
-               * `preload="metadata"` because the default is `auto`: opening
-               * this page began streaming a finished render — hundreds of
-               * megabytes — before anyone pressed play, competing with the
-               * page's own requests for bandwidth. Metadata is all the
-               * player needs to show a duration and a scrub bar.
-               *
-               * `aria-label` because a bare <video> has no accessible name;
-               * the card's heading is a sibling, which is not an association
-               * a screen reader can make. */}
-              <video
-                controls
-                preload="metadata"
-                aria-label="Rendered video"
-                className="aspect-video w-full rounded-md bg-black"
+              <MediaPlayer
+                shape="landscape"
+                label="Rendered video"
                 src={render.url}
+                errorMessage={RECLAIMED_MESSAGE}
+                onError={() => setRenderGone(true)}
               />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-muted-foreground text-xs">
@@ -123,21 +132,26 @@ export function VideoPreview({
                       : null,
                   ])}
                 </p>
-                <Button asChild variant="outline" size="sm">
-                  {/* `render.url` is this app's own streaming route
-                   * (/api/videos/[id]/file), not a signed Supabase URL —
-                   * same-origin, so `download` triggers a real save
-                   * instead of just opening the file in a new tab. */}
-                  <a
-                    href={render.url}
-                    download
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <Download />
-                    Download
-                  </a>
-                </Button>
+                {/* Withdrawn the moment the player reports the file gone: a
+                    download of a URL that has just 404'd is a button whose
+                    only outcome is an error page. */}
+                {!renderGone && (
+                  <Button asChild variant="outline" size="sm">
+                    {/* `render.url` is this app's own streaming route
+                     * (/api/videos/[id]/file), not a signed Supabase URL —
+                     * same-origin, so `download` triggers a real save
+                     * instead of just opening the file in a new tab. */}
+                    <a
+                      href={render.url}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <Download />
+                      Download
+                    </a>
+                  </Button>
+                )}
               </div>
             </>
           ) : youtubeVideoId ? (
@@ -169,11 +183,9 @@ export function VideoPreview({
           </h3>
           {audio.url ? (
             <>
-              <audio
-                controls
-                preload="metadata"
-                aria-label="Narration audio"
-                className="w-full"
+              <MediaPlayer
+                shape="audio"
+                label="Narration audio"
                 src={audio.url}
               />
               <p className="text-muted-foreground text-xs">
