@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { motion, useScroll, useTransform } from "motion/react";
-import { useRef, type ReactNode } from "react";
+import { motion } from "motion/react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
@@ -90,22 +90,57 @@ export function DeviceScroll({
  */
 function OpeningLid({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
-  const { scrollYProgress } = useScroll({
-    target: ref,
-    offset: ["start end", "center center"],
-  });
+  const [open, setOpen] = useState(false);
 
-  // Stops at 0.85 rather than 1 so the lid is fully open slightly before the
-  // section is centred — the last few degrees of a hinge are the least
-  // interesting part, and finishing early means it is flat-on while you read.
-  //
-  // `rotateX` alone. A scale here would grow the lid without growing the deck
-  // below it, and the two would visibly stop being the same machine.
-  const rotateX = useTransform(scrollYProgress, [0, 0.85], [-72, 0]);
+  /**
+   * Opens once, on arrival — deliberately not tied to scroll position.
+   *
+   * Scroll-linking this was the bug. A transform does not affect layout, so the
+   * container always reserves the lid's *flat* height while a `rotateX(-72deg)`
+   * lid only paints a fraction of it — measured, 169px of picture inside 490px
+   * of reserved box. Tying the angle to `["start end", "center center"]` then
+   * guaranteed the lid was still half-shut at the moment it came into view, so
+   * the section showed a 459px hole above a squashed laptop and only resolved
+   * if you happened to scroll it dead centre.
+   *
+   * Opening on intersection means the gap exists for one transition and then
+   * never again: by the time anyone reads the section the lid is flat and the
+   * reserved height is exactly the height being used.
+   */
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setOpen(true);
+            observer.disconnect();
+          }
+        }
+      },
+      { threshold: 0.15 },
+    );
+
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div ref={ref}>
-      <motion.div style={{ rotateX, transformOrigin: "bottom center" }}>
+      {/* `rotateX` alone. A scale here would grow the lid without growing the
+       * deck below it, and the two would visibly stop being the same machine.
+       * 55 degrees rather than 72: the steeper angle collapsed the picture so
+       * far that the closed state read as a rendering fault rather than a shut
+       * laptop. */}
+      <motion.div
+        initial={false}
+        animate={{ rotateX: open ? 0 : -55 }}
+        transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
+        style={{ transformOrigin: "bottom center" }}
+      >
         {children}
       </motion.div>
     </div>
@@ -132,7 +167,11 @@ function Lid({
 }) {
   return (
     <div className="rounded-t-xl border border-b-0 border-neutral-700/60 bg-neutral-900 p-1.5 shadow-2xl sm:rounded-t-2xl sm:p-2.5">
-      <div className="relative aspect-[16/10] overflow-hidden rounded-md bg-neutral-950 sm:rounded-lg">
+      {/* The screenshot's own ratio, not a nominal 16/10. `object-cover` in a
+          * container of the wrong shape crops the sides — and the side it cropped
+          * was the right one, taking the Approve button with it. That button is the
+          * only reason this section exists. */}
+      <div className="relative aspect-[2880/1640] overflow-hidden rounded-md bg-neutral-950 sm:rounded-lg">
         <Image
           src={src}
           alt={alt}
