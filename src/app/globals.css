@@ -173,11 +173,14 @@
   --popover-foreground: oklch(0.19 0.025 285);
   /*
    * `--primary` is deliberately NOT redefined, here or in the dark block. It
-   * stays the studio's near-black / near-white, so every Button on the page
-   * keeps the solid monochrome it always had — a violet button read as cheap
-   * against this grade, and a single high-contrast action is easier to find on
-   * a page this long than a coloured one competing with the artwork. The colour
-   * lives in the artwork; the thing you click stays plain.
+   * stays the studio's near-black / near-white, so every Button on these pages
+   * keeps the solid monochrome it has everywhere else. The colour lives in the
+   * artwork; the thing you click stays plain, and a single high-contrast action
+   * is easier to find on a page this long than a coloured one competing with
+   * the sections behind it.
+   *
+   * This matters beyond the landing page: `AuthShell` sets `.marketing` too, so
+   * anything defined here also lands on the sign-in and sign-up screens.
    */
   --secondary: oklch(0.965 0.012 285);
   --secondary-foreground: oklch(0.28 0.04 285);
@@ -192,6 +195,12 @@
   --spotlight-core: oklch(0.55 0.2 285 / 14%);
   --spotlight-mid: oklch(0.62 0.17 250 / 8%);
   --spotlight-edge: oklch(0.74 0.13 205 / 5%);
+
+  /* CardSpotlight's pool of light and the dot grid it reveals. Kept low: on a
+     light card the pool has to read as a tint, not a stain, and the text above
+     it has to stay at full contrast. */
+  --card-spotlight-wash: oklch(0.55 0.2 285 / 10%);
+  --card-spotlight-dot: oklch(0.55 0.2 285 / 22%);
 }
 
 .dark .marketing {
@@ -221,6 +230,32 @@
   --spotlight-core: oklch(0.72 0.18 285 / 22%);
   --spotlight-mid: oklch(0.75 0.15 250 / 12%);
   --spotlight-edge: oklch(0.82 0.12 205 / 7%);
+
+  --card-spotlight-wash: oklch(0.72 0.18 285 / 20%);
+  --card-spotlight-dot: oklch(0.85 0.1 285 / 30%);
+}
+
+/* ---------------------------------------------------------------------------
+ * Anchor landings
+ *
+ * The marketing header is sticky, so a browser that scrolls an `id` to the very
+ * top of the viewport parks that heading *underneath* the bar. `scroll-margin`
+ * is the one-line fix, applied to every landmark inside the shell rather than
+ * sprinkled as a utility across seven section components.
+ *
+ * Smooth scrolling is opt-out by preference: the jump is instant for anyone who
+ * has asked their OS for reduced motion, which includes people for whom a
+ * long animated scroll is a vestibular problem rather than a flourish. Scoped
+ * with `:has()` so a hash link inside the studio still jumps instantly.
+ * ------------------------------------------------------------------------- */
+.marketing :is(section, [id]) {
+  scroll-margin-top: 5rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.marketing) {
+    scroll-behavior: smooth;
+  }
 }
 
 /*

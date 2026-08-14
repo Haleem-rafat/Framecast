@@ -2,6 +2,10 @@ import Link from "next/link";
 
 import { LogoMark } from "@/components/brand/logo-mark";
 import { Button } from "@/components/ui/button";
+import {
+  MarketingNavLinks,
+  MarketingNavSheet,
+} from "@/features/marketing/components/marketing-nav";
 import { MarketingThemeToggle } from "@/features/marketing/components/marketing-theme-toggle";
 import { cn } from "@/lib/utils";
 
@@ -41,22 +45,42 @@ export function MarketingShell({
     // just redefined — `body` is outside it and keeps the studio's.
     <div className="marketing bg-background text-foreground flex min-h-svh flex-col">
       <header className="bg-background/80 sticky top-0 z-50 border-b backdrop-blur-sm">
-        <div className={cn(bar, "flex items-center justify-between gap-4 py-3")}>
-          <Link href="/" className="flex items-center gap-2 font-semibold">
+        <div className={cn(bar, "flex items-center gap-4 py-3")}>
+          <Link
+            href="/"
+            className="flex shrink-0 items-center gap-2 font-semibold"
+          >
             <span className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg">
               <LogoMark className="size-4" />
             </span>
             Framecast
           </Link>
 
-          <div className="flex items-center gap-1">
+          {/* Rendered on every page in this shell, including /privacy and
+              /terms. That is what the `/#…` anchors in NAV_LINKS are for: a
+              bare `#pricing` on the privacy policy scrolls nowhere, while
+              `/#pricing` goes home and lands on the section. A visitor who
+              reached the legal pages should not have to find their own way
+              back to the product. */}
+          <MarketingNavLinks className="mr-auto" />
+
+          <div className="ml-auto flex items-center gap-1">
             <MarketingThemeToggle />
-            <Button asChild variant="ghost" size="sm">
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="hidden sm:inline-flex"
+            >
               <Link href="/sign-in">Sign in</Link>
             </Button>
             <Button asChild size="sm" className="hidden sm:inline-flex">
               <Link href="/sign-up">Create an account</Link>
             </Button>
+            {/* Below md the links, and below sm the two buttons above, collapse
+                into this sheet — so a 375px bar is the wordmark, the theme
+                toggle and one button, never a row of truncated pills. */}
+            <MarketingNavSheet />
           </div>
         </div>
       </header>

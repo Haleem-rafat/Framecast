@@ -116,7 +116,10 @@ const STAGES: TimelineEntry[] = [
 
 export function LandingPipeline() {
   return (
-    <section id="pipeline" className="border-b">
+    // `how-it-works` rather than `pipeline`: the id is a public URL fragment
+    // that the nav links to, so it is named for what a visitor is looking for
+    // rather than for what the engineering calls it.
+    <section id="how-it-works" className="border-b">
       <div className="mx-auto grid w-full max-w-6xl gap-10 px-6 py-20 sm:py-28 lg:py-36 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:gap-20">
         {/* Pinned beside the rail on wide screens, so the claim the section is
             making stays on screen while you read the stages that back it up. */}

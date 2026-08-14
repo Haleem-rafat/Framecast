@@ -124,7 +124,7 @@ const CARDS: FocusCard[] = [
 
 export function LandingOutput() {
   return (
-    <section className="border-b">
+    <section id="output" className="border-b">
       <div className="mx-auto w-full max-w-6xl px-6 py-20 sm:py-28 lg:py-36">
         <div className="max-w-2xl">
           <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl lg:text-[2.75rem] lg:leading-[1.1]">
