@@ -1,123 +1,80 @@
-"use client";
+import type { ComponentProps } from "react";
 
-import { motion, useMotionTemplate, useMotionValue } from "motion/react";
-import type { ComponentProps, MouseEvent as ReactMouseEvent } from "react";
-
-import { Card } from "@/components/ui/card";
-import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import { CardSpotlight } from "@/components/ui/card-spotlight";
 import { cn } from "@/lib/utils";
 
 /**
- * The card surface every (auth) page puts its form in, styled once so the five
- * pages cannot drift apart. Slightly translucent over a blur so the wash behind
- * it reads *through* the card instead of stopping dead at its edge, and lifted
- * off the page with a soft shadow rather than a heavier border — on a page this
- * empty, elevation is what separates the form from the ground, and a second
- * strong line would just compete with the fields inside it.
- */
-const authCardClassName =
-  "bg-card/85 shadow-2xl shadow-black/[0.06] backdrop-blur-md [--card-spacing:--spacing(5)] dark:shadow-black/25";
-
-/** How far the spotlight reaches from the pointer, in px. */
-const SPOTLIGHT_RADIUS = 300;
-
-/**
- * The auth card, with Aceternity's Card Spotlight over its surface.
+ * The card every (auth) page puts its form in, styled once so the five pages
+ * cannot drift apart.
  *
- * The pointer tracking, the `useMotionTemplate` radial mask and the
- * fade-in-on-hover are Aceternity's `CardSpotlight`, taken from the current
- * registry source (`ui.aceternity.com/registry/card-spotlight.json`) rather
- * than from memory. Three things about it are changed, and each is a condition
- * this page has to meet that a component gallery does not.
+ * The surface is the same one the shell was already built around: slightly
+ * translucent over a blur so the wash behind it reads *through* the card
+ * instead of stopping dead at its edge, and lifted off the page with a soft
+ * shadow rather than a heavier border — on a page this empty, elevation is what
+ * separates the form from the ground, and a second strong line would just
+ * compete with the fields inside it.
  *
- * 1. No `CanvasRevealEffect`. Upstream paints a WebGL dot-matrix shader inside
- *    the mask, which is why the registry entry's real dependencies are `three`
- *    and `@react-three/fiber` — roughly three quarters of a megabyte of 3D
- *    runtime, downloaded and compiled, on the page whose entire job is to let
- *    somebody type a password and leave. The named effect, the one the
- *    component's own documentation describes as "a spotlight effect revealing a
- *    radial gradient background", is the masked layer, and that is what is here.
- *    The shader is the part that costs the most and reads the least at this
- *    size, and it is also the part that would animate blue and violet dots
- *    across a form containing an error message. It is left out on purpose.
+ * What is new is Aceternity's Card Spotlight under it: a soft pool of light
+ * that follows the pointer across the card's surface. The component is the one
+ * already vendored at `components/ui/card-spotlight` for the landing page —
+ * shared rather than reimplemented, so there is exactly one spotlight in this
+ * codebase and one place to change it. Its own note explains why the registry's
+ * `CanvasRevealEffect` (a `@react-three/fiber` shader, and `three` in the
+ * bundle) is not part of it; that reasoning holds twice over on the page whose
+ * entire job is to let somebody type a password and leave.
  *
- * 2. Both themes, from the brand tokens. Upstream is `bg-black` with a
- *    `#262626` fill, which on a near-white card is not a spotlight but a
- *    smudge. The tint here is `--brand-violet` — the same token the landing
- *    page and the mark's bloom use, redefined per theme in globals.css and only
- *    consumed here — held at 6% on light and 10% on dark. That is deliberately
- *    below the level where it does anything to legibility: at 6% over
- *    `--card`, body text, the destructive red of a validation message and the
- *    input borders all keep the contrast they have with the spotlight off. The
- *    effect is meant to be noticed as the card catching the light, not as a
- *    coloured panel appearing under the form.
+ * Four things make it safe to put a hover effect on a page like this one.
  *
- * 3. It sits *under* the content, not over it. The overlay is `-z-10` inside an
- *    `isolate` stacking context, so it paints above the card's own background
- *    and below every child — the labels, the inputs, the validation text, the
- *    submit button and, most importantly, the Google button, which is opaque
- *    and unreachable by this layer at any pointer position. Google's guidelines
- *    do not allow that button's fill or mark to be tinted by anything, so it is
+ * 1. It is turned down from the landing page's setting. The wash and the dot
+ *    grid are `--card-spotlight-*`, which the caller may override — the pricing
+ *    section already does — and the values here are roughly two thirds of the
+ *    defaults. On a card carrying labelled inputs, a validation message in
+ *    destructive red and a submit button, the pool has to read as the card
+ *    catching the light and never as a tint over the text. At these values the
+ *    body text, the error text and the input borders hold the contrast they
+ *    have with the pointer nowhere near the card.
+ * 2. Both are drawn from `--brand-violet` through `color-mix`, not from fresh
+ *    literals. The token is redefined per theme in globals.css, so light gets a
+ *    violet tint on a near-white card and dark gets a lift on the indigo one,
+ *    from one definition neither of which is repeated here.
+ * 3. The light paints under the content, never over it: the component keeps its
+ *    children in their own stacking context above both layers. That is what
+ *    keeps the effect off the Google button in particular — it sits opaque,
+ *    above the pool, at every pointer position. Google's guidelines do not
+ *    allow that button's fill or its mark to be tinted by anything, so it is
  *    excluded structurally rather than by choosing a weak colour and hoping.
- *
- * Under `prefers-reduced-motion` none of this mounts: no listener, no motion
- * values, no overlay — a static card. Note also that no React state is involved
- * even when it is on. Upstream keeps an `isHovering` boolean to gate the
- * canvas; without the canvas there is nothing to gate, so pointer movement
- * writes to motion values and re-renders nothing, and the fade is a plain CSS
- * `group-hover` transition. Moving the mouse across a sign-in form should not
- * re-render it.
+ * 4. Under `prefers-reduced-motion` the component mounts no handlers, no motion
+ *    values and no overlay at all — a plain static card.
  */
 export function AuthCard({
   className,
+  contentClassName,
   children,
   ...props
-}: ComponentProps<typeof Card>) {
-  const prefersReducedMotion = usePrefersReducedMotion();
-
-  const mouseX = useMotionValue(0);
-  const mouseY = useMotionValue(0);
-
-  const maskImage = useMotionTemplate`radial-gradient(${SPOTLIGHT_RADIUS}px circle at ${mouseX}px ${mouseY}px, white, transparent 80%)`;
-
-  function handleMouseMove({
-    currentTarget,
-    clientX,
-    clientY,
-  }: ReactMouseEvent<HTMLDivElement>) {
-    const { left, top } = currentTarget.getBoundingClientRect();
-
-    mouseX.set(clientX - left);
-    mouseY.set(clientY - top);
-  }
-
-  if (prefersReducedMotion) {
-    return (
-      <Card className={cn(authCardClassName, className)} {...props}>
-        {children}
-      </Card>
-    );
-  }
-
+}: ComponentProps<typeof CardSpotlight>) {
   return (
-    <Card
+    <CardSpotlight
+      radius={280}
       className={cn(
-        authCardClassName,
-        // `relative` gives the overlay something to position against and
-        // `isolate` gives it a stacking context to be -z-10 *inside*, which is
-        // what keeps it above the card's background and below every child.
-        "group/spotlight relative isolate",
+        "bg-card/85 text-card-foreground rounded-xl border-0 text-sm shadow-2xl shadow-black/[0.06] ring-1 ring-foreground/10 backdrop-blur-md dark:shadow-black/25",
+        "[--card-spotlight-wash:color-mix(in_oklch,var(--brand-violet)_7%,transparent)] [--card-spotlight-dot:color-mix(in_oklch,var(--brand-violet)_14%,transparent)]",
+        "dark:[--card-spotlight-wash:color-mix(in_oklch,var(--brand-violet)_14%,transparent)] dark:[--card-spotlight-dot:color-mix(in_oklch,var(--brand-violet)_20%,transparent)]",
         className,
       )}
-      onMouseMove={handleMouseMove}
+      /**
+       * `Card`'s own layout, lifted onto the wrapper the spotlight puts its
+       * children in. The card slots the pages use — CardHeader, CardContent —
+       * only need the column, the gap and `--card-spacing` to hang their
+       * padding off, and this is the level those have to live at: on the
+       * surface itself they would lay out the wrapper and nothing else.
+       */
+      contentClassName={cn(
+        "flex flex-col gap-(--card-spacing) py-(--card-spacing) [--card-spacing:--spacing(5)]",
+        contentClassName,
+      )}
       {...props}
     >
-      <motion.div
-        aria-hidden="true"
-        style={{ maskImage }}
-        className="bg-brand-violet/6 dark:bg-brand-violet/10 pointer-events-none absolute inset-0 -z-10 opacity-0 transition-opacity duration-300 group-hover/spotlight:opacity-100"
-      />
       {children}
-    </Card>
+    </CardSpotlight>
   );
 }
