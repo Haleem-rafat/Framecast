@@ -47,6 +47,7 @@ async function main(): Promise<void> {
   const { prisma } = await import("@/lib/prisma");
   const { jobService, HEARTBEAT_SECONDS } = await import("@/services/job.service");
   const { runPipeline, PipelineCancelledError } = await import("@/services/pipeline-runner");
+  const { shortsService } = await import("@/services/shorts.service");
 
   // Railway sends SIGTERM on every deploy. `shuttingDown` stops the loop from
   // claiming new work; whatever video is already mid-`processVideo` is left
@@ -176,18 +177,90 @@ async function main(): Promise<void> {
     }
   }
 
+  /**
+   * Claims, heartbeats, renders and releases exactly one short.
+   *
+   * The same shape as `processVideo` above, and deliberately so: shorts go
+   * through the identical claim/lease/heartbeat/release discipline rather than
+   * a second, ad-hoc loop of their own. What differs is only what shorts do
+   * not have — there is no cancellation flag to poll (see the `ShortStatus`
+   * comment in schema.prisma), so the heartbeat renews the lease and reports
+   * nothing back.
+   *
+   * Nothing in here can touch the parent video. `shortsService` writes only to
+   * the `short` row, and every error below is released against `shortId`, so a
+   * short that fails leaves a READY (or PUBLISHED) video exactly as it was —
+   * which is the whole reason shorts are a separate claim rather than a
+   * seventh pipeline stage bolted onto the end of `runPipeline`.
+   */
+  async function processShort(shortId: string, videoId: string): Promise<void> {
+    log(`claimed short ${shortId} (video ${videoId})`);
+
+    let heartbeatInFlight: Promise<void> = Promise.resolve();
+    const heartbeatTimer = setInterval(() => {
+      heartbeatInFlight = shortsService.heartbeat(shortId).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`heartbeat failed for short ${shortId}: ${message}`);
+      });
+    }, HEARTBEAT_SECONDS * 1000);
+
+    // Same reasoning as `processVideo`'s `stopHeartbeat`: `clearInterval` stops
+    // only future ticks, and a tick already in flight would renew the lease
+    // after `release` cleared it, leaving a finished short looking claimed.
+    async function stopHeartbeat(): Promise<void> {
+      clearInterval(heartbeatTimer);
+      await heartbeatInFlight;
+    }
+
+    try {
+      await shortsService.renderShort(shortId, (message) => log(`${shortId}    ${message}`));
+
+      await stopHeartbeat();
+      await shortsService.release(shortId, "succeeded");
+      log(`released short ${shortId}: READY`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`releasing short ${shortId}: failed — ${message}`);
+
+      await stopHeartbeat();
+
+      try {
+        await shortsService.release(shortId, "failed", message);
+      } catch (releaseError) {
+        const releaseMessage =
+          releaseError instanceof Error ? releaseError.message : String(releaseError);
+        log(`failed to release short ${shortId}: ${releaseMessage}`);
+      }
+    } finally {
+      clearInterval(heartbeatTimer);
+    }
+  }
+
   log(`starting — polling every ${POLL_INTERVAL_MS / 1000}s`);
 
   while (!shuttingDown) {
     try {
       const claimed = await jobService.claimNext(WORKER_ID);
 
-      if (!claimed) {
-        await sleep(POLL_INTERVAL_MS);
+      if (claimed) {
+        await processVideo(claimed.userId, claimed.videoId);
         continue;
       }
 
-      await processVideo(claimed.userId, claimed.videoId);
+      // Shorts are picked up only when there is no video waiting, and that
+      // ordering is the point rather than an accident of where the call sits.
+      // A video is the thing an operator is waiting on and the thing that
+      // spends provider money; a short is a derivative of one that already
+      // finished. Claiming shorts first would let a video sit queued behind
+      // three encodes on a box with one worker.
+      const claimedShort = await shortsService.claimNext();
+
+      if (claimedShort) {
+        await processShort(claimedShort.shortId, claimedShort.videoId);
+        continue;
+      }
+
+      await sleep(POLL_INTERVAL_MS);
     } catch (error) {
       // A claim/process failure must never kill the loop: an unhandled
       // throw here would kill the process, Railway would restart it, and
