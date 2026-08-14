@@ -6,12 +6,16 @@ import { Workflow } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { LogStream } from "@/features/videos/components/log-stream";
 import { PipelinePanel } from "@/features/videos/components/pipeline-panel";
 import { ScriptPanel } from "@/features/videos/components/script-panel";
 import { ShortsPanel } from "@/features/videos/components/shorts-panel";
+import {
+  TimelineFallback,
+  TimelineSection,
+} from "@/features/videos/components/timeline-section";
+import { VideoSection } from "@/features/videos/components/video-section";
 import { StatusEventsList } from "@/features/videos/components/status-events-list";
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
@@ -100,20 +104,41 @@ async function PipelineSection({ userId, videoId }: { userId: string; videoId: s
  * audio, never a raw storage path. Passing a storage path to the client is
  * how private storage ends up de facto public.
  */
+type SectionKey =
+  | "pipeline"
+  | "preview"
+  | "script"
+  | "timeline"
+  | "shorts"
+  | "events";
+
 /**
- * Which tab the page opens on, given where the video is.
+ * The page's section order, keyed by what the video is currently doing.
  *
- * DRAFT has nothing to watch and no run to inspect, so it opens on the one
- * thing that can be done: writing. Anything mid-flight opens on the run, which
- * is the only part still changing. Everything terminal opens on the result.
+ * Every arrangement contains the same six sections — nothing is hidden — but
+ * the one an operator opened the page for goes first. The alternative, a fixed
+ * order, means somebody always scrolls past two things they do not want; and
+ * because the script panel is the tallest block on the page, "somebody" was
+ * everyone whose video had already been written.
  */
-function openingTabFor(status: VideoStatus): "overview" | "script" | "pipeline" {
-  if (status === "DRAFT") return "script";
+const ORDERED_SECTIONS: Record<"writing" | "running" | "finished", SectionKey[]> = {
+  // Nothing to watch and no run to inspect. Writing is the only move.
+  writing: ["script", "pipeline", "preview", "timeline", "shorts", "events"],
+  // Mid-flight: the run is the only part still changing, and the player will
+  // not have anything in it until the render lands.
+  running: ["pipeline", "preview", "script", "timeline", "shorts", "events"],
+  // Terminal: watching it is the point, and the timeline is how you find the
+  // moment you disliked.
+  finished: ["preview", "timeline", "shorts", "script", "pipeline", "events"],
+};
+
+function sectionOrderFor(status: VideoStatus): keyof typeof ORDERED_SECTIONS {
+  if (status === "DRAFT") return "writing";
   if (status === "QUEUED" || status === "GENERATING" || status === "RENDERING") {
-    return "pipeline";
+    return "running";
   }
 
-  return "overview";
+  return "finished";
 }
 
 async function PreviewSection({
@@ -233,88 +258,120 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         youtubeVideoId={video.publication?.youtubeVideoId ?? null}
       />
 
-      {/* Four jobs live on this page — writing, watching a run, reviewing the
-       * result, cutting shorts — and only one of them is ever the reason an
-       * operator opened it. Stacked vertically they cost each other: a 480px
+      {/* Everything about the video on one page, in the order its current state
+       * makes useful: a draft leads with the script because writing is the only
+       * thing that can happen to it; a running video leads with the pipeline
+       * because that is the only part still changing; a finished one leads with
+       * the player because watching it is the point.
+       *
+       * This replaced a tabbed version. Tabs did solve a real problem — a 480px
        * script textarea sat between the pipeline and the shorts panel, so
-       * checking a render meant scrolling past a script nobody was editing.
+       * checking a render meant scrolling past a script nobody was editing —
+       * and simply removing them would bring that straight back. Two things
+       * stop it: the order below moves the section you came for to the top, and
+       * `ScriptPanel` collapses to a summary once the script is locked, which is
+       * exactly when that textarea was costing everyone else their place.
        *
-       * `Tabs` is the client component here; this page stays a server
-       * component and hands it already-rendered children, so every Suspense
-       * boundary below still streams exactly as it did.
-       *
-       * The opening tab follows the video's own state rather than being fixed,
-       * because what an operator wants is entirely determined by it: a draft
-       * needs writing, a running video needs watching, a finished one needs
-       * reviewing. */}
-      <Tabs defaultValue={openingTabFor(video.status)} className="gap-4">
-        {/* Four tabs just fit a 375px screen and would not survive a fifth or
-         * a longer label, and `TabsList` has no scroll container of its own —
-         * an over-wide strip pushes the document sideways instead. */}
-        <div className="-mx-4 overflow-x-auto px-4 md:mx-0 md:overflow-visible md:px-0">
-          <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="script">Script</TabsTrigger>
-            <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
-            <TabsTrigger value="shorts">Shorts</TabsTrigger>
-          </TabsList>
-        </div>
+       * Every section is in the DOM from the first byte. `VideoSection` only
+       * animates the arrival, so find-in-page, screen readers and crawlers see
+       * a whole page regardless of whether the animation runs at all. */}
+      <div className="flex flex-col gap-4">
+        {ORDERED_SECTIONS[sectionOrderFor(video.status)].map((key, index) => {
+          // The first two blocks are what the operator came for, so they are
+          // present immediately rather than fading in under their eyes.
+          const immediate = index < 2;
 
-        <TabsContent value="overview" className="space-y-4">
-          <Suspense fallback={<PreviewFallback />}>
-            <PreviewSection
-              videoId={video.id}
-              renderOutputUrl={renderOutputUrl ?? null}
-              audioPath={video.voiceOver?.audioUrl ?? null}
-              durationSeconds={video.voiceOver?.durationSeconds ?? null}
-              youtubeVideoId={video.publication?.youtubeVideoId ?? null}
-            />
-          </Suspense>
-          <StatusEventsList events={video.statusEvents} />
-        </TabsContent>
+          if (key === "pipeline") {
+            return (
+              <VideoSection key={key} immediate={immediate}>
+                {video.status === "DRAFT" ? (
+                  <Card>
+                    <CardContent className="py-8">
+                      <EmptyState
+                        icon={Workflow}
+                        title="Nothing has run yet"
+                        description="Approve the script and the pipeline starts: narration, footage, render. Its progress and logs appear here."
+                      />
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Suspense fallback={<PipelineFallback />}>
+                    <PipelineSection userId={user.id} videoId={video.id} />
+                  </Suspense>
+                )}
+              </VideoSection>
+            );
+          }
 
-        <TabsContent value="script" className="grid gap-4 lg:grid-cols-3">
-          {/* The script keeps its two-thirds column rather than going full
-           * width: a 480px monospace textarea spanning an ultrawide monitor
-           * gives lines far too long to read back as spoken prose. */}
-          <div className="lg:col-span-2">
-            <ScriptPanel
-              videoId={video.id}
-              status={video.status}
-              activeVersion={activeVersion}
-            />
-          </div>
-          <VersionHistory
-            videoId={video.id}
-            status={video.status}
-            versions={versions}
-            activeVersionId={script?.activeVersionId ?? null}
-          />
-        </TabsContent>
+          if (key === "preview") {
+            return (
+              <VideoSection key={key} immediate={immediate}>
+                <Suspense fallback={<PreviewFallback />}>
+                  <PreviewSection
+                    videoId={video.id}
+                    renderOutputUrl={renderOutputUrl ?? null}
+                    audioPath={video.voiceOver?.audioUrl ?? null}
+                    durationSeconds={video.voiceOver?.durationSeconds ?? null}
+                    youtubeVideoId={video.publication?.youtubeVideoId ?? null}
+                  />
+                </Suspense>
+              </VideoSection>
+            );
+          }
 
-        <TabsContent value="pipeline">
-          {video.status === "DRAFT" ? (
-            <EmptyState
-              icon={Workflow}
-              title="Nothing has run yet"
-              description="Approve the script and the pipeline starts: narration, footage, render. Its progress and logs appear here."
-            />
-          ) : (
-            <Suspense fallback={<PipelineFallback />}>
-              <PipelineSection userId={user.id} videoId={video.id} />
-            </Suspense>
-          )}
-        </TabsContent>
+          if (key === "script") {
+            return (
+              // The script keeps its two-thirds column rather than going full
+              // width: a monospace textarea spanning an ultrawide monitor gives
+              // lines far too long to read back as spoken prose.
+              <VideoSection key={key} immediate={immediate} className="grid gap-4 lg:grid-cols-3">
+                <div className="lg:col-span-2">
+                  <ScriptPanel
+                    videoId={video.id}
+                    status={video.status}
+                    activeVersion={activeVersion}
+                  />
+                </div>
+                <VersionHistory
+                  videoId={video.id}
+                  status={video.status}
+                  versions={versions}
+                  activeVersionId={script?.activeVersionId ?? null}
+                />
+              </VideoSection>
+            );
+          }
 
-        <TabsContent value="shorts">
-          {/* Shorts are cut out of a finished render, so this is only ever
-           * useful once one exists; the panel itself explains that rather than
-           * vanishing, so an operator can see the feature is there. */}
-          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
-            <ShortsSection userId={user.id} videoId={video.id} status={video.status} />
-          </Suspense>
-        </TabsContent>
-      </Tabs>
+          if (key === "timeline") {
+            return (
+              <VideoSection key={key} immediate={immediate}>
+                <Suspense fallback={<TimelineFallback />}>
+                  <TimelineSection userId={user.id} videoId={video.id} />
+                </Suspense>
+              </VideoSection>
+            );
+          }
+
+          if (key === "shorts") {
+            return (
+              // Shorts are cut out of a finished render, so this is only ever
+              // useful once one exists; the panel explains that rather than
+              // vanishing, so an operator can see the feature is there.
+              <VideoSection key={key} immediate={immediate}>
+                <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+                  <ShortsSection userId={user.id} videoId={video.id} status={video.status} />
+                </Suspense>
+              </VideoSection>
+            );
+          }
+
+          return (
+            <VideoSection key={key} immediate={immediate}>
+              <StatusEventsList events={video.statusEvents} />
+            </VideoSection>
+          );
+        })}
+      </div>
     </>
   );
 }
