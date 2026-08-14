@@ -37,27 +37,34 @@ const FloatingDock = dynamic(
  * - `/dashboard` — the one glance that answers "is anything wrong".
  * - `/videos` — the unit of work, and the only route to a specific video's
  *   status while it is rendering.
- * - `/projects` — the container you pick before doing anything with a video.
+ * - `/automation` — the one genuinely mobile *action* in the product: start a
+ *   video from a phone. Every other tab answers a question; this one does
+ *   something, which is what a native app's middle tab is usually for.
  * - `/logs` — the follow-up to the dashboard when the answer was "yes,
  *   something is wrong": why did that render fail.
+ *
+ * `/projects` used to hold the third slot and lost it when `/automation`
+ * shipped — this was the swap the previous revision of this comment called
+ * for. A project is a container you pick *before* desk work, and on a phone you
+ * arrive at a video from the dashboard or the video list rather than by walking
+ * down the hierarchy, so the tab was spending a permanent slot on a step nobody
+ * takes one-handed.
  *
  * Everything else is desk work and lives behind "More" and ⌘K. Channels is a
  * YouTube OAuth handshake, Providers is pasting API keys, Prompt Library is
  * editing multi-paragraph templates, Approvals and Settings are administration
- * — none of them is a thing anyone does one-handed on a train, and each would
- * have cost a slot one of the four above needed.
+ * — none of them is a thing anyone does on a train, and each would have cost a
+ * slot one of the four above needed.
  *
  * Analytics is the near miss. It is `built`, and "what did last week cost" is
  * a legitimate phone question — but the page is charts and a table, which is a
  * bad trade for a 375px screen when the same tap count reaches it via More.
  *
- * EXTENSION POINT: `/automation` is `built: false` today. When one-click
- * generate lands it is the strongest candidate for this list — it is the one
- * genuinely mobile action in the product, "start a video from my phone" — and
- * adding its href here is the whole change. Something has to leave when it
- * does; `/projects` is the one to drop.
+ * Five items including "More" is the ceiling: at 375px, five 44px targets plus
+ * their gaps and the bar's padding come to 260px, which still leaves the dock
+ * floating rather than spanning edge to edge.
  */
-const DOCK_HREFS = ["/dashboard", "/videos", "/projects", "/logs"] as const;
+const DOCK_HREFS = ["/dashboard", "/videos", "/automation", "/logs"] as const;
 
 function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
