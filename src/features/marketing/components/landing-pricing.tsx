@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { ArrowRight, Check, KeyRound, Minus } from "lucide-react";
 
-import { BackgroundGradient } from "@/components/ui/background-gradient";
 import { Button } from "@/components/ui/button";
+import { CardSpotlight } from "@/components/ui/card-spotlight";
 import { LampSection } from "@/components/ui/lamp";
 
 /**
@@ -68,12 +68,27 @@ const PLANS = [
   },
 ];
 
+/**
+ * The card's ground is fixed-dark in both themes because the lamp behind it is
+ * (see `lamp.tsx`), so this is the one place that overrides CardSpotlight's
+ * theme-aware tokens with values tuned for that ground. The surface classes are
+ * translucent white over `--lamp-bg` rather than a hard-coded hex, so the card
+ * still sits *in* the lit room instead of on top of it.
+ */
+const SPOTLIGHT_ON_LAMP =
+  "[--card-spotlight-wash:oklch(0.72_0.18_285/22%)] [--card-spotlight-dot:oklch(0.85_0.1_285/28%)]";
+
 function PlanCard({ plan }: { plan: (typeof PLANS)[number] }) {
   return (
-    <div
-      className={`flex h-full flex-col rounded-2xl border p-6 ${
+    <CardSpotlight
+      // Smaller than the 350px default: these cards are ~340px wide at
+      // `lg:grid-cols-3`, and a pool wider than the card lights the whole thing
+      // uniformly, which is a hover state, not a spotlight.
+      radius={260}
+      contentClassName="flex flex-col p-6"
+      className={`h-full ${SPOTLIGHT_ON_LAMP} ${
         plan.featured
-          ? "border-white/20 bg-white/10"
+          ? "ring-brand-violet/50 border-white/25 bg-white/10 ring-1"
           : plan.available
             ? "border-white/10 bg-white/[0.04]"
             : "border-white/10 bg-transparent"
@@ -146,7 +161,7 @@ function PlanCard({ plan }: { plan: (typeof PLANS)[number] }) {
           </p>
         )}
       </div>
-    </div>
+    </CardSpotlight>
   );
 }
 
@@ -166,22 +181,18 @@ export function LandingPricing() {
             </p>
           </div>
 
+          {/* The featured card used to sit inside a `BackgroundGradient`, whose
+              conic border spins continuously. With CardSpotlight now tracking
+              the pointer in this same section, that is two moving things
+              competing over three cards on a 2-vCPU box — and the spinning
+              border was doing the weaker job of the two. It is replaced by a
+              static brand ring, so the only motion here is the lamp's one-shot
+              entrance and the pool of light under whichever card you are
+              actually pointing at. */}
           <div className="mt-12 grid gap-6 lg:grid-cols-3">
-            {PLANS.map((plan) =>
-              plan.featured ? (
-                <BackgroundGradient
-                  key={plan.name}
-                  containerClassName="rounded-2xl h-full"
-                  className="h-full"
-                >
-                  <PlanCard plan={plan} />
-                </BackgroundGradient>
-              ) : (
-                <div key={plan.name} className="p-1">
-                  <PlanCard plan={plan} />
-                </div>
-              ),
-            )}
+            {PLANS.map((plan) => (
+              <PlanCard key={plan.name} plan={plan} />
+            ))}
           </div>
         </div>
       </LampSection>
