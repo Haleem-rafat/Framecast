@@ -249,12 +249,110 @@ export function sliceAlignment(alignment: Alignment, window: ShortWindow): Align
 export const SHORT_MAX_WORDS_PER_LINE = 3;
 
 /**
+ * The other half of that limit, and the half that actually binds.
+ *
+ * Three words is not a width. "and then it" is 11 characters and "understanding
+ * transformation opportunities" is 41, and libass sets both from the same cue —
+ * so a word count alone let a cue arrive three times wider than the line box and
+ * come back out as a three-row tower stacked up the middle of the frame. This is
+ * the same limit expressed in the unit the renderer actually cares about.
+ *
+ * 18 was measured, not guessed: inside the safe line box this file now asks for
+ * (742px, see `SHORT_SIDE_SAFE_FRACTION`), DejaVu Sans at the boosted size runs
+ * about 39px per character in sentence case, so 18 characters is ~700px — one
+ * row with room to spare. Capitals are wider and a line of them can still wrap,
+ * which is correct: a wrapped line is inside the frame, and this limit exists to
+ * make wrapping rare rather than to make it impossible.
+ *
+ * A single word longer than this is left alone. There is nothing to split — see
+ * the note on unbreakable tokens in `verticalCaptionStyle`.
+ */
+export const SHORT_MAX_CHARS_PER_LINE = 18;
+
+/**
+ * The ASS canvas FFmpeg invents when it converts an SRT for the `subtitles`
+ * filter, and the one thing in this file that is a property of the FFmpeg build
+ * rather than arithmetic.
+ *
+ * `verticalCaptionStyle` goes to some trouble below to express sizes as ratios
+ * precisely so this number cancels out. Margins cannot be expressed that way:
+ * there is no landscape MarginL to take a ratio against, because nothing in this
+ * codebase has ever set one. So these are read off the header directly:
+ *
+ *     $ ffmpeg -i captions.srt -f ass -
+ *     PlayResX: 384
+ *     PlayResY: 288
+ *
+ * verified against the worker image's own FFmpeg (5.1.9, Debian 12), and pinned
+ * by `shorts-plan.test.ts` so a change here has to be deliberate. libass scales
+ * horizontal margins by `frame_width / PlayResX` and vertical ones by
+ * `frame_height / PlayResY`, which for a 1080x1920 short is 2.8125 and 6.6667
+ * px per unit — both confirmed by measuring rendered frames.
+ */
+const PLAY_RES_X = 384;
+const PLAY_RES_Y = 288;
+
+/**
+ * How much of the frame's WIDTH is given up at each side, and it is sized by
+ * YouTube's UI rather than by taste.
+ *
+ * A Short is not played inside its own frame. YouTube lays its own chrome over
+ * it, and the piece that matters here is the action rail down the right-hand
+ * side — like, dislike, comment, share, and the spinning sound disc — which
+ * published templates put at 120-152px wide on a 1080px frame and which sits at
+ * exactly the height captions sit at. A caption behind it is not "slightly off",
+ * it is unreadable, and it is burned in.
+ *
+ * 15.6% is the widest of those figures plus a pad. It is applied to BOTH sides
+ * even though the left needs only ~60px: the operator reviews these clips in a
+ * plain browser player with no YouTube chrome in it, and captions visibly off
+ * centre there read as a bug rather than as a safe area. Symmetry costs about
+ * 100px of line width and buys a clip that looks right in both places.
+ */
+const SHORT_SIDE_SAFE_FRACTION = 0.156;
+
+/**
+ * The same, for the bottom: the channel row, the title, the description and the
+ * seek bar. Published templates put that band at 320-350px collapsed, and about
+ * 450px once a viewer taps the description open.
+ *
+ * 23.6% of 1920 is 453px, so captions clear it in the expanded state too. This
+ * is a FLOOR rather than a replacement — a channel that has set its captions
+ * higher still gets what it asked for.
+ */
+const SHORT_BOTTOM_SAFE_FRACTION = 0.236;
+
+/**
  * How much larger a short's captions are than the same channel's landscape
  * captions, in real pixels. Shorts are watched full-screen on a phone where the
  * captions are most of the point; a landscape video is a third of the screen
  * with the captions incidental.
+ *
+ * It was 1.25, and 1.25 was chosen when captions had the whole 1080px frame to
+ * spread across. They do not any more: the safe area above leaves a 742px line
+ * box, so the boost now has to be small enough that a real word still fits one.
+ * The longest word that turns up in this codebase's narration is around 17
+ * characters ("indistinguishable"), which sets 658px of that box at 1.1x — about
+ * 11% of headroom. At 1.25x it set 753px and had none, and a 17-character run of
+ * the font's widest glyphs came out 1123px wide and was clipped by the frame.
+ *
+ * 1.1x still renders a short's captions larger than the same channel's landscape
+ * ones, which is the point the boost exists to make.
  */
-const SHORT_CAPTION_BOOST = 1.25;
+const SHORT_CAPTION_BOOST = 1.1;
+
+/**
+ * A caption style that also pins its own horizontal safe area.
+ *
+ * Declared here rather than imported from ffmpeg-command.ts, and structural
+ * typing is what lets that work: `buildForceStyle` accepts these fields as
+ * optional and the landscape render never sets them, so the only style that
+ * carries a horizontal margin is the one this file produces.
+ */
+export interface VerticalCaptionStyle extends CaptionStyle {
+  marginL: number;
+  marginR: number;
+}
 
 /**
  * The channel's caption style, adapted to a 1080x1920 frame.
@@ -284,27 +382,49 @@ const SHORT_CAPTION_BOOST = 1.25;
  * (1.78x) while the glyphs scaled by only 1.25x, and the text would come out
  * looking bolder and muddier the taller the frame got.
  *
- * `marginV` is deliberately NOT rescaled. It is in those same script units, so
- * the same number is the same FRACTION of the frame's height in either format —
- * 60 sits the captions the same distance up from the bottom edge of a 1920px
- * frame as it does a 1080px one. That fraction (about a fifth of the way up)
- * also happens to clear the YouTube Shorts UI, which occupies the bottom band
- * of the screen; rescaling it would push the captions down underneath it.
+ * `marginV` is still not rescaled — it is in those same script units, so the
+ * same number is the same FRACTION of the frame's height in either format — but
+ * it is now raised to a floor. The old comment here claimed the landscape value
+ * "happens to clear the YouTube Shorts UI"; measured, it does not. 60 units puts
+ * the bottom of a caption 400px up, and YouTube's bottom chrome reaches ~450px
+ * once a viewer opens the description. `SHORT_BOTTOM_SAFE_FRACTION` is the floor
+ * that fixes it, taken as a `max` so a channel that has already asked for
+ * captions higher keeps them there.
+ *
+ * `marginL`/`marginR` are new, and they are the reason this function exists at
+ * all now. Nothing in this codebase had ever set a horizontal margin, so shorts
+ * inherited FFmpeg's default of 10 units — 28px on a 1080px frame, a 2.6% inset.
+ * That let captions run to within ~90px of the edges, straight underneath
+ * YouTube's action rail, and let a long enough word run off the frame outright.
+ *
+ * What margins cannot fix is an UNBREAKABLE token. libass wraps on spaces and
+ * nowhere else, so a single word wider than the line box overflows it rather
+ * than being broken, and no margin can catch that — only a smaller glyph can,
+ * which is what pulled `SHORT_CAPTION_BOOST` down to 1.1.
  *
  * `fontName` and the colours pass through untouched: the channel's brand does
  * not change because the frame is on its side.
  */
-export function verticalCaptionStyle(style: CaptionStyle): CaptionStyle {
+export function verticalCaptionStyle(style: CaptionStyle): VerticalCaptionStyle {
   const factor = (SHORT_CAPTION_BOOST * SOURCE_HEIGHT) / SHORT_HEIGHT;
   // One decimal place. libass parses fractional sizes happily, but a
   // twelve-decimal float in a `force_style` string is noise in every log line
   // and every test assertion that ever quotes it.
   const round = (value: number) => Math.round(value * factor * 10) / 10;
 
+  // A fraction of the frame becomes script units by multiplying by the PlayRes
+  // of the axis it lies on — that IS the unit, and it is why the two axes take
+  // different numbers for what is nearly the same inset.
+  const sideMargin = Math.round(SHORT_SIDE_SAFE_FRACTION * PLAY_RES_X);
+  const bottomMargin = Math.round(SHORT_BOTTOM_SAFE_FRACTION * PLAY_RES_Y);
+
   return {
     ...style,
     fontSize: round(style.fontSize),
     outline: round(style.outline),
     shadow: round(style.shadow),
+    marginL: sideMargin,
+    marginR: sideMargin,
+    marginV: Math.max(style.marginV, bottomMargin),
   };
 }

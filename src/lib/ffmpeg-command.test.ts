@@ -432,6 +432,20 @@ describe("buildAssembleArgs with caption styling", () => {
     expect(joined).toContain("MarginV=60");
   });
 
+  it("emits no horizontal margin, exactly as it always has", () => {
+    const joined = buildAssembleArgs({ ...assembleBase, captions }).join(" ");
+
+    // The safe area added for vertical shorts is deliberately opt-in: a 1920px
+    // frame with no overlay UI on it does not need one, and the landscape
+    // render must keep producing the force_style string it always produced.
+    expect(joined).not.toContain("MarginL");
+    expect(joined).not.toContain("MarginR");
+    expect(joined).toContain(
+      "force_style='FontName=DejaVu Sans,FontSize=22,PrimaryColour=&H00FFFFFF," +
+        "OutlineColour=&H00000000,Outline=2,Shadow=1,MarginV=60'",
+    );
+  });
+
   it("still escapes the subtitle path when a style is present", () => {
     const args = buildAssembleArgs({
       ...assembleBase,
@@ -614,7 +628,25 @@ describe("buildShortArgs", () => {
     // After the crop, so libass draws text at 1080x1920 rather than having it
     // scaled and resampled by a filter above it.
     expect(filter.indexOf("subtitles=")).toBeGreaterThan(filter.indexOf("crop="));
-    expect(filter).toContain("force_style='FontName=DejaVu Sans,FontSize=15.5");
+    expect(filter).toContain("force_style='FontName=DejaVu Sans,FontSize=13.6");
+  });
+
+  it("gives the vertical frame a horizontal safe area the landscape one has no need of", () => {
+    const filter =
+      valueOf(
+        buildShortArgs({
+          ...shortBase,
+          captions: verticalCaptionStyle(DEFAULT_STYLE.captions),
+        }),
+        "-vf",
+      ) ?? "";
+
+    // 60 script units is 168.75px on a 1080px-wide frame, which is what keeps
+    // burned-in text out from under YouTube's Shorts action rail. Without it
+    // libass inherits FFmpeg's default of 10 units — a 28px inset.
+    expect(filter).toContain("MarginL=60");
+    expect(filter).toContain("MarginR=60");
+    expect(filter).toContain("MarginV=68");
   });
 
   it("front-loads the moov atom so the panel can play it before it downloads", () => {

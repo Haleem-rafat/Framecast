@@ -8,6 +8,8 @@ import {
   MAX_SHORT_SECONDS,
   MIN_SHORT_SECONDS,
   planShortWindow,
+  SHORT_MAX_CHARS_PER_LINE,
+  SHORT_MAX_WORDS_PER_LINE,
   sliceAlignment,
   verticalCaptionStyle,
   windowsOverlap,
@@ -244,29 +246,19 @@ describe("verticalCaptionStyle", () => {
   it("scales the font by the frame-height ratio times the boost", () => {
     const vertical = verticalCaptionStyle(DEFAULT_STYLE.captions);
 
-    // 22 * 1.25 * (1080/1920) = 15.47 -> 15.5. The point of the ratio is that
+    // 22 * 1.1 * (1080/1920) = 13.61 -> 13.6. The point of the ratio is that
     // libass's PlayResY cancels out of it, so this number holds whatever
     // header FFmpeg happens to synthesise for an SRT.
-    expect(vertical.fontSize).toBeCloseTo(15.5, 5);
+    expect(vertical.fontSize).toBeCloseTo(13.6, 5);
   });
 
   it("scales outline and shadow with the glyphs", () => {
     const vertical = verticalCaptionStyle(DEFAULT_STYLE.captions);
 
     // Left alone, these would scale by the frame-height ratio (1.78x) while
-    // the text scaled by only 1.25x, and the captions would come out muddy.
-    expect(vertical.outline).toBeCloseTo(1.4, 5);
-    expect(vertical.shadow).toBeCloseTo(0.7, 5);
-  });
-
-  it("leaves the vertical margin alone", () => {
-    const vertical = verticalCaptionStyle(DEFAULT_STYLE.captions);
-
-    // MarginV is in the same script units, so the same number is the same
-    // fraction of frame height in either format — about a fifth of the way up,
-    // which is what clears the YouTube Shorts UI. Rescaling it would push the
-    // captions down underneath it.
-    expect(vertical.marginV).toBe(DEFAULT_STYLE.captions.marginV);
+    // the text scaled by only 1.1x, and the captions would come out muddy.
+    expect(vertical.outline).toBeCloseTo(1.2, 5);
+    expect(vertical.shadow).toBeCloseTo(0.6, 5);
   });
 
   it("keeps the channel's font and colours", () => {
@@ -279,5 +271,123 @@ describe("verticalCaptionStyle", () => {
 
     expect(vertical.fontName).toBe("Anton");
     expect(vertical.primaryColour).toBe("&H0000FFFF");
+  });
+});
+
+/**
+ * The caption safe area, pinned in PIXELS.
+ *
+ * Every number here was measured, not derived: rendered through the worker
+ * image's own FFmpeg and libass onto a flat 1080x1920 frame, and read back as
+ * the bounding box of the ink. The conversion below is the only assumption, and
+ * it is the one thing about `verticalCaptionStyle` that depends on the FFmpeg
+ * build — so it is asserted here rather than left implicit.
+ *
+ * libass scales horizontal margins by `frame_width / PlayResX` and vertical
+ * ones by `frame_height / PlayResY`. FFmpeg synthesises `PlayResX: 384,
+ * PlayResY: 288` when it converts an SRT — confirm with
+ * `ffmpeg -i captions.srt -f ass -` — so one script unit is 2.8125px across a
+ * short and 6.667px up it. If a future FFmpeg changes that header, these
+ * assertions still pass while the real geometry moves, which is why the numbers
+ * they encode are also written down in `verticalCaptionStyle`'s comment.
+ */
+describe("verticalCaptionStyle safe area", () => {
+  const PX_PER_UNIT_X = 1080 / 384;
+  const PX_PER_UNIT_Y = 1920 / 288;
+  const vertical = verticalCaptionStyle(DEFAULT_STYLE.captions);
+
+  it("insets the line box far enough to clear the Shorts action rail", () => {
+    expect(vertical.marginR).toBe(vertical.marginL);
+    expect(vertical.marginL * PX_PER_UNIT_X).toBeCloseTo(168.75, 2);
+
+    // The rail — like, dislike, comment, share, sound disc — is published at
+    // 120-152px wide on a 1080px frame, and it sits at exactly the height
+    // captions sit at. The line box has to end before the widest of those.
+    const rightEdge = 1080 - vertical.marginR * PX_PER_UNIT_X;
+    expect(rightEdge).toBeLessThan(1080 - 152);
+  });
+
+  it("leaves a line box wide enough for the longest word real narration has", () => {
+    const box = 1080 - (vertical.marginL + vertical.marginR) * PX_PER_UNIT_X;
+    expect(box).toBeCloseTo(742.5, 1);
+
+    // Measured in the worker image at this exact FontSize: "indistinguishable"
+    // sets 658px and its all-capitals form 788px. The first is what the boost
+    // is sized against, with ~11% of the box left over. At the old 1.25x boost
+    // those were 753px and 899px, in a box of 1024px that no margin narrowed.
+    expect(box).toBeGreaterThan(658);
+  });
+
+  it("lifts captions above the Shorts title, description and seek bar", () => {
+    // 320-350px collapsed, ~450px once a viewer opens the description. The old
+    // value of 60 units put the bottom of a caption 400px up — inside it.
+    expect(vertical.marginV * PX_PER_UNIT_Y).toBeCloseTo(453.3, 1);
+    expect(vertical.marginV * PX_PER_UNIT_Y).toBeGreaterThan(450);
+  });
+
+  it("treats the channel's own vertical margin as a floor, not a replacement", () => {
+    const raised = { ...DEFAULT_STYLE.captions, marginV: 200 };
+    expect(verticalCaptionStyle(raised).marginV).toBe(200);
+
+    const lowered = { ...DEFAULT_STYLE.captions, marginV: 5 };
+    expect(verticalCaptionStyle(lowered).marginV).toBe(vertical.marginV);
+  });
+});
+
+describe("SHORT_MAX_CHARS_PER_LINE", () => {
+  it("fits the safe line box at the boosted font size", () => {
+    // DejaVu Sans at FontSize 13.6 runs ~40px per character in sentence case,
+    // measured, so the budget times that has to land inside the 742px box.
+    expect(SHORT_MAX_CHARS_PER_LINE * 40).toBeLessThan(742);
+  });
+
+  it("is the limit that actually binds, not the word count", () => {
+    // Three words is not a width. The pair only means something if a cue of
+    // three ordinary words can still be cut short by the character budget.
+    expect("understanding transformation".length).toBeGreaterThan(SHORT_MAX_CHARS_PER_LINE);
+    expect("and then it".length).toBeLessThan(SHORT_MAX_CHARS_PER_LINE);
+  });
+
+  /** The text of every cue, in order — the lines libass is actually handed. */
+  function cueTextOf(srt: string): string[] {
+    return srt
+      .trim()
+      .split("\n\n")
+      .map((block) => block.split("\n").slice(2).join(" "));
+  }
+
+  it("breaks a cue of long words that a three-word limit would let through", () => {
+    const alignment = evenAlignment("understanding transformation opportunities");
+    const budgeted = cueTextOf(
+      buildSrt(alignment, SHORT_MAX_WORDS_PER_LINE, SHORT_MAX_CHARS_PER_LINE),
+    );
+
+    // 41 characters in one cue is what libass turned into a three-row tower up
+    // the middle of the frame; each of these is one row.
+    expect(cueTextOf(buildSrt(alignment, SHORT_MAX_WORDS_PER_LINE))).toEqual([
+      "understanding transformation opportunities",
+    ]);
+    expect(budgeted).toEqual(["understanding", "transformation", "opportunities"]);
+  });
+
+  it("leaves a word longer than the budget alone rather than emitting a blank cue", () => {
+    // There is nothing to split it against, and a zero-word cue would render as
+    // an empty subtitle and put the word on its own line anyway.
+    const srt = buildSrt(
+      evenAlignment("an indistinguishable result"),
+      SHORT_MAX_WORDS_PER_LINE,
+      SHORT_MAX_CHARS_PER_LINE,
+    );
+
+    expect(cueTextOf(srt)).toEqual(["an", "indistinguishable", "result"]);
+    expect(srt).not.toMatch(/\n\n\n/);
+  });
+
+  it("changes nothing for a caller that does not ask for a budget", () => {
+    // The landscape render calls buildSrt with one argument. Its output has to
+    // be byte-for-byte what it was.
+    const alignment = evenAlignment("understanding transformation opportunities today");
+
+    expect(buildSrt(alignment)).toBe(buildSrt(alignment, 6, Number.POSITIVE_INFINITY));
   });
 });

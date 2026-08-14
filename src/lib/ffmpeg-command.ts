@@ -199,12 +199,28 @@ export function buildSegmentArgs(input: SegmentInput): string[] {
 }
 
 /**
+ * A caption style that also pins a horizontal safe area.
+ *
+ * Both fields are OPTIONAL, and that is what keeps this shared with the
+ * landscape render without changing it: `verticalCaptionStyle` is the only
+ * thing in the codebase that sets them, so a landscape style leaves them
+ * undefined, the two `MarginL`/`MarginR` pairs are never emitted, and the
+ * `force_style` string a landscape render produces is byte-for-byte what it
+ * was. See `verticalCaptionStyle` for why a short needs them and a 1920px-wide
+ * frame with no overlay UI on it does not.
+ */
+export interface SafeAreaCaptionStyle extends CaptionStyle {
+  marginL?: number;
+  marginR?: number;
+}
+
+/**
  * libass reads `force_style` as comma-separated `Key=Value` pairs. Built here
  * rather than by the caller so the filter-graph escaping rules stay in the one
  * file that already knows them.
  */
-function buildForceStyle(style: CaptionStyle): string {
-  return [
+function buildForceStyle(style: SafeAreaCaptionStyle): string {
+  const pairs = [
     `FontName=${style.fontName}`,
     `FontSize=${style.fontSize}`,
     `PrimaryColour=${style.primaryColour}`,
@@ -212,10 +228,22 @@ function buildForceStyle(style: CaptionStyle): string {
     `Outline=${style.outline}`,
     `Shadow=${style.shadow}`,
     `MarginV=${style.marginV}`,
-  ].join(",");
+  ];
+
+  // Appended rather than interleaved so that a style without them produces the
+  // exact string this function has always produced. libass reads the pairs as a
+  // set, so the order is ours to choose.
+  if (style.marginL !== undefined) {
+    pairs.push(`MarginL=${style.marginL}`);
+  }
+  if (style.marginR !== undefined) {
+    pairs.push(`MarginR=${style.marginR}`);
+  }
+
+  return pairs.join(",");
 }
 
-export function buildSubtitleFilter(srtPath: string, captions?: CaptionStyle): string {
+export function buildSubtitleFilter(srtPath: string, captions?: SafeAreaCaptionStyle): string {
   const escaped = escapeForFilter(srtPath);
 
   if (!captions) {
@@ -378,11 +406,13 @@ export interface ShortInput {
    *  0 — see `sliceAlignment` in shorts-plan.ts. */
   srtPath: string;
   outputPath: string;
-  /** Already adapted for a 9:16 frame by `verticalCaptionStyle`. Passing the
-   *  landscape style straight through would work and render captions roughly
-   *  1.8x too large, so the type deliberately does not distinguish them —
-   *  the one caller does, and its own comment says so. */
-  captions?: CaptionStyle;
+  /** Already adapted for a 9:16 frame by `verticalCaptionStyle`, which is also
+   *  what supplies the `marginL`/`marginR` safe area a landscape style has no
+   *  reason to carry. Passing the landscape style straight through would work
+   *  and render captions roughly 1.8x too large with a 28px inset, so the type
+   *  deliberately does not distinguish them — the one caller does, and its own
+   *  comment says so. */
+  captions?: SafeAreaCaptionStyle;
 }
 
 /** Shorts are 9:16. Kept alongside WIDTH/HEIGHT above rather than imported from

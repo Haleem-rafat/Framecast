@@ -63,9 +63,18 @@ function toWords(alignment: Alignment): Word[] {
   return words;
 }
 
+/**
+ * `maxCharsPerLine` is off by default, and the default is what the landscape
+ * render uses — it calls this with one argument, so nothing about a 16:9 video's
+ * captions changes. The vertical shorts path is the only caller that sets it,
+ * because it is the only one whose frame is narrow enough for a cue's width in
+ * CHARACTERS, rather than in words, to be what decides whether libass wraps it.
+ * See `SHORT_MAX_CHARS_PER_LINE` in shorts-plan.ts.
+ */
 export function buildSrt(
   alignment: Alignment,
   maxWordsPerLine: number = DEFAULT_MAX_WORDS,
+  maxCharsPerLine: number = Number.POSITIVE_INFINITY,
 ): string {
   const words = toWords(alignment);
 
@@ -75,9 +84,24 @@ export function buildSrt(
 
   const cues: Word[][] = [];
   let line: Word[] = [];
+  let lineChars = 0;
 
   for (const word of words) {
+    // Closed BEFORE the word is added, so the word that would have overflowed
+    // starts the next cue instead of ending this one. Guarded on a non-empty
+    // line because a single word longer than the budget has nothing to be split
+    // against — flushing an empty cue would emit a blank subtitle and then put
+    // the word on its own line anyway.
+    const wouldBe = lineChars === 0 ? word.text.length : lineChars + 1 + word.text.length;
+
+    if (line.length > 0 && wouldBe > maxCharsPerLine) {
+      cues.push(line);
+      line = [];
+      lineChars = 0;
+    }
+
     line.push(word);
+    lineChars = lineChars === 0 ? word.text.length : lineChars + 1 + word.text.length;
 
     // Sentence-final punctuation is a better break than a word count: a cue that
     // ends mid-sentence reads worse than a short one.
@@ -86,6 +110,7 @@ export function buildSrt(
     if (endsSentence || line.length >= maxWordsPerLine) {
       cues.push(line);
       line = [];
+      lineChars = 0;
     }
   }
 

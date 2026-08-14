@@ -26,6 +26,7 @@ import {
   MAX_SHORT_SECONDS,
   MIN_SHORT_SECONDS,
   planShortWindow,
+  SHORT_MAX_CHARS_PER_LINE,
   SHORT_MAX_WORDS_PER_LINE,
   type ShortWindow,
   sliceAlignment,
@@ -775,11 +776,18 @@ export class ShortsService {
     try {
       // Captions for this clip alone, rebased to start at zero. `buildSrt` does
       // the word grouping and the sentence-boundary line breaks; all this side
-      // supplies is a narrower alignment and a narrower line width.
+      // supplies is a narrower alignment and a narrower line width. The line
+      // width is given BOTH ways on purpose — three words is not a width, and
+      // the character budget is the half that keeps a cue of long words from
+      // arriving at libass wider than the safe area and coming back as a tower.
       const srtPath = path.join(tempDir, "captions.srt");
       await writeFile(
         srtPath,
-        buildSrt(sliceAlignment(timeline.alignment, window), SHORT_MAX_WORDS_PER_LINE),
+        buildSrt(
+          sliceAlignment(timeline.alignment, window),
+          SHORT_MAX_WORDS_PER_LINE,
+          SHORT_MAX_CHARS_PER_LINE,
+        ),
       );
 
       const outputPath = path.join(tempDir, "short.mp4");
