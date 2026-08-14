@@ -45,17 +45,13 @@ export const SITE_LOCALE = "en_GB";
  * points at the same real inbox the pages do, rather than inventing a support
  * desk that does not exist.
  */
-export const OPERATOR_EMAIL = "eramdevteam@gmail.com";
+export const OPERATOR_EMAIL = "haleem.rafat@gmail.com";
 
 /**
- * The operator's second inbox, listed alongside the first everywhere a human
- * is invited to write in. Both are real and both are read.
+ * Every address a visitor may use to reach the operator.
  *
- * Two addresses rather than one because a privacy policy's contact route is the
- * one promise on the page that has to survive a mailbox going unread — a data
- * deletion request that bounces is a compliance failure, not an inconvenience.
+ * One entry, not two: the second inbox was the operator's other account and
+ * has been retired. Kept as a list so the privacy policy renders the same way
+ * whether there is one address or several.
  */
-export const OPERATOR_EMAIL_ALT = "haleem.rafat@gmail.com";
-
-/** Every address a visitor may use to reach the operator, in the order shown. */
-export const OPERATOR_EMAILS = [OPERATOR_EMAIL, OPERATOR_EMAIL_ALT] as const;
+export const OPERATOR_EMAILS = [OPERATOR_EMAIL] as const;

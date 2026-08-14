@@ -23,15 +23,20 @@ export function ProjectTable({
       {
         id: "name",
         header: "Name",
+        // Capped and truncated for the same reason the video table's title is: a
+        // table cell sizes to its content, so one long name widens the column
+        // past the viewport and puts the whole table into horizontal scroll. The
+        // `truncate` on the description did nothing on its own — truncation
+        // needs a bound, and nothing supplied one.
         cell: (project) => (
-          <>
-            <p className="font-medium">{project.name}</p>
+          <div className="max-w-[22rem]" title={project.name}>
+            <p className="truncate font-medium">{project.name}</p>
             {project.description && (
               <p className="text-muted-foreground truncate text-xs">
                 {project.description}
               </p>
             )}
-          </>
+          </div>
         ),
         sortValue: (project) => project.name,
         filterValue: (project) => `${project.name} ${project.description ?? ""}`,

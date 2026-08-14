@@ -409,13 +409,13 @@ describe("jobService.release", () => {
       cancelRequestedAt: new Date(),
     });
 
-    await jobService.release(videoId, "cancelled", "Cancelled by eramdevteam@gmail.com");
+    await jobService.release(videoId, "cancelled", "Cancelled by operator@example.test");
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("FAILED");
     expect(video.leaseExpiresAt).toBeNull();
     expect(video.cancelRequestedAt).toBeNull();
-    expect(video.failureReason).toBe("Cancelled by eramdevteam@gmail.com");
+    expect(video.failureReason).toBe("Cancelled by operator@example.test");
   });
 });
 

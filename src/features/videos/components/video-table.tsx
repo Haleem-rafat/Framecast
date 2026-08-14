@@ -33,9 +33,20 @@ export function VideoTable({
         id: "title",
         header: "Title",
         // The link wraps both lines so the whole title block stays one target.
+        //
+        // Both lines truncate against a capped width. A table cell sizes to its
+        // content, so a single long title widened this column past the viewport
+        // and put the entire table into horizontal scroll — and the `truncate`
+        // already on the topic line did nothing by itself, because truncation
+        // needs a bound to truncate against and nothing supplied one. `title`
+        // keeps the full text reachable on hover now that it is clipped.
         cell: (video) => (
-          <Link href={`/videos/${video.id}`} className="hover:underline">
-            <p className="font-medium">{video.title}</p>
+          <Link
+            href={`/videos/${video.id}`}
+            className="block max-w-[22rem] hover:underline"
+            title={video.title}
+          >
+            <p className="truncate font-medium">{video.title}</p>
             {video.topic && (
               <p className="text-muted-foreground truncate text-xs">
                 {video.topic}
