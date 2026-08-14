@@ -18,8 +18,8 @@ import {
   ResponsiveDialogTitle,
   ResponsiveDialogTrigger,
 } from "@/components/shared/responsive-dialog";
+import { FormField } from "@/components/shared/form-field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -93,55 +93,66 @@ export function CreateProjectDialog({
           </ResponsiveDialogHeader>
 
           <ResponsiveDialogBody>
+            <FormField name="name" label="Name" error={errors.name?.message}>
+              {(controlProps) => (
+                <Input {...register("name")} {...controlProps} />
+              )}
+            </FormField>
 
-          <div className="space-y-2">
-            <Label htmlFor="name">Name</Label>
-            <Input
-              id="name"
-              aria-invalid={Boolean(errors.name)}
-              {...register("name")}
-            />
-            {errors.name && (
-              <p className="text-destructive text-xs">{errors.name.message}</p>
-            )}
-          </div>
+            {/* `description` and `channelId` render their errors now. Both
+                could previously fail the resolver with nothing on screen: the
+                submit simply did not happen and the dialog gave no reason. */}
+            <FormField
+              name="description"
+              label="Description (optional)"
+              error={errors.description?.message}
+            >
+              {(controlProps) => (
+                <Textarea
+                  rows={3}
+                  {...register("description")}
+                  {...controlProps}
+                />
+              )}
+            </FormField>
 
-          <div className="space-y-2">
-            <Label htmlFor="description">Description (optional)</Label>
-            <Textarea id="description" rows={3} {...register("description")} />
-          </div>
-
-          {channels.length > 0 && (
-            <div className="space-y-2">
-              <Label htmlFor="channelId">Default channel (optional)</Label>
+            {channels.length > 0 && (
               <Controller
                 control={control}
                 name="channelId"
                 render={({ field }) => (
-                  <Select
-                    value={field.value ?? NONE_CHANNEL}
-                    onValueChange={(value) =>
-                      field.onChange(value === NONE_CHANNEL ? undefined : value)
-                    }
+                  <FormField
+                    name="channelId"
+                    label="Default channel (optional)"
+                    error={errors.channelId?.message}
                   >
-                    <SelectTrigger id="channelId" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE_CHANNEL}>None</SelectItem>
-                      {channels.map((channel) => (
-                        <SelectItem key={channel.id} value={channel.id}>
-                          {channel.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    {(controlProps) => (
+                      <Select
+                        value={field.value ?? NONE_CHANNEL}
+                        onValueChange={(value) =>
+                          field.onChange(
+                            value === NONE_CHANNEL ? undefined : value,
+                          )
+                        }
+                      >
+                        <SelectTrigger {...controlProps} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE_CHANNEL}>None</SelectItem>
+                          {channels.map((channel) => (
+                            <SelectItem key={channel.id} value={channel.id}>
+                              {channel.title}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FormField>
                 )}
               />
-            </div>
-          )}
+            )}
           </ResponsiveDialogBody>
-
 
           <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>

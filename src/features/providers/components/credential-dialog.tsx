@@ -18,8 +18,8 @@ import {
   ResponsiveDialogTitle,
   ResponsiveDialogTrigger,
 } from "@/components/shared/responsive-dialog";
+import { FormField } from "@/components/shared/form-field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { upsertCredentialAction } from "@/actions/provider.action";
 import { PROVIDER_LABELS } from "@/features/providers/provider-labels";
 import {
@@ -105,43 +105,40 @@ export function CredentialDialog({
             </ResponsiveDialogDescription>
           </ResponsiveDialogHeader>
 
+          {/* No spacing wrapper of its own: the body already gaps its
+              children, and the extra `space-y-4 py-2` that used to sit here was
+              a second helping of padding on top of the primitive's. */}
           <ResponsiveDialogBody>
-
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="apiKey">API key</Label>
-              <Input
-                id="apiKey"
-                type="password"
-                autoComplete="off"
-                placeholder="sk-..."
-                aria-invalid={Boolean(errors.apiKey)}
-                {...register("apiKey")}
-              />
-              {errors.apiKey && (
-                <p className="text-destructive text-xs">
-                  {errors.apiKey.message}
-                </p>
+            <FormField
+              name="apiKey"
+              label="API key"
+              error={errors.apiKey?.message}
+            >
+              {(control) => (
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  placeholder="sk-..."
+                  {...register("apiKey")}
+                  {...control}
+                />
               )}
-            </div>
+            </FormField>
 
-            <div className="space-y-2">
-              <Label htmlFor="label">Label (optional)</Label>
-              <Input
-                id="label"
-                placeholder="e.g. Production key"
-                aria-invalid={Boolean(errors.label)}
-                {...register("label")}
-              />
-              {errors.label && (
-                <p className="text-destructive text-xs">
-                  {errors.label.message}
-                </p>
+            <FormField
+              name="label"
+              label="Label (optional)"
+              error={errors.label?.message}
+            >
+              {(control) => (
+                <Input
+                  placeholder="e.g. Production key"
+                  {...register("label")}
+                  {...control}
+                />
               )}
-            </div>
-          </div>
+            </FormField>
           </ResponsiveDialogBody>
-
 
           <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>

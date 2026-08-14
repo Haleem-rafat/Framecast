@@ -19,8 +19,9 @@ import {
   ResponsiveDialogTitle,
   ResponsiveDialogTrigger,
 } from "@/components/shared/responsive-dialog";
+import { FormField, FormFieldset } from "@/components/shared/form-field";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -166,173 +167,198 @@ export function PromptTemplateDialog({
           </ResponsiveDialogHeader>
 
           <ResponsiveDialogBody>
+            {/* A layout grouping, not a spacing hack — these two fields share a
+                row on a desktop and stack on a phone. */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField name="name" label="Name" error={errors.name?.message}>
+                {(controlProps) => (
+                  <Input {...register("name")} {...controlProps} />
+                )}
+              </FormField>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                aria-invalid={Boolean(errors.name)}
-                {...register("name")}
-              />
-              {errors.name && (
-                <p className="text-destructive text-xs">{errors.name.message}</p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="category">Category</Label>
               <Controller
                 control={control}
                 name="category"
                 render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger id="category" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {promptCategories.map((one) => (
-                        <SelectItem key={one} value={one}>
-                          {PROMPT_CATEGORY_LABELS[one]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FormField
+                    name="category"
+                    label="Category"
+                    error={errors.category?.message}
+                  >
+                    {(controlProps) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger {...controlProps} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {promptCategories.map((one) => (
+                            <SelectItem key={one} value={one}>
+                              {PROMPT_CATEGORY_LABELS[one]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FormField>
                 )}
               />
             </div>
-          </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="description">Description (optional)</Label>
-            <Input id="description" {...register("description")} />
-          </div>
+            <FormField
+              name="description"
+              label="Description (optional)"
+              error={errors.description?.message}
+            >
+              {(controlProps) => (
+                <Input {...register("description")} {...controlProps} />
+              )}
+            </FormField>
 
-          <div className="space-y-2">
-            <Label htmlFor="content">Prompt content</Label>
-            <Textarea
-              id="content"
-              rows={8}
-              className="min-h-40 font-mono text-sm"
-              aria-invalid={Boolean(errors.content)}
-              {...register("content")}
-            />
-            {errors.content && (
-              <p className="text-destructive text-xs">
-                {errors.content.message}
-              </p>
-            )}
-            <p className="text-muted-foreground text-xs">
-              {extractVariables(content ?? "").length} placeholder(s) detected
-            </p>
-          </div>
+            <FormField
+              name="content"
+              label="Prompt content"
+              description={`${extractVariables(content ?? "").length} placeholder(s) detected`}
+              error={errors.content?.message}
+            >
+              {(controlProps) => (
+                <Textarea
+                  rows={8}
+                  className="min-h-40 font-mono text-sm"
+                  {...register("content")}
+                  {...controlProps}
+                />
+              )}
+            </FormField>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Variables</Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  append({ key: "", label: "", defaultValue: "", required: false })
-                }
-              >
-                <Plus />
-                Add variable
-              </Button>
-            </div>
-
-            {fields.length > 0 && (
-              <div className="space-y-2 rounded-lg border p-2">
-                {/* Five tracks inside a dialog leaves each input about 55px
-                 * wide on a phone, which is not a field anyone can type a
-                 * variable key into. Below `sm` a variable becomes a stacked
-                 * card instead, and this header — which only makes sense
-                 * above aligned columns — goes with the columns. */}
-                <div className="text-muted-foreground hidden grid-cols-[1fr_1fr_1fr_auto_auto] gap-2 px-1 text-xs sm:grid">
-                  <span>Key</span>
-                  <span>Label</span>
-                  <span>Default</span>
-                  <span>Required</span>
-                  <span />
-                </div>
-                {fields.map((field, index) => (
-                  <div
-                    key={field.id}
-                    className="grid gap-2 rounded-md border p-2 sm:grid-cols-[1fr_1fr_1fr_auto_auto] sm:items-center sm:rounded-none sm:border-0 sm:p-0"
+            <FormFieldset
+              label={
+                <div className="flex w-full items-center justify-between gap-2">
+                  {/* Not a <label>: this names a table of rows, not one
+                      control, so there is nothing for `htmlFor` to point at.
+                      Each row's inputs carry their own `aria-label`. */}
+                  <span>Variables</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      append({
+                        key: "",
+                        label: "",
+                        defaultValue: "",
+                        required: false,
+                      })
+                    }
                   >
-                    {/* The column header is gone below `sm`, so each field
-                     * carries its own name for anyone who cannot infer it
-                     * from a placeholder — a screen reader included. */}
-                    <Input
-                      placeholder="topic"
-                      aria-label="Variable key"
-                      aria-invalid={Boolean(errors.variables?.[index]?.key)}
-                      {...register(`variables.${index}.key` as const)}
-                    />
-                    <Input
-                      placeholder="Topic"
-                      aria-label="Variable label"
-                      {...register(`variables.${index}.label` as const)}
-                    />
-                    <Input
-                      placeholder="(none)"
-                      aria-label="Default value"
-                      {...register(`variables.${index}.defaultValue` as const)}
-                    />
-                    {/* `sm:contents` dissolves this wrapper back into the grid
-                     * on a desktop, so the switch and the delete button stay
-                     * the last two columns there and become one row here. */}
-                    <div className="flex items-center justify-between gap-2 sm:contents">
-                      <span className="text-muted-foreground text-xs sm:hidden">
-                        Required
-                      </span>
-                      <Controller
-                        control={control}
-                        name={`variables.${index}.required` as const}
-                        render={({ field: requiredField }) => (
-                          <Switch
-                            checked={requiredField.value}
-                            onCheckedChange={requiredField.onChange}
-                            aria-label="Required"
-                          />
-                        )}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => remove(index)}
-                      >
-                        <Trash2 />
-                        <span className="sr-only">Remove variable</span>
-                      </Button>
-                    </div>
+                    <Plus />
+                    Add variable
+                  </Button>
+                </div>
+              }
+            >
+              {fields.length > 0 && (
+                <div className="space-y-2 rounded-lg border p-2">
+                  {/* Five tracks inside a dialog leaves each input about 55px
+                   * wide on a phone, which is not a field anyone can type a
+                   * variable key into. Below `sm` a variable becomes a stacked
+                   * card instead, and this header — which only makes sense
+                   * above aligned columns — goes with the columns. */}
+                  <div className="text-muted-foreground hidden grid-cols-[1fr_1fr_1fr_auto_auto] gap-2 px-1 text-xs sm:grid">
+                    <span>Key</span>
+                    <span>Label</span>
+                    <span>Default</span>
+                    <span>Required</span>
+                    <span />
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
+                  {fields.map((field, index) => (
+                    <div
+                      key={field.id}
+                      className="grid gap-2 rounded-md border p-2 sm:grid-cols-[1fr_1fr_1fr_auto_auto] sm:items-center sm:rounded-none sm:border-0 sm:p-0"
+                    >
+                      {/* The column header is gone below `sm`, so each field
+                       * carries its own name for anyone who cannot infer it
+                       * from a placeholder — a screen reader included. */}
+                      <Input
+                        placeholder="topic"
+                        aria-label="Variable key"
+                        aria-invalid={Boolean(errors.variables?.[index]?.key)}
+                        {...register(`variables.${index}.key` as const)}
+                      />
+                      <Input
+                        placeholder="Topic"
+                        aria-label="Variable label"
+                        {...register(`variables.${index}.label` as const)}
+                      />
+                      <Input
+                        placeholder="(none)"
+                        aria-label="Default value"
+                        {...register(`variables.${index}.defaultValue` as const)}
+                      />
+                      {/* `sm:contents` dissolves this wrapper back into the grid
+                       * on a desktop, so the switch and the delete button stay
+                       * the last two columns there and become one row here. */}
+                      <div className="flex items-center justify-between gap-2 sm:contents">
+                        <span className="text-muted-foreground text-xs sm:hidden">
+                          Required
+                        </span>
+                        <Controller
+                          control={control}
+                          name={`variables.${index}.required` as const}
+                          render={({ field: requiredField }) => (
+                            <Switch
+                              checked={requiredField.value}
+                              onCheckedChange={requiredField.onChange}
+                              aria-label="Required"
+                            />
+                          )}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => remove(index)}
+                        >
+                          <Trash2 />
+                          <span className="sr-only">Remove variable</span>
+                        </Button>
+                      </div>
 
-          <div className="flex items-center gap-2">
+                      {/* The key input has always drawn a red ring when its value
+                       * was rejected, and never said why — the message existed on
+                       * the resolver and was rendered nowhere. `col-span-full`
+                       * puts it under the whole row rather than inside the first
+                       * 1fr track, where it would have wrapped to four lines. */}
+                      {errors.variables?.[index]?.key?.message && (
+                        <FieldError className="col-span-full text-xs">
+                          {errors.variables[index]?.key?.message}
+                        </FieldError>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </FormFieldset>
+
+            {/* `Field orientation="horizontal"` is the design system's answer
+                for a switch and its label — it already handles the alignment
+                and the label's normal weight that this was hand-rolling. */}
             <Controller
               control={control}
               name="isDefault"
               render={({ field }) => (
-                <Switch
-                  id="isDefault"
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
+                <Field orientation="horizontal">
+                  <Switch
+                    id="isDefault"
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                  <FieldLabel htmlFor="isDefault" className="font-normal">
+                    Make this the default template for its category
+                  </FieldLabel>
+                </Field>
               )}
             />
-            <Label htmlFor="isDefault" className="font-normal">
-              Make this the default template for its category
-            </Label>
-          </div>
           </ResponsiveDialogBody>
-
 
           <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>

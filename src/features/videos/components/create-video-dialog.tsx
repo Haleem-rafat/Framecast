@@ -18,8 +18,8 @@ import {
   ResponsiveDialogTitle,
   ResponsiveDialogTrigger,
 } from "@/components/shared/responsive-dialog";
+import { FormField } from "@/components/shared/form-field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -91,61 +91,53 @@ export function CreateVideoDialog({
           </ResponsiveDialogHeader>
 
           <ResponsiveDialogBody>
-
-          <div className="space-y-2">
-            <Label htmlFor="projectId">Project</Label>
+            {/* Controller wraps the field rather than sitting inside it, so
+                RHF's `field` and the field's own `control` props never have to
+                share a scope. */}
             <Controller
               control={control}
               name="projectId"
               render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="projectId" className="w-full">
-                    <SelectValue placeholder="Select a project" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {projects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <FormField
+                  name="projectId"
+                  label="Project"
+                  error={errors.projectId?.message}
+                >
+                  {(controlProps) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger {...controlProps} className="w-full">
+                        <SelectValue placeholder="Select a project" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {projects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            {project.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </FormField>
               )}
             />
-            {errors.projectId && (
-              <p className="text-destructive text-xs">
-                {errors.projectId.message}
-              </p>
-            )}
-          </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="title">Title</Label>
-            <Input
-              id="title"
-              aria-invalid={Boolean(errors.title)}
-              {...register("title")}
-            />
-            {errors.title && (
-              <p className="text-destructive text-xs">{errors.title.message}</p>
-            )}
-          </div>
+            <FormField name="title" label="Title" error={errors.title?.message}>
+              {(controlProps) => (
+                <Input {...register("title")} {...controlProps} />
+              )}
+            </FormField>
 
-          <div className="space-y-2">
-            <Label htmlFor="topic">Topic</Label>
-            <Textarea
-              id="topic"
-              rows={3}
-              placeholder="What is this video about? This becomes {{topic}} in the script prompt."
-              aria-invalid={Boolean(errors.topic)}
-              {...register("topic")}
-            />
-            {errors.topic && (
-              <p className="text-destructive text-xs">{errors.topic.message}</p>
-            )}
-          </div>
+            <FormField name="topic" label="Topic" error={errors.topic?.message}>
+              {(controlProps) => (
+                <Textarea
+                  rows={3}
+                  placeholder="What is this video about? This becomes {{topic}} in the script prompt."
+                  {...register("topic")}
+                  {...controlProps}
+                />
+              )}
+            </FormField>
           </ResponsiveDialogBody>
-
 
           <ResponsiveDialogFooter>
             <Button type="submit" disabled={isSubmitting}>

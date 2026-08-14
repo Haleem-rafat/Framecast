@@ -3,7 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -17,8 +17,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FormField, FormFieldset } from "@/components/shared/form-field";
+import { FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -85,8 +86,13 @@ interface SettingsFormProps {
  * The disclosure that sits under an unwired control. Rendered as ordinary help
  * text rather than a warning: the operator did nothing wrong, and there is
  * nothing for them to fix — it just says where the value really comes from.
+ *
+ * A function returning content rather than a component rendering its own `<p>`,
+ * because it is passed to `FormField`'s `note` slot — which owns the element,
+ * the id and the `aria-describedby` link back to the control. It used to be a
+ * private re-implementation of `FieldDescription` at a different size.
  */
-function WiringNote({ setting }: { setting: SettingKey }) {
+function wiringNote(setting: SettingKey): ReactNode {
   const wiring = SETTING_WIRING[setting];
 
   if (wiring.applied) {
@@ -94,10 +100,10 @@ function WiringNote({ setting }: { setting: SettingKey }) {
   }
 
   return (
-    <p className="text-muted-foreground text-xs">
+    <>
       <span className="text-foreground/70 font-medium">Not used yet.</span>{" "}
       {wiring.actualSource}
-    </p>
+    </>
   );
 }
 
@@ -225,54 +231,61 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
             nothing for anyone else.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <Label htmlFor="theme">Theme</Label>
+        {/* `FieldGroup` rather than a per-card `space-y-*`: the four cards were
+            using five different spacing scales between them, so the rhythm of
+            the page changed depending which card you were looking at. */}
+        <CardContent>
+          <FieldGroup>
             <Controller
               control={control}
               name="theme"
               render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="theme" className="w-full sm:w-64">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {themePreferences.map((one) => (
-                      <SelectItem key={one} value={one}>
-                        {THEME_LABELS[one]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <WiringNote setting="theme" />
-          </div>
-
-          <div className="space-y-3">
-            {/* Not a <Label>: the control below is a radio group whose
-                accessible name comes from its own <legend>, and a second label
-                pointing at nothing would just be a duplicate for a screen
-                reader to read out. */}
-            <div className="space-y-1">
-              <p className="text-sm leading-none font-medium">Accent colour</p>
-              <p className="text-muted-foreground text-xs">
-                Used for buttons, links, focus rings and the active sidebar
-                item. Graphite is the studio&rsquo;s original monochrome.
-              </p>
-            </div>
-
-            <Controller
-              control={control}
-              name="accent"
-              render={({ field }) => (
-                <AccentPicker value={field.value} onChange={field.onChange} />
+                <FormField
+                  name="theme"
+                  label="Theme"
+                  note={wiringNote("theme")}
+                >
+                  {(controlProps) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger
+                        {...controlProps}
+                        className="w-full sm:w-64"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {themePreferences.map((one) => (
+                          <SelectItem key={one} value={one}>
+                            {THEME_LABELS[one]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </FormField>
               )}
             />
 
-            <AccentPreview />
-            <WiringNote setting="accent" />
-          </div>
+            {/* A fieldset, not a field: the control is a radio group whose
+                accessible name comes from its own <legend>, so there is no
+                single element for a <label> to point at. This used to be a
+                hand-built heading out of two <p>s. */}
+            <FormFieldset
+              label="Accent colour"
+              description="Used for buttons, links, focus rings and the active sidebar item. Graphite is the studio's original monochrome."
+              note={wiringNote("accent")}
+            >
+              <Controller
+                control={control}
+                name="accent"
+                render={({ field }) => (
+                  <AccentPicker value={field.value} onChange={field.onChange} />
+                )}
+              />
+
+              <AccentPreview />
+            </FormFieldset>
+          </FieldGroup>
         </CardContent>
       </Card>
 
@@ -283,103 +296,119 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
             Which model writes the script and which voice reads it.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="defaultScriptProvider">Script provider</Label>
+        <CardContent>
+          <FieldGroup>
+            <div className="grid gap-5 sm:grid-cols-2">
               <Controller
                 control={control}
                 name="defaultScriptProvider"
                 render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger
-                      id="defaultScriptProvider"
-                      className="w-full"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {scriptProviderOptions.map((one) => (
-                        <SelectItem key={one} value={one}>
-                          {PROVIDER_LABELS[one]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FormField
+                    name="defaultScriptProvider"
+                    label="Script provider"
+                    note={wiringNote("defaultScriptProvider")}
+                  >
+                    {(controlProps) => (
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <SelectTrigger {...controlProps} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {scriptProviderOptions.map((one) => (
+                            <SelectItem key={one} value={one}>
+                              {PROVIDER_LABELS[one]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FormField>
                 )}
               />
-              <WiringNote setting="defaultScriptProvider" />
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="defaultVoiceProvider">Voice provider</Label>
               <Controller
                 control={control}
                 name="defaultVoiceProvider"
                 render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger id="defaultVoiceProvider" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {voiceProviderOptions.map((one) => (
-                        <SelectItem key={one} value={one}>
-                          {PROVIDER_LABELS[one]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FormField
+                    name="defaultVoiceProvider"
+                    label="Voice provider"
+                    note={wiringNote("defaultVoiceProvider")}
+                  >
+                    {(controlProps) => (
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <SelectTrigger {...controlProps} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {voiceProviderOptions.map((one) => (
+                            <SelectItem key={one} value={one}>
+                              {PROVIDER_LABELS[one]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FormField>
                 )}
               />
-              <WiringNote setting="defaultVoiceProvider" />
             </div>
-          </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="defaultVoiceId">Voice ID</Label>
-            <Input
-              id="defaultVoiceId"
-              placeholder="CwhRBWXzGAHq8TQ4Fs17"
-              className="font-mono sm:max-w-sm"
-              aria-invalid={Boolean(errors.defaultVoiceId)}
-              {...register("defaultVoiceId")}
-            />
-            {errors.defaultVoiceId && (
-              <p className="text-destructive text-xs">
-                {errors.defaultVoiceId.message}
-              </p>
-            )}
-            <WiringNote setting="defaultVoiceId" />
-          </div>
+            <FormField
+              name="defaultVoiceId"
+              label="Voice ID"
+              error={errors.defaultVoiceId?.message}
+              note={wiringNote("defaultVoiceId")}
+            >
+              {(controlProps) => (
+                <Input
+                  placeholder="CwhRBWXzGAHq8TQ4Fs17"
+                  className="font-mono sm:max-w-sm"
+                  {...register("defaultVoiceId")}
+                  {...controlProps}
+                />
+              )}
+            </FormField>
 
-          <div className="space-y-2">
-            <Label htmlFor="defaultScriptPromptId">Script template</Label>
             <Controller
               control={control}
               name="defaultScriptPromptId"
               render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger
-                    id="defaultScriptPromptId"
-                    className="w-full sm:max-w-sm"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_SCRIPT_PROMPT}>
-                      No template pinned
-                    </SelectItem>
-                    {scriptPrompts.map((prompt) => (
-                      <SelectItem key={prompt.id} value={prompt.id}>
-                        {prompt.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <FormField
+                  name="defaultScriptPromptId"
+                  label="Script template"
+                  note={wiringNote("defaultScriptPromptId")}
+                >
+                  {(controlProps) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger
+                        {...controlProps}
+                        className="w-full sm:max-w-sm"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_SCRIPT_PROMPT}>
+                          No template pinned
+                        </SelectItem>
+                        {scriptPrompts.map((prompt) => (
+                          <SelectItem key={prompt.id} value={prompt.id}>
+                            {prompt.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </FormField>
               )}
             />
-            <WiringNote setting="defaultScriptPromptId" />
-          </div>
+          </FieldGroup>
         </CardContent>
       </Card>
 
@@ -390,52 +419,56 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
             How a finished video reaches YouTube.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <Label htmlFor="defaultVisibility">Visibility</Label>
+        <CardContent>
+          <FieldGroup>
             <Controller
               control={control}
               name="defaultVisibility"
               render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger
-                    id="defaultVisibility"
-                    className="w-full sm:w-64"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {publishVisibilities.map((one) => (
-                      <SelectItem key={one} value={one}>
-                        {VISIBILITY_LABELS[one]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <FormField
+                  name="defaultVisibility"
+                  label="Visibility"
+                  note={wiringNote("defaultVisibility")}
+                >
+                  {(controlProps) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger
+                        {...controlProps}
+                        className="w-full sm:w-64"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {publishVisibilities.map((one) => (
+                          <SelectItem key={one} value={one}>
+                            {VISIBILITY_LABELS[one]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </FormField>
               )}
             />
-            <WiringNote setting="defaultVisibility" />
-          </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="defaultTags">Tags</Label>
-            <Input
-              id="defaultTags"
-              placeholder="finance, explainer, market news"
-              aria-invalid={Boolean(errors.defaultTags)}
-              {...register("defaultTags")}
-            />
-            {errors.defaultTags ? (
-              <p className="text-destructive text-xs">
-                {errors.defaultTags.message}
-              </p>
-            ) : (
-              <p className="text-muted-foreground text-xs">
-                Comma separated, up to {MAX_DEFAULT_TAGS}.
-              </p>
-            )}
-            <WiringNote setting="defaultTags" />
-          </div>
+            {/* The hint and the error share one slot, so the card does not grow
+                a line taller the moment a tag list is rejected. */}
+            <FormField
+              name="defaultTags"
+              label="Tags"
+              description={`Comma separated, up to ${MAX_DEFAULT_TAGS}.`}
+              error={errors.defaultTags?.message}
+              note={wiringNote("defaultTags")}
+            >
+              {(controlProps) => (
+                <Input
+                  placeholder="finance, explainer, market news"
+                  {...register("defaultTags")}
+                  {...controlProps}
+                />
+              )}
+            </FormField>
+          </FieldGroup>
         </CardContent>
       </Card>
 
@@ -444,24 +477,32 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
           <CardTitle>Storage</CardTitle>
           <CardDescription>Where rendered files are kept.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2">
-          <Label htmlFor="storageBucket">Bucket</Label>
-          <Input
-            id="storageBucket"
-            className="font-mono sm:max-w-sm"
-            aria-invalid={Boolean(errors.storageBucket)}
-            {...register("storageBucket")}
-          />
-          {errors.storageBucket && (
-            <p className="text-destructive text-xs">
-              {errors.storageBucket.message}
-            </p>
-          )}
-          <WiringNote setting="storageBucket" />
+        <CardContent>
+          <FormField
+            name="storageBucket"
+            label="Bucket"
+            error={errors.storageBucket?.message}
+            note={wiringNote("storageBucket")}
+          >
+            {(controlProps) => (
+              <Input
+                className="font-mono sm:max-w-sm"
+                {...register("storageBucket")}
+                {...controlProps}
+              />
+            )}
+          </FormField>
         </CardContent>
       </Card>
 
-      <div className="flex items-center gap-3">
+      {/* Stacked and full-width on a phone, inline on a desktop — the primary
+          action of a long form is the last thing that should be a 110px target
+          at the bottom of a 375px screen.
+          Stacked in DOM order rather than reversed: `flex-col-reverse` would
+          have put Save under Discard visually while leaving it first in the tab
+          order, which is the focus-order trap that reads fine to a mouse and
+          wrong to a keyboard. */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
         <Button type="submit" disabled={isSubmitting || !isDirty}>
           {isSubmitting && <Loader2 className="animate-spin" />}
           Save settings

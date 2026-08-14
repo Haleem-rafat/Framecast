@@ -14,8 +14,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FormField } from "@/components/shared/form-field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import {
   Select,
@@ -102,27 +102,48 @@ function VariableField({
   value: string;
   onChange: (next: string) => void;
 }) {
+  const isRequired = field.required && !field.defaultValue;
+
   return (
-    <div className="space-y-2">
-      <Label htmlFor={`variable-${field.key}`}>
-        {field.label}
-        {field.required && !field.defaultValue && (
-          <span className="text-destructive">*</span>
-        )}
-      </Label>
-      <Input
-        id={`variable-${field.key}`}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={field.defaultValue ?? ""}
-      />
-      {field.defaultValue && !value.trim() && (
-        <p className="text-muted-foreground text-xs">
-          Leave this blank to use your prompt&apos;s default:{" "}
-          <span className="font-medium">{field.defaultValue}</span>
-        </p>
+    <FormField
+      name={`variable-${field.key}`}
+      label={
+        <>
+          {field.label}
+          {isRequired && (
+            <>
+              {/* The asterisk was the only signal that an answer was
+               * mandatory, and an asterisk is a glyph with no accessible name
+               * — a screen reader read the label and stopped. The mark stays
+               * for sighted operators, hidden from the tree, with the word it
+               * stands for beside it. */}
+              <span aria-hidden="true" className="text-destructive">
+                *
+              </span>
+              <span className="sr-only">(required)</span>
+            </>
+          )}
+        </>
+      }
+      description={
+        field.defaultValue && !value.trim() ? (
+          <>
+            Leave this blank to use your prompt&apos;s default:{" "}
+            <span className="font-medium">{field.defaultValue}</span>
+          </>
+        ) : undefined
+      }
+    >
+      {(control) => (
+        <Input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.defaultValue ?? ""}
+          aria-required={isRequired || undefined}
+          {...control}
+        />
       )}
-    </div>
+    </FormField>
   );
 }
 
@@ -145,30 +166,36 @@ function DurationField({
   onChange: (next: string) => void;
 }) {
   return (
-    <div className="space-y-2">
-      <Label htmlFor="duration">{field.label}</Label>
+    <FormField
+      name="duration"
+      label={field.label}
+      description={
+        <>
+          {estimatedWords === null
+            ? ""
+            : `Roughly ${estimatedWords.toLocaleString()} words of narration. `}
+          Length is what everything downstream costs: a longer script is a
+          longer Anthropic call, more ElevenLabs characters, more footage to
+          fetch and a longer render. A short video finishes in minutes; a long
+          one takes considerably longer.
+        </>
+      }
+    >
       {/* Not `type="number"`: this is whatever the operator declared as a
           prompt variable, and its default is a free-text string. A numeric
           input would silently reject a perfectly valid non-numeric default.
           `inputMode` still gets a phone keyboard the right way round, and the
-          estimate below simply doesn't render when the value isn't a number. */}
-      <Input
-        id="duration"
-        inputMode="numeric"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={field.defaultValue ?? "8"}
-      />
-      <p className="text-muted-foreground text-xs">
-        {estimatedWords === null
-          ? ""
-          : `Roughly ${estimatedWords.toLocaleString()} words of narration. `}
-        Length is what everything downstream costs: a longer script is a longer
-        Anthropic call, more ElevenLabs characters, more footage to fetch and a
-        longer render. A short video finishes in minutes; a long one takes
-        considerably longer.
-      </p>
-    </div>
+          estimate above simply doesn't render when the value isn't a number. */}
+      {(control) => (
+        <Input
+          inputMode="numeric"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.defaultValue ?? "8"}
+          {...control}
+        />
+      )}
+    </FormField>
   );
 }
 
@@ -339,40 +366,45 @@ export function AutomationFlow({
 
         <CardContent className="space-y-4">
           {step === "topic" && (
-            <div className="space-y-2">
-              <Label htmlFor="topic">Topic</Label>
-              <Textarea
-                id="topic"
-                rows={4}
-                value={topic}
-                onChange={(event) => setTopic(event.target.value)}
-                placeholder="How index funds quietly took over the stock market"
-                maxLength={300}
-                autoFocus
-              />
-              <p className="text-muted-foreground text-xs">
-                {topic.trim().length}/300 characters
-              </p>
-            </div>
+            <FormField
+              name="topic"
+              label="Topic"
+              description={`${topic.trim().length}/300 characters`}
+            >
+              {(control) => (
+                <Textarea
+                  rows={4}
+                  value={topic}
+                  onChange={(event) => setTopic(event.target.value)}
+                  placeholder="How index funds quietly took over the stock market"
+                  maxLength={300}
+                  autoFocus
+                  {...control}
+                />
+              )}
+            </FormField>
           )}
 
           {step === "project" && (
-            <div className="space-y-2">
-              <Label htmlFor="projectId">Project</Label>
-              <Select value={projectId} onValueChange={setProjectId}>
-                <SelectTrigger id="projectId" className="w-full">
-                  <SelectValue placeholder="Select a project" />
-                </SelectTrigger>
-                <SelectContent>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
-                      {project.name}
-                      {project.channelTitle ? ` — ${project.channelTitle}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <FormField name="projectId" label="Project">
+              {(control) => (
+                <Select value={projectId} onValueChange={setProjectId}>
+                  <SelectTrigger {...control} className="w-full">
+                    <SelectValue placeholder="Select a project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                        {project.channelTitle
+                          ? ` — ${project.channelTitle}`
+                          : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </FormField>
           )}
 
           {step === "direction" &&
@@ -481,8 +513,29 @@ export function AutomationFlow({
           </Button>
 
           <div className="flex items-center gap-3">
-            {blocked && <p className="text-muted-foreground text-xs">{blocked}</p>}
-            <Button type="submit" disabled={Boolean(blocked) || isPending}>
+            {/* Deliberately *not* `FieldError`. This says why the disabled
+             * button is disabled, and it is on screen from the moment a step
+             * opens — before the operator has done anything wrong. Painting
+             * "Give the topic a few more words" destructive-red on arrival
+             * would accuse them of a mistake they have not made yet. It is
+             * announced instead of coloured: `aria-live` speaks it when it
+             * changes, and the button points at it so anyone landing on a
+             * disabled button hears the reason. */}
+            {blocked && (
+              <p
+                id="automation-blocked"
+                role="status"
+                aria-live="polite"
+                className="text-muted-foreground text-xs"
+              >
+                {blocked}
+              </p>
+            )}
+            <Button
+              type="submit"
+              disabled={Boolean(blocked) || isPending}
+              aria-describedby={blocked ? "automation-blocked" : undefined}
+            >
               {isPending ? (
                 <Loader2 className="animate-spin" />
               ) : step === "review" ? (
