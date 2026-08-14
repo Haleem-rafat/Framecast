@@ -81,6 +81,17 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /*
+   * Marketing hero spotlight. Aceternity's Spotlight ships hard-coded blue
+   * `hsla()` beams that vanish on a white page, so the three stops are lifted
+   * out here and redefined per theme instead. On light the beams are a wash of
+   * the foreground colour — light through haze reads as a soft grey shaft on
+   * white, not a glow — and on dark they are the usual lift towards white.
+   */
+  --spotlight-core: oklch(0.145 0 0 / 9%);
+  --spotlight-mid: oklch(0.145 0 0 / 5%);
+  --spotlight-edge: oklch(0.145 0 0 / 3%);
 }
 
 .dark {
@@ -115,6 +126,10 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  --spotlight-core: oklch(0.985 0 0 / 14%);
+  --spotlight-mid: oklch(0.985 0 0 / 7%);
+  --spotlight-edge: oklch(0.985 0 0 / 4%);
 }
 
 @layer base {

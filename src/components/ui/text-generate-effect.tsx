@@ -1,62 +1,63 @@
 "use client";
-import { useEffect } from "react";
-import { motion, stagger, useAnimate } from "motion/react";
+
+import { motion } from "motion/react";
+
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 
-export const TextGenerateEffect = ({
+/**
+ * Aceternity's TextGenerateEffect — words un-blurring one after another, the
+ * shape of a model writing — rebuilt on the declarative API.
+ *
+ * Changes from upstream:
+ * - No hard-coded `font-bold`, `text-2xl` or `text-black dark:text-white`. The
+ *   effect inherits type and colour from wherever it is used, so it can sit
+ *   inside a body paragraph instead of only as a display heading.
+ * - Triggered by `whileInView` with `once: true` rather than on mount, so the
+ *   words are written when the reader actually reaches them, and exactly once.
+ *   `useAnimate` + a `[scope.current]` effect dependency (which React does not
+ *   track) is gone with it.
+ * - Reduced motion renders the finished text immediately, with no wrapper
+ *   elements animating at all.
+ */
+export function TextGenerateEffect({
   words,
   className,
-  filter = true,
-  duration = 0.5,
+  duration = 0.4,
+  stagger = 0.05,
 }: {
   words: string;
   className?: string;
-  filter?: boolean;
+  /** Seconds each word takes to resolve. */
   duration?: number;
-}) => {
-  const [scope, animate] = useAnimate();
-  let wordsArray = words.split(" ");
-  useEffect(() => {
-    animate(
-      "span",
-      {
-        opacity: 1,
-        filter: filter ? "blur(0px)" : "none",
-      },
-      {
-        duration: duration ? duration : 1,
-        delay: stagger(0.2),
-      }
-    );
-  }, [scope.current]);
+  /**
+   * Seconds between one word starting and the next. Kept low: a sentence of
+   * thirty words at 0.12 takes four seconds to finish writing itself, which is
+   * longer than anyone will wait to read one example.
+   */
+  stagger?: number;
+}) {
+  const reduceMotion = usePrefersReducedMotion();
 
-  const renderWords = () => {
-    return (
-      <motion.div ref={scope}>
-        {wordsArray.map((word, idx) => {
-          return (
-            <motion.span
-              key={word + idx}
-              className="dark:text-white text-black opacity-0"
-              style={{
-                filter: filter ? "blur(10px)" : "none",
-              }}
-            >
-              {word}{" "}
-            </motion.span>
-          );
-        })}
-      </motion.div>
-    );
-  };
+  if (reduceMotion) {
+    return <span className={className}>{words}</span>;
+  }
 
   return (
-    <div className={cn("font-bold", className)}>
-      <div className="mt-4">
-        <div className=" dark:text-white text-black text-2xl leading-snug tracking-wide">
-          {renderWords()}
-        </div>
-      </div>
-    </div>
+    <span className={cn("inline", className)}>
+      {words.split(" ").map((word, index) => (
+        <motion.span
+          // Words repeat within a sentence, so the word alone is not a key.
+          key={`${word}-${index}`}
+          className="inline-block whitespace-pre"
+          initial={{ opacity: 0, filter: "blur(8px)" }}
+          whileInView={{ opacity: 1, filter: "blur(0px)" }}
+          viewport={{ once: true, amount: 0.3 }}
+          transition={{ duration, delay: index * stagger }}
+        >
+          {word}{" "}
+        </motion.span>
+      ))}
+    </span>
   );
-};
+}

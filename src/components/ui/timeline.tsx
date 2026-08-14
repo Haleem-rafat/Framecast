@@ -1,90 +1,110 @@
 "use client";
-import {
-  useMotionValueEvent,
-  useScroll,
-  useTransform,
-  motion,
-} from "motion/react";
-import React, { useEffect, useRef, useState } from "react";
 
-interface TimelineEntry {
+import { motion, useScroll } from "motion/react";
+import { useRef, type ReactNode, type RefObject } from "react";
+
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import { cn } from "@/lib/utils";
+
+export interface TimelineEntry {
   title: string;
-  content: React.ReactNode;
+  /** Rendered inside the rail's marker. A lucide icon, usually. */
+  icon?: ReactNode;
+  content: ReactNode;
 }
 
-export const Timeline = ({ data }: { data: TimelineEntry[] }) => {
-  const ref = useRef<HTMLDivElement>(null);
+/**
+ * Aceternity's Timeline: a vertical rail whose beam fills in as you read down
+ * it. Kept for the shape it gives a sequence — you can see how far through the
+ * pipeline you are — but rebuilt fairly heavily.
+ *
+ * - Upstream paints `bg-white dark:bg-neutral-950`, a purple-to-blue beam and
+ *   its own hard-coded heading and blurb. All three are gone: the component is
+ *   now transparent, draws in `--primary`/`--border`, and renders only the
+ *   entries it is given.
+ * - Upstream animates the beam's `height`, which is a layout property and makes
+ *   the browser reflow the rail on every scroll frame. This animates `scaleY`
+ *   from a fixed-height element instead, which the compositor can handle on its
+ *   own thread. That also removes the `useState` + `getBoundingClientRect`
+ *   measuring pass and the stale height it left behind after a resize.
+ * - Under reduced motion the beam is not animated *or* subscribed: the scroll
+ *   listener lives in a child that simply is not rendered, so there is no
+ *   per-frame work at all, and the rail is drawn already complete.
+ * - The layout is a two-column grid rather than absolute offsets, so it holds
+ *   together down to 375px without the marker colliding with the text.
+ */
+export function Timeline({
+  data,
+  className,
+}: {
+  data: TimelineEntry[];
+  className?: string;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(0);
-
-  useEffect(() => {
-    if (ref.current) {
-      const rect = ref.current.getBoundingClientRect();
-      setHeight(rect.height);
-    }
-  }, [ref]);
-
-  const { scrollYProgress } = useScroll({
-    target: containerRef,
-    offset: ["start 10%", "end 50%"],
-  });
-
-  const heightTransform = useTransform(scrollYProgress, [0, 1], [0, height]);
-  const opacityTransform = useTransform(scrollYProgress, [0, 0.1], [0, 1]);
+  const reduceMotion = usePrefersReducedMotion();
 
   return (
-    <div
-      className="w-full bg-white dark:bg-neutral-950 font-sans md:px-10"
-      ref={containerRef}
-    >
-      <div className="max-w-7xl mx-auto py-20 px-4 md:px-8 lg:px-10">
-        <h2 className="text-lg md:text-4xl mb-4 text-black dark:text-white max-w-4xl">
-          Changelog from my journey
-        </h2>
-        <p className="text-neutral-700 dark:text-neutral-300 text-sm md:text-base max-w-sm">
-          I&apos;ve been working on Aceternity for the past 2 years. Here&apos;s
-          a timeline of my journey.
-        </p>
-      </div>
-
-      <div ref={ref} className="relative max-w-7xl mx-auto pb-20">
-        {data.map((item, index) => (
-          <div
-            key={index}
-            className="flex justify-start pt-10 md:pt-40 md:gap-10"
-          >
-            <div className="sticky flex flex-col md:flex-row z-40 items-center top-40 self-start max-w-xs lg:max-w-sm md:w-full">
-              <div className="h-10 absolute left-3 md:left-3 w-10 rounded-full bg-white dark:bg-black flex items-center justify-center">
-                <div className="h-4 w-4 rounded-full bg-neutral-200 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 p-2" />
-              </div>
-              <h3 className="hidden md:block text-xl md:pl-20 md:text-5xl font-bold text-neutral-500 dark:text-neutral-500 ">
-                {item.title}
-              </h3>
-            </div>
-
-            <div className="relative pl-20 pr-4 md:pl-4 w-full">
-              <h3 className="md:hidden block text-2xl mb-4 text-left font-bold text-neutral-500 dark:text-neutral-500">
-                {item.title}
-              </h3>
-              {item.content}{" "}
-            </div>
-          </div>
-        ))}
+    <div ref={containerRef} className={cn("relative", className)}>
+      {/* The unlit track. Masked at both ends so it fades rather than stops. */}
+      <div
+        aria-hidden="true"
+        className="bg-border absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
+      />
+      {reduceMotion ? (
         <div
-          style={{
-            height: height + "px",
-          }}
-          className="absolute md:left-8 left-8 top-0 overflow-hidden w-[2px] bg-[linear-gradient(to_bottom,var(--tw-gradient-stops))] from-transparent from-[0%] via-neutral-200 dark:via-neutral-700 to-transparent to-[99%]  [mask-image:linear-gradient(to_bottom,transparent_0%,black_10%,black_90%,transparent_100%)] "
-        >
-          <motion.div
-            style={{
-              height: heightTransform,
-              opacity: opacityTransform,
-            }}
-            className="absolute inset-x-0 top-0  w-[2px] bg-gradient-to-t from-purple-500 via-blue-500 to-transparent from-[0%] via-[10%] rounded-full"
-          />
-        </div>
-      </div>
+          aria-hidden="true"
+          className="bg-primary/40 absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
+        />
+      ) : (
+        <TimelineBeam containerRef={containerRef} />
+      )}
+
+      <ol className="relative">
+        {data.map((entry) => (
+          <li
+            key={entry.title}
+            className="grid grid-cols-[2.25rem_1fr] gap-x-4 pb-12 last:pb-0 sm:gap-x-6 sm:pb-16"
+          >
+            <span
+              aria-hidden="true"
+              className="bg-background text-muted-foreground ring-border flex size-9 items-center justify-center rounded-full ring-1 [&_svg]:size-4"
+            >
+              {entry.icon}
+            </span>
+
+            <div className="min-w-0 pt-1">
+              <h3 className="text-base font-medium tracking-tight sm:text-lg">
+                {entry.title}
+              </h3>
+              <div className="mt-2">{entry.content}</div>
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
-};
+}
+
+/**
+ * Split out so that the `useScroll` subscription only exists when it will
+ * actually be used — a hook cannot be called conditionally, but a component can
+ * be rendered conditionally.
+ */
+function TimelineBeam({
+  containerRef,
+}: {
+  containerRef: RefObject<HTMLDivElement | null>;
+}) {
+  const { scrollYProgress } = useScroll({
+    target: containerRef,
+    offset: ["start 65%", "end 85%"],
+  });
+
+  return (
+    <motion.div
+      aria-hidden="true"
+      style={{ scaleY: scrollYProgress, transformOrigin: "top" }}
+      className="from-primary/70 to-primary/20 absolute top-2 bottom-2 left-[1.125rem] w-px -translate-x-1/2 bg-gradient-to-b [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
+    />
+  );
+}
