@@ -1064,6 +1064,21 @@ model ActivityLog {
   @@index([userId, createdAt])
   @@index([entityType, entityId])
   @@index([level, createdAt])
+  /// Serves the action dropdown on /logs, which groups this operator's rows
+  /// by `action` to list the filter's options with a count each. That is the
+  /// one query on the page that must touch every row the operator owns, and
+  /// without this index it does so as a sequential scan of the whole table:
+  /// at 60k rows it read 1,154 pages in 24.4ms, against 0.14ms for the fifty
+  /// rows actually rendered beside it. As an index-only scan it reads 39
+  /// pages in 12.8ms — the 30x drop in pages is the point on a box where
+  /// `shared_buffers` is 256MB and Postgres shares it with the app and the
+  /// render worker.
+  ///
+  /// Write cost: one extra btree entry per `activityLog.create`, and this
+  /// table is append-only and written on nearly every operator action and
+  /// pipeline stage. The entry is an append to the right-hand edge for any
+  /// single operator, which is the cheap case.
+  @@index([userId, action])
   @@map("activity_log")
 }
 

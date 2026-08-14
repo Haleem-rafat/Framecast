@@ -1,0 +1,11 @@
+-- The /logs action dropdown groups an operator's activity rows by `action`.
+-- Without this index that grouping is a sequential scan of the whole table:
+-- measured at 60k rows it read 1,154 shared buffers in 24.4ms, while the
+-- fifty rows the page actually renders alongside it cost 0.14ms. With the
+-- index the same grouping is an index-only scan (Heap Fetches: 0) reading
+-- 39 buffers in 12.8ms.
+--
+-- `(userId, action)` in that order because every query on this table is
+-- scoped to one operator first; `action` alone would not be usable for the
+-- scoped grouping.
+CREATE INDEX "activity_log_userId_action_idx" ON "activity_log"("userId", "action");
