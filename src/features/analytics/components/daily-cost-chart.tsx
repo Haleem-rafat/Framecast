@@ -108,6 +108,44 @@ export function DailyCostChart({
                 {points.at(-1) && format(parseISO(points.at(-1)!.date), "d MMM")}
               </span>
             </div>
+
+            {/* The same series as numbers, for anyone the columns do not reach.
+              *
+              * `role="img"` above collapses the whole bar chart to its one
+              * `aria-label`, which makes the per-day `title` tooltips
+              * unreachable — and those tooltips are mouse-only regardless, so
+              * keyboard and touch users could not read a single day's figure
+              * either. That is the entire content of the chart, available to
+              * pointer users only.
+              *
+              * A table rather than a longer label, because the data is
+              * genuinely tabular and a screen reader can then navigate it by
+              * row and column instead of hearing thirty comma-separated
+              * numbers. `sr-only` keeps the visual design exactly as it was —
+              * this adds an alternative, it does not replace anything. */}
+            <table className="sr-only">
+              <caption>
+                Daily provider spend for the last {windowDays} days
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Date</th>
+                  <th scope="col">Cost</th>
+                  <th scope="col">Calls</th>
+                </tr>
+              </thead>
+              <tbody>
+                {points.map((point) => (
+                  <tr key={point.date}>
+                    <th scope="row">
+                      {format(parseISO(point.date), "d MMM")}
+                    </th>
+                    <td>{formatCurrency(point.costUsd)}</td>
+                    <td>{point.requests}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </>
         )}
       </CardContent>

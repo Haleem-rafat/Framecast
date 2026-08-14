@@ -20,7 +20,11 @@ export function ChannelCard({ channel }: { channel: ChannelSummary }) {
 
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-center gap-2">
-            <p className="truncate font-medium">{channel.title}</p>
+            {/* The channel name is this card's title, so it should be a
+              * heading — a screen-reader user skimming a page of connected
+              * channels by heading would otherwise find nothing at all. h3
+              * sits under the page h1 and the section that holds the list. */}
+            <h3 className="truncate font-medium">{channel.title}</h3>
             {!channel.isActive && <Badge variant="outline">Inactive</Badge>}
           </div>
           <p className="text-muted-foreground truncate text-xs">

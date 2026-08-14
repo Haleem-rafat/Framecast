@@ -83,7 +83,10 @@ export function PromptTemplateCard({
       <CardHeader className="flex flex-row items-start justify-between space-y-0">
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-2">
-            <p className="truncate font-medium">{template.name}</p>
+            {/* The template name is the card's title; as a `<p>` it was
+              * absent from the heading outline of a page that is nothing but
+              * a grid of these. */}
+            <h3 className="truncate font-medium">{template.name}</h3>
             {template.isDefault && <Badge>Default</Badge>}
           </div>
           {template.description && (

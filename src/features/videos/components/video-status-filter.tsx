@@ -41,7 +41,11 @@ export function VideoStatusFilter({ current }: { current: string }) {
 
   return (
     <Select value={current} onValueChange={onChange}>
-      <SelectTrigger className="w-40">
+      {/* The trigger's only content is the selected value, so without this its
+          accessible name is "All statuses" — the current answer, not the
+          question. Nothing else on the page labels it: there is no visible
+          <Label>, and the control sits alone in the header. */}
+      <SelectTrigger className="w-40" aria-label="Filter videos by status">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

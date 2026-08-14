@@ -38,7 +38,9 @@ const SOURCE_LABEL: Record<PipelineLogSource, string> = {
 const LEVEL_BADGE_CLASS: Record<LogLevel, string> = {
   DEBUG: "text-muted-foreground",
   INFO: "text-muted-foreground",
-  WARN: "border-amber-600/30 text-amber-600 dark:border-amber-400/30 dark:text-amber-400",
+  // amber-600 measures near 3:1 against the card, under the 4.5:1 this 12px
+  // badge text needs. 700 reads as the same warning colour and clears it.
+  WARN: "border-amber-700/30 text-amber-700 dark:border-amber-400/30 dark:text-amber-300",
   ERROR: "border-destructive/30 text-destructive",
 };
 
@@ -179,10 +181,21 @@ export function LogStream({
               : "No warnings or errors — switch to “Everything” to see the full stream."}
           </p>
         ) : (
+          // `role="log"` is the role for a region that appends over time, and
+          // gating `aria-live` on `isActive` is what keeps it bearable: while
+          // the pipeline runs, new lines are announced as they land; once it
+          // settles the region goes quiet rather than re-reading itself on
+          // every poll. `tabIndex={0}` because a scrollable region that cannot
+          // be reached by keyboard cannot be scrolled by keyboard — the log is
+          // capped at 24rem and routinely overflows.
           <div
             ref={scrollRef}
             onScroll={onScroll}
-            className="bg-muted/50 max-h-96 space-y-1 overflow-y-auto rounded-md p-2 font-mono text-xs"
+            role="log"
+            aria-live={isActive ? "polite" : "off"}
+            aria-label="Pipeline log output"
+            tabIndex={0}
+            className="bg-muted/50 focus-visible:ring-ring/50 max-h-96 space-y-1 overflow-y-auto rounded-md p-2 font-mono text-xs outline-none focus-visible:ring-3"
           >
             {visible.map((entry) => (
               <div key={entry.id} className="flex items-start gap-2">

@@ -138,7 +138,7 @@ export function ScriptPanel({
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="space-y-1">
-              <p className="text-sm font-medium">Import a script</p>
+              <h2 className="text-sm font-medium">Import a script</h2>
               <p className="text-muted-foreground text-xs">
                 Paste narration only — every word is read aloud exactly as
                 written. Footage is matched to the video&apos;s topic rather
@@ -157,7 +157,12 @@ export function ScriptPanel({
             </Button>
           </div>
 
+          {/* A placeholder is not a label — it is gone the moment anything is
+              typed, and it is not what assistive tech reads for the field's
+              name. This is the only control in the panel, so there is nothing
+              else for it to be labelled by. */}
           <Textarea
+            aria-label="Script to import"
             value={importDraft ?? ""}
             onChange={(event) => setImportDraft(event.target.value)}
             rows={20}
@@ -254,7 +259,11 @@ export function ScriptPanel({
           </div>
         </div>
 
+        {/* Named after the version it is showing, because the panel's whole
+            point is that you can switch between versions — an unqualified
+            "Script content" would read identically whichever one is loaded. */}
         <Textarea
+          aria-label={`Script content, version ${activeVersion.version}`}
           value={content}
           onChange={(event) => setContent(event.target.value)}
           rows={20}

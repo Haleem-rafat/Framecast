@@ -249,7 +249,18 @@ function StageRow({
         )}
       </div>
       {showRenderExtras && stage.status === "running" && (
-        <Progress value={progress ?? 0} className="ml-6 h-1.5" />
+        // Radix renders this as `role="progressbar"`, and a progressbar with no
+        // accessible name is announced as a bare percentage with nothing to
+        // attach it to. The bar is visually tied to the stage row above it by
+        // its indent alone, which is exactly the association a screen reader
+        // cannot see. `aria-valuetext` overrides the default "N percent" with
+        // wording that says what is at N percent.
+        <Progress
+          value={progress ?? 0}
+          aria-label={`${stage.label} progress`}
+          aria-valuetext={`${stage.label}: ${Math.round(progress ?? 0)}% complete`}
+          className="ml-6 h-1.5"
+        />
       )}
     </div>
   );

@@ -68,7 +68,14 @@ export function ActivityLogFilters({
         {/* 256px + 160px of fixed triggers is wider than a 375px screen's
          * content box, so on a phone each one takes the full width and they
          * stack — the flex-wrap above was only ever going to half-solve it. */}
-        <SelectTrigger className="w-full sm:w-64">
+        {/* A Select trigger's accessible name defaults to its own value, so
+         * without this the control announces as "All actions" — the answer,
+         * with the question missing. Two unlabelled filters side by side are
+         * indistinguishable to anyone who cannot see which column they sit
+         * over. An `aria-label` rather than a visible `<Label>` because the
+         * row is deliberately label-less by design; the name still has to
+         * exist somewhere. */}
+        <SelectTrigger aria-label="Filter by action" className="w-full sm:w-64">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -82,7 +89,7 @@ export function ActivityLogFilters({
       </Select>
 
       <Select value={level} onValueChange={(value) => push({ level: value })}>
-        <SelectTrigger className="w-full sm:w-40">
+        <SelectTrigger aria-label="Filter by level" className="w-full sm:w-40">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
