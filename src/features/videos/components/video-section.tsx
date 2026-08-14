@@ -19,7 +19,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 
 /**
@@ -182,7 +181,6 @@ export function VideoSection({
   children,
 }: VideoSectionProps) {
   const Icon = SECTION_ICON[id];
-  const reduced = usePrefersReducedMotion();
   const contentId = `${useId()}-content`;
   const [open, setOpen] = useState(defaultOpen);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -323,14 +321,21 @@ export function VideoSection({
         <div
           className={cn(
             "border-foreground/10 border-t px-4 py-4",
-            // Only the body fades in, and only when it is opened. There is no
-            // height animation: the sections on this page contain a video
-            // player, a monospace textarea and a scrolling log, all of which
+            // A fade on open, and deliberately no height animation. The
+            // sections on this page hold a video player, a monospace textarea
+            // that grows to its content, and a scrolling log — all of which
             // report a different height mid-animation than they settle at, so
-            // an animated height either jumps at the end or has to be measured
-            // every frame. A 150ms fade reads as deliberate and cannot be
-            // wrong, and it costs no layout work per frame.
-            !reduced && "animate-in fade-in duration-150",
+            // an animated height either snaps at the end or has to be measured
+            // every frame. A fade reads as deliberate, cannot be wrong, and
+            // costs no layout work.
+            //
+            // Keyed off the section's `data-open` rather than a JavaScript
+            // flag because the element is never created or destroyed — it only
+            // stops being `hidden`. A class that is always present would
+            // therefore only ever animate once, on first paint; a rule that
+            // *starts matching* when the attribute flips animates every time
+            // the operator opens the section, which is when it means anything.
+            "motion-safe:group-data-[open=true]/section:animate-in motion-safe:group-data-[open=true]/section:fade-in duration-200",
             bodyClassName,
           )}
         >
