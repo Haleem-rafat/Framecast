@@ -148,8 +148,17 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
     }
 
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") finish();
-      if (event.key === "ArrowRight" || event.key === "Enter") next();
+      if (event.key === "Escape") {
+        finish();
+        return;
+      }
+      // Arrow keys only. `Enter` used to be handled here too, but this listener
+      // is on `window`: with focus on the tour's own Next button — where a
+      // keyboard user's focus naturally is — one press fired both the button's
+      // onClick and this handler, skipping a step every time. Enter is already
+      // the activation key for whatever is focused, so it never needed a
+      // global binding.
+      if (event.key === "ArrowRight") next();
       if (event.key === "ArrowLeft") back();
     }
 
@@ -189,10 +198,18 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
       />
 
       {/* Sits above the dim and swallows clicks, so the tour is modal without
-       * a separate full-screen overlay competing with the cutout. */}
-      <button
-        type="button"
-        aria-label="Skip the tour"
+       * a separate full-screen overlay competing with the cutout.
+       *
+       * A `<div>`, not the `<button>` this used to be. As a button it was the
+       * first tabbable element inside the dialog — so tabbing in landed on an
+       * invisible, viewport-sized control announcing "Skip the tour", the exact
+       * name of the real X button a few stops later. Two identically named
+       * controls, one of them nine tenths of the screen and invisible, is a
+       * worse outcome than the click-to-dismiss affordance it was buying.
+       * Dismissal by keyboard is unaffected: Escape is bound above and the X
+       * button is properly focusable. */}
+      <div
+        aria-hidden="true"
         onClick={finish}
         className="absolute inset-0 cursor-default"
       />
@@ -219,8 +236,16 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
         <p className="text-muted-foreground text-sm leading-relaxed">{current.body}</p>
 
         <div className="flex items-center justify-between gap-3 pt-1">
-          <span className="text-muted-foreground text-xs tabular-nums">
-            {index + 1} of {steps.length}
+          {/* Advancing swaps the title and body in place, which a screen
+            * reader has no reason to re-read. This counter is the one element
+            * guaranteed to change on every step, so making it the live region
+            * is what announces that anything happened at all. */}
+          <span
+            role="status"
+            aria-live="polite"
+            className="text-muted-foreground text-xs tabular-nums"
+          >
+            Step {index + 1} of {steps.length}
           </span>
 
           <div className="flex items-center gap-2">
