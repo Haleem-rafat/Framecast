@@ -33,10 +33,10 @@ enum AccountApproval {
 }
 
 model User {
-  id            String   @id @default(uuid()) @db.Uuid
+  id            String          @id @default(uuid()) @db.Uuid
   name          String
-  email         String   @unique
-  emailVerified Boolean  @default(false)
+  email         String          @unique
+  emailVerified Boolean         @default(false)
   image         String?
   /// Defaults to PENDING so a newly registered account is gated by default —
   /// a bug that skips the approval write must fail closed, not open. Every
@@ -45,8 +45,8 @@ model User {
   /// default would lock every existing operator out of their own studio.
   approval      AccountApproval @default(PENDING)
   approvedAt    DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 
   sessions            Session[]
   accounts            Account[]
@@ -57,6 +57,7 @@ model User {
   providerCredentials ProviderCredential[]
   activityLogs        ActivityLog[]
   settings            UserSetting?
+  schedules           Schedule[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
   @@index([approval, createdAt])
@@ -233,7 +234,8 @@ model Project {
   channelId String?  @db.Uuid
   channel   Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
 
-  videos Video[]
+  videos    Video[]
+  schedules Schedule[]
 
   @@index([userId, status, deletedAt])
   @@map("project")
@@ -295,6 +297,7 @@ model Video {
   publication  Publication?
   statusEvents VideoStatusEvent[]
   shorts       Short[]
+  scheduleRuns ScheduleRun[]
 
   @@index([userId, status, deletedAt])
   @@index([projectId, deletedAt])
@@ -613,7 +616,7 @@ model Short {
   /// operator's only way to judge a selection without watching all three.
   reason      String?
 
-  status ShortStatus @default(QUEUED)
+  status     ShortStatus @default(QUEUED)
   /// Path relative to RENDER_ROOT, e.g. `shorts/<id>.mp4` — the same "a path,
   /// never a URL" arrangement as `RenderJob.outputUrl` (see render-storage.ts).
   /// Named `outputPath` rather than repeating that column's misleading name.
@@ -834,6 +837,203 @@ model ProviderUsage {
   @@index([provider, createdAt])
   @@index([credentialId, createdAt])
   @@map("provider_usage")
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled automation
+// ---------------------------------------------------------------------------
+
+/// How often a schedule fires.
+///
+/// Two members, and deliberately not a cron expression. This product has
+/// exactly one flow — topic in, video out — and every run costs real provider
+/// money, so the useful range is "a video a week" to "a video a month". A cron
+/// field would additionally admit `* * * * *`, which is a way to spend an
+/// operator's entire Anthropic balance in an afternoon by mistyping one
+/// character, and would have to be validated back down to roughly this set
+/// anyway. Nothing here forecloses adding DAILY later; the arithmetic in
+/// src/lib/schedule-time.ts is written per-frequency precisely so a third
+/// member is a new branch rather than a rewrite.
+enum ScheduleFrequency {
+  WEEKLY
+  MONTHLY
+}
+
+/// PAUSED is the only state in which the due-check ignores a schedule, and it
+/// is reached three ways: the operator presses Pause, the topic queue runs dry,
+/// or the run has failed `MAX_CONSECUTIVE_FAILURES` times in a row. All three
+/// write `pausedReason`, because a schedule that stopped on its own has to be
+/// able to say why — an operator who finds no video on Monday needs the answer
+/// on the schedule itself, not in a log they would have to know to look for.
+enum ScheduleStatus {
+  ACTIVE
+  PAUSED
+}
+
+/// What happened at one occurrence.
+///
+/// SKIPPED and MISSED are different things and the distinction is the point.
+/// SKIPPED means the occurrence came round, the worker looked, and there was a
+/// reason not to spend money — no ElevenLabs key, no topics left, the project
+/// archived. MISSED means nothing looked at all: the occurrence passed while
+/// the worker was down, and `advancePast` recorded it on the way past rather
+/// than running it late (see src/lib/schedule-time.ts for why a missed
+/// occurrence is never made up).
+enum ScheduleRunOutcome {
+  SUCCEEDED
+  SKIPPED
+  FAILED
+  MISSED
+}
+
+/// A recurring instruction to produce a video: which project, how often, and
+/// with which answers to the operator's own prompt variables.
+///
+/// The timing columns store *local wall-clock fields plus an IANA zone*, never
+/// a UTC time of day. "Every Monday at 09:00" has to keep meaning 09:00 in the
+/// operator's zone across a DST transition, and a stored UTC hour cannot: it
+/// would drift by an hour twice a year, silently, in the direction nobody
+/// checks. `nextRunAt` is the only UTC instant here, it is derived from those
+/// fields, and it is re-derived (never incremented) every time the schedule
+/// fires — see `ScheduleService.claimDue`.
+model Schedule {
+  id           String         @id @default(uuid()) @db.Uuid
+  name         String
+  status       ScheduleStatus @default(ACTIVE)
+  /// Written whenever `status` becomes PAUSED, cleared on resume. Null for an
+  /// ACTIVE schedule and for one the operator paused by hand without comment.
+  pausedReason String?
+
+  frequency  ScheduleFrequency
+  /// 0 = Sunday … 6 = Saturday. Set for WEEKLY, null for MONTHLY.
+  dayOfWeek  Int?
+  /// 1–31. Set for MONTHLY, null for WEEKLY. A day the month does not have
+  /// clamps to that month's last day rather than skipping the month.
+  dayOfMonth Int?
+  hour       Int
+  minute     Int
+  /// IANA zone name, e.g. `Europe/London`. Validated on the way in — a typo
+  /// here would otherwise throw inside the worker's poll loop weeks later.
+  timeZone   String
+
+  /// Answers for the variables the operator's default SCRIPT prompt declares,
+  /// keyed by `PromptVariable.key` — the same map the guided flow submits. Json
+  /// rather than a child table for the same reason `AutomationService` takes a
+  /// plain record: which keys exist is a property of a template the operator
+  /// can edit at any moment, so a schema that enumerated them would need a
+  /// migration every time somebody renamed a variable.
+  variables Json @default("{}")
+
+  /// The next instant this schedule is due, derived from the fields above. Null
+  /// only while paused with no future occurrence computed. This column is the
+  /// lock: a claim advances it in the same conditional update that wins it, so
+  /// two concurrent ticks can never both fire the same occurrence.
+  nextRunAt DateTime?
+  /// When the last claim was taken — not when a video was produced. A run that
+  /// skipped still moved this, because it is what proves the tick loop looked.
+  lastRunAt DateTime?
+
+  /// Held for the duration of one run, so a second worker does not start the
+  /// same occurrence while the first is still inside `automationService.start`.
+  /// A lease rather than a lock, exactly like `Video.leaseExpiresAt`: a worker
+  /// that dies mid-run must not strand the schedule forever.
+  claimExpiresAt DateTime?
+
+  /// Reset to zero by any successful run. A schedule that fails this many times
+  /// in a row pauses itself rather than billing an Anthropic call every week
+  /// for a fault nobody is watching.
+  consecutiveFailures Int @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Cascade, not SetNull: a schedule with no project has nowhere to put a
+  /// video and no honest state to sit in. Deleting the project is the operator
+  /// saying they are done with this line of work.
+  projectId String  @db.Uuid
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  topics ScheduleTopic[]
+  runs   ScheduleRun[]
+
+  /// The due-check's candidate scan: active schedules whose next occurrence has
+  /// arrived, oldest first. Mirrors `Video`'s own `[status, leaseExpiresAt]`.
+  @@index([status, nextRunAt])
+  @@index([userId, deletedAt])
+  @@map("schedule")
+}
+
+/// One subject the operator wrote ahead of time, waiting its turn.
+///
+/// The queue is where topics come from, rather than a model inventing one each
+/// week. A standing instruction ("pick something about personal finance") would
+/// mean the studio choosing the subject of a video the operator pays for and
+/// puts their name on, and getting that wrong is not a small failure — it is a
+/// video about something they would never have covered, discovered after it was
+/// rendered. A queue is cheap, predictable, reviewable in advance, and when it
+/// empties the schedule stops rather than improvising.
+model ScheduleTopic {
+  id         String    @id @default(uuid()) @db.Uuid
+  /// Sort key, not an index into anything. Consumed rows keep their position so
+  /// history reads in the order the operator wrote them.
+  position   Int
+  topic      String
+  /// Set when a run takes this topic, which happens *before* the model is
+  /// called — see `ScheduleService.executeClaim` for why a failed run does not
+  /// put the topic back.
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  scheduleId String   @db.Uuid
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  /// "The next unconsumed topic for this schedule" is a prefix scan of this
+  /// b-tree, which is the single hottest query in the tick path.
+  @@index([scheduleId, consumedAt, position])
+  @@map("schedule_topic")
+}
+
+/// Append-only history: one row per occurrence, whatever became of it.
+///
+/// Every occurrence writes a row, including the ones that produced nothing.
+/// "No video appeared on Monday" is the question this table exists to answer,
+/// and it can only answer it if a skip is as visible as a success.
+model ScheduleRun {
+  id           String             @id @default(uuid()) @db.Uuid
+  /// The occurrence this row is about, not when the row was written. Those
+  /// differ for a run the worker picked up late, and the occurrence is the one
+  /// the operator can reason about.
+  scheduledFor DateTime
+  outcome      ScheduleRunOutcome
+  /// Why, in the operator's terms. Always set for SKIPPED, FAILED and MISSED;
+  /// null for a plain success.
+  reason       String?
+  /// The topic this run consumed, copied rather than referenced: the
+  /// `ScheduleTopic` row can be removed by the operator, and history that
+  /// forgets what it was about is not history.
+  topic        String?
+  createdAt    DateTime           @default(now())
+
+  scheduleId String   @db.Uuid
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  /// SetNull rather than Cascade: a video that was hard-deleted should not take
+  /// the record of its own production with it. Soft deletion — the normal case
+  /// — leaves this pointing at the row exactly as before.
+  videoId String? @db.Uuid
+  video   Video?  @relation(fields: [videoId], references: [id], onDelete: SetNull)
+
+  /// Belt and braces behind the conditional-update claim. If a bug ever let two
+  /// ticks agree that the same occurrence was theirs, the second insert fails
+  /// on this constraint before `automationService.start` is ever reached, so
+  /// the worst case is a logged error rather than a video billed twice.
+  @@unique([scheduleId, scheduledFor])
+  @@index([scheduleId, createdAt])
+  @@map("schedule_run")
 }
 
 // ---------------------------------------------------------------------------
