@@ -27,6 +27,17 @@ export const metadata: Metadata = {
   // social scrapers, which do not resolve relative paths, silently show no
   // image at all.
   metadataBase: new URL(SITE_URL),
+  // Google Search Console's HTML-tag method of proving domain ownership, which
+  // OAuth branding verification requires before it will accept framecasts.com
+  // as this app's homepage. Read from the environment rather than committed:
+  // the token is specific to one Google account, and hard-coding it here would
+  // silently break verification for anyone who forks or self-hosts this.
+  //
+  // Next.js omits the tag entirely when the variable is unset, so an
+  // un-configured deployment renders exactly as it does today.
+  verification: process.env.GOOGLE_SITE_VERIFICATION
+    ? { google: process.env.GOOGLE_SITE_VERIFICATION }
+    : undefined,
   title: {
     default: `${SITE_NAME} — automated YouTube video production`,
     template: `%s · ${SITE_NAME}`,

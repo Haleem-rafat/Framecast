@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { Workflow } from "lucide-react";
 
+import { EmptyState } from "@/components/shared/empty-state";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { LogStream } from "@/features/videos/components/log-stream";
 import { PipelinePanel } from "@/features/videos/components/pipeline-panel";
@@ -97,6 +100,22 @@ async function PipelineSection({ userId, videoId }: { userId: string; videoId: s
  * audio, never a raw storage path. Passing a storage path to the client is
  * how private storage ends up de facto public.
  */
+/**
+ * Which tab the page opens on, given where the video is.
+ *
+ * DRAFT has nothing to watch and no run to inspect, so it opens on the one
+ * thing that can be done: writing. Anything mid-flight opens on the run, which
+ * is the only part still changing. Everything terminal opens on the result.
+ */
+function openingTabFor(status: VideoStatus): "overview" | "script" | "pipeline" {
+  if (status === "DRAFT") return "script";
+  if (status === "QUEUED" || status === "GENERATING" || status === "RENDERING") {
+    return "pipeline";
+  }
+
+  return "overview";
+}
+
 async function PreviewSection({
   videoId,
   renderOutputUrl,
@@ -214,58 +233,83 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
         youtubeVideoId={video.publication?.youtubeVideoId ?? null}
       />
 
-      {/* Everything below streams. Previously this page awaited the pipeline
-       * state, the log stream, a remote HEAD on the render and a signed URL
-       * for the narration before rendering a single element, so the whole
-       * route sat on its skeleton for the slowest of the four and then appeared at once. The
-       * header and script come from the query already resolved above and have
-       * no reason to wait on any of that. */}
-      {video.status !== "DRAFT" && (
-        <Suspense fallback={<PipelineFallback />}>
-          <PipelineSection userId={user.id} videoId={video.id} />
-        </Suspense>
-      )}
+      {/* Four jobs live on this page — writing, watching a run, reviewing the
+       * result, cutting shorts — and only one of them is ever the reason an
+       * operator opened it. Stacked vertically they cost each other: a 480px
+       * script textarea sat between the pipeline and the shorts panel, so
+       * checking a render meant scrolling past a script nobody was editing.
+       *
+       * `Tabs` is the client component here; this page stays a server
+       * component and hands it already-rendered children, so every Suspense
+       * boundary below still streams exactly as it did.
+       *
+       * The opening tab follows the video's own state rather than being fixed,
+       * because what an operator wants is entirely determined by it: a draft
+       * needs writing, a running video needs watching, a finished one needs
+       * reviewing. */}
+      <Tabs defaultValue={openingTabFor(video.status)} className="gap-4">
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="script">Script</TabsTrigger>
+          <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+          <TabsTrigger value="shorts">Shorts</TabsTrigger>
+        </TabsList>
 
-      {/* Above the script panel: once a video exists, watching it is the
-       * primary action on this page, and it's the one an operator needs to
-       * see before Gate 2 (YouTube publish) means anything. */}
-      <Suspense fallback={<PreviewFallback />}>
-        <PreviewSection
-          videoId={video.id}
-          renderOutputUrl={renderOutputUrl ?? null}
-          audioPath={video.voiceOver?.audioUrl ?? null}
-          durationSeconds={video.voiceOver?.durationSeconds ?? null}
-          youtubeVideoId={video.publication?.youtubeVideoId ?? null}
-        />
-      </Suspense>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <ScriptPanel
-            videoId={video.id}
-            status={video.status}
-            activeVersion={activeVersion}
-          />
-        </div>
-
-        <div className="space-y-4">
-          {/* Shorts are cut out of a finished render, so this is only ever
-            * useful once one exists; the panel itself explains that rather
-            * than vanishing, so an operator can see the feature is there. Its
-            * list is fetched inside its own boundary for the same reason
-            * everything else below the header streams. */}
-          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
-            <ShortsSection userId={user.id} videoId={video.id} status={video.status} />
+        <TabsContent value="overview" className="space-y-4">
+          <Suspense fallback={<PreviewFallback />}>
+            <PreviewSection
+              videoId={video.id}
+              renderOutputUrl={renderOutputUrl ?? null}
+              audioPath={video.voiceOver?.audioUrl ?? null}
+              durationSeconds={video.voiceOver?.durationSeconds ?? null}
+              youtubeVideoId={video.publication?.youtubeVideoId ?? null}
+            />
           </Suspense>
+          <StatusEventsList events={video.statusEvents} />
+        </TabsContent>
+
+        <TabsContent value="script" className="grid gap-4 lg:grid-cols-3">
+          {/* The script keeps its two-thirds column rather than going full
+           * width: a 480px monospace textarea spanning an ultrawide monitor
+           * gives lines far too long to read back as spoken prose. */}
+          <div className="lg:col-span-2">
+            <ScriptPanel
+              videoId={video.id}
+              status={video.status}
+              activeVersion={activeVersion}
+            />
+          </div>
           <VersionHistory
             videoId={video.id}
             status={video.status}
             versions={versions}
             activeVersionId={script?.activeVersionId ?? null}
           />
-          <StatusEventsList events={video.statusEvents} />
-        </div>
-      </div>
+        </TabsContent>
+
+        <TabsContent value="pipeline">
+          {video.status === "DRAFT" ? (
+            <EmptyState
+              icon={Workflow}
+              title="Nothing has run yet"
+              description="Approve the script and the pipeline starts: narration, footage, render. Its progress and logs appear here."
+            />
+          ) : (
+            <Suspense fallback={<PipelineFallback />}>
+              <PipelineSection userId={user.id} videoId={video.id} />
+            </Suspense>
+          )}
+        </TabsContent>
+
+        <TabsContent value="shorts">
+          {/* Shorts are cut out of a finished render, so this is only ever
+           * useful once one exists; the panel itself explains that rather than
+           * vanishing, so an operator can see the feature is there. */}
+          <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+            <ShortsSection userId={user.id} videoId={video.id} status={video.status} />
+          </Suspense>
+        </TabsContent>
+      </Tabs>
     </>
   );
 }
