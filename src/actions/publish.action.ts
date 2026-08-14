@@ -3,40 +3,38 @@
 import { revalidatePath } from "next/cache";
 
 import { run, type ActionResult } from "@/actions/action-result";
+import { publishVideoSchema } from "@/schemas/publish.schema";
 import { publishService } from "@/services/publish.service";
 import { requireSession } from "@/server/session";
 
 /**
- * A deliberate placeholder, not a permanent default.
+ * Gate 2's server half.
  *
- * `publish.service.ts` used to hard-code `unlisted` inside `uploadToYouTube`;
- * it now takes visibility from the caller and defaults to `PRIVATE` when
- * nobody asks — the right default for a service, since nothing leaks publicly
- * by omission. This action is the one caller that cannot yet ask, because no
- * visibility picker exists in the UI: `publish-video-button.tsx` states the
- * upload's visibility as a fact the operator is confirming, not as a choice
- * they are making.
+ * Visibility is now the operator's, taken from the dialog's picker and parsed
+ * here rather than assumed: this action used to pin every upload to
+ * `UNLISTED` — a placeholder that stood in for the picker that did not exist —
+ * which meant every video an operator published was findable only by someone
+ * already holding its link. No search, no browse, no recommendations.
  *
- * Passing `UNLISTED` explicitly keeps that copy true and keeps the behaviour
- * the operator already relies on. The alternative — letting the service
- * default apply — would silently change every publish from "anyone with the
- * link can watch it" to "nobody but me can", while the dialog kept promising a
- * shareable link, for an action that cannot be undone from this app.
- *
- * Delete this constant when the picker ships and pass the operator's actual
- * choice through instead. Until then, whoever changes this line must change
- * `UPLOAD_VISIBILITY_NOTE` and the success toast in `publish-video-button.tsx`
- * in the same edit.
+ * Nothing about this makes a second publish easier. The claim that makes
+ * publishing one-shot lives in `publishService.publish` (a `create()` on the
+ * `@unique` `Publication.videoId`, taken before a single byte is sent), and it
+ * is unchanged and unreachable from here — a caller that sends a different
+ * visibility for a video that already has a Publication row still gets the
+ * same `ConflictError` as one that sends the same visibility. Nor does
+ * anything call this on a schedule: `/automation` and the schedules stop at a
+ * READY video on purpose, and this action still runs only from a click.
  */
-const PLACEHOLDER_VISIBILITY = "UNLISTED" as const;
-
 export async function publishVideoAction(
   videoId: string,
+  input: unknown,
 ): Promise<ActionResult<{ youtubeVideoId: string }>> {
   return run(async () => {
     const session = await requireSession();
+    const { visibility } = publishVideoSchema.parse(input);
+
     const result = await publishService.publish(session.user.id, videoId, {
-      visibility: PLACEHOLDER_VISIBILITY,
+      visibility,
     });
 
     revalidatePath("/videos");

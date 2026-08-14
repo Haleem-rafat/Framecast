@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { CircleAlert, ExternalLink, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
@@ -17,18 +17,53 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { publishVideoAction } from "@/actions/publish.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
 import type { SerializedError } from "@/lib/errors";
+import {
+  publishVisibilityOptions,
+  type PublishVisibilityOption,
+} from "@/schemas/publish.schema";
 
-/** `publish.action.ts` passes `UNLISTED` explicitly — see
- * `PLACEHOLDER_VISIBILITY` there. It is *not* `publish.service.ts`'s own
- * default any more (that is `PRIVATE`), so this copy is only true for as long
- * as the action keeps sending `UNLISTED`; the two must be changed together.
- * No client-side toggle exists yet, so the confirmation states the visibility
- * as a fact rather than as a choice the operator is making here. */
-const UPLOAD_VISIBILITY_NOTE =
-  "The video uploads as unlisted, not public — only people with the link can watch it.";
+/**
+ * What each choice actually does, in the terms that decide it.
+ *
+ * The consequence line matters more than the label here: "unlisted" reads to
+ * most people as "a bit less visible than public", when what it really means
+ * is that the video is in no search result, no browse surface and no
+ * recommendation — it exists only for whoever is handed the link. That was the
+ * value this button used to send for every publish, silently, so saying it
+ * plainly next to the option is the point of the picker rather than a
+ * decoration on it.
+ */
+const VISIBILITY_CHOICES: Record<
+  PublishVisibilityOption,
+  { label: string; consequence: string }
+> = {
+  PUBLIC: {
+    label: "Public",
+    consequence: "Anyone can find it — search, browse and recommendations.",
+  },
+  UNLISTED: {
+    label: "Unlisted",
+    consequence: "Only people you send the link to. Never surfaced by YouTube.",
+  },
+  PRIVATE: {
+    label: "Private",
+    consequence: "Nobody but you, until you change it in YouTube Studio.",
+  },
+};
+
+/** What the success toast says, per choice — the same sentence the operator
+ *  just read next to the option they picked, so the confirmation and the
+ *  promise cannot drift apart. */
+const PUBLISHED_NOTE: Record<PublishVisibilityOption, string> = {
+  PUBLIC: "The video is live and public on the connected channel.",
+  UNLISTED: "The video is live as unlisted — only people with the link can watch it.",
+  PRIVATE: "The video is on the channel as private — only you can watch it.",
+};
 
 interface PublishFailure {
   message: string;
@@ -77,6 +112,7 @@ export function PublishVideoButton({
   status,
   channelName,
   youtubeVideoId,
+  defaultVisibility,
 }: {
   videoId: string;
   status: VideoStatus;
@@ -86,11 +122,27 @@ export function PublishVideoButton({
   channelName: string | null;
   /** Set once a `Publication` row exists with a recorded YouTube id. */
   youtubeVideoId: string | null;
+  /**
+   * `UserSetting.defaultVisibility` — what the picker starts on, and the one
+   * thing that column has ever been read for.
+   *
+   * A *seed*, not a decision: the operator still confirms it on every publish,
+   * because this upload cannot be undone from Framecast and cannot be
+   * repeated. A saved preference of PUBLIC therefore preselects PUBLIC rather
+   * than skipping the question.
+   */
+  defaultVisibility: PublishVisibilityOption;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("confirm");
   const [failure, setFailure] = useState<PublishFailure | null>(null);
+  const [visibility, setVisibility] =
+    useState<PublishVisibilityOption>(defaultVisibility);
+  // Ids for the picker's labels. Generated rather than written out because
+  // this component is rendered per video and nothing stops a future list view
+  // from mounting two of them.
+  const visibilityId = useId();
 
   // Gate 2 already ran — the only thing left to show is the real result,
   // not another confirmation.
@@ -142,6 +194,12 @@ export function PublishVideoButton({
       }
       setPhase("confirm");
       setFailure(null);
+      // Reopening starts from the saved default again rather than from
+      // whatever the last, abandoned attempt happened to leave selected — a
+      // dialog that silently remembers PUBLIC from a cancelled publish is the
+      // one way this picker could make an irreversible choice quieter than it
+      // was before.
+      setVisibility(defaultVisibility);
     }
   }
 
@@ -149,7 +207,7 @@ export function PublishVideoButton({
     setPhase("uploading");
     setFailure(null);
 
-    const result = await publishVideoAction(videoId);
+    const result = await publishVideoAction(videoId, { visibility });
 
     if (!result.ok) {
       const described = describePublishFailure(result.error);
@@ -164,7 +222,7 @@ export function PublishVideoButton({
     setOpen(false);
     setPhase("confirm");
     toast.success("Published to YouTube", {
-      description: "The video is live as unlisted on the connected channel.",
+      description: PUBLISHED_NOTE[visibility],
     });
     router.refresh();
   }
@@ -214,8 +272,49 @@ export function PublishVideoButton({
               </DialogHeader>
 
               <DialogBody>
+                <fieldset className="space-y-2">
+                  <legend id={`${visibilityId}-legend`} className="text-sm font-medium">
+                    Who can watch it
+                  </legend>
+                  {/* Radix renders `role="radiogroup"`, which a fieldset's
+                    * legend does not name on its own — a screen reader would
+                    * announce an unlabelled group. */}
+                  <RadioGroup
+                    aria-labelledby={`${visibilityId}-legend`}
+                    value={visibility}
+                    onValueChange={(next) =>
+                      setVisibility(next as PublishVisibilityOption)
+                    }
+                    className="gap-2"
+                  >
+                    {publishVisibilityOptions.map((option) => (
+                      <div key={option} className="flex items-start gap-2.5">
+                        <RadioGroupItem
+                          value={option}
+                          id={`${visibilityId}-${option}`}
+                          className="mt-0.5"
+                        />
+                        {/* Label and consequence are inside one <Label>, so
+                          * the whole two-line block is a click target and a
+                          * screen reader announces the consequence as part of
+                          * the option rather than as loose text after it. */}
+                        <Label
+                          htmlFor={`${visibilityId}-${option}`}
+                          className="flex flex-col items-start gap-0.5 font-normal"
+                        >
+                          <span className="font-medium">
+                            {VISIBILITY_CHOICES[option].label}
+                          </span>
+                          <span className="text-muted-foreground text-xs">
+                            {VISIBILITY_CHOICES[option].consequence}
+                          </span>
+                        </Label>
+                      </div>
+                    ))}
+                  </RadioGroup>
+                </fieldset>
+
                 <div className="space-y-2 text-sm text-muted-foreground">
-                  <p>{UPLOAD_VISIBILITY_NOTE}</p>
                   <p>
                     It publishes to{" "}
                     <strong className="text-foreground">{channelName}</strong>.
@@ -247,9 +346,13 @@ export function PublishVideoButton({
               </DialogBody>
 
               <DialogFooter>
+                {/* The chosen visibility is named on the button itself, not
+                  * just in the picker above it: this is the click that cannot
+                  * be taken back, and it should not be possible to make it
+                  * without having read which of the three it commits to. */}
                 <Button onClick={onConfirm}>
                   <Upload />
-                  Publish
+                  Publish as {VISIBILITY_CHOICES[visibility].label.toLowerCase()}
                 </Button>
               </DialogFooter>
             </>

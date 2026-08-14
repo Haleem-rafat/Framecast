@@ -23,6 +23,7 @@ import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
+import { settingsService } from "@/services/settings.service";
 import { shortsService } from "@/services/shorts.service";
 import { videoService } from "@/services/video.service";
 import { formatDuration } from "@/utils/format";
@@ -304,6 +305,14 @@ export default async function VideoDetailPage({
     throw error;
   });
 
+  // The publish dialog's visibility picker starts here, on the operator's own
+  // saved preference — `settingsService.get` returns PRIVATE for an operator
+  // who has never saved, and never writes a row just because a page was
+  // rendered. Read on the page rather than inside the dialog because the
+  // dialog is a client component and this is one indexed lookup on a page
+  // that already makes several.
+  const { defaultVisibility } = await settingsService.get(user.id);
+
   const script = video.script;
   const activeVersion = script?.activeVersion ?? null;
   const versions = script?.versions ?? [];
@@ -335,6 +344,7 @@ export default async function VideoDetailPage({
         wordCount={activeVersion?.wordCount ?? 0}
         channelName={video.project.channel?.title ?? null}
         youtubeVideoId={youtubeVideoId}
+        defaultVisibility={defaultVisibility}
       />
 
       {/* Everything about the video on one page, folded, in the order its

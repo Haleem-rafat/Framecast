@@ -5,6 +5,7 @@ import { DeleteVideoButton } from "@/features/videos/components/delete-video-but
 import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import type { VideoStatus } from "@/generated/prisma/enums";
+import type { PublishVisibilityOption } from "@/schemas/publish.schema";
 
 /** Reading pace used to translate a script's word count into a runtime estimate. */
 const WORDS_PER_MINUTE = 150;
@@ -17,6 +18,7 @@ export function VideoHeader({
   wordCount,
   channelName,
   youtubeVideoId,
+  defaultVisibility,
 }: {
   videoId: string;
   title: string;
@@ -28,6 +30,9 @@ export function VideoHeader({
   channelName: string | null;
   /** Set once Gate 2 has actually published this video. */
   youtubeVideoId: string | null;
+  /** `UserSetting.defaultVisibility`, which the publish dialog's picker starts
+   * on — see `PublishVideoButton`. */
+  defaultVisibility: PublishVisibilityOption;
 }) {
   const estimatedMinutes = wordCount > 0 ? wordCount / WORDS_PER_MINUTE : 0;
   const canApprove = status === "DRAFT" && wordCount > 0;
@@ -67,6 +72,7 @@ export function VideoHeader({
           status={status}
           channelName={channelName}
           youtubeVideoId={youtubeVideoId}
+          defaultVisibility={defaultVisibility}
         />
       </div>
     </div>

@@ -61,11 +61,12 @@ export const SETTING_WIRING: Record<SettingKey, SettingWiring> = {
     actualSource:
       "The voice is fixed for the whole deployment by the ELEVENLABS_VOICE_ID environment variable.",
   },
-  defaultVisibility: {
-    applied: false,
-    actualSource:
-      "Every publish uploads as unlisted. There is no visibility picker on the publish button yet.",
-  },
+  // Read by the video page and used to seed the publish dialog's visibility
+  // picker. A seed rather than a silent default: the operator still confirms
+  // it on every publish, because the upload cannot be undone or repeated from
+  // here. `actualSource` is gone with the "uploads as unlisted" placeholder it
+  // described.
+  defaultVisibility: { applied: true },
   defaultTags: {
     applied: false,
     actualSource:

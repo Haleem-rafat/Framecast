@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConflictError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { TITLE_MAX } from "@/lib/youtube-limits";
 import { PUBLISHING_DEFAULTS } from "@/lib/youtube-categories";
@@ -185,6 +186,105 @@ describe("publishService.publish — title limits", () => {
 });
 
 const TITLE = "How inflation actually works";
+
+describe("publishService.publish — the operator's visibility", () => {
+  it.each([
+    ["PUBLIC", "public"],
+    ["UNLISTED", "unlisted"],
+    ["PRIVATE", "private"],
+  ] as const)(
+    "sends %s as privacyStatus %s and records it",
+    async (visibility, privacyStatus) => {
+      // The picker in publish-video-button.tsx offers exactly these three, and
+      // every one of them has to survive the whole way to the request body —
+      // this action used to pin every publish to UNLISTED regardless of what
+      // anything asked for.
+      const { videoId } = await makePublishableVideo(TITLE);
+
+      const { fetchImpl, calls } = createUploadFetch();
+      await new PublishService(fetchImpl).publish(userId, videoId, { visibility });
+
+      const body = JSON.parse(calls[0].init!.body as string);
+      expect(body.status.privacyStatus).toBe(privacyStatus);
+
+      // The row has to agree with the request. A Publication that records
+      // UNLISTED for a video YouTube is showing publicly is worse than either
+      // outcome on its own, because nothing downstream would ever say so.
+      const publication = await prisma.publication.findUniqueOrThrow({
+        where: { videoId },
+      });
+      expect(publication.visibility).toBe(visibility);
+    },
+  );
+
+  it("still publishes only once, whichever visibility the second attempt asks for", async () => {
+    // The picker is new; the one-shot property is not, and asking for a
+    // different visibility must not read as a different publish that is
+    // allowed to happen again. Two things stand in the way and neither moved:
+    // the video is no longer READY, and `Publication.videoId` is @unique, so
+    // the claim could not be taken a second time either.
+    const { videoId } = await makePublishableVideo(TITLE);
+
+    const first = createUploadFetch();
+    await new PublishService(first.fetchImpl).publish(userId, videoId, {
+      visibility: "PRIVATE",
+    });
+
+    const second = createUploadFetch();
+    await expect(
+      new PublishService(second.fetchImpl).publish(userId, videoId, {
+        visibility: "PUBLIC",
+      }),
+    ).rejects.toThrow(ConflictError);
+
+    // Not one byte of a second upload, and the first publish's own record is
+    // untouched — a rejected retry must not quietly upgrade what is stored.
+    expect(second.calls).toHaveLength(0);
+    const publication = await prisma.publication.findUniqueOrThrow({
+      where: { videoId },
+    });
+    expect(publication.visibility).toBe("PRIVATE");
+  });
+
+  it("refuses a scheduled publish at anything but public, and sends nothing", async () => {
+    // YouTube's publishAt is valid only with privacyStatus: private, and what
+    // it does at the timestamp is make the video *public* — there is no way to
+    // schedule an unlisted one. The dialog offers no scheduling control at all
+    // and `publishVideoSchema` accepts no timestamp, so this combination is
+    // unreachable from the UI by construction; the service refusing it is what
+    // keeps that true for the CLI and for whatever schedules publishes later.
+    const { videoId } = await makePublishableVideo(TITLE);
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await expect(
+      new PublishService(fetchImpl).publish(userId, videoId, {
+        visibility: "UNLISTED",
+        scheduledFor: new Date("2030-01-01T12:00:00.000Z"),
+      }),
+    ).rejects.toThrow(/always goes live as public/);
+
+    expect(calls).toHaveLength(0);
+    // Refused before the claim, so the video is still publishable — a refusal
+    // that consumed the one-shot would be worse than the combination it
+    // rejected.
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+  });
+
+  it("accepts a scheduled PUBLIC publish, uploading it private with publishAt", async () => {
+    const { videoId } = await makePublishableVideo(TITLE);
+    const scheduledFor = new Date("2030-01-01T12:00:00.000Z");
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      scheduledFor,
+    });
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.status.privacyStatus).toBe("private");
+    expect(body.status.publishAt).toBe(scheduledFor.toISOString());
+  });
+});
 
 describe("publishService.publish — language and category", () => {
   it("sends the channel's language and category on the snippet", async () => {
