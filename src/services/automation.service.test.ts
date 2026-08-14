@@ -578,15 +578,20 @@ describe("automationService.start — refusing to spend money", () => {
         return realTransaction(...(args as Parameters<typeof realTransaction>));
       }) as typeof prisma.$transaction);
 
-    await expect(
-      service.start(userId, {
-        projectId,
-        topic: "how a container ship is loaded",
-        variables: {},
-      }),
-    ).rejects.toBe(forced);
-
-    spy.mockRestore();
+    // `finally`, because `mockImplementation` persists until it is restored: if
+    // the assertion below fails, an un-restored spy follows every later test in
+    // this file and turns one failure into a cascade that hides its own cause.
+    try {
+      await expect(
+        service.start(userId, {
+          projectId,
+          topic: "how a container ship is loaded",
+          variables: {},
+        }),
+      ).rejects.toBe(forced);
+    } finally {
+      spy.mockRestore();
+    }
 
     const video = await prisma.video.findFirstOrThrow({
       where: { userId },
