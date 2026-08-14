@@ -245,25 +245,40 @@ export function ScheduleForm({
     };
 
     startTransition(async () => {
-      const response = schedule
-        ? await updateScheduleAction(schedule.id, payload)
-        : await createScheduleAction({ ...payload, topics });
+      // The two branches are kept apart rather than unified behind one
+      // `response` because they return different payloads — the create action
+      // hands back the new id this navigates to, the update action has nothing
+      // to hand back. Merging them would need a cast at the one place the id
+      // actually matters.
+      if (schedule) {
+        const response = await updateScheduleAction(schedule.id, payload);
 
-      if (!response.ok) {
-        toast.error(
-          schedule ? "Could not save that schedule" : "Could not create that schedule",
-          { description: response.error.message },
-        );
+        if (!response.ok) {
+          toast.error("Could not save that schedule", {
+            description: response.error.message,
+          });
+          return;
+        }
+
+        toast.success("Schedule saved");
+        router.push(`/automation/schedules/${schedule.id}`);
+        router.refresh();
         return;
       }
 
-      toast.success(schedule ? "Schedule saved" : "Schedule created");
+      const response = await createScheduleAction({ ...payload, topics });
 
-      router.push(
-        schedule
-          ? `/automation/schedules/${schedule.id}`
-          : `/automation/schedules/${(response.data as { id: string }).id}`,
-      );
+      if (!response.ok) {
+        toast.error("Could not create that schedule", {
+          description: response.error.message,
+        });
+        return;
+      }
+
+      toast.success("Schedule created", {
+        description: `${topics.length} topic${topics.length === 1 ? "" : "s"} queued. The first run happens at the next occurrence, not now.`,
+      });
+      router.push(`/automation/schedules/${response.data.id}`);
       router.refresh();
     });
   }
