@@ -15,20 +15,13 @@ import { env } from "@/config/env";
 import { AuthShell } from "@/features/auth/components/auth-shell";
 import { SignInForm } from "@/features/auth/components/sign-in-form";
 import { signInErrorMessage } from "@/features/auth/sign-in-error";
+import { safeRedirectTo } from "@/lib/safe-redirect";
 import { getAccountStatus } from "@/server/session";
 
 export const metadata: Metadata = { title: "Sign in" };
 
 interface SignInPageProps {
   searchParams: Promise<{ redirectTo?: string; error?: string }>;
-}
-
-/** Only same-origin relative paths are honoured, to prevent open redirects. */
-function safeRedirectTo(value: string | undefined): string {
-  if (!value?.startsWith("/") || value.startsWith("//")) {
-    return "/dashboard";
-  }
-  return value;
 }
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
@@ -68,7 +61,18 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
       <Card>
         <CardHeader>
           <CardTitle>Welcome back</CardTitle>
-          <CardDescription>Enter your credentials to continue.</CardDescription>
+          {/*
+            Names the account being signed in to, rather than the previous
+            "Enter your credentials to continue." A Google button sits directly
+            below this form, and a password field under an unattributed prompt
+            beside Google's mark reads as a request for a *Google* password.
+            Saying "your Framecast account" costs three words and removes the
+            ambiguity for the reader and for anything classifying the page.
+          */}
+          <CardDescription>
+            Sign in to your Framecast account with the email and password you
+            registered.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <SignInForm
