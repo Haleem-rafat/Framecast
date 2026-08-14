@@ -7,6 +7,7 @@ import { LandingHero } from "@/features/marketing/components/landing-hero";
 import { LandingOutput } from "@/features/marketing/components/landing-output";
 import { LandingPipeline } from "@/features/marketing/components/landing-pipeline";
 import { LandingPricing } from "@/features/marketing/components/landing-pricing";
+import { LandingStudio } from "@/features/marketing/components/landing-studio";
 import { MarketingShell } from "@/features/marketing/components/marketing-shell";
 
 export const metadata: Metadata = {
@@ -22,6 +23,7 @@ export default function HomePage() {
       <LandingPipeline />
       <LandingFeatures />
       <LandingOutput />
+      <LandingStudio />
       <LandingPricing />
       <LandingFaq />
       <LandingCta />

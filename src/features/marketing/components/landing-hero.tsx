@@ -36,12 +36,15 @@ export function LandingHero() {
           .
         </h1>
 
+        {/* Two sentences, not one seven-clause list: the first says what you
+            stop doing, the second is the pipeline in the order it runs. A
+            reader who quits after the first has still got the point. */}
         <p className="text-muted-foreground mt-6 max-w-2xl text-base text-pretty sm:text-lg">
           No writing, no recording, no editing. Framecast drafts a sourced
           script, narrates it with ElevenLabs, matches footage to every line,
-          burns in the captions, lays music and motion under it, renders the cut
-          and uploads it to YouTube with its title, description, tags and
-          thumbnail.
+          then renders the cut with burned-in captions, music and motion and
+          uploads it to YouTube — title, description, tags and thumbnail
+          included.
         </p>
 
         {/* The approval gate is the most trust-building true thing about this
@@ -55,13 +58,24 @@ export function LandingHero() {
           </span>
         </p>
 
+        {/* The button itself stays the app's plain near-black `--primary`. The
+            emphasis comes from around it instead: a soft brand halo sitting
+            behind the primary action only, so it reads as the lit thing on the
+            section without the button being recoloured. `blur` on a static
+            element is composited once, not per frame. */}
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <Button asChild size="lg">
-            <Link href="/sign-up">
-              Create an account
-              <ArrowRight />
-            </Link>
-          </Button>
+          <div className="relative">
+            <span
+              aria-hidden="true"
+              className="from-brand-violet via-brand-blue to-brand-cyan absolute -inset-2 -z-10 rounded-full bg-gradient-to-r opacity-40 blur-lg"
+            />
+            <Button asChild size="lg">
+              <Link href="/sign-up">
+                Create an account
+                <ArrowRight />
+              </Link>
+            </Button>
+          </div>
           <Button asChild size="lg" variant="outline">
             <Link href="/sign-in">Sign in</Link>
           </Button>
