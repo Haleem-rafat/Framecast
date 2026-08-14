@@ -174,10 +174,24 @@ for DB in framecast framecast_staging; do
   # isn't tight enough — that's satisfiable by a dump that happens to carry
   # some inconsequential table's data while missing the ones this backup
   # exists to protect. This checks each of REQUIRED_TABLES by name instead.
-  if ! LISTING=$(gunzip -c "$OUT" | compose exec -T postgres \
-      pg_restore -l - 2>&1); then
+  # `pg_restore -l` must seek within the archive, so it cannot read a
+  # custom-format dump from stdin. An earlier version piped `gunzip -c` into
+  # `pg_restore -l -` and failed every run with "could not open input file" —
+  # caught on the very first real backup, which is the argument for running one
+  # rather than trusting a script that has never executed. Decompress to a real
+  # file instead; it lives in $WORK, which the EXIT trap removes, and the dump
+  # is a couple of megabytes.
+  # Suffixed, not `${OUT%.gz}` — a stripped suffix that isn't there leaves
+  # PLAIN equal to OUT, and the gunzip below would truncate the very dump it
+  # is meant to verify.
+  PLAIN="${OUT}.plain"
+  if ! gunzip -c "$OUT" > "$PLAIN" 2>/dev/null; then
+    fail "Refusing to upload ${DB}: the gzipped dump could not be decompressed."
+  fi
+  if ! LISTING=$(pg_restore -l "$PLAIN" 2>&1); then
     fail "Refusing to upload ${DB}: pg_restore could not read the dump's own table of contents — it may be truncated or corrupt. Output: ${LISTING}"
   fi
+  rm -f "$PLAIN"
   if [ "$DB" = framecast ]; then
     DUMPED_TABLES=$(awk '$4 == "TABLE" && $5 == "DATA" { print $7 }' <<<"$LISTING")
     for TABLE in "${REQUIRED_TABLES[@]}"; do
