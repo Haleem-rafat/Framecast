@@ -302,13 +302,19 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
             return (
               <VideoSection key={key} immediate={immediate}>
                 {video.status === "DRAFT" ? (
+                  // One line, not a full EmptyState. A draft's pipeline has
+                  // nothing to report and this sits at the top of the page, so
+                  // a centred icon-and-paragraph card spent 360px of the first
+                  // screen saying "nothing here" and pushed the script — the
+                  // only thing an operator can act on — below the fold.
                   <Card>
-                    <CardContent className="py-8">
-                      <EmptyState
-                        icon={Workflow}
-                        title="Nothing has run yet"
-                        description="Approve the script and the pipeline starts: narration, footage, render. Its progress and logs appear here."
-                      />
+                    <CardContent className="text-muted-foreground flex items-center gap-3 py-4 text-sm">
+                      <Workflow className="size-4 shrink-0" />
+                      <p className="text-pretty">
+                        Nothing has run yet. Approving the script starts
+                        narration, footage and the render, and their progress
+                        appears here.
+                      </p>
                     </CardContent>
                   </Card>
                 ) : (

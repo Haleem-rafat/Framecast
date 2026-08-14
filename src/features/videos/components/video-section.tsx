@@ -70,6 +70,12 @@ export function VideoSection({
     <section
       ref={ref}
       className={cn(
+        // `empty:hidden` matters more than it looks: a section whose panel
+        // renders nothing for this video's state still contributed the parent
+        // flex gap, so the page showed unexplained vertical holes between
+        // cards. Measured on a draft, one section was 0px tall and still
+        // costing a gap above and below it.
+        "empty:hidden",
         "transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none",
         shown ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0",
         className,

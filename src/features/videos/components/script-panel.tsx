@@ -166,7 +166,11 @@ export function ScriptPanel({
             value={importDraft ?? ""}
             onChange={(event) => setImportDraft(event.target.value)}
             rows={20}
-            className="min-h-[480px] font-mono text-sm"
+            // `field-sizing-content` grows the box to its text, with min/max as the
+          // bounds. Pinned at 480px it reserved half a screen of empty dark for a
+          // 147-word script — and this panel sits above everything else on the
+          // page, so that emptiness pushed the rest of the video down with it.
+          className="max-h-[70vh] min-h-[14rem] font-mono text-sm field-sizing-content"
             disabled={isPending}
             placeholder="Paste your script here"
             autoFocus
@@ -267,7 +271,11 @@ export function ScriptPanel({
           value={content}
           onChange={(event) => setContent(event.target.value)}
           rows={20}
-          className="min-h-[480px] font-mono text-sm"
+          // `field-sizing-content` grows the box to its text, with min/max as the
+          // bounds. Pinned at 480px it reserved half a screen of empty dark for a
+          // 147-word script — and this panel sits above everything else on the
+          // page, so that emptiness pushed the rest of the video down with it.
+          className="max-h-[70vh] min-h-[14rem] font-mono text-sm field-sizing-content"
           disabled={!isDraft || isPending}
           placeholder="Script content"
         />
