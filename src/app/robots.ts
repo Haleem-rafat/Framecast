@@ -10,14 +10,27 @@ import { SITE_URL } from "@/config/site";
  * ever index the sign-in redirect — but a disallow is a stated boundary rather
  * than a coincidence of the auth check, and it keeps the URLs themselves out
  * of search results.
+ *
+ * Written without a trailing slash on purpose. `Disallow: /dashboard/` is a
+ * prefix match on the literal string, so it covers `/dashboard/anything` but
+ * leaves the bare `/dashboard` — the route that actually exists — crawlable.
+ * Dropping the slash covers both.
+ *
+ * This list is every segment under `src/app/(dashboard)`, plus `/api`. It has
+ * to be kept in step with that directory by hand; a route added there and not
+ * added here is a route a crawler is invited into.
  */
 const OPERATOR_ROUTES = [
-  "/dashboard",
-  "/videos",
-  "/projects",
+  "/analytics",
+  "/approvals",
   "/channels",
-  "/providers",
+  "/dashboard",
+  "/logs",
+  "/projects",
   "/prompts",
+  "/providers",
+  "/settings",
+  "/videos",
   "/api",
 ];
 
@@ -26,7 +39,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: {
       userAgent: "*",
       allow: "/",
-      disallow: OPERATOR_ROUTES.map((route) => `${route}/`),
+      disallow: OPERATOR_ROUTES,
     },
     sitemap: `${SITE_URL}/sitemap.xml`,
   };
