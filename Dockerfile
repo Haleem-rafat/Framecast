@@ -28,6 +28,14 @@ ENV DATABASE_URL=postgresql://build:build@localhost:5432/build
 ENV BETTER_AUTH_SECRET=build-time-placeholder-secret-000000
 ENV BETTER_AUTH_URL=http://localhost:3000
 ENV CREDENTIAL_ENCRYPTION_KEY=YnVpbGQtdGltZS1wbGFjZWhvbGRlci1rZXktMzJieXQ=
+# Google Search Console's verification token, which proves domain ownership for
+# OAuth branding review. It has to arrive as a *build* argument, not a runtime
+# variable: it is read by the root layout's `metadata`, and the pages that carry
+# it are statically generated, so a value supplied only at runtime would never
+# reach the rendered HTML. Not a secret — the whole point of the token is that
+# it is published on the public site.
+ARG GOOGLE_SITE_VERIFICATION=""
+ENV GOOGLE_SITE_VERIFICATION=$GOOGLE_SITE_VERIFICATION
 RUN pnpm build
 
 # ---- Runtime --------------------------------------------------------------
