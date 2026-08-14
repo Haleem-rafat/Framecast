@@ -19,12 +19,32 @@ datasource db {
 // Authentication (Better Auth managed tables)
 // ---------------------------------------------------------------------------
 
+/// Whether a self-registered account may actually use the studio.
+///
+/// framecasts.com is a public URL and every render spends real money — Pexels
+/// footage, ElevenLabs narration, an Anthropic script — against the operator's
+/// own API keys. Open registration would let any stranger who finds the domain
+/// spend those credits, so a new account can sign in and see that it is waiting
+/// but can do nothing else until an existing operator approves it.
+enum AccountApproval {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model User {
   id            String   @id @default(uuid()) @db.Uuid
   name          String
   email         String   @unique
   emailVerified Boolean  @default(false)
   image         String?
+  /// Defaults to PENDING so a newly registered account is gated by default —
+  /// a bug that skips the approval write must fail closed, not open. Every
+  /// account that existed before approval did is backfilled to APPROVED by
+  /// the migration that adds this column; without that backfill the column's
+  /// default would lock every existing operator out of their own studio.
+  approval      AccountApproval @default(PENDING)
+  approvedAt    DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -38,6 +58,8 @@ model User {
   activityLogs        ActivityLog[]
   settings            UserSetting?
 
+  /// The approvals queue reads "every account still PENDING, oldest first".
+  @@index([approval, createdAt])
   @@map("user")
 }
 
