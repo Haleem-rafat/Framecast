@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { Sparkles } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -41,11 +42,18 @@ async function DashboardContent() {
       <div data-tour="tour-checklist">
         <OnboardingChecklistCard checklist={checklist} />
       </div>
-      <DashboardStats stats={stats} />
-      <div className="grid gap-4 lg:grid-cols-3">
+      {/* The checklist above is the only thing reliably on screen on a phone,
+       * so these two are where the reveal actually has something to do here.
+       * On a desktop viewport both start above the fold and `Reveal` measures
+       * its way out of animating either — which is the point: the dashboard is
+       * the app's landing page and must never look slower than it is. */}
+      <Reveal>
+        <DashboardStats stats={stats} />
+      </Reveal>
+      <Reveal className="grid gap-4 lg:grid-cols-3">
         <RecentVideosCard videos={recentVideos} />
         <RecentActivityCard items={recentActivity} />
-      </div>
+      </Reveal>
     </>
   );
 }

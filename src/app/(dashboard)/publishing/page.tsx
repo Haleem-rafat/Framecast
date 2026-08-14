@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { CalendarClock, CircleAlert, Clapperboard, Upload } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { StatCard } from "@/components/shared/stat-card";
 import { PublicationTable } from "@/features/studio/components/publication-table";
 import { ReadyToPublishList } from "@/features/studio/components/ready-to-publish-list";
@@ -62,17 +63,17 @@ export default async function PublishingPage() {
         />
       </div>
 
-      <div className="space-y-2">
+      <Reveal className="space-y-2">
         <h2 className="text-lg font-semibold tracking-tight">
           Ready to publish
         </h2>
         <ReadyToPublishList videos={readyToPublish} />
-      </div>
+      </Reveal>
 
-      <div className="space-y-2">
+      <Reveal className="space-y-2">
         <h2 className="text-lg font-semibold tracking-tight">Publications</h2>
         <PublicationTable publications={publications} />
-      </div>
+      </Reveal>
 
       <p className="text-muted-foreground text-xs text-balance">
         A failed publish is not retried automatically and cannot be retried

@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { Clock, Mic } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { StatCard, StatCardSkeleton } from "@/components/shared/stat-card";
 import { NarrationLibrary } from "@/features/studio/components/narration-library";
 import {
@@ -71,9 +72,13 @@ export default async function StudioVoicePage() {
         </Suspense>
       </div>
 
-      <NarrationLibrary narrations={narrations} />
+      <Reveal>
+        <NarrationLibrary narrations={narrations} />
+      </Reveal>
 
-      <VoiceNotes />
+      <Reveal>
+        <VoiceNotes />
+      </Reveal>
     </>
   );
 }

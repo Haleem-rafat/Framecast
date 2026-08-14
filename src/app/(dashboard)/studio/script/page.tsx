@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { FileText, Film, Quote, Type } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { StatCard } from "@/components/shared/stat-card";
 import { ScriptLibraryTable } from "@/features/studio/components/script-library-table";
 import { requireUser } from "@/server/session";
@@ -66,7 +67,9 @@ export default async function StudioScriptPage() {
         />
       </div>
 
-      <ScriptLibraryTable scripts={scripts} />
+      <Reveal>
+        <ScriptLibraryTable scripts={scripts} />
+      </Reveal>
 
       <p className="text-muted-foreground text-xs text-balance">
         Scripts are written, edited and approved on a video&apos;s own page —

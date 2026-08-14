@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { Badge } from "@/components/ui/badge";
 import { PendingAccountList } from "@/features/auth/components/pending-account-list";
 import { requireUser } from "@/server/session";
@@ -34,7 +35,9 @@ export default async function ApprovalsPage() {
         }
       />
 
-      <PendingAccountList accounts={pending} />
+      <Reveal>
+        <PendingAccountList accounts={pending} />
+      </Reveal>
     </>
   );
 }

@@ -18,6 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { FormField, FormFieldset } from "@/components/shared/form-field";
+import { Reveal } from "@/components/shared/reveal";
 import { FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -289,37 +290,174 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Generation defaults</CardTitle>
-          <CardDescription>
-            Which model writes the script and which voice reads it.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
-            <div className="grid gap-5 sm:grid-cols-2">
+      {/* Appearance stays put — it is the card the operator can see on arrival,
+       * and the one whose controls change the page around them. The three below
+       * it are off screen on every viewport this form has been checked at, so
+       * they fade up as they are reached. Tabbing into one counts as reaching
+       * it: the browser scrolls a focused field into view, which is the same
+       * crossing the observer is watching for. */}
+      <Reveal>
+        <Card>
+          <CardHeader>
+            <CardTitle>Generation defaults</CardTitle>
+            <CardDescription>
+              Which model writes the script and which voice reads it.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <FieldGroup>
+              <div className="grid gap-5 sm:grid-cols-2">
+                <Controller
+                  control={control}
+                  name="defaultScriptProvider"
+                  render={({ field }) => (
+                    <FormField
+                      name="defaultScriptProvider"
+                      label="Script provider"
+                      note={wiringNote("defaultScriptProvider")}
+                    >
+                      {(controlProps) => (
+                        <Select
+                          value={field.value}
+                          onValueChange={field.onChange}
+                        >
+                          <SelectTrigger {...controlProps} className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {scriptProviderOptions.map((one) => (
+                              <SelectItem key={one} value={one}>
+                                {PROVIDER_LABELS[one]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </FormField>
+                  )}
+                />
+
+                <Controller
+                  control={control}
+                  name="defaultVoiceProvider"
+                  render={({ field }) => (
+                    <FormField
+                      name="defaultVoiceProvider"
+                      label="Voice provider"
+                      note={wiringNote("defaultVoiceProvider")}
+                    >
+                      {(controlProps) => (
+                        <Select
+                          value={field.value}
+                          onValueChange={field.onChange}
+                        >
+                          <SelectTrigger {...controlProps} className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {voiceProviderOptions.map((one) => (
+                              <SelectItem key={one} value={one}>
+                                {PROVIDER_LABELS[one]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </FormField>
+                  )}
+                />
+              </div>
+
+              <FormField
+                name="defaultVoiceId"
+                label="Voice ID"
+                error={errors.defaultVoiceId?.message}
+                note={wiringNote("defaultVoiceId")}
+              >
+                {(controlProps) => (
+                  <Input
+                    placeholder="CwhRBWXzGAHq8TQ4Fs17"
+                    className="font-mono sm:max-w-sm"
+                    {...register("defaultVoiceId")}
+                    {...controlProps}
+                  />
+                )}
+              </FormField>
+
               <Controller
                 control={control}
-                name="defaultScriptProvider"
+                name="defaultScriptPromptId"
                 render={({ field }) => (
                   <FormField
-                    name="defaultScriptProvider"
-                    label="Script provider"
-                    note={wiringNote("defaultScriptProvider")}
+                    name="defaultScriptPromptId"
+                    label="Script template"
+                    note={wiringNote("defaultScriptPromptId")}
                   >
                     {(controlProps) => (
                       <Select
                         value={field.value}
                         onValueChange={field.onChange}
                       >
-                        <SelectTrigger {...controlProps} className="w-full">
+                        <SelectTrigger
+                          {...controlProps}
+                          className="w-full sm:max-w-sm"
+                        >
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {scriptProviderOptions.map((one) => (
+                          <SelectItem value={NO_SCRIPT_PROMPT}>
+                            No template pinned
+                          </SelectItem>
+                          {scriptPrompts.map((prompt) => (
+                            <SelectItem key={prompt.id} value={prompt.id}>
+                              {prompt.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </FormField>
+                )}
+              />
+            </FieldGroup>
+          </CardContent>
+        </Card>
+      </Reveal>
+
+      <Reveal>
+        <Card>
+          <CardHeader>
+            <CardTitle>Publishing defaults</CardTitle>
+            <CardDescription>
+              How a finished video reaches YouTube.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <FieldGroup>
+              <Controller
+                control={control}
+                name="defaultVisibility"
+                render={({ field }) => (
+                  <FormField
+                    name="defaultVisibility"
+                    label="Visibility"
+                    note={wiringNote("defaultVisibility")}
+                  >
+                    {(controlProps) => (
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <SelectTrigger
+                          {...controlProps}
+                          className="w-full sm:w-64"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {publishVisibilities.map((one) => (
                             <SelectItem key={one} value={one}>
-                              {PROVIDER_LABELS[one]}
+                              {VISIBILITY_LABELS[one]}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -329,171 +467,52 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
                 )}
               />
 
-              <Controller
-                control={control}
-                name="defaultVoiceProvider"
-                render={({ field }) => (
-                  <FormField
-                    name="defaultVoiceProvider"
-                    label="Voice provider"
-                    note={wiringNote("defaultVoiceProvider")}
-                  >
-                    {(controlProps) => (
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                      >
-                        <SelectTrigger {...controlProps} className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {voiceProviderOptions.map((one) => (
-                            <SelectItem key={one} value={one}>
-                              {PROVIDER_LABELS[one]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </FormField>
+              {/* The hint and the error share one slot, so the card does not grow
+                  a line taller the moment a tag list is rejected. */}
+              <FormField
+                name="defaultTags"
+                label="Tags"
+                description={`Comma separated, up to ${MAX_DEFAULT_TAGS}.`}
+                error={errors.defaultTags?.message}
+                note={wiringNote("defaultTags")}
+              >
+                {(controlProps) => (
+                  <Input
+                    placeholder="finance, explainer, market news"
+                    {...register("defaultTags")}
+                    {...controlProps}
+                  />
                 )}
-              />
-            </div>
+              </FormField>
+            </FieldGroup>
+          </CardContent>
+        </Card>
+      </Reveal>
 
+      <Reveal>
+        <Card>
+          <CardHeader>
+            <CardTitle>Storage</CardTitle>
+            <CardDescription>Where rendered files are kept.</CardDescription>
+          </CardHeader>
+          <CardContent>
             <FormField
-              name="defaultVoiceId"
-              label="Voice ID"
-              error={errors.defaultVoiceId?.message}
-              note={wiringNote("defaultVoiceId")}
+              name="storageBucket"
+              label="Bucket"
+              error={errors.storageBucket?.message}
+              note={wiringNote("storageBucket")}
             >
               {(controlProps) => (
                 <Input
-                  placeholder="CwhRBWXzGAHq8TQ4Fs17"
                   className="font-mono sm:max-w-sm"
-                  {...register("defaultVoiceId")}
+                  {...register("storageBucket")}
                   {...controlProps}
                 />
               )}
             </FormField>
-
-            <Controller
-              control={control}
-              name="defaultScriptPromptId"
-              render={({ field }) => (
-                <FormField
-                  name="defaultScriptPromptId"
-                  label="Script template"
-                  note={wiringNote("defaultScriptPromptId")}
-                >
-                  {(controlProps) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger
-                        {...controlProps}
-                        className="w-full sm:max-w-sm"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NO_SCRIPT_PROMPT}>
-                          No template pinned
-                        </SelectItem>
-                        {scriptPrompts.map((prompt) => (
-                          <SelectItem key={prompt.id} value={prompt.id}>
-                            {prompt.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </FormField>
-              )}
-            />
-          </FieldGroup>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Publishing defaults</CardTitle>
-          <CardDescription>
-            How a finished video reaches YouTube.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldGroup>
-            <Controller
-              control={control}
-              name="defaultVisibility"
-              render={({ field }) => (
-                <FormField
-                  name="defaultVisibility"
-                  label="Visibility"
-                  note={wiringNote("defaultVisibility")}
-                >
-                  {(controlProps) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger
-                        {...controlProps}
-                        className="w-full sm:w-64"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {publishVisibilities.map((one) => (
-                          <SelectItem key={one} value={one}>
-                            {VISIBILITY_LABELS[one]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </FormField>
-              )}
-            />
-
-            {/* The hint and the error share one slot, so the card does not grow
-                a line taller the moment a tag list is rejected. */}
-            <FormField
-              name="defaultTags"
-              label="Tags"
-              description={`Comma separated, up to ${MAX_DEFAULT_TAGS}.`}
-              error={errors.defaultTags?.message}
-              note={wiringNote("defaultTags")}
-            >
-              {(controlProps) => (
-                <Input
-                  placeholder="finance, explainer, market news"
-                  {...register("defaultTags")}
-                  {...controlProps}
-                />
-              )}
-            </FormField>
-          </FieldGroup>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Storage</CardTitle>
-          <CardDescription>Where rendered files are kept.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FormField
-            name="storageBucket"
-            label="Bucket"
-            error={errors.storageBucket?.message}
-            note={wiringNote("storageBucket")}
-          >
-            {(controlProps) => (
-              <Input
-                className="font-mono sm:max-w-sm"
-                {...register("storageBucket")}
-                {...controlProps}
-              />
-            )}
-          </FormField>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </Reveal>
 
       {/* Stacked and full-width on a phone, inline on a desktop — the primary
           action of a long form is the last thing that should be a 110px target

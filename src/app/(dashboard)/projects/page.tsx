@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { CreateProjectDialog } from "@/features/projects/components/create-project-dialog";
 import { ProjectTable } from "@/features/projects/components/project-table";
 import { channelService } from "@/services/channel.service";
@@ -34,7 +35,9 @@ export default async function ProjectsPage() {
         }
       />
 
-      <ProjectTable projects={projects} channels={channelOptions} />
+      <Reveal>
+        <ProjectTable projects={projects} channels={channelOptions} />
+      </Reveal>
     </>
   );
 }

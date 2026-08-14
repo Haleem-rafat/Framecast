@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import {
   ActivityLogFilters,
   ALL,
@@ -113,10 +114,18 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
         </p>
       </div>
 
-      <ActivityLogList
-        entries={entries}
-        hasFilter={Boolean(actionFilter ?? levelFilter)}
-      />
+      {/* Both filters navigate, so this whole tree re-renders — and on a full
+       * page of fifty events, remounts — every time the operator narrows the
+       * list. It is safe to wrap anyway: `Reveal` only arms a region that is
+       * entirely below the fold, and an operator changing a filter is by
+       * definition looking at the top of the list they just re-filtered. The
+       * new rows therefore land instantly, with no entrance to sit through. */}
+      <Reveal>
+        <ActivityLogList
+          entries={entries}
+          hasFilter={Boolean(actionFilter ?? levelFilter)}
+        />
+      </Reveal>
 
       <ActivityLogPagination
         page={page}

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { TriangleAlert } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { channelErrorMessage } from "@/features/channels/channel-error";
 import { ChannelList } from "@/features/channels/components/channel-list";
@@ -39,7 +40,9 @@ export default async function ChannelsPage({
         </Alert>
       )}
 
-      <ChannelList channels={channels} />
+      <Reveal>
+        <ChannelList channels={channels} />
+      </Reveal>
     </>
   );
 }

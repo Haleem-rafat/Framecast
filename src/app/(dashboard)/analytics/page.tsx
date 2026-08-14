@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { CircleAlert, Clapperboard, Timer, Wallet, Zap } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { StatCard } from "@/components/shared/stat-card";
 import {
   Card,
@@ -109,7 +110,7 @@ export default async function AnalyticsPage() {
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <Reveal className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Videos by status</CardTitle>
@@ -187,42 +188,44 @@ export default async function AnalyticsPage() {
             </div>
           </CardContent>
         </Card>
-      </div>
+      </Reveal>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Publishing</CardTitle>
-          <CardDescription>
-            Every publication attached to your videos, at its current status.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {publish.byStatus.length === 0 ? (
-            <p className="text-muted-foreground py-6 text-center text-sm">
-              Nothing has been sent to YouTube yet.
-            </p>
-          ) : (
-            <>
-              <BarList
-                items={publish.byStatus.map((row) => ({
-                  label: PUBLISH_STATUS_LABELS[row.status],
-                  value: row.count,
-                  display: String(row.count),
-                }))}
-              />
-              {publish.published > 0 && (
-                <p className="text-muted-foreground text-sm">
-                  Custom thumbnail attached on {publish.thumbnailApplied} of{" "}
-                  {publish.published} published{" "}
-                  {publish.published === 1 ? "video" : "videos"}
-                  {publish.thumbnailApplied < publish.published &&
-                    " — YouTube only accepts custom thumbnails from verified channels."}
-                </p>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <Reveal>
+        <Card>
+          <CardHeader>
+            <CardTitle>Publishing</CardTitle>
+            <CardDescription>
+              Every publication attached to your videos, at its current status.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {publish.byStatus.length === 0 ? (
+              <p className="text-muted-foreground py-6 text-center text-sm">
+                Nothing has been sent to YouTube yet.
+              </p>
+            ) : (
+              <>
+                <BarList
+                  items={publish.byStatus.map((row) => ({
+                    label: PUBLISH_STATUS_LABELS[row.status],
+                    value: row.count,
+                    display: String(row.count),
+                  }))}
+                />
+                {publish.published > 0 && (
+                  <p className="text-muted-foreground text-sm">
+                    Custom thumbnail attached on {publish.thumbnailApplied} of{" "}
+                    {publish.published} published{" "}
+                    {publish.published === 1 ? "video" : "videos"}
+                    {publish.thumbnailApplied < publish.published &&
+                      " — YouTube only accepts custom thumbnails from verified channels."}
+                  </p>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </Reveal>
 
       <div className="space-y-2">
         <h2 className="text-lg font-semibold tracking-tight">Provider usage</h2>
@@ -260,13 +263,15 @@ export default async function AnalyticsPage() {
         />
       </div>
 
-      <DailyCostChart
-        points={usage.daily}
-        truncated={usage.dailyTruncated}
-        windowDays={windowDays}
-      />
+      <Reveal>
+        <DailyCostChart
+          points={usage.daily}
+          truncated={usage.dailyTruncated}
+          windowDays={windowDays}
+        />
+      </Reveal>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <Reveal className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>By provider</CardTitle>
@@ -292,7 +297,7 @@ export default async function AnalyticsPage() {
         </Card>
 
         <OperationReliability rows={usage.byOperation} />
-      </div>
+      </Reveal>
 
       <p className="text-muted-foreground text-xs text-balance">
         A cost of zero means the model has no entry in the pricing table

@@ -3,6 +3,7 @@ import { Image as ImageIcon, Layers, TriangleAlert } from "lucide-react";
 
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { StatCard } from "@/components/shared/stat-card";
 import { ThumbnailCard } from "@/features/studio/components/thumbnail-card";
 import { requireUser } from "@/server/session";
@@ -52,19 +53,26 @@ export default async function StudioThumbnailPage() {
         />
       </div>
 
-      {thumbnails.length === 0 ? (
-        <EmptyState
-          icon={ImageIcon}
-          title="No thumbnails yet"
-          description="A thumbnail is generated automatically once a video finishes rendering. Every attempt is kept, so you can come back and compare them here."
-        />
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {thumbnails.map((entry) => (
-            <ThumbnailCard key={entry.videoId} entry={entry} />
-          ))}
-        </div>
-      )}
+      {/* One region for the whole gallery rather than one per card. A grid of
+       * thumbnails where every tile arrives on its own schedule reads as a page
+       * still loading, not as a page that is alive — and the cards refresh
+       * themselves after a version is promoted, which is the other reason they
+       * must not each own an entrance. */}
+      <Reveal>
+        {thumbnails.length === 0 ? (
+          <EmptyState
+            icon={ImageIcon}
+            title="No thumbnails yet"
+            description="A thumbnail is generated automatically once a video finishes rendering. Every attempt is kept, so you can come back and compare them here."
+          />
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {thumbnails.map((entry) => (
+              <ThumbnailCard key={entry.videoId} entry={entry} />
+            ))}
+          </div>
+        )}
+      </Reveal>
 
       <p className="text-muted-foreground text-xs text-balance">
         A thumbnail is only attached to a video during its publish, so the

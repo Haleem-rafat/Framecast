@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { PromptCategoryTabs } from "@/features/prompts/components/prompt-category-tabs";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { requireUser } from "@/server/session";
@@ -18,7 +19,9 @@ export default async function PromptsPage() {
         description="Templates used to generate scripts, thumbnails, scenes, and metadata."
       />
 
-      <PromptCategoryTabs templates={templates} />
+      <Reveal>
+        <PromptCategoryTabs templates={templates} />
+      </Reveal>
     </>
   );
 }

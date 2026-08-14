@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { subDays } from "date-fns";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { EnvironmentProviderTable } from "@/features/providers/components/environment-provider-table";
 import { ProviderSpendSummary } from "@/features/providers/components/provider-spend-summary";
 import { ProviderTable } from "@/features/providers/components/provider-table";
@@ -50,7 +51,9 @@ export default async function ProvidersPage() {
         <ProviderTable credentials={credentials} />
       </div>
 
-      <div className="space-y-2">
+      {/* The operator's own keys, above, are what this page is for and are left
+       * alone. These two are reference material further down the page. */}
+      <Reveal className="space-y-2">
         <p className="text-muted-foreground text-sm">
           Platform-level services configured via the deployment environment —
           read-only here; change them where the deployment&apos;s environment
@@ -59,9 +62,11 @@ export default async function ProvidersPage() {
         <EnvironmentProviderTable
           statuses={getEnvironmentProviderStatuses()}
         />
-      </div>
+      </Reveal>
 
-      <ProviderSpendSummary spend={spend} />
+      <Reveal>
+        <ProviderSpendSummary spend={spend} />
+      </Reveal>
     </>
   );
 }

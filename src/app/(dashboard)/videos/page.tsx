@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { CreateVideoDialog } from "@/features/videos/components/create-video-dialog";
 import { VideoStatusFilter } from "@/features/videos/components/video-status-filter";
 import { VideoTable } from "@/features/videos/components/video-table";
@@ -48,7 +49,12 @@ export default async function VideosPage({ searchParams }: VideosPageProps) {
         <VideoStatusFilter current={statusFilter ?? "ALL"} />
       </div>
 
-      <VideoTable videos={filtered} hasFilter={Boolean(statusFilter)} />
+      {/* Same reasoning as /logs: the status filter navigates and rebuilds this
+       * table, and the reveal declines to arm a region the operator can see —
+       * so filtering never costs them an animation they have to wait out. */}
+      <Reveal>
+        <VideoTable videos={filtered} hasFilter={Boolean(statusFilter)} />
+      </Reveal>
     </>
   );
 }
