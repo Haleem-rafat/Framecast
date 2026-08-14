@@ -33,7 +33,15 @@ export function BentoGrid({
   return (
     <div
       className={cn(
-        "grid grid-cols-1 gap-4 md:auto-rows-[17rem] md:grid-cols-3",
+        // `minmax(17rem, auto)`, not a flat `17rem`: 17rem is a floor that
+        // keeps short tiles from collapsing, and a ceiling would be a promise
+        // the content cannot keep. At `md` each column is only ~230px wide, so
+        // the longer descriptions run to eight or nine lines and a fixed track
+        // cannot hold them — the text spills past the card's border and over
+        // the row beneath, which is what makes one tile look like it is
+        // hanging out of the grid and the one behind it look half empty.
+        // Rows now grow to their tallest tile and the rest stretch to match.
+        "grid grid-cols-1 gap-4 md:auto-rows-[minmax(17rem,auto)] md:grid-cols-3",
         className,
       )}
     >
