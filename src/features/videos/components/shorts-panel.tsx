@@ -27,8 +27,12 @@ const STATUS_LABEL: Record<ShortSummary["status"], string> = {
 
 const STATUS_CLASS: Record<ShortSummary["status"], string> = {
   QUEUED: "text-muted-foreground",
-  RENDERING: "border-amber-600/30 text-amber-600 dark:border-amber-400/30 dark:text-amber-400",
-  READY: "border-emerald-600/30 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-400",
+  // amber-600 and emerald-600 both land near 3:1 on the card surface, which is
+  // short of the 4.5:1 these badges need at this size. The 700 shades clear it
+  // while reading as the same colour; the dark-mode 300s do the same job
+  // against a dark card, where the 400s were the thin ones.
+  RENDERING: "border-amber-700/30 text-amber-700 dark:border-amber-400/30 dark:text-amber-300",
+  READY: "border-emerald-700/30 text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-300",
   FAILED: "border-destructive/30 text-destructive",
 };
 
@@ -67,7 +71,7 @@ function ShortCard({ videoId, short }: { videoId: string; short: ShortSummary })
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex items-start justify-between gap-2">
           <p className="text-sm font-medium">{short.title ?? `Short ${short.index + 1}`}</p>
-          <Badge variant="outline" className={cn("shrink-0 text-[10px]", STATUS_CLASS[short.status])}>
+          <Badge variant="outline" className={cn("shrink-0 text-xs", STATUS_CLASS[short.status])}>
             {STATUS_LABEL[short.status]}
           </Badge>
         </div>

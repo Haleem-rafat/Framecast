@@ -38,7 +38,9 @@ export function EnvironmentProviderTable({
             {status.configured ? (
               <Badge
                 variant="outline"
-                className="gap-1 text-emerald-600 dark:text-emerald-400"
+                // emerald-600 sits near 3:1 on the card; 700 clears the
+                // 4.5:1 this 12px badge text needs without changing the hue.
+                className="gap-1 text-emerald-700 dark:text-emerald-300"
               >
                 <CircleCheck className="size-3.5" />
                 Configured

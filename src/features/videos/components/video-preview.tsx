@@ -97,9 +97,21 @@ export function VideoPreview({
           <CardContent className="space-y-3">
             {render?.url ? (
               <>
-                {/* No <track> — captions are burned into the render itself. */}
+                {/* No <track> — captions are burned into the render itself.
+                 *
+                 * `preload="metadata"` because the default is `auto`: opening
+                 * this page began streaming a finished render — hundreds of
+                 * megabytes — before anyone pressed play, competing with the
+                 * page's own requests for bandwidth. Metadata is all the
+                 * player needs to show a duration and a scrub bar.
+                 *
+                 * `aria-label` because a bare <video> has no accessible name;
+                 * the card's heading is a sibling, which is not an association
+                 * a screen reader can make. */}
                 <video
                   controls
+                  preload="metadata"
+                  aria-label="Rendered video"
                   className="aspect-video w-full rounded-md bg-black"
                   src={render.url}
                 />
@@ -152,7 +164,13 @@ export function VideoPreview({
           <CardContent className="space-y-3">
             {audio.url ? (
               <>
-                <audio controls className="w-full" src={audio.url} />
+                <audio
+                  controls
+                  preload="metadata"
+                  aria-label="Narration audio"
+                  className="w-full"
+                  src={audio.url}
+                />
                 <p className="text-muted-foreground text-xs">
                   {metaLine([
                     durationLabel,

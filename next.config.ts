@@ -6,11 +6,25 @@ const nextConfig: NextConfig = {
 
   serverExternalPackages: ["@prisma/adapter-pg"],
 
+  // `X-Powered-By: Next.js` tells an attacker the framework and, by way of the
+  // CVE list, a range of versions to try. It buys nothing in return — no
+  // browser or CDN behaves differently for its presence.
+  poweredByHeader: false,
+
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "*.ytimg.com" },
       { protocol: "https", hostname: "yt3.ggpht.com" },
     ],
+    // Next.js negotiates on `Accept` and falls back down this list, so ordering
+    // it AVIF-first is the whole opt-in: AVIF is roughly 20-30% smaller than
+    // WebP at the same quality, and the thumbnails this app renders — YouTube
+    // stills, which are photographic and full of gradients — are exactly the
+    // content where that gap is widest. Anything that cannot decode AVIF still
+    // gets WebP, and anything that cannot decode either gets the original, so
+    // this is a saving with no correctness cost. Left unset, Next.js emits only
+    // WebP and the AVIF-capable majority pays for a format they did not need.
+    formats: ["image/avif", "image/webp"],
   },
 
   /**

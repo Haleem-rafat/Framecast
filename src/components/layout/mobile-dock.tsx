@@ -1,15 +1,31 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { Menu } from "lucide-react";
 
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
-import {
-  FloatingDock,
-  type FloatingDockItem,
-} from "@/components/ui/floating-dock";
+import type { FloatingDockItem } from "@/components/ui/floating-dock";
 import { navItems } from "@/config/navigation";
+
+/**
+ * The dock is the one thing in the studio that pulls in `motion`.
+ *
+ * This component is mounted by the dashboard layout on every authenticated
+ * route, so a static import put the whole animation library in the initial
+ * bundle of every page — including every desktop page, where the dock is
+ * `md:hidden` and its magnification never runs at all. Loading it on demand
+ * moves that cost off the critical path: nothing about the first paint depends
+ * on it, and on a phone it resolves long before a thumb reaches the bar.
+ *
+ * `ssr: false` is safe here specifically because the dock is `position: fixed`
+ * — it is out of flow, so arriving a frame late moves nothing else on the page.
+ */
+const FloatingDock = dynamic(
+  () => import("@/components/ui/floating-dock").then((m) => m.FloatingDock),
+  { ssr: false },
+);
 
 /**
  * The four destinations that earn a permanent slot on a phone.
