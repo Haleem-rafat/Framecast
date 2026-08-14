@@ -24,11 +24,20 @@ export default function DashboardError({
       <div className="w-full max-w-md space-y-4">
         <Alert variant="destructive">
           <TriangleAlert />
-          <AlertTitle>Could not load the dashboard</AlertTitle>
+          {/* This boundary replaces the whole page, PageHeader and its h1
+            * included, so without a heading here the document has none at all.
+            * Matches the group boundary one level up. */}
+          <AlertTitle asChild>
+            <h1>Could not load the dashboard</h1>
+          </AlertTitle>
           <AlertDescription>
             {error.message || "An unexpected error occurred."}
             {error.digest && (
-              <span className="mt-1 block font-mono text-xs opacity-70">
+              // No `opacity-70`: this inherits the destructive foreground,
+              // already the lowest-contrast colour on the page, and fading it
+              // a further 30% puts the one string an operator has to read back
+              // to us — and copy accurately — under 3:1.
+              <span className="mt-1 block font-mono text-xs">
                 Reference: {error.digest}
               </span>
             )}
