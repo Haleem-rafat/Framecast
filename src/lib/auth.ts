@@ -2,24 +2,31 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { nextCookies } from "better-auth/next-js";
 
-import { env, isProduction } from "@/config/env";
+import { env } from "@/config/env";
 import { prisma } from "@/lib/prisma";
+import { MIN_PASSWORD_LENGTH } from "@/schemas/auth.schema";
+import { accountService } from "@/services/account.service";
+
+/** Reset links are relayed by hand, so a one-hour default would expire mid-relay. */
+const RESET_TOKEN_TTL_SECONDS = 60 * 60 * 2;
 
 /**
- * Who is allowed to hold an account at all. Seeded operator plus anything in
- * AUTH_ALLOWED_EMAILS. Opening this up later is a config change, not a rewrite.
+ * Addresses that skip the approvals queue.
+ *
+ * This used to be a hard allowlist: an address that was not on it could not
+ * hold an account at all. Registration is open now and the approvals queue is
+ * the gate, so the list has one job left — solving the bootstrap. Approving an
+ * account requires an already-approved operator, so on a fresh database with
+ * an empty queue there would be nobody who could ever approve anybody. The
+ * seeded operator (and anyone in AUTH_ALLOWED_EMAILS) is therefore approved at
+ * creation, and every other account waits.
  */
-const allowedOperatorEmails = new Set(
+const autoApprovedEmails = new Set(
   [env.SEED_USER_EMAIL, ...(env.AUTH_ALLOWED_EMAILS?.split(",") ?? [])]
     .map((email) => email?.trim().toLowerCase())
     .filter((email): email is string => Boolean(email)),
 );
 
-/**
- * The platform is single-user today, so sign-up is closed by default and there
- * is no invite flow. Multi-user support becomes a matter of re-opening
- * `disableSignUp` and scoping queries — no schema change is required.
- */
 export const auth = betterAuth({
   appName: "Framecast",
   baseURL: env.BETTER_AUTH_URL,
@@ -29,9 +36,38 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    // Seeded via `pnpm db:seed`; there is no public registration surface.
-    disableSignUp: isProduction,
-    minPasswordLength: 12,
+    minPasswordLength: MIN_PASSWORD_LENGTH,
+
+    /**
+     * There is no email transport in this repo, so nothing here can send a
+     * link. `sendResetPassword` writes it to the activity log instead and says
+     * so out loud — see AccountService.recordPasswordResetRequest and
+     * PASSWORD_RESET_DELIVERY in src/config/env.ts. Better Auth refuses the
+     * whole /request-password-reset endpoint unless this callback exists, so
+     * omitting it would break the flow rather than degrade it.
+     */
+    resetPasswordTokenExpiresIn: RESET_TOKEN_TTL_SECONDS,
+    sendResetPassword: async ({ user, url }) => {
+      await accountService.recordPasswordResetRequest({
+        userId: user.id,
+        email: user.email,
+        url,
+        expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_SECONDS * 1000),
+      });
+    },
+
+    /**
+     * A password reset is the remedy for a session someone else is holding, so
+     * completing one has to end those sessions. Without this the attacker's
+     * cookie outlives the password it was obtained with.
+     */
+    revokeSessionsOnPasswordReset: true,
+    onPasswordReset: async ({ user }) => {
+      await accountService.recordPasswordResetCompleted({
+        userId: user.id,
+        email: user.email,
+      });
+    },
   },
 
   /**
@@ -51,21 +87,58 @@ export const auth = betterAuth({
       }
     : {}),
 
+  user: {
+    additionalFields: {
+      /**
+       * Declared so the create hook below can write it — Better Auth's adapter
+       * drops any field its schema does not know about, so an undeclared
+       * `approval` would silently never reach Postgres and the seeded operator
+       * would lock themselves out of their own studio.
+       *
+       * `input: false` is the security-relevant half: it makes Better Auth
+       * reject a sign-up body that carries an `approval` of its own, so nobody
+       * can register straight into APPROVED by adding one field to a POST.
+       *
+       * `returned: false` keeps it off the session user. That is deliberate:
+       * the copy in the session cookie can be up to five minutes stale, and
+       * the gate in src/server/session.ts reads the column directly instead.
+       * Not returning it means no future caller can mistake the stale copy for
+       * the authoritative one.
+       */
+      approval: {
+        type: "string",
+        required: false,
+        input: false,
+        returned: false,
+      },
+      /** Declared for the same reason, and hidden for the same reason. */
+      approvedAt: {
+        type: "date",
+        required: false,
+        input: false,
+        returned: false,
+      },
+    },
+  },
+
   databaseHooks: {
     user: {
       create: {
         /**
-         * `disableSignUp` above governs email/password only — social sign-in
-         * creates users through a different path. Without this, any Google
-         * account on the internet could sign into the studio. The allowlist is
-         * the single gate every creation path has to pass.
+         * Runs for every creation path — email/password sign-up and Google
+         * alike — which is why the bootstrap exception lives here rather than
+         * in the sign-up route. Everyone else falls through untouched and
+         * takes the column's `PENDING` default: the gate fails closed if this
+         * hook is ever changed or skipped.
          */
         before: async (user) => {
-          if (!allowedOperatorEmails.has(user.email.trim().toLowerCase())) {
-            throw new Error(`${user.email} is not an authorised operator.`);
+          if (!autoApprovedEmails.has(user.email.trim().toLowerCase())) {
+            return { data: user };
           }
 
-          return { data: user };
+          return {
+            data: { ...user, approval: "APPROVED", approvedAt: new Date() },
+          };
         },
       },
     },

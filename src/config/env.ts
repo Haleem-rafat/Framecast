@@ -37,10 +37,22 @@ const serverEnvSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
 
-  /** Seeded operator address; also the first entry on the sign-in allowlist. */
+  /** Seeded operator address; also auto-approved on sign-up (see src/lib/auth.ts). */
   SEED_USER_EMAIL: z.string().email().optional(),
-  /** Comma-separated additional addresses permitted to hold an account. */
+  /** Comma-separated additional addresses that skip the approvals queue. */
   AUTH_ALLOWED_EMAILS: z.string().optional(),
+
+  /**
+   * How a password-reset link reaches the person who asked for one.
+   *
+   * This repo has no email transport — no SMTP client, no Resend/Postmark
+   * dependency, nothing. "log" is therefore the only honest option today: the
+   * link is written to `ActivityLog` at WARN level and an operator relays it
+   * out of band. "email" is reserved for whenever a transport is actually
+   * wired up, and is refused at boot below rather than silently dropping
+   * every reset on the floor while the UI claims an email was sent.
+   */
+  PASSWORD_RESET_DELIVERY: z.enum(["log", "email"]).default("log"),
 
   /**
    * Where objects live on disk. Absolute in every deployed environment
@@ -181,6 +193,17 @@ function loadServerEnv(): ServerEnv {
   if (parsed.data.DATABASE_SSL_INSECURE && parsed.data.NODE_ENV === "production") {
     throw new Error(
       "DATABASE_SSL_INSECURE cannot be enabled in production: set SUPABASE_CA_CERT instead.",
+    );
+  }
+
+  // Refusing at boot is the point: a deployment that asks for emailed reset
+  // links must not start and then quietly deliver none. Remove this check in
+  // the same change that adds a real transport, not before.
+  if (parsed.data.PASSWORD_RESET_DELIVERY === "email") {
+    throw new Error(
+      'PASSWORD_RESET_DELIVERY="email" is not supported: this deployment has no ' +
+        "email transport. Leave it unset to keep reset links going to the " +
+        "activity log, where an operator can relay them.",
     );
   }
 
