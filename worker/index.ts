@@ -23,6 +23,18 @@ const WORKER_ID = process.env.WORKER_ID?.trim() || hostname();
 /** How long to wait before checking for new work after finding none. */
 const POLL_INTERVAL_MS = 5_000;
 
+/**
+ * How often to ask whether a schedule is due.
+ *
+ * Not every poll. The video and short claims are the loop's real work and they
+ * run every five seconds; a third query on the same cadence would be twelve
+ * pointless round trips a minute against a table whose rows come due once a
+ * week. Thirty seconds is far finer than the minute-level granularity a
+ * schedule can even express, so nothing fires late that would not have fired
+ * late anyway.
+ */
+const SCHEDULE_TICK_INTERVAL_MS = 30_000;
+
 /** Display names for `PipelineStageName`, same list as scripts/render.ts —
  * kept here rather than imported because it's purely a presentation concern,
  * duplicated intentionally rather than shared for it. */
@@ -47,6 +59,7 @@ async function main(): Promise<void> {
   const { prisma } = await import("@/lib/prisma");
   const { jobService, HEARTBEAT_SECONDS } = await import("@/services/job.service");
   const { runPipeline, PipelineCancelledError } = await import("@/services/pipeline-runner");
+  const { scheduleService } = await import("@/services/schedule.service");
   const { shortsService } = await import("@/services/shorts.service");
 
   // Railway sends SIGTERM on every deploy. `shuttingDown` stops the loop from
@@ -238,8 +251,45 @@ async function main(): Promise<void> {
 
   log(`starting — polling every ${POLL_INTERVAL_MS / 1000}s`);
 
+  /**
+   * When the schedule due-check may next run. Zero so the first poll after a
+   * deploy checks immediately — a worker that has just come back up is exactly
+   * when a schedule is most likely to be overdue.
+   */
+  let nextScheduleTickAt = 0;
+
   while (!shuttingDown) {
     try {
+      // Deliberately before the video claim rather than after it, and this is
+      // the one ordering decision in this loop worth arguing about.
+      //
+      // The shorts claim below sits *after* the video claim so that a queued
+      // video always outranks a derivative of one that already finished. A
+      // schedule tick is not that: it is the thing that *creates* queued
+      // videos. Put behind the video claim, it would never run at all on a busy
+      // worker — every iteration would `continue` on a claimed video and the
+      // Monday morning run would land whenever the backlog happened to clear.
+      //
+      // Placing it first is safe precisely because it is bounded and rare: it
+      // is one indexed query that almost always returns nothing, it runs at
+      // most twice a minute, and when it does find work that work is a single
+      // Anthropic call — the same order of delay as one video's claim, not a
+      // ten-minute render. Nothing here `continue`s either, so the moment the
+      // tick queues a video the loop falls straight through and claims it.
+      if (Date.now() >= nextScheduleTickAt) {
+        nextScheduleTickAt = Date.now() + SCHEDULE_TICK_INTERVAL_MS;
+
+        const tick = await scheduleService.tick();
+
+        if (tick) {
+          log(
+            `schedule "${tick.scheduleName}" due ${tick.scheduledFor.toISOString()} → ` +
+              `${tick.outcome}${tick.videoId ? ` (video ${tick.videoId})` : ""}` +
+              `${tick.reason ? ` — ${tick.reason}` : ""}`,
+          );
+        }
+      }
+
       const claimed = await jobService.claimNext(WORKER_ID);
 
       if (claimed) {
