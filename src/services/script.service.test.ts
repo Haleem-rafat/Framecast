@@ -119,6 +119,83 @@ afterEach(async () => {
 });
 afterAll(cleanupProviderUsage);
 
+describe("scriptService.importScript", () => {
+  const PASTED = "Inflation is what happens when money outruns goods.";
+
+  it("creates the script row for a video that has never generated one", async () => {
+    // The case saveEdit cannot serve: no Script row exists yet, and an
+    // operator bringing their own script has by definition never generated.
+    expect(await prisma.script.findUnique({ where: { videoId } })).toBeNull();
+
+    const version = await service.importScript(userId, videoId, PASTED);
+
+    expect(version.version).toBe(1);
+    expect(version.wordCount).toBe(8);
+    expect(version.content).toBe(PASTED);
+
+    const script = await prisma.script.findUniqueOrThrow({ where: { videoId } });
+    expect(script.activeVersionId).toBe(version.id);
+  });
+
+  it("appends a version when the video already has one", async () => {
+    await service.generate(userId, videoId, {});
+
+    const version = await service.importScript(userId, videoId, PASTED);
+
+    expect(version.version).toBe(2);
+    const script = await prisma.script.findUniqueOrThrow({ where: { videoId } });
+    expect(script.activeVersionId).toBe(version.id);
+  });
+
+  it("records no prompt, model, provider or cues", async () => {
+    // Nothing was sent to a model, so recording a prompt or a provider would
+    // put a claim in the reproducibility columns that never happened. Cues are
+    // null because they are derived from sections the model wrote, and pasted
+    // prose has none — footage then falls back to the topic-level pool.
+    const version = await service.importScript(userId, videoId, PASTED);
+
+    expect(version.prompt).toBeNull();
+    expect(version.model).toBeNull();
+    expect(version.provider).toBeNull();
+    expect(version.cues).toBeNull();
+    expect(version.sources).toBeNull();
+  });
+
+  it("trims surrounding whitespace before storing", async () => {
+    const version = await service.importScript(userId, videoId, `\n\n  ${PASTED}  \n`);
+
+    expect(version.content).toBe(PASTED);
+  });
+
+  it("rejects an empty or whitespace-only script", async () => {
+    await expect(service.importScript(userId, videoId, "   \n  ")).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+  });
+
+  it("refuses once the video has left DRAFT", async () => {
+    // Same freeze saveEdit enforces: downstream stages have already read the
+    // approved script, and narration may already have been synthesised from it.
+    await service.generate(userId, videoId, {});
+    await videoService.approveScript(userId, videoId);
+
+    await expect(service.importScript(userId, videoId, PASTED)).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+  });
+
+  it("does not import into another operator's video", async () => {
+    const otherUserId = await createTestUser("script-other");
+
+    try {
+      await expect(service.importScript(otherUserId, videoId, PASTED)).rejects.toThrow();
+      expect(await prisma.script.findUnique({ where: { videoId } })).toBeNull();
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+});
+
 describe("scriptService.generate", () => {
   it("stores version 1 and makes it active", async () => {
     const version = await service.generate(userId, videoId, {});

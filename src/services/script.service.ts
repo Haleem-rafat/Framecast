@@ -240,6 +240,125 @@ export class ScriptService {
     }
   }
 
+  /**
+   * Takes a script the operator wrote elsewhere and makes it this video's
+   * active version, with no model call and no cost.
+   *
+   * Distinct from `saveEdit`, which refuses a video that has no `Script` row
+   * yet — the case that matters here, since an operator bringing their own
+   * script has by definition never generated one. This upserts that row the
+   * same way `generate` does, so an import and a generation produce exactly
+   * the same shape and every downstream stage is indifferent to which
+   * happened.
+   *
+   * The imported version carries no `cues`: cue anchors are produced by the
+   * model alongside the narration it wrote, and there is nothing to derive
+   * them from in pasted prose. Footage collection already handles a
+   * cue-less script by drawing from the topic-level pool — the same path
+   * every script written before cues existed still takes — so this degrades
+   * to "footage matched to the topic rather than the sentence" rather than
+   * failing. `prompt`, `model` and `provider` stay null for the same reason:
+   * recording a prompt nobody sent would corrupt the reproducibility those
+   * columns exist to give.
+   */
+  async importScript(userId: string, videoId: string, content: string) {
+    const trimmed = content.trim();
+
+    if (trimmed.length === 0) {
+      throw new ConflictError("An imported script cannot be empty.");
+    }
+
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: { id: true, status: true },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    // Same gate `saveEdit` applies, and for the same reason: once approval has
+    // moved the video past DRAFT, downstream stages have already read the
+    // script that was approved, and replacing it here would swap content out
+    // from under a narration that may already have been synthesised.
+    if (video.status !== "DRAFT") {
+      throw new ConflictError(
+        "This video's script was already approved and can no longer be replaced.",
+      );
+    }
+
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const script = await tx.script.upsert({
+          where: { videoId },
+          create: { videoId },
+          update: {},
+        });
+
+        const previous = await tx.scriptVersion.findFirst({
+          where: { scriptId: script.id },
+          orderBy: { version: "desc" },
+          select: { version: true },
+        });
+
+        const version = await tx.scriptVersion.create({
+          data: {
+            scriptId: script.id,
+            version: (previous?.version ?? 0) + 1,
+            content: trimmed,
+            wordCount: countWords(trimmed),
+          },
+        });
+
+        // The same conditional update `generate` uses, for the same race: an
+        // operator can approve the current script between this call starting
+        // and its transaction committing, and the approved version must not
+        // then be silently repointed at text nobody approved. Throwing rolls
+        // back the version created just above, so the two can never both land.
+        const { count } = await tx.video.updateMany({
+          where: { id: videoId, userId, deletedAt: null, status: "DRAFT" },
+          data: { updatedAt: new Date() },
+        });
+
+        if (count === 0) {
+          throw new ConflictError(
+            "Your script was approved while this import was still running. " +
+              "The imported version has been discarded; the version you " +
+              "approved is unchanged.",
+          );
+        }
+
+        await tx.script.update({
+          where: { id: script.id },
+          data: { activeVersionId: version.id },
+        });
+
+        await tx.activityLog.create({
+          data: {
+            userId,
+            action: "script.import",
+            entityType: "Video",
+            entityId: videoId,
+            message: `Imported script v${version.version} (${version.wordCount} words)`,
+          },
+        });
+
+        return version;
+      });
+    } catch (error) {
+      // Two imports racing the same script's version number surface as a raw
+      // unique violation; recast to the typed conflict the rest of this
+      // service uses, exactly as `generate` does.
+      if (isUniqueConstraintViolation(error)) {
+        throw new ConflictError(
+          "Another change to this script is already in progress. Try again.",
+        );
+      }
+
+      throw error;
+    }
+  }
+
   /** Operator edits append a new version rather than mutating the old one. */
   async saveEdit(userId: string, videoId: string, content: string) {
     const video = await prisma.video.findFirst({

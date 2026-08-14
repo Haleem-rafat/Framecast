@@ -2,15 +2,29 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Loader2, RotateCw, Save, Sparkles } from "lucide-react";
+import { FileText, Loader2, RotateCw, Save, Sparkles, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Textarea } from "@/components/ui/textarea";
-import { generateScriptAction, saveScriptEditAction } from "@/actions/script.action";
+import {
+  generateScriptAction,
+  importScriptAction,
+  saveScriptEditAction,
+} from "@/actions/script.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
+
+/** Live word count for the importer, so an operator pasting a script can see
+ * whether it is anywhere near the length they asked the prompt for before
+ * committing it. Counts the same way the server does — whitespace-separated
+ * runs — so the number shown here matches the one stored on the version. */
+function countWordsInDraft(draft: string | null): number {
+  const trimmed = (draft ?? "").trim();
+
+  return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+}
 
 interface ActiveVersion {
   id: string;
@@ -31,6 +45,10 @@ export function ScriptPanel({
   const router = useRouter();
   const [content, setContent] = useState(activeVersion?.content ?? "");
   const [isPending, startTransition] = useTransition();
+  // Import is its own draft, kept apart from `content` so opening the importer
+  // and closing it again cannot destroy edits in progress on the live script.
+  const [importDraft, setImportDraft] = useState<string | null>(null);
+  const isImporting = importDraft !== null;
 
   // A new version — from Generate, Regenerate, or picking a different one in
   // the history sidebar — replaces what the operator is looking at. Their own
@@ -42,6 +60,25 @@ export function ScriptPanel({
 
   const isDraft = status === "DRAFT";
   const isDirty = content !== (activeVersion?.content ?? "");
+
+  function onImport() {
+    const pasted = importDraft ?? "";
+
+    startTransition(async () => {
+      const result = await importScriptAction(videoId, pasted);
+
+      if (!result.ok) {
+        toast.error("Could not import that script", {
+          description: result.error.message,
+        });
+        return;
+      }
+
+      toast.success(`Imported v${result.data.version} (${result.data.wordCount} words)`);
+      setImportDraft(null);
+      router.refresh();
+    });
+  }
 
   function onGenerate() {
     startTransition(async () => {
@@ -95,6 +132,58 @@ export function ScriptPanel({
     });
   }
 
+  if (isImporting) {
+    return (
+      <Card>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Import a script</p>
+              <p className="text-muted-foreground text-xs">
+                Paste narration only — every word is read aloud exactly as
+                written. Footage is matched to the video&apos;s topic rather
+                than to each line, because an imported script carries no
+                per-section visual cues.
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setImportDraft(null)}
+              disabled={isPending}
+            >
+              <X />
+              Cancel
+            </Button>
+          </div>
+
+          <Textarea
+            value={importDraft ?? ""}
+            onChange={(event) => setImportDraft(event.target.value)}
+            rows={20}
+            className="min-h-[480px] font-mono text-sm"
+            disabled={isPending}
+            placeholder="Paste your script here"
+            autoFocus
+          />
+
+          <div className="flex items-center justify-between">
+            <p className="text-muted-foreground text-xs">
+              {countWordsInDraft(importDraft)} words
+            </p>
+            <Button
+              onClick={onImport}
+              disabled={!isDraft || isPending || (importDraft ?? "").trim().length === 0}
+            >
+              {isPending ? <Loader2 className="animate-spin" /> : <Upload />}
+              Import script
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   if (!activeVersion) {
     return (
       <Card>
@@ -102,12 +191,22 @@ export function ScriptPanel({
           <EmptyState
             icon={FileText}
             title="No script yet"
-            description="Generate a script from the video's topic using the default script prompt template."
+            description="Generate one from the video's topic using your default script prompt, or import a script you already wrote."
             action={
-              <Button onClick={onGenerate} disabled={!isDraft || isPending}>
-                {isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}
-                Generate script
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button onClick={onGenerate} disabled={!isDraft || isPending}>
+                  {isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                  Generate script
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setImportDraft("")}
+                  disabled={!isDraft || isPending}
+                >
+                  <Upload />
+                  Import script
+                </Button>
+              </div>
             }
           />
         </CardContent>
@@ -123,6 +222,15 @@ export function ScriptPanel({
             Version {activeVersion.version} · {activeVersion.wordCount} words
           </p>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setImportDraft("")}
+              disabled={!isDraft || isPending}
+            >
+              <Upload />
+              Import
+            </Button>
             <Button
               variant="outline"
               size="sm"

@@ -23,6 +23,20 @@ export async function generateScriptAction(
   });
 }
 
+export async function importScriptAction(
+  videoId: string,
+  content: string,
+): Promise<ActionResult<Awaited<ReturnType<typeof scriptService.importScript>>>> {
+  return run(async () => {
+    const session = await requireSession();
+    const version = await scriptService.importScript(session.user.id, videoId, content);
+
+    revalidatePath(`/videos/${videoId}`);
+
+    return version;
+  });
+}
+
 export async function saveScriptEditAction(
   videoId: string,
   content: string,
