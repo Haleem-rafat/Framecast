@@ -1,5 +1,6 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
+import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
@@ -34,9 +35,24 @@ function Alert({
   )
 }
 
-function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
+/**
+ * `asChild` is here for the case an `Alert` is the entire page — the route
+ * error boundaries, which replace `PageHeader` and its `<h1>` along with
+ * everything else. A `<div>` title leaves those pages with no heading at all,
+ * and hard-coding a heading level instead would be wrong everywhere the alert
+ * is one item inside a page that already has an outline. Letting the call site
+ * pass the element keeps the styling and moves the semantics to whoever knows
+ * what the alert is in context. Mirrors `Button`/`Badge` in this directory.
+ */
+function AlertTitle({
+  className,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"div"> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot.Root : "div"
+
   return (
-    <div
+    <Comp
       data-slot="alert-title"
       className={cn(
         "font-medium group-has-[>svg]/alert:col-start-2 [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground",

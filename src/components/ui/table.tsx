@@ -65,10 +65,20 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   )
 }
 
+/**
+ * `scope="col"` by default, because that is what a `<th>` in a `<thead>` almost
+ * always is and forgetting it is silent: the header still looks like a header,
+ * it just stops being announced with the cells beneath it. `DataTable` passes
+ * it explicitly, but the hand-rolled tables (activity log, operation
+ * reliability) did not, so the default is what makes the guarantee hold
+ * everywhere rather than only where someone remembered. Still overridable —
+ * a row header passes `scope="row"` and wins, since `...props` spreads after.
+ */
 function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   return (
     <th
       data-slot="table-head"
+      scope="col"
       className={cn(
         "h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-foreground [&:has([role=checkbox])]:pr-0",
         className

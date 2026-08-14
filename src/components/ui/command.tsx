@@ -48,10 +48,6 @@ function CommandDialog({
 }) {
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
       <DialogContent
         className={cn(
           "top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0",
@@ -59,6 +55,20 @@ function CommandDialog({
         )}
         showCloseButton={showCloseButton}
       >
+        {/* Inside `DialogContent`, not beside it.
+         *
+         * As a sibling of the content this header was not portalled with the
+         * dialog — it rendered inline in the page body, permanently, on every
+         * page that mounts a `CommandDialog`, open or closed. Two costs: a
+         * screen reader met a stray "Command Palette / Search for a command to
+         * run..." in the middle of the page content, and because Radix looks
+         * for the title *within* the content to name the dialog, the dialog
+         * itself was left unnamed — the exact warning the sr-only header was
+         * added to silence. Moving it in fixes both with one edit. */}
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
         {children}
       </DialogContent>
     </Dialog>

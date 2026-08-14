@@ -23,7 +23,13 @@ export function EmptyState({
           <Icon className="size-5" />
         </div>
         <div className="space-y-1">
-          <p className="font-medium">{title}</p>
+          {/* An `<h3>`, not a `<p>`. This is the only content in the region it
+            * replaces — a table, a card list — and a screen-reader user
+            * skimming by heading would otherwise pass straight over the one
+            * line explaining why the section looks empty. h3 rather than h2
+            * because empty states sit inside a card that is already a
+            * subsection of the page's h1. */}
+          <h3 className="font-medium">{title}</h3>
           <p className="text-muted-foreground mx-auto max-w-sm text-sm text-balance">
             {description}
           </p>
