@@ -32,12 +32,23 @@ export default function DashboardGroupError({
       <div className="w-full max-w-md space-y-4">
         <Alert variant="destructive">
           <TriangleAlert />
-          <AlertTitle>Something went wrong</AlertTitle>
+          {/* This boundary replaces the whole page, `PageHeader` included, so
+            * without a real heading here the document has none at all — no h1
+            * to land on, nothing for a screen reader's heading list. AlertTitle
+            * is a styled `<div>`; `asChild` keeps its styling and lets the h1
+            * be the element that actually renders. */}
+          <AlertTitle asChild>
+            <h1>Something went wrong</h1>
+          </AlertTitle>
           <AlertDescription>
             This page could not be loaded. Try again, or head back to the
             dashboard if the problem continues.
             {error.digest && (
-              <span className="mt-1 block font-mono text-xs opacity-70">
+              // No `opacity-70`: this text inherits the destructive foreground,
+              // which is already the lowest-contrast colour on the page, and
+              // fading it a further 30% puts the one string an operator has to
+              // read back to us — and copy accurately — under 3:1.
+              <span className="mt-1 block font-mono text-xs">
                 Reference: {error.digest}
               </span>
             )}

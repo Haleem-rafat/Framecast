@@ -11,6 +11,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 export default function VideoDetailLoading() {
   return (
     <>
+      {/* The slowest fetch in the dashboard is also the longest a screen reader
+       * spends on a page with no text on it. See (dashboard)/loading.tsx for
+       * why this is a sibling in the fragment rather than a wrapper. */}
+      <span role="status" className="sr-only">
+        Loading video…
+      </span>
+
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">

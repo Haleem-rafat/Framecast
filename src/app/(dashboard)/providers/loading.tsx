@@ -19,6 +19,13 @@ function TableSkeleton({ rows }: { rows: number }) {
 export default function ProvidersLoading() {
   return (
     <>
+      {/* Skeletons carry no text, so without this the page is silent to a
+       * screen reader for the whole fetch. See (dashboard)/loading.tsx for why
+       * this is a sibling in the fragment rather than a wrapper. */}
+      <span role="status" className="sr-only">
+        Loading AI providers…
+      </span>
+
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-2">
           <Skeleton className="h-8 w-40" />
