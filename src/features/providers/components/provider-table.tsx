@@ -1,104 +1,129 @@
+"use client";
+
+import { useMemo } from "react";
 import { CircleCheck, CircleX } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { DataTable, type DataTableColumn } from "@/components/shared/data-table";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { aiProviderTypes } from "@/schemas/provider.schema";
+import { Badge } from "@/components/ui/badge";
 import { CredentialDialog } from "@/features/providers/components/credential-dialog";
 import { RevokeCredentialButton } from "@/features/providers/components/revoke-credential-button";
 import { TestCredentialButton } from "@/features/providers/components/test-credential-button";
 import { PROVIDER_LABELS } from "@/features/providers/provider-labels";
+import { aiProviderTypes } from "@/schemas/provider.schema";
 import type { CredentialSummary } from "@/services/provider-credential.service";
 
+type ProviderRow = {
+  provider: (typeof aiProviderTypes)[number];
+  credential: CredentialSummary | undefined;
+};
+
+/**
+ * No search box and no pagination: this table is a fixed ten rows in a
+ * deliberate order, so both would be chrome over nothing. Sorting is offered
+ * on the two columns that answer a real question — which provider, and which
+ * key has gone longest without a successful test.
+ */
 export function ProviderTable({
   credentials,
 }: {
   credentials: CredentialSummary[];
 }) {
-  const byProvider = new Map(credentials.map((one) => [one.provider, one]));
+  const rows = useMemo<ProviderRow[]>(() => {
+    const byProvider = new Map(credentials.map((one) => [one.provider, one]));
+
+    // One row per known provider type, not per credential the operator has
+    // saved — an unconfigured provider still needs an "Add key" affordance.
+    return aiProviderTypes.map((provider) => ({
+      provider,
+      credential: byProvider.get(provider),
+    }));
+  }, [credentials]);
+
+  const columns = useMemo<DataTableColumn<ProviderRow>[]>(
+    () => [
+      {
+        id: "provider",
+        header: "Provider",
+        cell: (row) => PROVIDER_LABELS[row.provider],
+        sortValue: (row) => PROVIDER_LABELS[row.provider],
+        cellClassName: "font-medium",
+        alwaysVisible: true,
+      },
+      {
+        id: "key",
+        header: "Key",
+        cell: (row) =>
+          row.credential ? (
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm">
+                •••• {row.credential.keyLastFour}
+              </span>
+              {row.credential.label && (
+                <span className="text-muted-foreground text-xs">
+                  {row.credential.label}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="text-muted-foreground text-sm">Not configured</span>
+          ),
+      },
+      {
+        id: "lastTested",
+        header: "Last tested",
+        cell: (row) =>
+          row.credential?.lastTestedAt ? (
+            <div className="flex items-center gap-1.5 text-sm">
+              {row.credential.lastTestOk ? (
+                <CircleCheck className="text-emerald-600 dark:text-emerald-400 size-3.5" />
+              ) : (
+                <CircleX className="text-destructive size-3.5" />
+              )}
+              <RelativeTime date={row.credential.lastTestedAt} />
+            </div>
+          ) : row.credential ? (
+            <Badge variant="outline">Never tested</Badge>
+          ) : (
+            <span className="text-muted-foreground text-sm">—</span>
+          ),
+        // Ascending by default, i.e. stalest first: a key tested minutes ago
+        // needs no attention, and never-tested rows sink to the bottom on
+        // their own since they have no date at all.
+        sortValue: (row) => row.credential?.lastTestedAt,
+      },
+      {
+        id: "actions",
+        header: "Actions",
+        cell: (row) => (
+          <div className="flex items-center justify-end gap-2">
+            {row.credential ? (
+              <>
+                <TestCredentialButton provider={row.provider} />
+                <CredentialDialog
+                  provider={row.provider}
+                  existingLabel={row.credential.label}
+                />
+                <RevokeCredentialButton provider={row.provider} />
+              </>
+            ) : (
+              <CredentialDialog provider={row.provider} />
+            )}
+          </div>
+        ),
+        align: "right",
+        alwaysVisible: true,
+      },
+    ],
+    [],
+  );
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Provider</TableHead>
-          <TableHead>Key</TableHead>
-          <TableHead>Last tested</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {/* One row per known provider type, not per row in the table — an
-            unconfigured provider still needs an "Add key" affordance. */}
-        {aiProviderTypes.map((provider) => {
-          const credential = byProvider.get(provider);
-
-          return (
-            <TableRow key={provider}>
-              <TableCell className="font-medium">
-                {PROVIDER_LABELS[provider]}
-              </TableCell>
-              <TableCell>
-                {credential ? (
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm">
-                      •••• {credential.keyLastFour}
-                    </span>
-                    {credential.label && (
-                      <span className="text-muted-foreground text-xs">
-                        {credential.label}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <span className="text-muted-foreground text-sm">
-                    Not configured
-                  </span>
-                )}
-              </TableCell>
-              <TableCell>
-                {credential?.lastTestedAt ? (
-                  <div className="flex items-center gap-1.5 text-sm">
-                    {credential.lastTestOk ? (
-                      <CircleCheck className="text-emerald-600 dark:text-emerald-400 size-3.5" />
-                    ) : (
-                      <CircleX className="text-destructive size-3.5" />
-                    )}
-                    <RelativeTime date={credential.lastTestedAt} />
-                  </div>
-                ) : credential ? (
-                  <Badge variant="outline">Never tested</Badge>
-                ) : (
-                  <span className="text-muted-foreground text-sm">—</span>
-                )}
-              </TableCell>
-              <TableCell>
-                <div className="flex items-center justify-end gap-2">
-                  {credential ? (
-                    <>
-                      <TestCredentialButton provider={provider} />
-                      <CredentialDialog
-                        provider={provider}
-                        existingLabel={credential.label}
-                      />
-                      <RevokeCredentialButton provider={provider} />
-                    </>
-                  ) : (
-                    <CredentialDialog provider={provider} />
-                  )}
-                </div>
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+    <DataTable
+      rows={rows}
+      columns={columns}
+      getRowId={(row) => row.provider}
+      caption="Per-operator provider API keys"
+    />
   );
 }
