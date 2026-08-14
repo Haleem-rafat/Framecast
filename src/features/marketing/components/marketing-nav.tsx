@@ -60,11 +60,17 @@ export function MarketingNavLinks({ className }: { className?: string }) {
 }
 
 /**
- * The same links below `md`, in a sheet. They move rather than disappear: a
- * phone getting the identical empty bar the desktop had is the bug, not the
- * fix. The two account buttons hide below `sm` in the header and reappear at
- * the bottom of this panel, so a 375px bar is only ever the wordmark, the
- * theme toggle and this button.
+ * What is left of the mobile menu once the floating dock has the sections.
+ *
+ * They used to be listed here too, and behind a tap in the top-right corner of
+ * a phone was the wrong place for them: the sections are how the page is read,
+ * they are wanted constantly, and they are the one thing a bar can show the
+ * current position in. So they moved to `MarketingDock` and this panel keeps
+ * what a five-slot dock has no room for and nobody needs mid-scroll — contact,
+ * and the two account buttons that hide from the header below `sm`.
+ *
+ * The remaining row is 44px rather than the links' 36px: this is a panel
+ * operated by a thumb.
  */
 export function MarketingNavSheet({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
@@ -87,22 +93,14 @@ export function MarketingNavSheet({ className }: { className?: string }) {
           <SheetTitle>Framecast</SheetTitle>
         </SheetHeader>
 
-        <nav aria-label="Sections" className="flex flex-col gap-1 px-4">
-          {NAV_LINKS.map((link) => (
-            <SheetClose asChild key={link.href}>
-              <Link
-                href={link.href}
-                className="hover:bg-accent rounded-md px-2 py-2.5 text-sm transition-colors"
-              >
-                {link.label}
-              </Link>
-            </SheetClose>
-          ))}
-
+        {/* Not "Sections": that name belongs to the header nav and now to the
+            dock, and three navigations answering to one label is how a screen
+            reader user ends up unable to tell them apart. */}
+        <nav aria-label="Account" className="flex flex-col gap-1 px-4">
           <SheetClose asChild>
             <Link
               href="/contact"
-              className="hover:bg-accent rounded-md px-2 py-2.5 text-sm transition-colors"
+              className="hover:bg-accent flex h-11 items-center rounded-md px-2 text-sm transition-colors"
             >
               Contact
             </Link>

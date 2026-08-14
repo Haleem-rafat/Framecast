@@ -3,6 +3,10 @@ import Link from "next/link";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { Button } from "@/components/ui/button";
 import {
+  MarketingDock,
+  MarketingDockSpacer,
+} from "@/features/marketing/components/marketing-dock";
+import {
   MarketingNavLinks,
   MarketingNavSheet,
 } from "@/features/marketing/components/marketing-nav";
@@ -77,9 +81,12 @@ export function MarketingShell({
             <Button asChild size="sm" className="hidden sm:inline-flex">
               <Link href="/sign-up">Create an account</Link>
             </Button>
-            {/* Below md the links, and below sm the two buttons above, collapse
-                into this sheet — so a 375px bar is the wordmark, the theme
-                toggle and one button, never a row of truncated pills. */}
+            {/* Below md the sections move to the floating dock at the bottom
+                of the screen — thumb reach, and with the section you are
+                reading lit up — and this menu keeps what is left: contact and
+                the two account actions, which hide from the bar below sm. So a
+                375px bar is the wordmark, the theme toggle and one button,
+                never a row of truncated pills. */}
             <MarketingNavSheet />
           </div>
         </div>
@@ -111,7 +118,13 @@ export function MarketingShell({
             </Link>
           </nav>
         </div>
+        {/* The dock is fixed, so it sits on top of this footer — and the
+            footer is where Privacy and Terms are, which are the two links a
+            compliance reviewer goes looking for. */}
+        <MarketingDockSpacer />
       </footer>
+
+      <MarketingDock />
     </div>
   );
 }

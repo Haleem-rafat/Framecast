@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
 import { SiteStructuredData } from "@/components/seo/structured-data";
@@ -110,6 +110,21 @@ export const metadata: Metadata = {
       "max-video-preview": -1,
     },
   },
+};
+
+/**
+ * `viewport-fit=cover` is what makes `env(safe-area-inset-*)` resolve to
+ * anything but zero on an iPhone — without it every one of those insets reads
+ * as 0px and the bars that use them sit under the home indicator.
+ *
+ * It lives at the root because both halves of the app now need it: the studio
+ * has its floating dock, and the public pages have theirs. The studio's layout
+ * still declares it as well, which is a no-op repeat rather than a conflict —
+ * viewport is merged per field down the tree — and is worth keeping, because it
+ * is what stops a future change here from silently unpinning that dock.
+ */
+export const viewport: Viewport = {
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
