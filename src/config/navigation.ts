@@ -54,15 +54,27 @@ export const navigation: NavGroup[] = [
         title: "Analytics",
         href: "/analytics",
         icon: BarChart3,
-        keywords: ["views", "ctr", "watch time", "revenue", "retention"],
-        built: false,
+        // These described the YouTube Analytics integration this page was
+        // once planned around. That integration does not exist, so searching
+        // "watch time" landed on a page that has never shown one. The page
+        // reports what the database actually holds — cost, render timings,
+        // throughput — and the keywords now say so.
+        keywords: [
+          "cost",
+          "spend",
+          "render time",
+          "reliability",
+          "failures",
+          "throughput",
+        ],
+        built: true,
       },
       {
         title: "Activity",
         href: "/logs",
         icon: Activity,
         keywords: ["logs", "history", "errors", "audit"],
-        built: false,
+        built: true,
       },
     ],
   },
@@ -161,7 +173,7 @@ export const navigation: NavGroup[] = [
         href: "/settings",
         icon: Settings,
         keywords: ["theme", "defaults", "storage"],
-        built: false,
+        built: true,
       },
     ],
   },
