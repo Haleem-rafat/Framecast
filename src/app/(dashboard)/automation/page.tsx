@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { CalendarClock } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { Button } from "@/components/ui/button";
 import { AutomationFlow } from "@/features/automation/components/automation-flow";
 import { AutomationRunView } from "@/features/automation/components/automation-run-view";
 import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
@@ -62,6 +65,18 @@ export default async function AutomationPage({ searchParams }: AutomationPagePro
       <PageHeader
         title="One-click video"
         description="Answer a few questions and Framecast writes the script, approves it for you, and runs the pipeline through to a finished video. Publishing stays yours."
+        actions={
+          /* The same flow, on a timer. Surfaced here rather than in the sidebar
+             because a schedule is not a separate feature — it is this page's
+             own button, pressed for you every Monday — and finding it beside
+             the manual version is what makes that relationship obvious. */
+          <Button asChild variant="outline">
+            <Link href="/automation/schedules">
+              <CalendarClock />
+              Schedules
+            </Link>
+          </Button>
+        }
       />
 
       {/* `prompt` is null exactly when the missing-default-prompt blocker is
