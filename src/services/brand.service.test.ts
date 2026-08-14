@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_STYLE } from "@/lib/video-style";
-import { brandService } from "@/services/brand.service";
+import {
+  CURATED_CATEGORIES,
+  PUBLISHING_DEFAULTS,
+} from "@/lib/youtube-categories";
+import { BrandService, brandService, type FetchLike } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -174,5 +179,207 @@ describe("brandService.resolve", () => {
     const brand = await brandService.resolve("not-a-valid-uuid");
     expect(brand.videoStyle).toEqual(DEFAULT_STYLE);
     expect(brand.logoPath).toBeNull();
+  });
+});
+
+describe("brandService — publishing defaults", () => {
+  it("returns en and Education for a channel that has never been branded", async () => {
+    // Every channel connected before these columns existed lands here, and
+    // has to publish with nothing asked of the operator.
+    const defaults = await brandService.getPublishingDefaults(userId, channelId);
+
+    expect(defaults).toEqual(PUBLISHING_DEFAULTS);
+  });
+
+  it("creates the brand row on first save, and updates it afterwards", async () => {
+    // Setting a publishing default is as likely to be an operator's first
+    // branding action as choosing a logo is, so this upserts rather than
+    // failing on a channel with no row.
+    await brandService.updatePublishingDefaults(userId, {
+      channelId,
+      language: "en-GB",
+      categoryId: "28",
+    });
+
+    expect(await brandService.getPublishingDefaults(userId, channelId)).toEqual({
+      language: "en-GB",
+      categoryId: "28",
+    });
+
+    await brandService.updatePublishingDefaults(userId, {
+      channelId,
+      language: "pt-BR",
+      categoryId: "27",
+    });
+
+    expect(await brandService.getPublishingDefaults(userId, channelId)).toEqual({
+      language: "pt-BR",
+      categoryId: "27",
+    });
+  });
+
+  it("leaves the rest of the brand alone when saving the publishing pair", async () => {
+    await prisma.channelBrand.create({
+      data: { channelId, tone: "dry and factual", logoPath: "logos/one.png" },
+    });
+
+    await brandService.updatePublishingDefaults(userId, {
+      channelId,
+      language: "de",
+      categoryId: "28",
+    });
+
+    const brand = await brandService.resolve(channelId);
+    expect(brand.language).toBe("de");
+    expect(brand.categoryId).toBe("28");
+    expect(brand.tone).toBe("dry and factual");
+    expect(brand.logoPath).toBe("logos/one.png");
+  });
+
+  it("refuses to read or write another operator's channel", async () => {
+    // Reached straight from a URL, unlike every other read in this service —
+    // so ownership is proven here rather than assumed. Defaults for a foreign
+    // id would answer "does this channel exist"; NotFoundError does not.
+    const otherUserId = await createTestUser("brand-other");
+
+    try {
+      await expect(
+        brandService.getPublishingDefaults(otherUserId, channelId),
+      ).rejects.toThrow(NotFoundError);
+
+      await expect(
+        brandService.updatePublishingDefaults(otherUserId, {
+          channelId,
+          language: "de",
+          categoryId: "28",
+        }),
+      ).rejects.toThrow(NotFoundError);
+
+      expect(await prisma.channelBrand.count({ where: { channelId } })).toBe(0);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+
+  it("lists every branded channel's pair in one lookup, scoped to the operator", async () => {
+    const otherUserId = await createTestUser("brand-other");
+
+    try {
+      const otherChannel = await channelService.connect(otherUserId, {
+        youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
+        title: "Somebody else's channel",
+        accessToken: "ya29.test",
+        refreshToken: "1//test",
+        expiresInSeconds: 3600,
+        scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+      });
+      await prisma.channelBrand.create({
+        data: { channelId: otherChannel.id, language: "fr", categoryId: "24" },
+      });
+      await prisma.channelBrand.create({
+        data: { channelId, language: "en-GB", categoryId: "28" },
+      });
+
+      const all = await brandService.listPublishingDefaults(userId);
+
+      expect(all[channelId]).toEqual({ language: "en-GB", categoryId: "28" });
+      expect(all).not.toHaveProperty(otherChannel.id);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+});
+
+describe("brandService.listCategories", () => {
+  /** The two calls `listCategories` makes, in order: the channel's own
+   *  country, then the category list for it. */
+  function createCategoryFetch(
+    options: { country?: string | null; failList?: boolean } = {},
+  ): { fetchImpl: FetchLike; calls: string[] } {
+    const calls: string[] = [];
+
+    const fetchImpl: FetchLike = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      calls.push(url);
+
+      if (url.includes("/channels?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [{ snippet: { country: options.country ?? undefined } }],
+          }),
+        } as unknown as Response;
+      }
+
+      if (options.failList) {
+        return { ok: false, status: 503, json: async () => ({}) } as unknown as Response;
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [
+            { id: "27", snippet: { title: "Education", assignable: true } },
+            { id: "1", snippet: { title: "Film & Animation", assignable: true } },
+            // Returned by the same call so old videos filed under it can be
+            // read — sending it to videos.insert is a 400 after the whole
+            // file has uploaded.
+            { id: "18", snippet: { title: "Short Movies", assignable: false } },
+          ],
+        }),
+      } as unknown as Response;
+    }) as FetchLike;
+
+    return { fetchImpl, calls };
+  }
+
+  it("offers only the categories YouTube marks assignable, for the channel's own region", async () => {
+    const { fetchImpl, calls } = createCategoryFetch({ country: "GB" });
+
+    const list = await new BrandService(fetchImpl).listCategories(userId, channelId);
+
+    expect(list.live).toBe(true);
+    expect(list.regionCode).toBe("GB");
+    expect(calls[1]).toContain("regionCode=GB");
+    // Sorted by title — not by the id order YouTube returns, which is
+    // meaningless to whoever is reading the list — and the non-assignable
+    // entry is gone.
+    expect(list.categories).toEqual([
+      { id: "27", title: "Education" },
+      { id: "1", title: "Film & Animation" },
+    ]);
+  });
+
+  it("falls back to US when the channel has no country of its own", async () => {
+    const { fetchImpl, calls } = createCategoryFetch({ country: null });
+
+    const list = await new BrandService(fetchImpl).listCategories(userId, channelId);
+
+    expect(list.regionCode).toBe("US");
+    expect(calls[1]).toContain("regionCode=US");
+  });
+
+  it("degrades to the curated list rather than throwing when YouTube is unreachable", async () => {
+    // The language half of the same dialog needs no network at all, so an
+    // unreachable API must not take the dialog down with it — it says the
+    // list is not live instead.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { fetchImpl } = createCategoryFetch({ failList: true });
+
+    const list = await new BrandService(fetchImpl).listCategories(userId, channelId);
+
+    expect(list.live).toBe(false);
+    expect(list.categories).toEqual([...CURATED_CATEGORIES]);
+    // The default has to be offerable by the fallback too, or a channel that
+    // opens the dialog offline cannot save what it already has.
+    expect(
+      list.categories.some(
+        (category) => category.id === PUBLISHING_DEFAULTS.categoryId,
+      ),
+    ).toBe(true);
+
+    consoleError.mockRestore();
   });
 });

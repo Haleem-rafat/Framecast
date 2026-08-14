@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { TITLE_MAX } from "@/lib/youtube-limits";
+import { PUBLISHING_DEFAULTS } from "@/lib/youtube-categories";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import type { FetchLike } from "@/services/publish.service";
@@ -100,8 +101,12 @@ function createUploadFetch(): { fetchImpl: FetchLike; calls: FetchCall[] } {
 
 /** A video eligible to publish, with `title` under the caller's control —
  *  the field `createVideoSchema` caps at 120 characters, twenty past
- *  YouTube's own limit. */
-async function makePublishableVideo(title: string): Promise<string> {
+ *  YouTube's own limit. The channel comes back too, because the snippet's
+ *  language and category are the *channel's* and the tests below have to be
+ *  able to brand it. */
+async function makePublishableVideo(
+  title: string,
+): Promise<{ videoId: string; channelId: string }> {
   const channel = await channelService.connect(userId, {
     youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
     title: "Money Mechanics",
@@ -133,7 +138,7 @@ async function makePublishableVideo(title: string): Promise<string> {
 
   await prisma.video.update({ where: { id: video.id }, data: { status: "READY" } });
 
-  return video.id;
+  return { videoId: video.id, channelId: channel.id };
 }
 
 describe("publishService.publish — title limits", () => {
@@ -147,7 +152,7 @@ describe("publishService.publish — title limits", () => {
     expect(longTitle.length).toBeGreaterThan(TITLE_MAX);
     expect(longTitle.length).toBeLessThanOrEqual(120);
 
-    const videoId = await makePublishableVideo(longTitle);
+    const { videoId } = await makePublishableVideo(longTitle);
 
     const { fetchImpl, calls } = createUploadFetch();
     await new PublishService(fetchImpl).publish(userId, videoId);
@@ -169,12 +174,70 @@ describe("publishService.publish — title limits", () => {
     // Clamping must not become "every title gets trimmed": a short title has
     // to survive character-for-character, trailing punctuation included.
     const title = "How inflation actually works!";
-    const videoId = await makePublishableVideo(title);
+    const { videoId } = await makePublishableVideo(title);
 
     const { fetchImpl, calls } = createUploadFetch();
     await new PublishService(fetchImpl).publish(userId, videoId);
 
     const body = JSON.parse(calls[0].init!.body as string);
     expect(body.snippet.title).toBe(title);
+  });
+});
+
+const TITLE = "How inflation actually works";
+
+describe("publishService.publish — language and category", () => {
+  it("sends the channel's language and category on the snippet", async () => {
+    // Both are properties of the channel, not of one video: a channel's
+    // videos are written, narrated and categorised the same way every time.
+    const { videoId, channelId } = await makePublishableVideo(TITLE);
+    await prisma.channelBrand.create({
+      data: { channelId, language: "en-GB", categoryId: "28" },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    // The metadata language and the spoken language are the same value here
+    // by construction — the description is built from the script the voice
+    // reads — so one column feeds both fields.
+    expect(body.snippet.defaultLanguage).toBe("en-GB");
+    expect(body.snippet.defaultAudioLanguage).toBe("en-GB");
+    expect(body.snippet.categoryId).toBe("28");
+  });
+
+  it("falls back to en and Education for a channel with no brand row", async () => {
+    // The whole point of the defaults: every channel connected before this
+    // shipped keeps publishing with nothing asked of the operator. YouTube
+    // guesses the language from the text when the field is absent, and files
+    // the video under its own default category — both decide who ever sees it.
+    const { videoId, channelId } = await makePublishableVideo(TITLE);
+    expect(await prisma.channelBrand.count({ where: { channelId } })).toBe(0);
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.snippet.defaultLanguage).toBe(PUBLISHING_DEFAULTS.language);
+    expect(body.snippet.defaultAudioLanguage).toBe(PUBLISHING_DEFAULTS.language);
+    expect(body.snippet.categoryId).toBe(PUBLISHING_DEFAULTS.categoryId);
+  });
+
+  it("uses the column defaults for a brand row that names neither", async () => {
+    // A brand row created for a logo, a colour or a tone — the common case,
+    // and the one a migration that added nullable columns would have left
+    // sending `undefined` to YouTube.
+    const { videoId, channelId } = await makePublishableVideo(TITLE);
+    await prisma.channelBrand.create({
+      data: { channelId, tone: "dry and factual" },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    expect(body.snippet.defaultLanguage).toBe(PUBLISHING_DEFAULTS.language);
+    expect(body.snippet.categoryId).toBe(PUBLISHING_DEFAULTS.categoryId);
   });
 });

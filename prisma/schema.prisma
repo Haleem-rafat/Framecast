@@ -199,6 +199,32 @@ model ChannelBrand {
   /// by title found nothing usable.
   musicQuery      String?
 
+  /// BCP-47, e.g. `en`. Sent to YouTube on every upload from this channel as
+  /// *both* `snippet.defaultLanguage` (what the title and description are
+  /// written in) and `snippet.defaultAudioLanguage` (what the narration is
+  /// spoken in). One column rather than two because those two can never
+  /// disagree here: the description is built from the same script the voice
+  /// reads, so a channel whose metadata is English and whose audio is not is
+  /// not a state this pipeline can produce.
+  ///
+  /// Non-null with a default, unlike the branding columns above, because
+  /// YouTube's own behaviour for an *absent* language is the thing being
+  /// fixed — it guesses, and a wrong guess costs the video its place in
+  /// recommendations for the audience that speaks it.
+  language   String @default("en")
+  /// YouTube's video category, as the numeric string the Data API wants
+  /// (`"27"`, not `27` and not `"Education"`). The assignable set is
+  /// region-dependent, so the picker lists what `videoCategories.list`
+  /// returns for the channel's own country rather than anything hardcoded —
+  /// see `BrandService.listCategories`.
+  ///
+  /// 27 (Education) is the default: this app makes narrated explainers with a
+  /// SOURCES block in the description, and Education is assignable in every
+  /// region YouTube publishes categories for. A channel that is really about
+  /// hardware or software changes it to 28 in the channel's publishing
+  /// defaults.
+  categoryId String @default("27")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -2,9 +2,22 @@ import "server-only";
 
 import { z } from "zod";
 
+import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStyle } from "@/lib/video-style";
 import { DEFAULT_STYLE } from "@/lib/video-style";
+import {
+  CURATED_CATEGORIES,
+  PUBLISHING_DEFAULTS,
+  type PublishingDefaults,
+  type VideoCategory,
+} from "@/lib/youtube-categories";
+import type { UpdatePublishingDefaultsInput } from "@/schemas/channel.schema";
+import { channelService } from "@/services/channel.service";
+
+/** Injectable so tests never make a real call to YouTube. Same seam, and the
+ *  same reason, as `PublishService` and `ChannelService` have one. */
+export type FetchLike = typeof fetch;
 
 export interface ResolvedBrand {
   videoStyle: VideoStyle;
@@ -15,11 +28,25 @@ export interface ResolvedBrand {
   tone: string;
   niche: string;
   musicQuery: string;
+  /** BCP-47. Sent as both `snippet.defaultLanguage` and
+   *  `snippet.defaultAudioLanguage` — see the column's comment in
+   *  schema.prisma for why one value covers both. */
+  language: string;
+  /** YouTube's numeric category id as a string, e.g. `"27"`. */
+  categoryId: string;
 }
 
-/** What a channel with no brand row gets. Chosen to be unremarkable rather
- *  than distinctive: a default that looks like a deliberate design would be
- *  worn by every channel that never set one. */
+/**
+ * What a channel with no brand row gets, and — for the two publishing columns
+ * — what a brand row created before those columns existed already got from
+ * the migration's own `DEFAULT`. The two must agree: a channel that has never
+ * been branded and a channel branded before this feature shipped publish
+ * identically, and neither needs the operator to do anything.
+ *
+ * The branding half is chosen to be unremarkable rather than distinctive: a
+ * default that looks like a deliberate design would be worn by every channel
+ * that never set one.
+ */
 const FALLBACK = {
   primaryColour: "#FFFFFF",
   secondaryColour: "#000000",
@@ -27,7 +54,38 @@ const FALLBACK = {
   tone: "clear and factual",
   niche: "general interest",
   musicQuery: "calm ambient instrumental",
+  // The publishing pair lives in youtube-categories.ts, because the dialog
+  // that edits it is a client component and this module is `server-only`.
+  ...PUBLISHING_DEFAULTS,
 } as const;
+
+export interface VideoCategoryList {
+  categories: VideoCategory[];
+  /**
+   * False when YouTube could not be reached and `CURATED_CATEGORIES` is what
+   * is being shown instead. The dialog says so rather than presenting a
+   * stale list as authoritative — the assignable set is region-dependent, and
+   * an unassignable id costs the operator the video (videos.insert answers
+   * 400 after the upload, and the failed Publication row blocks the retry).
+   */
+  live: boolean;
+  /** The region the list was resolved for, so the dialog can name it. */
+  regionCode: string;
+}
+
+/**
+ * Where the category list is resolved for when the channel's own country is
+ * unknown — either YouTube did not answer the `channels.list` call, or the
+ * channel has no country set, which is common.
+ *
+ * US rather than a guess from the operator's browser: it is the region whose
+ * assignable set is the broadest of the ones YouTube publishes, so falling
+ * back to it never *hides* a category the channel could have used. A category
+ * assignable in US but not in the channel's real region is the residual risk,
+ * and it is the reason the default is 27 — Education is assignable
+ * everywhere.
+ */
+const FALLBACK_REGION = "US";
 
 /**
  * Mirrors `VideoStyle`. Every section is optional — a stored value may set
@@ -155,6 +213,8 @@ function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle 
 }
 
 export class BrandService {
+  constructor(private readonly fetchImpl: FetchLike = fetch) {}
+
   /**
    * The one way anything reads a channel's identity.
    *
@@ -177,7 +237,213 @@ export class BrandService {
       tone: brand?.tone ?? FALLBACK.tone,
       niche: brand?.niche ?? FALLBACK.niche,
       musicQuery: brand?.musicQuery ?? FALLBACK.musicQuery,
+      // `?.` and `??` for two NOT NULL columns is not belt-and-braces: `brand`
+      // is null for a channel with no row at all, and `findBrand` also returns
+      // null when the lookup itself failed. Both land here, and both have to
+      // publish rather than send YouTube `undefined`.
+      language: brand?.language ?? FALLBACK.language,
+      categoryId: brand?.categoryId ?? FALLBACK.categoryId,
     };
+  }
+
+  /**
+   * The publishing half of a channel's brand, for the dialog that edits it.
+   *
+   * Scoped to the operator — every other read in this service takes a
+   * `channelId` that a *caller* has already proven ownership of (rendering a
+   * video it owns), while this one is reached straight from a URL. A channel
+   * belonging to somebody else is `NotFoundError`, not defaults: silently
+   * showing `en`/`27` for a foreign id would let an operator discover which
+   * channel ids exist.
+   */
+  async getPublishingDefaults(
+    userId: string,
+    channelId: string,
+  ): Promise<PublishingDefaults> {
+    const channel = await prisma.channel.findFirst({
+      where: { id: channelId, userId, deletedAt: null },
+      select: { brand: { select: { language: true, categoryId: true } } },
+    });
+
+    if (!channel) {
+      throw new NotFoundError("Channel");
+    }
+
+    return {
+      language: channel.brand?.language ?? PUBLISHING_DEFAULTS.language,
+      categoryId: channel.brand?.categoryId ?? PUBLISHING_DEFAULTS.categoryId,
+    };
+  }
+
+  /**
+   * Every channel's publishing pair in one query, keyed by channel id, for the
+   * channels list — which would otherwise do one lookup per card.
+   *
+   * Only channels that *have* a brand row appear. The page fills the rest in
+   * from `PUBLISHING_DEFAULTS`, which is the same answer `resolve()` and
+   * `getPublishingDefaults()` give for a channel without one, so a card and a
+   * publish agree about an unbranded channel.
+   */
+  async listPublishingDefaults(
+    userId: string,
+  ): Promise<Record<string, PublishingDefaults>> {
+    const brands = await prisma.channelBrand.findMany({
+      where: { channel: { userId, deletedAt: null } },
+      select: { channelId: true, language: true, categoryId: true },
+    });
+
+    return Object.fromEntries(
+      brands.map(({ channelId, language, categoryId }) => [
+        channelId,
+        { language, categoryId },
+      ]),
+    );
+  }
+
+  /**
+   * Upserts rather than updates, exactly as `LogoService.choose` does and for
+   * the same reason: most channels have no `ChannelBrand` row at all, and
+   * setting a publishing default is as likely to be the first branding action
+   * an operator takes as choosing a logo is. The `create` branch names only
+   * these two columns, so every other brand field lands on its own schema
+   * default.
+   */
+  async updatePublishingDefaults(
+    userId: string,
+    input: UpdatePublishingDefaultsInput,
+  ): Promise<PublishingDefaults> {
+    const { channelId, language, categoryId } = input;
+
+    const channel = await prisma.channel.findFirst({
+      where: { id: channelId, userId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!channel) {
+      throw new NotFoundError("Channel");
+    }
+
+    const brand = await prisma.channelBrand.upsert({
+      where: { channelId },
+      create: { channelId, language, categoryId },
+      update: { language, categoryId },
+      select: { language: true, categoryId: true },
+    });
+
+    return brand;
+  }
+
+  /**
+   * The categories YouTube will actually accept for this channel.
+   *
+   * Fetched, not hardcoded. `videoCategories.list` is the only authority on
+   * which ids are `assignable`, that set is region-dependent, and getting it
+   * wrong is expensive in a way that is easy to underestimate:
+   * `videos.insert` rejects an unassignable id with a 400 *after* the whole
+   * file has been uploaded, `publish()` then marks the video FAILED, and the
+   * `Publication` row it deliberately keeps blocks every retry. A guessed
+   * list would cost the operator the video.
+   *
+   * The token is the channel's own — the same one the upload itself uses, via
+   * the same `resolveAccessToken` — so no new credential, scope or key is
+   * involved. Both calls cost 1 quota unit against the 10,000/day the upload
+   * spends 1,600 of.
+   *
+   * Never throws. A failure here must not stop the operator editing the
+   * *language*, which is the other half of the same dialog and needs no
+   * network at all, so an unreachable API degrades to `CURATED_CATEGORIES`
+   * with `live: false` and the dialog says as much.
+   */
+  async listCategories(
+    userId: string,
+    channelId: string,
+  ): Promise<VideoCategoryList> {
+    let regionCode = FALLBACK_REGION;
+
+    try {
+      const accessToken = await channelService.resolveAccessToken(userId, channelId);
+
+      regionCode = (await this.resolveRegion(accessToken)) ?? FALLBACK_REGION;
+
+      const response = await this.fetchImpl(
+        `https://www.googleapis.com/youtube/v3/videoCategories?part=snippet&regionCode=${regionCode}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+
+      if (!response.ok) {
+        throw new Error(`videoCategories.list answered ${response.status}`);
+      }
+
+      const body = (await response.json()) as {
+        items?: {
+          id?: string;
+          snippet?: { title?: string; assignable?: boolean };
+        }[];
+      };
+
+      const categories = (body.items ?? [])
+        // `assignable: false` categories are returned by the same call and are
+        // the ones that produce the 400 above — YouTube lists them so old
+        // videos filed under them can still be *read*, not so new ones can be
+        // filed there.
+        .filter((item) => item.snippet?.assignable === true)
+        .flatMap((item) =>
+          item.id && item.snippet?.title
+            ? [{ id: item.id, title: item.snippet.title }]
+            : [],
+        )
+        .sort((a, b) => a.title.localeCompare(b.title));
+
+      // An empty list is a failure dressed as a success — a picker with no
+      // options cannot be used, and the curated list is strictly better than
+      // nothing.
+      if (categories.length === 0) {
+        throw new Error("videoCategories.list returned no assignable categories");
+      }
+
+      return { categories, live: true, regionCode };
+    } catch (error) {
+      console.error(
+        `brandService.listCategories: falling back to the curated list for channel ` +
+          `${channelId}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+
+      return {
+        categories: [...CURATED_CATEGORIES],
+        live: false,
+        regionCode,
+      };
+    }
+  }
+
+  /**
+   * The channel's own country, which is what makes the category list the
+   * right one rather than an approximation. `mine=true` resolves to whichever
+   * channel the token belongs to, so no id has to be passed and no other
+   * channel can be read.
+   *
+   * Returns null — not a throw — for every "we simply don't know" case: a
+   * channel with no country set is ordinary, not an error, and the caller has
+   * a documented region to fall back to. A genuine transport failure does
+   * throw, and is caught by the caller together with the list call it was
+   * about to make anyway.
+   */
+  private async resolveRegion(accessToken: string): Promise<string | null> {
+    const response = await this.fetchImpl(
+      "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const body = (await response.json()) as {
+      items?: { snippet?: { country?: string } }[];
+    };
+
+    return body.items?.[0]?.snippet?.country ?? null;
   }
 
   /**

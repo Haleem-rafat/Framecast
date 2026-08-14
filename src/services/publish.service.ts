@@ -7,6 +7,7 @@ import { ConflictError, InternalError, NotFoundError, ProviderError } from "@/li
 import { prisma } from "@/lib/prisma";
 import { getObject, objectContentType, removeObjects } from "@/lib/storage";
 import { clampDescription, clampTitle } from "@/lib/youtube-limits";
+import { brandService } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. */
@@ -335,6 +336,21 @@ export class PublishService {
       : sourcesAndCredits;
     const description = clampDescription(combinedDescription);
 
+    // Language and category are the channel's, not this video's — a channel's
+    // videos are written, narrated and categorised the same way every time —
+    // and they are read here rather than at the upload call because
+    // `brandService.resolve` is a database round trip and the claim below is
+    // the point after which a failure costs the operator the video. Resolving
+    // it before the claim keeps a brand lookup that hiccups from producing a
+    // `FAILED` Publication row that then blocks every retry.
+    //
+    // `resolve()` cannot throw and cannot return null — a channel with no
+    // brand row, a malformed one, or a failed lookup all come back as `en`
+    // and `27` (see FALLBACK there, which mirrors the columns' own database
+    // defaults), so an unbranded channel publishes exactly as it did before
+    // these fields existed rather than not publishing at all.
+    const brand = await brandService.resolve(channelId);
+
     // The gate itself, and it happens *before* the upload — not after, the
     // way the first draft of this method had it. `Publication.videoId` is
     // `@unique`, so this `create()` is the claim: two callers can both read
@@ -418,6 +434,8 @@ export class PublishService {
           tags: video.tags,
           visibility,
           publishAt: opts.scheduledFor,
+          language: brand.language,
+          categoryId: brand.categoryId,
         },
         fileBuffer,
       );
@@ -800,6 +818,15 @@ export class PublishService {
    * *unlisted* is not expressible in this API. `publish()` refuses any
    * scheduled publish that asks for a visibility other than PUBLIC rather
    * than accepting it and quietly going public later — see its own comment.
+   *
+   * `language` and `categoryId` come from the channel's brand (see
+   * `BrandService.resolve`) and are sent unconditionally. Both are things
+   * YouTube otherwise guesses: with no `defaultLanguage`/`defaultAudioLanguage`
+   * it infers the language from the text, and with no `categoryId` it files
+   * the video wherever its own default puts it. Those two guesses decide who
+   * the video is shown to in search, browse and recommendations, so leaving
+   * them out is not neutral — it is delegating the audience question to a
+   * heuristic.
    */
   private async uploadToYouTube(
     accessToken: string,
@@ -809,6 +836,11 @@ export class PublishService {
       tags: string[];
       visibility: PublishVisibility;
       publishAt?: Date;
+      /** BCP-47, e.g. `en`. One value for both snippet language fields — see
+       *  the `language` column's comment in schema.prisma. */
+      language: string;
+      /** YouTube's numeric category id as a string, e.g. `"27"`. */
+      categoryId: string;
     },
     fileBuffer: Buffer,
   ): Promise<string> {
@@ -831,6 +863,13 @@ export class PublishService {
             title: metadata.title,
             description: metadata.description,
             tags: metadata.tags,
+            // The metadata's language (what `title` and `description` are
+            // written in) and the audio's (what the narration is spoken in)
+            // are the same value here by construction: the description is
+            // built from the same script the voice reads.
+            defaultLanguage: metadata.language,
+            defaultAudioLanguage: metadata.language,
+            categoryId: metadata.categoryId,
           },
           status: {
             privacyStatus,

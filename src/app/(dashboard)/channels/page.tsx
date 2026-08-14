@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { channelErrorMessage } from "@/features/channels/channel-error";
 import { ChannelList } from "@/features/channels/components/channel-list";
 import { ConnectChannelButton } from "@/features/channels/components/connect-channel-button";
+import { brandService } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
 import { requireUser } from "@/server/session";
 
@@ -23,7 +24,12 @@ export default async function ChannelsPage({
   const { error } = await searchParams;
   const errorMessage = channelErrorMessage(error);
 
-  const channels = await channelService.list(user.id);
+  // Both scoped to this operator, and both one query — the publishing pair
+  // comes back keyed by channel id rather than per card.
+  const [channels, publishingDefaults] = await Promise.all([
+    channelService.list(user.id),
+    brandService.listPublishingDefaults(user.id),
+  ]);
 
   return (
     <>
@@ -41,7 +47,10 @@ export default async function ChannelsPage({
       )}
 
       <Reveal>
-        <ChannelList channels={channels} />
+        <ChannelList
+          channels={channels}
+          publishingDefaults={publishingDefaults}
+        />
       </Reveal>
     </>
   );
