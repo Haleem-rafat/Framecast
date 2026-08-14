@@ -26,10 +26,26 @@ name: framecast
 # ~1GB for the OS, the Docker daemon, and bursts — see deploy/README.md for
 # the full breakdown and the swap this still assumes exists (Task 9).
 
+# Docker's default json-file driver never rotates: every line a container has
+# ever written stays on disk until the container is removed. That is fine at
+# the few hundred kilobytes a day these services normally produce, and not
+# fine the first time a render loop fails repeatedly — the log then grows at
+# the speed of the loop, and the disk it fills is the same one holding
+# postgres and every rendered video. Capping it here rather than in
+# /etc/docker/daemon.json keeps the limit in version control and avoids
+# needing a daemon restart to change it; it takes effect per container as
+# each is next recreated, which a deploy already does.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *logging
     mem_limit: 128m
     ports:
       - "80:80"
@@ -43,6 +59,7 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    logging: *logging
     mem_limit: 640m
     environment:
       # `:?` rather than a bare `${...}`: an unset value here would otherwise
@@ -70,6 +87,7 @@ services:
   app-prod:
     image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    logging: *logging
     # 1024m, not the 512m a "Next.js server" would suggest, because publishing
     # runs in this process: `publishVideoAction` (a Server Action) calls
     # `publishService.publish()`, which buffers the whole ~170MB render into
@@ -100,6 +118,7 @@ services:
   worker-prod:
     image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-worker:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    logging: *logging
     # 640m, down from the 1408m this held before app-prod's publish buffer was
     # accounted for. The room the two app services now need came from here on
     # purpose: a worker killed mid-render is recovered automatically by the
@@ -134,6 +153,7 @@ services:
   app-staging:
     image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    logging: *logging
     # Same process as app-prod, and the staging proof in the runbook publishes
     # a real video — so it holds the same ~170MB render buffer app-prod does.
     # Lighter traffic, not a lighter peak; 384m would be killed by the first
@@ -156,6 +176,7 @@ services:
   worker-staging:
     image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-worker:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    logging: *logging
     # Matches worker-prod rather than undercutting it: it runs the identical
     # pipeline, and the staging render is the proof that the pipeline works at
     # all. A smaller limit here would mean a staging render that dies where a
