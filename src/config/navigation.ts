@@ -113,7 +113,7 @@ export const navigation: NavGroup[] = [
         href: "/automation",
         icon: Sparkles,
         keywords: ["one click", "pipeline", "generate"],
-        built: false,
+        built: true,
       },
       {
         title: "Script",
