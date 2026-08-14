@@ -29,18 +29,56 @@ function UnavailableNotice() {
   );
 }
 
+/**
+ * Plays the published video from YouTube when the local render is gone.
+ *
+ * Publishing deliberately deletes the local file — `publish.service.ts` reclaims
+ * it once YouTube confirms the upload, because a 170MB render per video fills a
+ * 40GB disk quickly and YouTube is now holding the authoritative copy. The
+ * consequence nobody saw coming is that the operator's own video vanished from
+ * their own studio the moment they published it: the player below points at
+ * `/api/videos/[id]/file`, which 404s the instant the reclaim runs.
+ *
+ * An embed is the honest thing to show there. It is the same video, it is the
+ * copy that now matters, and it costs no disk and no API quota to display —
+ * unlike re-fetching the file, YouTube's iframe is served by YouTube.
+ *
+ * `youtube-nocookie.com` rather than `youtube.com`: this frame renders inside a
+ * private studio page, and there is no reason for viewing your own draft to
+ * seed advertising cookies.
+ */
+function YouTubeEmbed({ youtubeVideoId }: { youtubeVideoId: string }) {
+  return (
+    <iframe
+      className="aspect-video w-full rounded-md bg-black"
+      src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(youtubeVideoId)}`}
+      title="Published video"
+      allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+      allowFullScreen
+    />
+  );
+}
+
 export function VideoPreview({
   render,
   audio,
   durationSeconds,
+  youtubeVideoId = null,
 }: {
   render: PreviewAsset | null;
   audio: PreviewAsset | null;
   durationSeconds: number | null;
+  /** Set once the video is on YouTube. Lets the card fall back to the embed
+   * rather than a dead player after the local render has been reclaimed. */
+  youtubeVideoId?: string | null;
 }) {
   // Neither a RenderJob nor a VoiceOver exists yet — nothing to preview, and
   // no section-shaped hole where one would otherwise go.
-  if (!render && !audio) {
+  // A published video whose local render has been reclaimed has no `render`
+  // at all — resolveRenderPreview stats the file, finds it gone, and returns
+  // null. Before the embed existed that emptied this whole section and the
+  // operator's own published video simply disappeared from their studio.
+  if (!render && !audio && !youtubeVideoId) {
     return null;
   }
 
@@ -48,7 +86,7 @@ export function VideoPreview({
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      {render && (
+      {(render || youtubeVideoId) && (
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
@@ -57,7 +95,7 @@ export function VideoPreview({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {render.url ? (
+            {render?.url ? (
               <>
                 {/* No <track> — captions are burned into the render itself. */}
                 <video
@@ -84,6 +122,17 @@ export function VideoPreview({
                     </a>
                   </Button>
                 </div>
+              </>
+            ) : youtubeVideoId ? (
+              <>
+                <YouTubeEmbed youtubeVideoId={youtubeVideoId} />
+                <p className="text-muted-foreground text-xs">
+                  {metaLine([
+                    durationLabel,
+                    RENDER_RESOLUTION,
+                    "playing from YouTube — the local render was reclaimed after publishing",
+                  ])}
+                </p>
               </>
             ) : (
               <UnavailableNotice />

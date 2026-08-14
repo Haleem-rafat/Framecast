@@ -11,6 +11,7 @@ import {
   Mic,
   MonitorPlay,
   Settings,
+  UserCheck,
   Sparkles,
   Upload,
   Video,
@@ -166,6 +167,13 @@ export const navigation: NavGroup[] = [
         href: "/providers",
         icon: KeyRound,
         keywords: ["api keys", "openai", "anthropic", "gemini"],
+        built: true,
+      },
+      {
+        title: "Approvals",
+        href: "/approvals",
+        icon: UserCheck,
+        keywords: ["accounts", "pending", "sign up", "register", "approve"],
         built: true,
       },
       {

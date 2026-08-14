@@ -102,18 +102,29 @@ async function PreviewSection({
   renderOutputUrl,
   audioPath,
   durationSeconds,
+  youtubeVideoId,
 }: {
   videoId: string;
   renderOutputUrl: string | null;
   audioPath: string | null;
   durationSeconds: number | null;
+  /** Lets the preview fall back to a YouTube embed once publishing has
+   * reclaimed the local render — see VideoPreview's own comment. */
+  youtubeVideoId: string | null;
 }) {
   const [render, audio] = await Promise.all([
     renderOutputUrl ? resolveRenderPreview(videoId, renderOutputUrl) : Promise.resolve(null),
     audioPath ? resolvePreviewAsset(videoId, audioPath) : Promise.resolve(null),
   ]);
 
-  return <VideoPreview render={render} audio={audio} durationSeconds={durationSeconds} />;
+  return (
+    <VideoPreview
+      render={render}
+      audio={audio}
+      durationSeconds={durationSeconds}
+      youtubeVideoId={youtubeVideoId}
+    />
+  );
 }
 
 /**
@@ -224,6 +235,7 @@ export default async function VideoDetailPage({ params }: VideoDetailPageProps) 
           renderOutputUrl={renderOutputUrl ?? null}
           audioPath={video.voiceOver?.audioUrl ?? null}
           durationSeconds={video.voiceOver?.durationSeconds ?? null}
+          youtubeVideoId={video.publication?.youtubeVideoId ?? null}
         />
       </Suspense>
 
