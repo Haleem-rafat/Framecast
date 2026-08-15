@@ -3,7 +3,6 @@ import {
   Activity,
   BarChart3,
   FileText,
-  Film,
   Image,
   KeyRound,
   LayoutDashboard,
@@ -135,13 +134,6 @@ export const navigation: NavGroup[] = [
         icon: Image,
         keywords: ["cover", "image", "art"],
         built: true,
-      },
-      {
-        title: "Scenes",
-        href: "/studio/scenes",
-        icon: Film,
-        keywords: ["veo", "runway", "kling", "assets"],
-        built: false,
       },
       {
         title: "Publishing",
