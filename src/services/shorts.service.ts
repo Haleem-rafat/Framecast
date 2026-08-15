@@ -8,7 +8,7 @@ import { createGateway, generateObject, NoObjectGeneratedError } from "ai";
 import { z } from "zod";
 
 import { env } from "@/config/env";
-import type { ShortStatus } from "@/generated/prisma/enums";
+import type { ShortStatus, VideoStatus } from "@/generated/prisma/enums";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
@@ -271,6 +271,9 @@ interface VideoTimeline {
   narrationSeconds: number;
   renderLocation: string;
   channelId: string | null;
+  /** Only so a missing render can say *why* it is missing. A PUBLISHED video's
+   *  render was deleted on purpose; any other video's went missing. */
+  videoStatus: VideoStatus;
 }
 
 export class ShortsService {
@@ -377,6 +380,7 @@ export class ShortsService {
       alignment,
       narrationSeconds,
       renderLocation,
+      videoStatus: video.status,
       channelId: video.project?.channelId ?? null,
     };
   }
@@ -440,6 +444,32 @@ export class ShortsService {
       throw new ConflictError(
         "A short for this video is still rendering. Wait for it to finish before " +
           "generating a new set.",
+      );
+    }
+
+    // The render has to exist before anything here is destructive, because
+    // everything after this line is: the model call costs money, and the write
+    // below hard-deletes the video's existing shorts to replace them.
+    //
+    // This was found the expensive way. An operator published a video — which
+    // reclaims the local render on purpose — and then pressed Generate. The
+    // three READY shorts they already had were deleted, three replacements were
+    // created, and all three failed two seconds later against a file that no
+    // longer existed. Every individual step behaved as designed; the sequence
+    // destroyed good work to arrive at a message we could have given first.
+    //
+    // Checked here rather than in `renderShort`, which also checks: by the time
+    // the worker gets there the deletion has already happened.
+    const renderStat = await statRenderFile(timeline.renderLocation);
+    if (!renderStat) {
+      throw new ConflictError(
+        timeline.videoStatus === "PUBLISHED"
+          ? "This video was published, and publishing deletes the local render to " +
+            "reclaim disk — so there is nothing left to cut shorts from. Any " +
+            "shorts it already has are kept; generating a new set would only " +
+            "replace them with ones that cannot render."
+          : "This video's render is no longer on disk, so no short can be cut " +
+            "from it. The shorts it already has are kept.",
       );
     }
 
