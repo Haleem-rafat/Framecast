@@ -1,3 +1,4 @@
+import type { VideoFormat } from "@/generated/prisma/enums";
 import { ValidationError } from "@/lib/errors";
 import type {
   AudioStyle,
@@ -6,8 +7,33 @@ import type {
   TransitionStyle,
 } from "@/lib/video-style";
 
-const WIDTH = 1920;
-const HEIGHT = 1080;
+export interface FrameSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * The pixels each format is composed at, and the only place in this codebase
+ * that decides them.
+ *
+ * `VERTICAL` used to be two private constants further down this file, used
+ * exclusively to crop a 9:16 clip out of a finished 16:9 render. It is a
+ * first-class output now: a vertical video's clips are normalised straight
+ * into this frame in pass one, so the picture is composed at 1080x1920 rather
+ * than being the centre 608 columns of a landscape frame upscaled 1.78x.
+ */
+export const FRAME_SIZES: Record<VideoFormat, FrameSize> = {
+  LANDSCAPE: { width: 1920, height: 1080 },
+  VERTICAL: { width: 1080, height: 1920 },
+};
+
+/** The frame `format` is composed at. `undefined` means landscape, which is
+ *  what every caller written before formats existed passes — so their argv is
+ *  byte-for-byte what it was. */
+export function frameSize(format?: VideoFormat): FrameSize {
+  return FRAME_SIZES[format ?? "LANDSCAPE"];
+}
+
 const FPS = 30;
 
 /**
@@ -110,6 +136,11 @@ export interface SegmentInput {
    *  video re-rendered produces identical arguments. */
   index?: number;
   motion?: MotionStyle;
+  /** What frame this clip is normalised into. Optional, and absent means
+   *  landscape: `planRender` does not set it, so the segment argv for every
+   *  video that existed before formats did is unchanged. RenderService spreads
+   *  the video's own format in at the call site, beside `motion`. */
+  format?: VideoFormat;
 }
 
 /**
@@ -133,23 +164,31 @@ const PAN_EXPRESSIONS = [
 
 function buildVideoFilter(input: SegmentInput, clipSeconds: number): string {
   const motion = input.motion;
+  // `force_original_aspect_ratio=increase` then `crop` covers the frame and
+  // keeps its centre, whichever way round the frame is: a 16:9 stock clip
+  // normalised into a vertical frame is scaled until it is 1920 tall (3413
+  // wide) and the middle 1080 columns are kept. That is a real centre crop of
+  // the SOURCE, which is what "composed natively at 9:16" means — as opposed
+  // to cropping a finished landscape render, which crops a picture that was
+  // already framed for a different shape and then upscales what is left.
+  const { width, height } = frameSize(input.format);
 
   if (!motion?.enabled) {
     return (
-      `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase,` +
-      `crop=${WIDTH}:${HEIGHT},fps=${FPS},setsar=1`
+      `scale=${width}:${height}:force_original_aspect_ratio=increase,` +
+      `crop=${width}:${height},fps=${FPS},setsar=1`
     );
   }
 
-  const scaledWidth = Math.round(WIDTH * motion.scale);
-  const scaledHeight = Math.round(HEIGHT * motion.scale);
+  const scaledWidth = Math.round(width * motion.scale);
+  const scaledHeight = Math.round(height * motion.scale);
   const pan = PAN_EXPRESSIONS[(input.index ?? 0) % PAN_EXPRESSIONS.length];
   const progress = `t/${clipSeconds}`;
 
   return (
     `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase,` +
     `crop=${scaledWidth}:${scaledHeight},fps=${FPS},` +
-    `crop=w=${WIDTH}:h=${HEIGHT}:` +
+    `crop=w=${width}:h=${height}:` +
     `x='${pan.x.replaceAll("T", progress)}':` +
     `y='${pan.y.replaceAll("T", progress)}',` +
     `setsar=1`
@@ -259,11 +298,26 @@ export interface AssembleInput {
    *  than holding one copy open for the whole run. */
   concatListPath: string;
   audioPath: string;
+  /** Where in `audioPath` this composition starts, in seconds.
+   *
+   *  Absent for a whole video — the narration is the timeline. Set only when
+   *  composing a WINDOW of one: a short is a run of sections out of the middle
+   *  of a narration, and the words it is cut to start partway through the same
+   *  MP3 the full render reads from beginning to end. Emitted as an input-side
+   *  `-ss` before `-i`, so FFmpeg seeks the file rather than decoding and
+   *  discarding everything before the window; absent it emits nothing at all,
+   *  which is what keeps a full render's argv unchanged. */
+  audioStartSeconds?: number;
   srtPath: string;
   outputPath: string;
   /** Cut the result to exactly this, so video and narration cannot drift. */
   durationSeconds: number;
-  captions?: CaptionStyle;
+  /** `SafeAreaCaptionStyle`, not `CaptionStyle`, because a vertical
+   *  composition needs the horizontal safe area `verticalCaptionStyle`
+   *  supplies. A landscape style leaves those two fields undefined and the
+   *  `force_style` string is byte-for-byte what it was — see
+   *  `SafeAreaCaptionStyle`'s own comment. */
+  captions?: SafeAreaCaptionStyle;
   musicPath?: string;
   sfxPath?: string;
   audio?: AudioStyle;
@@ -371,6 +425,13 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
     "-f", "concat",
     "-safe", "0",
     "-i", input.concatListPath,
+    // Before `-i`, so this seeks rather than decodes-and-discards, and after
+    // the concat input so it applies to the narration alone. Spread from an
+    // array so a full render — which passes nothing — emits exactly the two
+    // tokens it always did.
+    ...(input.audioStartSeconds !== undefined
+      ? ["-ss", String(input.audioStartSeconds)]
+      : []),
     "-i", input.audioPath,
     ...chain.inputArgs,
     "-filter_complex", [videoFilter, ...chain.filters].join(";"),
@@ -386,134 +447,14 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
     "-c:a", "aac",
     "-b:a", "128k",
     "-shortest",
-    "-t", String(Math.round(input.durationSeconds)),
+    // Not rounded. A whole video's length is `VoiceOver.durationSeconds`, an
+    // integer column, so this is the same token it has always been for every
+    // render — but a WINDOW of a narration is a run of sentences and lands on
+    // a fraction, and rounding that would produce a clip up to half a second
+    // longer or shorter than the window the operator is shown beside it.
+    "-t", String(input.durationSeconds),
     // Machine-readable progress on stdout so the runner can report a real
     // percentage instead of a decorative one.
-    "-progress", "pipe:1",
-    "-nostats",
-    input.outputPath,
-  ];
-}
-
-export interface ShortInput {
-  /** The finished 16:9 render this clip is cut out of. */
-  sourcePath: string;
-  /** Where the clip starts in `sourcePath`, in seconds. */
-  startSeconds: number;
-  /** How long the clip runs. */
-  durationSeconds: number;
-  /** Captions for the clip alone, already rebased so its first word starts at
-   *  0 — see `sliceAlignment` in shorts-plan.ts. */
-  srtPath: string;
-  outputPath: string;
-  /** Already adapted for a 9:16 frame by `verticalCaptionStyle`, which is also
-   *  what supplies the `marginL`/`marginR` safe area a landscape style has no
-   *  reason to carry. Passing the landscape style straight through would work
-   *  and render captions roughly 1.8x too large with a 28px inset, so the type
-   *  deliberately does not distinguish them — the one caller does, and its own
-   *  comment says so. */
-  captions?: SafeAreaCaptionStyle;
-}
-
-/** Shorts are 9:16. Kept alongside WIDTH/HEIGHT above rather than imported from
- *  shorts-plan.ts, for the same reason those two are local constants: this file
- *  is the one that decides what pixels FFmpeg is asked to produce. */
-const SHORT_WIDTH = 1080;
-const SHORT_HEIGHT = 1920;
-
-/**
- * One vertical short, cut out of an already-finished render.
- *
- * ## Why this is one pass and not two
- *
- * The two-pass split at the top of this file exists for one reason: a filter
- * graph holds every input open at once, and joining thirty-eight clips that way
- * meant thirty-eight live h264 decoders inside a 1GB container. That cause does
- * not exist here. A short has exactly ONE input — a single local MP4 this
- * codebase produced itself — so there is one decoder and one encoder no matter
- * how long the clip is or how many shorts the video has. Splitting it in two
- * would not lower the peak by a byte; it would double the encode and add a
- * generation of loss to a clip that is already a second-generation encode of
- * the source footage.
- *
- * The memory *discipline* is reused in full even though the split is not: the
- * decoder thread pool is capped before `-i` (see `buildSegmentArgs` for the
- * SIGKILL that taught this codebase that lesson), and the encoder and filter
- * pools are capped after it. Peak memory is a handful of 1080x1920 frames plus
- * x264's own window, and it is flat in both clip length and clip count —
- * shorts are claimed and rendered one at a time by the worker, never batched.
- *
- * ## What the filter chain does
- *
- * `scale=...:force_original_aspect_ratio=increase` then `crop` is the same
- * idiom `buildVideoFilter` uses for the landscape case, run the other way: the
- * 1920x1080 source is scaled up until it covers a 1080x1920 frame (3413x1920)
- * and the centre 1080 columns are kept. That is the centre crop — the middle
- * ~608 columns of the original, upscaled. It is written as scale-then-crop
- * rather than crop-then-scale so that a source which is not exactly 1920x1080
- * (an older render, a future resolution change) still produces exactly
- * 1080x1920 rather than whatever its own aspect ratio implies.
- *
- * `setpts=PTS-STARTPTS` is not cosmetic. `-ss` before `-i` seeks accurately but
- * leaves the first output frame carrying a presentation timestamp up to one
- * frame past zero, so the muxed stream starts at 0.033s while the audio starts
- * at 0. The `subtitles` filter matches cues against frame timestamps, so the
- * rebased SRT would be read against a timeline offset by that amount, and the
- * container would report a duration a frame short of the window it was asked
- * for. Rebasing both streams to zero makes the clip's timeline exactly
- * [0, durationSeconds], which is what the SRT was rebased to.
- *
- * `subtitles` runs last, after the crop, so libass renders text at the output
- * resolution rather than having it scaled and re-sampled by the crop above it.
- */
-export function buildShortArgs(input: ShortInput): string[] {
-  const videoFilter = [
-    `scale=${SHORT_WIDTH}:${SHORT_HEIGHT}:force_original_aspect_ratio=increase`,
-    `crop=${SHORT_WIDTH}:${SHORT_HEIGHT}`,
-    `fps=${FPS}`,
-    "setsar=1",
-    "setpts=PTS-STARTPTS",
-    buildSubtitleFilter(input.srtPath, input.captions),
-  ].join(",");
-
-  return [
-    "-y",
-    // Input-side thread cap, and the position matters — see `buildSegmentArgs`.
-    "-threads", DECODER_THREADS,
-    // Before `-i`, so FFmpeg seeks the container instead of decoding and
-    // discarding everything up to the cut. Accurate seeking is on by default,
-    // so this lands on the exact requested second rather than the preceding
-    // keyframe — verified against a real encode, since the alternative would
-    // silently start every short up to several seconds early.
-    "-ss", String(input.startSeconds),
-    // Input-side `-t` bounds how much is decoded at all; the output-side one
-    // below is the guard that the clip cannot come out longer than its own
-    // recorded window.
-    "-t", String(input.durationSeconds),
-    "-i", input.sourcePath,
-    "-vf", videoFilter,
-    // The video's counterpart to `setpts` above. The source's audio is already
-    // the finished mix — narration, music bed and effects, loudness-normalised
-    // by the assemble pass — so it is re-encoded and nothing more. Running
-    // `loudnorm` again over an already-normalised mix would pump it.
-    "-af", "asetpts=PTS-STARTPTS",
-    "-map", "0:v:0",
-    "-map", "0:a:0",
-    "-filter_threads", THREADS,
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", FINAL_CRF,
-    "-pix_fmt", "yuv420p",
-    "-threads", THREADS,
-    "-c:a", "aac",
-    "-b:a", "128k",
-    // The operator reviews these in a browser before uploading them by hand,
-    // and a player cannot start until it has the moov atom — at the end of the
-    // file by default, which over a range-request stream means downloading the
-    // whole clip before the first frame appears.
-    "-movflags", "+faststart",
-    "-t", String(input.durationSeconds),
-    // Machine-readable progress, same as the assemble pass.
     "-progress", "pipe:1",
     "-nostats",
     input.outputPath,

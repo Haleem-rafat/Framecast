@@ -162,6 +162,9 @@ async function makeRenderableVideo(
     /** Insert the clip Assets back-to-front, so `createdAt` order is the
      *  reverse of the order their paths sort in. */
     reverseInsertion?: boolean;
+    /** What the operator approved at Gate 1. Absent means LANDSCAPE, which is
+     *  what every video in this file was before formats existed. */
+    format?: "LANDSCAPE" | "VERTICAL";
   } = {},
 ): Promise<string> {
   const durationSeconds = opts.durationSeconds ?? 2;
@@ -176,7 +179,10 @@ async function makeRenderableVideo(
     topic: "testing",
   });
 
-  await prisma.video.update({ where: { id: video.id }, data: { status: "GENERATING" } });
+  await prisma.video.update({
+    where: { id: video.id },
+    data: { status: "GENERATING", format: opts.format ?? "LANDSCAPE" },
+  });
 
   const audioPath = storagePath(video.id, "audio", "narration.mp3");
   await putObject(audioPath, Buffer.from(`fake-audio-${RUN}`), "audio/mpeg");
@@ -349,7 +355,10 @@ async function makeRenderableVideoWithCues(
     data: { activeVersionId: version.id },
   });
 
-  await prisma.video.update({ where: { id: video.id }, data: { status: "GENERATING" } });
+  await prisma.video.update({
+    where: { id: video.id },
+    data: { status: "GENERATING" },
+  });
 
   const audioPath = storagePath(video.id, "audio", "narration.mp3");
   await putObject(audioPath, Buffer.from(`fake-audio-${RUN}`), "audio/mpeg");
@@ -625,6 +634,85 @@ describe("renderService.render — happy path", () => {
 
     const job = await prisma.renderJob.findFirstOrThrow({ where: { videoId } });
     expect(job.progress).toBe(100);
+  });
+});
+
+describe("renderService.render — output format", () => {
+  /** The picture filter of every segment pass, in play order. */
+  function segmentFilters(calls: SpawnCall[]): string[] {
+    return calls
+      .filter((call) => call.args.includes("-vf"))
+      .map((call) => call.args[call.args.indexOf("-vf") + 1]);
+  }
+
+  function assembleGraph(calls: SpawnCall[]): string {
+    const assemble = calls.filter((call) => call.args.includes("-filter_complex"));
+    const last = assemble[assemble.length - 1];
+    return last.args[last.args.indexOf("-filter_complex") + 1];
+  }
+
+  it("normalises every clip into a 1080x1920 frame for a vertical video", async () => {
+    const videoId = await makeRenderableVideo({ format: "VERTICAL" });
+    const { spawner, calls } = createSucceedingSpawner();
+
+    await new RenderService(spawner).render(userId, videoId);
+
+    const filters = segmentFilters(calls);
+    expect(filters.length).toBeGreaterThan(0);
+    for (const filter of filters) {
+      // Composed at 9:16 from the source clip, not cropped out of a landscape
+      // frame afterwards.
+      expect(filter).toContain("crop=w=1080:h=1920");
+    }
+  });
+
+  it("sizes a vertical video's captions for the frame it is actually in", async () => {
+    const videoId = await makeRenderableVideo({ format: "VERTICAL" });
+    const { spawner, calls } = createSucceedingSpawner();
+
+    await new RenderService(spawner).render(userId, videoId);
+
+    // The same measured geometry a short uses — margins that clear YouTube's
+    // action rail, a marginV floor that clears its bottom chrome. A 1080x1920
+    // full render is in exactly the same frame as a 1080x1920 short.
+    const graph = assembleGraph(calls);
+    expect(graph).toContain("MarginL=60");
+    expect(graph).toContain("MarginR=60");
+    expect(graph).toContain("MarginV=68");
+  });
+
+  it("leaves a landscape render exactly as it was", async () => {
+    // The compatibility claim, checked against the real service rather than
+    // against `buildSegmentArgs` alone: no horizontal margins, no vertical
+    // frame, nothing new in the command line at all.
+    const videoId = await makeRenderableVideo();
+    const { spawner, calls } = createSucceedingSpawner();
+
+    await new RenderService(spawner).render(userId, videoId);
+
+    for (const filter of segmentFilters(calls)) {
+      expect(filter).toContain("1920");
+      expect(filter).not.toContain("crop=w=1080:h=1920");
+    }
+
+    const graph = assembleGraph(calls);
+    expect(graph).not.toContain("MarginL");
+    expect(graph).not.toContain("MarginR");
+  });
+
+  it("still cuts the picture to the narration and lands a playable file", async () => {
+    // A vertical render is a whole video, not a clip: same statuses, same
+    // RenderJob, same file on disk. Publishing reads that file and knows
+    // nothing about the shape of its frames.
+    const videoId = await makeRenderableVideo({ format: "VERTICAL" });
+    const { spawner } = createSucceedingSpawner();
+
+    const result = await new RenderService(spawner).render(userId, videoId);
+
+    expect(result.outputUrl).toBe(renderPath(videoId));
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("READY");
+    expect(video.format).toBe("VERTICAL");
   });
 });
 

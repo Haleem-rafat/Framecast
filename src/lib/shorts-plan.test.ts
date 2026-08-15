@@ -7,6 +7,7 @@ import {
   describeSections,
   MAX_SHORT_SECONDS,
   MIN_SHORT_SECONDS,
+  planShortSlots,
   planShortWindow,
   SHORT_MAX_CHARS_PER_LINE,
   SHORT_MAX_WORDS_PER_LINE,
@@ -389,5 +390,82 @@ describe("SHORT_MAX_CHARS_PER_LINE", () => {
     const alignment = evenAlignment("understanding transformation opportunities today");
 
     expect(buildSrt(alignment)).toBe(buildSrt(alignment, 6, Number.POSITIVE_INFINITY));
+  });
+});
+
+describe("planShortSlots", () => {
+  /** Four sections, each five seconds long, starting at 0, 5, 10 and 15. */
+  const windows = [0, 5, 10, 15].map((startSeconds) => ({
+    cue: `cue ${startSeconds}`,
+    startSeconds,
+    endSeconds: startSeconds + 4.9,
+  }));
+
+  it("plays every section the window covers, in order", () => {
+    const slots = planShortSlots(windows, { startSeconds: 0, endSeconds: 20 }, 1);
+
+    expect(slots.map((slot) => slot.sectionIndex)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("sums to exactly the window, so the picture cannot drift off the words", () => {
+    // The property the whole thing rests on. Measured between section STARTS
+    // rather than as each section's own spoken length, because a window's end
+    // is the end of its last character and those leave slivers uncovered —
+    // slivers that make every later clip play early.
+    const window = { startSeconds: 7, endSeconds: 19.5 };
+    const slots = planShortSlots(windows, window, 1);
+    const total = slots.reduce((sum, slot) => sum + slot.seconds, 0);
+
+    expect(total).toBeCloseTo(window.endSeconds - window.startSeconds, 6);
+  });
+
+  it("ignores sections outside the window entirely", () => {
+    const slots = planShortSlots(windows, { startSeconds: 10, endSeconds: 20 }, 1);
+
+    expect(slots.map((slot) => slot.sectionIndex)).toEqual([2, 3]);
+    expect(slots.map((slot) => slot.seconds)).toEqual([5, 5]);
+  });
+
+  it("clips the first and last sections to the window's own edges", () => {
+    const slots = planShortSlots(windows, { startSeconds: 2, endSeconds: 12 }, 1);
+
+    expect(slots.map((slot) => slot.sectionIndex)).toEqual([0, 1, 2]);
+    // Three seconds of section 0 left, all five of section 1, two of section 2.
+    expect(slots.map((slot) => slot.seconds)).toEqual([3, 5, 2]);
+  });
+
+  it("merges a sliver of a section into the clip already on screen", () => {
+    // A window truncated by MAX_SHORT_SECONDS routinely lands a fraction of a
+    // second into a section. A 0.2s slot is a visible flicker, and `planRender`
+    // refuses one shorter than the crossfade it has to donate to — so it is
+    // absorbed rather than played.
+    const slots = planShortSlots(windows, { startSeconds: 0, endSeconds: 10.2 }, 1);
+
+    expect(slots.map((slot) => slot.sectionIndex)).toEqual([0, 1]);
+    expect(slots[0].seconds).toBeCloseTo(5, 6);
+    expect(slots[1].seconds).toBeCloseTo(5.2, 6);
+  });
+
+  it("absorbs a short opening section forwards, not backwards", () => {
+    // There is nothing before the first slot to give it to, so it takes from
+    // what follows — and the clip on screen for the merged slot is the one the
+    // window actually starts on.
+    const slots = planShortSlots(windows, { startSeconds: 4.6, endSeconds: 15 }, 1);
+
+    expect(slots.map((slot) => slot.sectionIndex)).toEqual([0, 2]);
+    expect(slots.map((slot) => slot.seconds)).toEqual([5.4, 5]);
+  });
+
+  it("never drops the only slot it has, however the floor is set", () => {
+    // A single slot covers the whole short, which is at least
+    // MIN_SHORT_SECONDS — there is no reading under which it is too short, and
+    // returning nothing would leave the composer with an empty concat list.
+    const slots = planShortSlots(windows, { startSeconds: 0, endSeconds: 4 }, 30);
+
+    expect(slots).toEqual([{ sectionIndex: 0, seconds: 4 }]);
+  });
+
+  it("returns nothing for a window no section reaches", () => {
+    expect(planShortSlots([], { startSeconds: 0, endSeconds: 20 }, 1)).toEqual([]);
   });
 });

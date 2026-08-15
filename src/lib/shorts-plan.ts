@@ -151,6 +151,101 @@ export function planShortWindow(
 }
 
 /**
+ * Which section's footage fills the screen, and for how long, inside a short.
+ *
+ * `sectionIndex` indexes the same `windows` array `planShortWindow` was given,
+ * which is index-aligned with the anchored cues — and therefore with the clip
+ * `FootageService` stored for that section. `seconds` is that clip's slot in
+ * the short, not in the parent video.
+ */
+export interface ShortSlot {
+  sectionIndex: number;
+  seconds: number;
+}
+
+/**
+ * The picture plan for a short: which section clips play, in order, and for
+ * how long each.
+ *
+ * This is what lets a short be COMPOSED rather than cropped. A short used to
+ * be cut out of the finished landscape render, which meant it inherited the
+ * landscape captions burned into those pixels and then had its own vertical
+ * ones drawn on top — two sets of subtitles, the first of them unremovable
+ * because it was the image. Going back to the section clips is the only fix
+ * that does not involve keeping a second, caption-free copy of every render on
+ * a disk that is already watched.
+ *
+ * Slots are measured between section START boundaries, clipped to the window,
+ * exactly as `sectionDurations` measures them for a whole video and for the
+ * same reason: a window's `endSeconds` is the end of its last spoken character,
+ * so measuring `end - start` per section leaves slivers uncovered and every
+ * later section plays that much early. Boundaries tile; lengths do not. The
+ * slots therefore sum to exactly `window.endSeconds - window.startSeconds`.
+ *
+ * `minSeconds` is the floor a slot has to clear, and a slot below it is merged
+ * into its NEIGHBOUR rather than being padded: padding would push everything
+ * after it late, and the sum is the one thing that has to stay exact. The
+ * merged slot keeps the earlier section's clip, which is the one already on
+ * screen when the too-short section arrives. The floor exists because
+ * `planRender` refuses a slot shorter than the crossfade it has to donate to —
+ * correctly, but a window that clips a section 0.2s after it starts is a
+ * routine consequence of `MAX_SHORT_SECONDS`, not a fault worth failing on.
+ */
+export function planShortSlots(
+  windows: CueWindow[],
+  window: ShortWindow,
+  minSeconds: number,
+): ShortSlot[] {
+  const clamp = (value: number) =>
+    Math.min(Math.max(value, window.startSeconds), window.endSeconds);
+
+  const raw: ShortSlot[] = [];
+
+  windows.forEach((cueWindow, index) => {
+    const start = clamp(cueWindow.startSeconds);
+    // The next section's start, not this one's end — see the doc comment. The
+    // last section runs to the end of the window.
+    const end =
+      index + 1 < windows.length ? clamp(windows[index + 1].startSeconds) : window.endSeconds;
+    const seconds = end - start;
+
+    if (seconds > 0) {
+      raw.push({ sectionIndex: index, seconds });
+    }
+  });
+
+  if (raw.length === 0) {
+    return [];
+  }
+
+  // Forward pass: a slot under the floor absorbs the one after it, so the clip
+  // already on screen simply holds it longer.
+  const merged: ShortSlot[] = [];
+  for (const slot of raw) {
+    const previous = merged[merged.length - 1];
+
+    if (previous && previous.seconds < minSeconds) {
+      previous.seconds += slot.seconds;
+      continue;
+    }
+
+    merged.push({ ...slot });
+  }
+
+  // The forward pass cannot fix a final slot that is still short — there is
+  // nothing after it to absorb — so it goes backwards into the one before it.
+  // A single slot is left alone: a short is at least MIN_SHORT_SECONDS long,
+  // so one slot covering all of it is already well past any sane floor.
+  const last = merged[merged.length - 1];
+  if (merged.length > 1 && last.seconds < minSeconds) {
+    merged[merged.length - 2].seconds += last.seconds;
+    merged.pop();
+  }
+
+  return merged;
+}
+
+/**
  * True when two windows overlap at all.
  *
  * Three shorts that share ten seconds of narration are three near-identical

@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildAssembleArgs,
   buildSegmentArgs,
-  buildShortArgs,
   buildTransitionArgs,
   concatListLine,
+  FRAME_SIZES,
+  frameSize,
   planRender,
 } from "@/lib/ffmpeg-command";
 import { verticalCaptionStyle } from "@/lib/shorts-plan";
@@ -545,111 +546,126 @@ describe("buildAssembleArgs audio chain", () => {
   });
 });
 
-describe("buildShortArgs", () => {
-  const shortBase = {
-    sourcePath: "/tmp/render.mp4",
-    startSeconds: 92.5,
-    durationSeconds: 34,
-    srtPath: "/tmp/short.srt",
-    outputPath: "/tmp/short.mp4",
+describe("frame formats", () => {
+  const segmentBase = {
+    clipPath: "/tmp/clip.mp4",
+    outputPath: "/tmp/segment-0.mp4",
+    clipSeconds: 12,
   };
 
-  it("produces a 1080x1920 frame by covering then centre-cropping", () => {
-    const filter = valueOf(buildShortArgs(shortBase), "-vf") ?? "";
-
-    // Scale-then-crop, not crop-then-scale: a source that is not exactly
-    // 1920x1080 still has to come out exactly 1080x1920 rather than whatever
-    // its own aspect ratio implies.
-    expect(filter).toContain(
-      "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+  it("treats an absent format as landscape, argument for argument", () => {
+    // The whole compatibility claim of this change in one assertion: every
+    // caller written before formats existed passes no format, and must
+    // therefore produce byte-for-byte the argv it always did.
+    expect(buildSegmentArgs(segmentBase)).toEqual(
+      buildSegmentArgs({ ...segmentBase, format: "LANDSCAPE" }),
     );
+    expect(frameSize()).toEqual(FRAME_SIZES.LANDSCAPE);
   });
 
-  it("seeks before the input, not after it", () => {
-    const args = buildShortArgs(shortBase);
+  it("normalises a clip into a 1080x1920 frame when the video is vertical", () => {
+    const filter =
+      valueOf(buildSegmentArgs({ ...segmentBase, format: "VERTICAL" }), "-vf") ?? "";
 
-    // After `-i` this would decode and discard 92.5 seconds of 1080p before
-    // emitting a frame — minutes of CPU per short on a two-core box.
-    expect(args.indexOf("-ss")).toBeLessThan(args.indexOf("-i"));
-    expect(valueOf(args, "-ss")).toBe("92.5");
+    // Cover then centre-crop, the same idiom the landscape case uses, run the
+    // other way round: a 16:9 source is scaled until it is 1920 tall and the
+    // middle 1080 columns are kept. This is a crop of the SOURCE — the thing
+    // that makes a vertical render native rather than a crop of a finished
+    // landscape frame.
+    expect(filter).toContain("scale=1080:1920:force_original_aspect_ratio=increase");
+    expect(filter).toContain("crop=1080:1920");
+    expect(filter).not.toContain("1920:1080");
   });
 
-  it("bounds the decode as well as the output", () => {
-    const args = buildShortArgs(shortBase);
-
-    // Two `-t`s, one either side of `-i`: the input one stops the decoder, the
-    // output one guarantees the clip cannot outrun its own recorded window.
-    const durations = args.filter((_, index) => args[index - 1] === "-t");
-    expect(durations).toEqual(["34", "34"]);
-  });
-
-  it("rebases both streams so the clip starts at zero", () => {
-    const args = buildShortArgs(shortBase);
-
-    // `-ss` leaves the first frame carrying a PTS up to one frame past zero.
-    // The SRT is rebased to zero, and `subtitles` matches cues against frame
-    // timestamps, so without this the captions run against an offset timeline.
-    expect(valueOf(args, "-vf")).toContain("setpts=PTS-STARTPTS");
-    expect(valueOf(args, "-af")).toBe("asetpts=PTS-STARTPTS");
-  });
-
-  it("caps the decoder pool before the input and the encoder after it", () => {
-    const args = buildShortArgs(shortBase);
-
-    // The same lesson buildSegmentArgs records: a `-threads` after `-i` caps
-    // only the encoder, leaving the h264 decoder to size its pool from the
-    // host's core count — which is what SIGKILLed a render inside the
-    // container.
-    const firstThreads = args.indexOf("-threads");
-    expect(firstThreads).toBeLessThan(args.indexOf("-i"));
-    expect(args[firstThreads + 1]).toBe("1");
-    expect(args.lastIndexOf("-threads")).toBeGreaterThan(args.indexOf("-i"));
-  });
-
-  it("re-encodes the source's finished mix without touching its loudness", () => {
-    const args = buildShortArgs(shortBase);
-
-    // The source audio is already narration + music + effects, loudness
-    // normalised by the assemble pass. Running loudnorm over it again pumps it.
-    expect(args.join(" ")).not.toContain("loudnorm");
-    expect(valueOf(args, "-c:a")).toBe("aac");
-  });
-
-  it("burns captions last, at the output resolution", () => {
+  it("pans inside the vertical frame, not the landscape one", () => {
     const filter =
       valueOf(
-        buildShortArgs({
-          ...shortBase,
-          captions: verticalCaptionStyle(DEFAULT_STYLE.captions),
+        buildSegmentArgs({
+          ...segmentBase,
+          format: "VERTICAL",
+          motion: { enabled: true, scale: 1.15 },
         }),
         "-vf",
       ) ?? "";
 
-    // After the crop, so libass draws text at 1080x1920 rather than having it
-    // scaled and resampled by a filter above it.
-    expect(filter.indexOf("subtitles=")).toBeGreaterThan(filter.indexOf("crop="));
-    expect(filter).toContain("force_style='FontName=DejaVu Sans,FontSize=13.6");
+    // 1080 x 1.15 and 1920 x 1.15. Getting this the wrong way round would
+    // upscale to a landscape-shaped intermediate and crop a 9:16 window out of
+    // it, which is a different picture entirely.
+    expect(filter).toContain("scale=1242:2208:force_original_aspect_ratio=increase");
+    expect(filter).toContain("crop=w=1080:h=1920");
   });
 
-  it("gives the vertical frame a horizontal safe area the landscape one has no need of", () => {
+  it("leaves the assemble pass alone — the frame is decided by the segments", () => {
+    // There is nothing format-specific in pass two: the concat demuxer joins
+    // whatever the segments already are. This is why a vertical render adds no
+    // pass, no filter and no memory.
+    const args = buildAssembleArgs(assembleBase);
+    expect(args.join(" ")).not.toContain("scale=");
+    expect(args.join(" ")).not.toContain("crop=");
+  });
+});
+
+describe("buildAssembleArgs over a window of the narration", () => {
+  it("emits nothing at all when the whole narration is used", () => {
+    // The landscape render passes no `audioStartSeconds`, so its argv is
+    // unchanged — including the fact that the only `-ss` in a full render's
+    // command line is no `-ss` at all.
+    expect(buildAssembleArgs(assembleBase)).not.toContain("-ss");
+  });
+
+  it("seeks the narration before opening it, not after", () => {
+    const args = buildAssembleArgs({ ...assembleBase, audioStartSeconds: 92.5 });
+    const seekIndex = args.indexOf("-ss");
+    const narrationIndex = args.indexOf("/tmp/narration.mp3");
+    const concatIndex = args.indexOf("/tmp/segments.txt");
+
+    expect(args[seekIndex + 1]).toBe("92.5");
+    // Between the two inputs: after the concat list, so it cannot apply to the
+    // picture, and before `-i narration.mp3`, so FFmpeg seeks the file instead
+    // of decoding and discarding a minute and a half of it.
+    expect(seekIndex).toBeGreaterThan(concatIndex);
+    expect(seekIndex).toBeLessThan(narrationIndex);
+  });
+
+  it("cuts a window to its exact length rather than a whole second", () => {
+    // A window is a run of sentences and lands on a fraction. Rounding it
+    // would make the file disagree with the start/end the panel prints beside
+    // it by up to half a second.
+    const args = buildAssembleArgs({ ...assembleBase, durationSeconds: 34.4 });
+    expect(valueOf(args, "-t")).toBe("34.4");
+  });
+});
+
+describe("buildAssembleArgs with a vertical caption style", () => {
+  it("carries the measured 9:16 safe area through to libass", () => {
+    // The geometry itself is pinned in shorts-plan.test.ts; what this pins is
+    // that it survives the trip through the assemble pass, which is now the
+    // command that burns a short's captions in. It used to be `buildShortArgs`,
+    // and a short whose margins silently reverted to FFmpeg's default 10 units
+    // would put burned-in text under YouTube's action rail with nothing to
+    // catch it.
     const filter =
       valueOf(
-        buildShortArgs({
-          ...shortBase,
+        buildAssembleArgs({
+          ...assembleBase,
           captions: verticalCaptionStyle(DEFAULT_STYLE.captions),
         }),
-        "-vf",
+        "-filter_complex",
       ) ?? "";
 
-    // 60 script units is 168.75px on a 1080px-wide frame, which is what keeps
-    // burned-in text out from under YouTube's Shorts action rail. Without it
-    // libass inherits FFmpeg's default of 10 units — a 28px inset.
     expect(filter).toContain("MarginL=60");
     expect(filter).toContain("MarginR=60");
     expect(filter).toContain("MarginV=68");
   });
 
-  it("front-loads the moov atom so the panel can play it before it downloads", () => {
-    expect(buildShortArgs(shortBase)).toContain("+faststart");
+  it("emits no horizontal margin for a landscape style, exactly as before", () => {
+    const filter =
+      valueOf(
+        buildAssembleArgs({ ...assembleBase, captions: DEFAULT_STYLE.captions }),
+        "-filter_complex",
+      ) ?? "";
+
+    expect(filter).not.toContain("MarginL");
+    expect(filter).not.toContain("MarginR");
   });
 });

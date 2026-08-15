@@ -12,9 +12,7 @@ import type { ShortStatus, VideoStatus } from "@/generated/prisma/enums";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
-import { buildShortArgs } from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
-import { statRenderFile } from "@/lib/render-storage";
 import {
   anchorCues,
   cueWindows,
@@ -25,6 +23,7 @@ import {
   describeSections,
   MAX_SHORT_SECONDS,
   MIN_SHORT_SECONDS,
+  planShortSlots,
   planShortWindow,
   SHORT_MAX_CHARS_PER_LINE,
   SHORT_MAX_WORDS_PER_LINE,
@@ -41,14 +40,48 @@ import {
   repairDoubleEncodedObject,
 } from "@/lib/structured-output";
 import { brandService } from "@/services/brand.service";
+import { compose } from "@/services/composer";
 import { MAX_ATTEMPTS } from "@/services/job.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
-import { defaultSpawner, type ProcessSpawner, type RenderProgress } from "@/services/render.service";
+import {
+  defaultSpawner,
+  type ProcessSpawner,
+  type RenderProgress,
+  sectionClipPath,
+} from "@/services/render.service";
 
 /**
- * Cutting vertical shorts out of a video that is already finished.
+ * Composing vertical shorts out of the footage a finished video was made from.
  *
- * Two halves that never run at the same time:
+ * ## Why the footage and not the finished file
+ *
+ * This used to cut a 9:16 window out of the parent's finished 16:9 render, and
+ * that was a bug you could see. The assemble pass burns the landscape captions
+ * INTO the render's pixels (`buildAssembleArgs`), and the centre crop a short
+ * takes keeps the bottom of the frame — so every short arrived with the
+ * landscape captions already in the picture, and then had its own vertical ones
+ * drawn on top of them. Two sets of subtitles, and the first set could not be
+ * turned off, moved or restyled, because it was not a layer. It was the image.
+ *
+ * The fix is to go back one step. `videos/{id}/clips/section-NNN.mp4` is the
+ * footage the render itself played, it has never had text drawn on it, and it
+ * is still in storage for any video that has not been published. Composing the
+ * short out of those clips at 1080x1920 (`composer.ts`, the same code the full
+ * render uses) gives a clip whose only captions are its own — and gives a
+ * better picture besides, since each clip is centre-cropped from the SOURCE
+ * rather than from a landscape frame that was already cropped for a different
+ * shape and is then upscaled 1.78x.
+ *
+ * The alternative was keeping a caption-free master beside every render and
+ * burning captions into a separate deliverable: about 170MB per video on a
+ * 40GB disk, plus a second full-length encode on a 2-vCPU box, paid by every
+ * video whether or not a short is ever cut from it. This way a video that has
+ * no shorts costs exactly what it always did — the landscape render's argv and
+ * its output are unchanged — and only a video that actually gets a short pays,
+ * once, for that short.
+ *
+ * ## Two halves that never run at the same time
+ *
  *
  *   1. `generate` — the operator asks for shorts. A model is shown the script,
  *      section by section, and picks the moments worth clipping; each pick is
@@ -86,6 +119,18 @@ const SHORT_LEASE_SECONDS = 120;
 
 /** Stderr is batched rather than written per line, same as render.service.ts. */
 const STDERR_FLUSH_BYTES = 4000;
+
+/**
+ * The shortest a section's clip may hold the screen inside a short.
+ *
+ * The counterpart of `MIN_CLIP_SECONDS` in render.service.ts, and it guards the
+ * same thing from the other direction: a window clipped by `MAX_SHORT_SECONDS`
+ * routinely lands a fraction of a second into a section, and a 0.2s slot is
+ * both a visible flicker and something `planRender` refuses outright when
+ * transitions are on. `planShortSlots` merges anything under this into its
+ * neighbour, so the picture simply holds a moment longer.
+ */
+const MIN_SLOT_SECONDS = 1;
 
 export interface ShortSummary {
   id: string;
@@ -269,10 +314,12 @@ interface VideoTimeline {
   sections: string;
   alignment: Alignment;
   narrationSeconds: number;
-  renderLocation: string;
+  /** The narration MP3's storage path. A short reads a WINDOW of it — the same
+   *  file the full render reads from beginning to end. */
+  narrationPath: string;
   channelId: string | null;
-  /** Only so a missing render can say *why* it is missing. A PUBLISHED video's
-   *  render was deleted on purpose; any other video's went missing. */
+  /** Only so missing footage can say *why* it is missing. A PUBLISHED video's
+   *  clips were reclaimed on purpose; any other video's went missing. */
   videoStatus: VideoStatus;
 }
 
@@ -299,16 +346,19 @@ export class ShortsService {
       select: {
         id: true,
         status: true,
+        format: true,
         project: { select: { channelId: true } },
-        voiceOver: { select: { durationSeconds: true } },
+        voiceOver: { select: { durationSeconds: true, audioUrl: true } },
         script: { select: { activeVersion: { select: { content: true, cues: true } } } },
-        // The render the shorts are cut out of. Only a SUCCEEDED job's
-        // `outputUrl` names a file that was ever completely written.
+        // Not the render's `outputUrl` any more — nothing here reads that file.
+        // Only that a render SUCCEEDED, which is what says the footage, the
+        // narration and the alignment below all agree with each other and with
+        // a video the operator has actually watched.
         renderJobs: {
           where: { status: "SUCCEEDED", outputUrl: { not: null } },
           orderBy: { createdAt: "desc" },
           take: 1,
-          select: { outputUrl: true },
+          select: { id: true },
         },
       },
     });
@@ -317,23 +367,35 @@ export class ShortsService {
       throw new NotFoundError("Video");
     }
 
-    // READY or PUBLISHED, and PUBLISHED matters: `publish.service.ts` reclaims
-    // the section clips once a video is live but leaves the render itself in
-    // place, so a published video is still perfectly clippable — and is in fact
-    // the state an operator is most likely to want shorts from.
+    // READY or PUBLISHED, and PUBLISHED matters because a live video is the one
+    // an operator is most likely to want clips from. Whether one can still be
+    // made is a separate question — see `requireFootage`, which is where
+    // publishing's reclaim is felt.
     if (video.status !== "READY" && video.status !== "PUBLISHED") {
       throw new ConflictError(
         `Shorts are cut out of a finished video. This one is ${video.status.toLowerCase()}.`,
       );
     }
 
-    const renderLocation = video.renderJobs[0]?.outputUrl;
-    if (!renderLocation) {
+    // A short IS a vertical video, so there is nothing to cut: the parent
+    // already is the thing this feature makes. Refused here rather than in the
+    // panel alone, because `generate` spends a model call and deletes the
+    // existing set before it writes a new one.
+    if (video.format === "VERTICAL") {
+      throw new ConflictError(
+        "This video is already a vertical short — there is nothing to cut a " +
+          "short out of. Publish it as it is, or make a full-length video if " +
+          "you want clips from it.",
+      );
+    }
+
+    if (video.renderJobs.length === 0) {
       throw new ConflictError("This video has no completed render to cut shorts from.");
     }
 
     const narrationSeconds = video.voiceOver?.durationSeconds;
-    if (narrationSeconds == null) {
+    const narrationPath = video.voiceOver?.audioUrl;
+    if (narrationSeconds == null || !narrationPath) {
       throw new ConflictError("This video's narration length is unknown; re-render it first.");
     }
 
@@ -379,10 +441,66 @@ export class ShortsService {
       sections: describeSections(anchored, windows, content),
       alignment,
       narrationSeconds,
-      renderLocation,
+      narrationPath,
       videoStatus: video.status,
       channelId: video.project?.channelId ?? null,
     };
+  }
+
+  /**
+   * The section clips a short is composed out of, or a `ConflictError` naming
+   * why they are not there.
+   *
+   * This replaces the old `statRenderFile` check, and it is the same guard
+   * moved one step upstream: what a short needs on disk is no longer the
+   * finished render but the footage that render played. Both `generate` and
+   * `renderShort` call it, and `generate` calls it BEFORE the model call and
+   * before it deletes the operator's existing set — the sequence that once
+   * destroyed three good shorts to arrive at a message we could have given
+   * first.
+   *
+   * Every section is required, not merely some. A short is a contiguous run of
+   * sections, and a run with a hole in it would compose fine and play the
+   * wrong footage under the wrong words from the hole onward — the same
+   * failure `RenderService.render` refuses a partially-collected video for.
+   */
+  private async requireSectionClips(
+    videoId: string,
+    sectionCount: number,
+    videoStatus: VideoStatus,
+  ): Promise<string[]> {
+    const wanted = Array.from({ length: sectionCount }, (_unused, index) =>
+      sectionClipPath(videoId, index),
+    );
+
+    const present = await prisma.asset.findMany({
+      where: {
+        kind: "VIDEO",
+        deletedAt: null,
+        storagePath: { in: wanted },
+      },
+      select: { storagePath: true },
+    });
+
+    if (present.length === wanted.length) {
+      return wanted;
+    }
+
+    // Publishing is the overwhelmingly common way to get here:
+    // `publish.service.ts` reclaims `videos/{id}/clips/` once YouTube confirms
+    // the upload, because the clips are dead weight on a 40GB disk from that
+    // moment on. The operator did nothing wrong and — as with the render —
+    // cannot put it right, so the message says when shorts have to be made
+    // rather than suggesting a recovery that does not exist.
+    throw new ConflictError(
+      videoStatus === "PUBLISHED"
+        ? "This video was published, and publishing reclaims the footage it was " +
+          "composed from — so there is nothing left to build a short out of. " +
+          "Shorts have to be generated before a video is published."
+        : "This video's footage is no longer in storage, so no short can be " +
+          "composed from it. Only a video that has not finished rendering can " +
+          "be run again, so this one cannot be recovered.",
+    );
   }
 
   /**
@@ -447,31 +565,24 @@ export class ShortsService {
       );
     }
 
-    // The render has to exist before anything here is destructive, because
+    // The footage has to exist before anything here is destructive, because
     // everything after this line is: the model call costs money, and the write
     // below hard-deletes the video's existing shorts to replace them.
     //
     // This was found the expensive way. An operator published a video — which
-    // reclaims the local render on purpose — and then pressed Generate. The
-    // three READY shorts they already had were deleted, three replacements were
-    // created, and all three failed two seconds later against a file that no
+    // reclaims its storage on purpose — and then pressed Generate. The three
+    // READY shorts they already had were deleted, three replacements were
+    // created, and all three failed two seconds later against files that no
     // longer existed. Every individual step behaved as designed; the sequence
     // destroyed good work to arrive at a message we could have given first.
     //
-    // Checked here rather than in `renderShort`, which also checks: by the time
-    // the worker gets there the deletion has already happened.
-    const renderStat = await statRenderFile(timeline.renderLocation);
-    if (!renderStat) {
-      throw new ConflictError(
-        timeline.videoStatus === "PUBLISHED"
-          ? "This video was published, and publishing deletes the local render to " +
-            "reclaim disk — so there is nothing left to cut shorts from. Any " +
-            "shorts it already has are kept; generating a new set would only " +
-            "replace them with ones that cannot render."
-          : "This video's render is no longer on disk, so no short can be cut " +
-            "from it. The shorts it already has are kept.",
-      );
-    }
+    // Checked here rather than only in `renderShort`, which also checks: by the
+    // time the worker gets there the deletion has already happened.
+    await this.requireSectionClips(
+      videoId,
+      timeline.windows.length,
+      timeline.videoStatus,
+    );
 
     const brand = await brandService.resolve(timeline.channelId);
     const apiKey =
@@ -730,13 +841,23 @@ export class ShortsService {
   }
 
   /**
-   * Encodes one claimed short.
+   * Composes one claimed short.
    *
-   * Reads the parent video's finished render off local disk, cuts the stored
-   * window out of it, and writes a 1080x1920 MP4 with its own rebased captions
-   * burned in. One FFmpeg process, one decoder, one encoder — see
-   * `buildShortArgs` for why this does not need the two-pass split a full
-   * render does.
+   * Downloads the section clips the parent video's window plays, normalises
+   * each into a 1080x1920 frame, joins them, mixes the narration window under
+   * the same music bed the parent used, and burns the clip's own rebased
+   * captions in. Exactly the pipeline a full render runs (`composer.ts`), on a
+   * minute of material instead of nine.
+   *
+   * What it deliberately does NOT read is the parent's finished MP4. That file
+   * has the landscape captions burned into it — see this class's own doc
+   * comment for the two-caption bug that came of cropping it.
+   *
+   * Memory is unchanged from the single-pass version it replaces: the two-pass
+   * split exists precisely so that no more than one decoder and one encoder are
+   * ever open at once, whatever the clip count (see ffmpeg-command.ts). A short
+   * spans a handful of sections, so this is a handful of short encodes plus one
+   * assemble, all sequential, all bounded by the same `-threads` caps.
    */
   async renderShort(shortId: string, onProgress: RenderProgress = () => {}): Promise<string> {
     const short = await prisma.short.findFirst({
@@ -748,9 +869,9 @@ export class ShortsService {
         endSeconds: true,
         status: true,
         videoId: true,
-        // `status` is read only to explain a missing render: a PUBLISHED video
-        // had its file reclaimed on purpose, which is a different message from a
-        // render that vanished for any other reason.
+        // `status` is read only to explain missing footage: a PUBLISHED video
+        // had its clips reclaimed on purpose, which is a different message from
+        // footage that vanished for any other reason.
         video: { select: { userId: true, status: true } },
       },
     });
@@ -767,43 +888,54 @@ export class ShortsService {
 
     const timeline = await this.loadTimeline(short.video.userId, short.videoId);
 
-    // `RenderJob.outputUrl` says a render exists; the disk is what decides
-    // whether it still does. Checked before a temp directory is created and an
-    // encoder is spawned, so the failure names the real cause rather than
-    // surfacing as "ffmpeg exited with code 1".
-    const renderStat = await statRenderFile(timeline.renderLocation);
-    if (!renderStat) {
-      // The overwhelmingly common way to reach this is publishing: publish.service
-      // reclaims the local render once YouTube confirms the upload, because a
-      // ~170MB file per video fills the disk and YouTube then holds the copy that
-      // matters. So the operator did nothing wrong, and — importantly — cannot
-      // put it right: `runPipeline` returns "video is already READY — skipped"
-      // and `JobService.requeue` will not take a terminal video, so there is no
-      // re-render to offer. Telling them to re-render, as this used to, sent
-      // them looking for a button that does not exist and would refuse them if
-      // it did.
-      const published = short.video.status === "PUBLISHED";
-
-      throw new ConflictError(
-        published
-          ? "This video was published, and publishing deletes the local render to " +
-            "reclaim disk — so there is no file left to cut a short from. Shorts " +
-            "have to be generated before a video is published."
-          : "This video's render is no longer on disk, so no short can be cut " +
-            "from it. Only a video that has not finished rendering can be run " +
-            "again, so this one cannot be recovered.",
-      );
-    }
+    // Checked before a temp directory is created and an encoder is spawned, so
+    // the failure names the real cause rather than surfacing as "ffmpeg exited
+    // with code 1" against a clip path that does not exist.
+    const sectionPaths = await this.requireSectionClips(
+      short.videoId,
+      timeline.windows.length,
+      short.video.status,
+    );
 
     const window: ShortWindow = {
       startSeconds: short.startSeconds,
       endSeconds: short.endSeconds,
     };
     const durationSeconds = window.endSeconds - window.startSeconds;
+    const brand = await brandService.resolve(timeline.channelId);
+    const style = brand.videoStyle;
+
+    // The same floor the full render applies, for the same reason: a slot has
+    // to outlast the crossfade it donates its tail to or `planRender` refuses
+    // the plan. Derived from the style rather than hard-coded so raising the
+    // transition duration cannot quietly invalidate it.
+    const minClipSeconds = Math.max(
+      MIN_SLOT_SECONDS,
+      style.transitions.enabled ? style.transitions.durationSeconds * 2 : 0,
+    );
+    const slots = planShortSlots(timeline.windows, window, minClipSeconds);
+
+    if (slots.length === 0) {
+      // Not reachable from a window `planShortWindow` produced — it only ever
+      // returns a range inside the narration — but a Short row is durable and
+      // its script's cues are not, so a re-anchoring that moved every section
+      // clear of this window must fail with a sentence rather than an empty
+      // concat list.
+      throw new ConflictError(
+        "None of this script's sections fall inside this short's window any " +
+          "more, so there is no footage to compose it from. Generate the set " +
+          "again.",
+      );
+    }
 
     const tempDir = await mkdtemp(path.join(tmpdir(), "framecast-short-"));
 
     try {
+      onProgress(
+        `composing ${durationSeconds.toFixed(1)}s from ${slots.length} section(s) ` +
+          `starting at ${window.startSeconds.toFixed(1)}s`,
+      );
+
       // Captions for this clip alone, rebased to start at zero. `buildSrt` does
       // the word grouping and the sentence-boundary line breaks; all this side
       // supplies is a narrower alignment and a narrower line width. The line
@@ -820,29 +952,71 @@ export class ShortsService {
         ),
       );
 
-      const outputPath = path.join(tempDir, "short.mp4");
-      const brand = await brandService.resolve(timeline.channelId);
-
-      onProgress(
-        `cutting ${durationSeconds.toFixed(1)}s from ${window.startSeconds.toFixed(1)}s`,
+      const narrationPath = path.join(
+        tempDir,
+        `narration${path.extname(timeline.narrationPath) || ".mp3"}`,
       );
+      await writeFile(narrationPath, await getObject(timeline.narrationPath));
 
-      await this.runFfmpeg(
-        buildShortArgs({
-          // The render lives under RENDER_ROOT, and `statRenderFile` above has
-          // already confined and confirmed it. Resolved the same way here.
-          sourcePath: path.resolve(env.RENDER_ROOT, timeline.renderLocation),
-          startSeconds: window.startSeconds,
+      const clipPaths: string[] = [];
+      for (const [index, slot] of slots.entries()) {
+        const clipPath = path.join(tempDir, `clip-${index}.mp4`);
+        await writeFile(clipPath, await getObject(sectionPaths[slot.sectionIndex]));
+        clipPaths.push(clipPath);
+      }
+
+      // The bed the parent video was rendered with, reused rather than
+      // re-searched: `MusicService.collect` would return this same asset for a
+      // video that already has one, and going through it would let a video
+      // whose track was deleted quietly fetch a DIFFERENT one — so a short
+      // would have music its own parent does not. Absent is fine; the mix
+      // simply has no bed, exactly as the render's does not.
+      const musicAsset = await prisma.asset.findFirst({
+        where: {
+          kind: "MUSIC",
+          deletedAt: null,
+          storagePath: { startsWith: `videos/${short.videoId}/` },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { storagePath: true },
+      });
+
+      let musicPath: string | undefined;
+      if (musicAsset) {
+        musicPath = path.join(tempDir, "music.mp3");
+        await writeFile(musicPath, await getObject(musicAsset.storagePath));
+      }
+
+      const outputPath = path.join(tempDir, "short.mp4");
+
+      await compose(
+        {
+          tempDir,
+          clipPaths,
+          clipSeconds: slots.map((slot) => slot.seconds),
+          style,
+          format: "VERTICAL",
+          audioPath: narrationPath,
+          // The window is a run of sentences out of the middle of the
+          // narration, so the mix starts there. The SRT above is rebased to
+          // zero by `sliceAlignment` for exactly the same reason.
+          audioStartSeconds: window.startSeconds,
           durationSeconds,
           srtPath,
-          outputPath,
           // The channel's own caption style, adapted to a 9:16 frame — see
           // `verticalCaptionStyle` for why this is a ratio against the
-          // landscape style rather than a set of absolute pixel sizes.
-          captions: verticalCaptionStyle(brand.videoStyle.captions),
-        }),
-        durationSeconds,
-        onProgress,
+          // landscape style rather than a set of absolute pixel sizes. The
+          // geometry is unchanged by this rewrite: same margins, same marginV
+          // floor, same boost, same line widths.
+          captions: verticalCaptionStyle(style.captions),
+          musicPath,
+          outputPath,
+        },
+        {
+          runFfmpeg: (args, runDurationSeconds, report) =>
+            this.runFfmpeg(args, runDurationSeconds, report),
+          onProgress,
+        },
       );
 
       const outputLocation = await writeShortFile(short.id, outputPath);
@@ -886,7 +1060,11 @@ export class ShortsService {
    */
   private runFfmpeg(
     args: string[],
-    durationSeconds: number,
+    /** null for the runs whose length is fixed and short — the per-section
+     *  segments, the crossfade stubs, the effects track. Same convention
+     *  `RenderService.runFfmpeg` uses, and the reason is the same: 0 would
+     *  divide by zero and report a finished-looking percentage. */
+    durationSeconds: number | null,
     onProgress: RenderProgress,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -906,7 +1084,7 @@ export class ShortsService {
             continue;
           }
           const ms = Number(value);
-          if (!Number.isFinite(ms) || durationSeconds <= 0) {
+          if (!Number.isFinite(ms) || durationSeconds === null || durationSeconds <= 0) {
             continue;
           }
           const percent = Math.min(

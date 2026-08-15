@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { VideoStatus } from "@/generated/prisma/enums";
+import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { CreateVideoInput } from "@/schemas/video.schema";
@@ -50,6 +50,11 @@ export class VideoService {
         title: true,
         topic: true,
         status: true,
+        // The list has a Format column now. One more scalar off a row the
+        // query already reads — a video's shape is not something an operator
+        // should have to open a video to find out, and a list of twenty where
+        // three are vertical is exactly where it matters.
+        format: true,
         updatedAt: true,
         project: { select: { id: true, name: true } },
       },
@@ -178,8 +183,23 @@ export class VideoService {
   /**
    * Gate 1. Approving costs nothing yet — it only makes the video eligible for
    * the expensive stages, which is precisely why the gate sits here.
+   *
+   * `format` is written here and nowhere else, and this is the only moment it
+   * can be chosen. Every stage after this reads it: the narration is the same
+   * either way, but the footage is framed for it, the captions are sized for
+   * it, and the frame FFmpeg composes into is it. A video whose format changed
+   * halfway would have clips normalised into one shape sitting in a concat list
+   * the assemble pass is joining at another, which FFmpeg would refuse — and
+   * changing it after a render would mean paying for the whole pipeline again,
+   * which is a new video, not an edit. It defaults to LANDSCAPE so a caller
+   * that does not care (the tests that approve a fixture, `script.service`'s
+   * own) gets exactly the behaviour that existed before formats did.
    */
-  async approveScript(userId: string, id: string) {
+  async approveScript(
+    userId: string,
+    id: string,
+    format: VideoFormat = "LANDSCAPE",
+  ) {
     const video = await prisma.video.findFirst({
       where: { id, userId, deletedAt: null },
       select: {
@@ -211,7 +231,7 @@ export class VideoService {
       // can go on to append the QUEUED event below.
       const { count } = await tx.video.updateMany({
         where: { id, userId, deletedAt: null, status: "DRAFT" },
-        data: { status: "QUEUED" },
+        data: { status: "QUEUED", format },
       });
 
       if (count === 0) {
@@ -223,7 +243,14 @@ export class VideoService {
           videoId: id,
           from: "DRAFT",
           to: "QUEUED",
-          message: "Script approved by operator",
+          // The format is named in the event, not only in the column. This is
+          // the append-only record of what the operator asked for, and "which
+          // shape did I approve this as" is exactly the question asked later of
+          // a video whose render nobody is happy with.
+          message:
+            format === "VERTICAL"
+              ? "Script approved by operator — vertical short (1080×1920)"
+              : "Script approved by operator — full video (1920×1080)",
         },
       });
     });

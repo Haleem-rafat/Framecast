@@ -14,7 +14,7 @@ import { MIN_SHORT_SECONDS } from "@/lib/shorts-plan";
 import { deleteShortFile, shortPath } from "@/lib/shorts-storage";
 import { putObject, storagePath } from "@/lib/storage";
 import { projectService } from "@/services/project.service";
-import type { ProcessSpawner } from "@/services/render.service";
+import { type ProcessSpawner, sectionClipPath } from "@/services/render.service";
 import {
   type MomentCandidate,
   type MomentSelector,
@@ -156,10 +156,40 @@ async function claimOne(service: ShortsService, videoId: string): Promise<string
   return queued.id;
 }
 
-/** The SRT path out of an argv's `-vf`, which is where `buildShortArgs` puts
- *  it — as the `subtitles=` filter's first, positional option. */
+/**
+ * The one call in a composition that joins the segments, mixes the narration
+ * and burns the captions.
+ *
+ * Identified by `-progress`, not by `-filter_complex`: the crossfade stubs and
+ * the effects track both build their output with a filter graph too, and only
+ * the assemble reports a percentage (see `composer.ts`, which passes a real
+ * duration for that run and null for every other).
+ */
+function assembleCallOf(calls: SpawnCall[]): string[] {
+  const assemble = calls.filter((call) => call.args.includes("-progress"));
+  expect(assemble).toHaveLength(1);
+  return assemble[0].args;
+}
+
+/** Every call that normalises one section clip into a segment: the ones with a
+ *  `-vf` and no filter graph. Crossfade stubs use `-filter_complex`, so both
+ *  halves of that test are needed to tell them apart. */
+function segmentCallsOf(calls: SpawnCall[]): string[][] {
+  return calls
+    .filter((call) => call.args.includes("-vf") && !call.args.includes("-filter_complex"))
+    .map((call) => call.args);
+}
+
+/** How many times a caption file is burned into the picture across a whole
+ *  composition. The number this feature exists to keep at one. */
+function captionBurnCount(calls: SpawnCall[]): number {
+  return calls.filter((call) => call.args.join(" ").includes("subtitles=")).length;
+}
+
+/** The SRT path out of the assemble call's filter graph. */
 function srtPathOf(args: string[]): string {
-  return args[args.indexOf("-vf") + 1].split("subtitles=")[1].split(":")[0];
+  const graph = args[args.indexOf("-filter_complex") + 1];
+  return graph.split("subtitles=")[1].split(":")[0];
 }
 
 let userId: string;
@@ -216,7 +246,14 @@ afterEach(async () => {
  * the real pipeline would make this file a test of the pipeline.
  */
 async function makeClippableVideo(
-  opts: { cues?: ScriptCue[]; status?: "READY" | "PUBLISHED" | "DRAFT" } = {},
+  opts: {
+    cues?: ScriptCue[];
+    status?: "READY" | "PUBLISHED" | "DRAFT";
+    format?: "LANDSCAPE" | "VERTICAL";
+    /** Skips writing the section clips, which is the state publishing leaves a
+     *  video in — the row still says it rendered, the footage is gone. */
+    withoutClips?: boolean;
+  } = {},
 ): Promise<string> {
   const project = await projectService.create(userId, {
     name: `${PROJECT_NAME}-${randomUUID().slice(0, 8)}`,
@@ -230,7 +267,7 @@ async function makeClippableVideo(
 
   await prisma.video.update({
     where: { id: video.id },
-    data: { status: opts.status ?? "READY" },
+    data: { status: opts.status ?? "READY", format: opts.format ?? "LANDSCAPE" },
   });
 
   const script = await prisma.script.create({ data: { videoId: video.id } });
@@ -248,12 +285,17 @@ async function makeClippableVideo(
     data: { activeVersionId: version.id },
   });
 
+  // The narration itself, not just its row: a short reads a window of this
+  // same file, exactly as the full render reads all of it.
+  const narrationPath = storagePath(video.id, "audio", "narration.mp3");
+  await putObject(narrationPath, Buffer.from(`fake-narration-${RUN}`), "audio/mpeg");
+
   await prisma.voiceOver.create({
     data: {
       videoId: video.id,
       provider: "ELEVENLABS",
       voiceId: "test-voice",
-      audioUrl: storagePath(video.id, "audio", "narration.mp3"),
+      audioUrl: narrationPath,
       // Stored as an integer, exactly as VoiceOverService stores it — so this
       // fixture exercises the same rounding the real pipeline produces.
       durationSeconds: Math.floor(NARRATION_SECONDS),
@@ -270,6 +312,22 @@ async function makeClippableVideo(
     data: { kind: "SUBTITLE", storagePath: alignmentPath, provider: "ELEVENLABS" },
   });
 
+  // One clip per section, at the exact paths FootageService stores them at —
+  // this is the footage a short is composed from now, in place of the finished
+  // render it used to be cut out of.
+  if (!opts.withoutClips) {
+    for (let index = 0; index < SECTIONS.length; index += 1) {
+      const clipPath = sectionClipPath(video.id, index);
+      await putObject(clipPath, Buffer.from(`fake-clip-${index}-${RUN}`), "video/mp4");
+      await prisma.asset.create({
+        data: { kind: "VIDEO", storagePath: clipPath, provider: "PIXABAY" },
+      });
+    }
+  }
+
+  // Still written, and still required: a SUCCEEDED RenderJob is what says the
+  // footage, the narration and the alignment agree with a video the operator
+  // has actually watched. Nothing reads the file itself any more.
   const outputUrl = await writeRenderFile(video.id, Buffer.from(`fake-render-${RUN}`));
   await prisma.renderJob.create({
     data: { videoId: video.id, status: "SUCCEEDED", progress: 100, outputUrl },
@@ -398,13 +456,43 @@ describe("generate — the states it refuses", () => {
     await expect(service.generate(userId, videoId)).rejects.toBeInstanceOf(ConflictError);
   });
 
-  it("allows a published video", async () => {
-    // Publishing reclaims the section clips but leaves the render itself, and
-    // a live video is the one an operator most wants shorts from.
+  it("allows a published video whose footage is somehow still there", async () => {
+    // Publishing normally reclaims the clips, which is the case below. When
+    // they are still present there is nothing wrong with clipping a live video
+    // — it is the one an operator most wants shorts from.
     const videoId = await makeClippableVideo({ status: "PUBLISHED" });
     const service = new ShortsService(fakeSelector([moment(1, 3)]));
 
     await expect(service.generate(userId, videoId)).resolves.toHaveLength(1);
+  });
+
+  it("names publishing when the footage it reclaimed is what is missing", async () => {
+    const videoId = await makeClippableVideo({
+      status: "PUBLISHED",
+      withoutClips: true,
+    });
+    const selector = fakeSelector([moment(1, 3)]);
+    const service = new ShortsService(selector);
+
+    await expect(service.generate(userId, videoId)).rejects.toThrow(/published/i);
+    // Refused before the model call and before the existing set is deleted —
+    // the sequence that once destroyed three good shorts to arrive at a
+    // message we could have given first.
+    expect(selector).not.toHaveBeenCalled();
+  });
+
+  it("refuses a video that is already vertical", async () => {
+    // A short of a short is nothing: the parent already is the thing this
+    // feature makes. Refused in the service and not only in the panel, because
+    // generating spends a model call and replaces the existing set.
+    const videoId = await makeClippableVideo({ format: "VERTICAL" });
+    const selector = fakeSelector([moment(1, 3)]);
+    const service = new ShortsService(selector);
+
+    await expect(service.generate(userId, videoId)).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    expect(selector).not.toHaveBeenCalled();
   });
 
   it("refuses while one of the previous set is still rendering", async () => {
@@ -552,7 +640,7 @@ describe("claimNext", () => {
 });
 
 describe("renderShort", () => {
-  it("cuts the stored window out of the parent's render at 1080x1920", async () => {
+  it("composes the window from the section clips, at 1080x1920", async () => {
     const videoId = await makeClippableVideo();
     const { spawner, calls } = createSucceedingSpawner();
     const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
@@ -560,15 +648,69 @@ describe("renderShort", () => {
 
     await service.renderShort(shortId);
 
-    expect(calls).toHaveLength(1);
-    const args = calls[0].args;
-    const filter = args[args.indexOf("-vf") + 1];
+    // Sections 2-4 of the fixture are five seconds each, so three clips are
+    // normalised — out of the footage, not out of a finished render.
+    const segments = segmentCallsOf(calls);
+    expect(segments).toHaveLength(3);
 
-    expect(filter).toContain("crop=1080:1920");
+    for (const args of segments) {
+      // The channel's default style pans, so the chain upscales to 1242x2208
+      // and the moving window it ends on is the frame — a landscape render's
+      // ends on `crop=w=1920:h=1080`.
+      const filter = args[args.indexOf("-vf") + 1];
+      expect(filter).toContain("crop=w=1080:h=1920");
+      expect(filter).not.toContain("crop=w=1920:h=1080");
+    }
+
+    // Nothing in the whole composition opens the parent's MP4. That file is
+    // where the landscape captions live, and reading it is the bug.
+    const renderLocation = renderPath(videoId);
+    expect(calls.some((call) => call.args.some((arg) => arg.includes(renderLocation))))
+      .toBe(false);
+  });
+
+  it("burns exactly one set of captions", async () => {
+    const videoId = await makeClippableVideo();
+    const { spawner, calls } = createSucceedingSpawner();
+    const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    // The defect this rewrite exists for. A short cut out of the finished
+    // render carried the landscape captions burned into the pixels it was
+    // cropped from AND its own vertical ones on top — and the first set could
+    // not be removed, because it was the image rather than a layer. Composing
+    // from footage that has never had text drawn on it means the only
+    // `subtitles=` in the entire run is this one.
+    expect(captionBurnCount(calls)).toBe(1);
+
+    const assemble = assembleCallOf(calls);
+    const graph = assemble[assemble.indexOf("-filter_complex") + 1];
+    expect(graph).toContain("MarginL=60");
+    expect(graph).toContain("MarginV=68");
+  });
+
+  it("mixes the window of the narration the clip is cut to", async () => {
+    const videoId = await makeClippableVideo();
+    const { spawner, calls } = createSucceedingSpawner();
+    const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    const args = assembleCallOf(calls);
+    const stored = await prisma.short.findUniqueOrThrow({ where: { id: shortId } });
+
     // The seek must match the row, not some recomputed value: the row is what
     // the operator sees in the panel beside the clip.
-    const stored = await prisma.short.findUniqueOrThrow({ where: { id: shortId } });
     expect(Number(args[args.indexOf("-ss") + 1])).toBeCloseTo(stored.startSeconds, 3);
+    // And the clip is exactly as long as the window says, not rounded to a
+    // whole second.
+    expect(Number(args[args.lastIndexOf("-t") + 1])).toBeCloseTo(
+      stored.endSeconds - stored.startSeconds,
+      3,
+    );
   });
 
   it("burns captions cut to the clip and rebased to zero", async () => {
@@ -578,7 +720,9 @@ describe("renderShort", () => {
     // exists: `renderShort` deletes its temp directory in a `finally`.
     let srt = "";
     const { spawner } = createSpawner(async (child, args) => {
-      srt = await readFile(srtPathOf(args), "utf8").catch(() => "");
+      if (args.join(" ").includes("subtitles=")) {
+        srt = await readFile(srtPathOf(args), "utf8").catch(() => "");
+      }
       await writeFile(args[args.length - 1], `fake-short-bytes-${RUN}`);
       child.emit("close", 0);
     });
@@ -587,9 +731,10 @@ describe("renderShort", () => {
 
     await service.renderShort(shortId);
 
-    // The clip is encoded with `-ss` before `-i`, which resets output
-    // timestamps to zero, so its SRT has to be numbered from zero too —
-    // otherwise every caption in every short is off by where it was cut from.
+    // The narration input is seeked with `-ss`, which resets the mixed
+    // stream's timestamps to zero, so its SRT has to be numbered from zero too
+    // — otherwise every caption in every short is off by where it was cut
+    // from.
     expect(srt).toContain("00:00:00,000 --> ");
     // Section 3's own words, not the video's opening line.
     expect(srt).toContain("printing");
@@ -622,13 +767,17 @@ describe("renderShort", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("names the missing render rather than surfacing an ffmpeg exit code", async () => {
+  it("names the missing footage rather than surfacing an ffmpeg exit code", async () => {
     const videoId = await makeClippableVideo();
     const { spawner, calls } = createSucceedingSpawner();
     const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
     const shortId = await claimOne(service, videoId);
 
-    await deleteRenderFile(renderPath(videoId));
+    // What publishing does, after the short was queued against footage that
+    // was there at the time.
+    await prisma.asset.deleteMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/clips/` } },
+    });
 
     await expect(service.renderShort(shortId)).rejects.toBeInstanceOf(ConflictError);
     // Checked before an encoder is ever spawned.

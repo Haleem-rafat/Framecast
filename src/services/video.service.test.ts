@@ -149,6 +149,57 @@ describe("videoService", () => {
     expect(events).toBe(1);
   });
 
+  it("records the format the operator approved, and only then", async () => {
+    const videoId = await createApprovableVideo();
+
+    // A draft has not chosen anything yet. The column defaults to LANDSCAPE
+    // because that is what every video made before formats existed factually
+    // is, not because a draft has decided to be one.
+    const draft = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(draft.format).toBe("LANDSCAPE");
+
+    await videoService.approveScript(userId, videoId, "VERTICAL");
+
+    const approved = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(approved.format).toBe("VERTICAL");
+    expect(approved.status).toBe("QUEUED");
+  });
+
+  it("keeps landscape for a caller that does not choose", async () => {
+    // Gate 1's default, and the reason every existing caller — the script
+    // service's own tests, the fixtures — is unaffected by the new parameter.
+    const videoId = await createApprovableVideo();
+
+    await videoService.approveScript(userId, videoId);
+
+    const approved = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(approved.format).toBe("LANDSCAPE");
+  });
+
+  it("names the format in the status event, not only in the column", async () => {
+    // VideoStatusEvent is the append-only record of what was asked for, and
+    // "which shape did I approve this as" is exactly the question asked later
+    // of a video whose render nobody is happy with.
+    const videoId = await createApprovableVideo();
+
+    await videoService.approveScript(userId, videoId, "VERTICAL");
+
+    const event = await prisma.videoStatusEvent.findFirstOrThrow({
+      where: { videoId, to: "QUEUED" },
+    });
+    expect(event.message).toContain("1080×1920");
+  });
+
+  it("surfaces the format on the list the videos page renders", async () => {
+    const videoId = await createApprovableVideo();
+    await videoService.approveScript(userId, videoId, "VERTICAL");
+
+    const listed = await videoService.list(userId);
+    const row = listed.find((video) => video.id === videoId);
+
+    expect(row?.format).toBe("VERTICAL");
+  });
+
   it("soft-deletes a video rather than removing the row", async () => {
     const videoId = await createApprovableVideo();
 

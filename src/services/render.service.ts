@@ -11,13 +11,6 @@ import { writeRenderFile } from "@/lib/render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
-import {
-  buildAssembleArgs,
-  buildSegmentArgs,
-  buildTransitionArgs,
-  concatListLine,
-  planRender,
-} from "@/lib/ffmpeg-command";
 import { prisma } from "@/lib/prisma";
 import {
   anchorCues,
@@ -25,9 +18,14 @@ import {
   type ScriptCue,
   sectionDurations,
 } from "@/lib/script-cues";
-import { buildSfxTrackArgs, planSfxCues } from "@/lib/sfx-track";
+import {
+  SHORT_MAX_CHARS_PER_LINE,
+  SHORT_MAX_WORDS_PER_LINE,
+  verticalCaptionStyle,
+} from "@/lib/shorts-plan";
 import { getObject, storagePath } from "@/lib/storage";
 import { brandService } from "@/services/brand.service";
+import { compose } from "@/services/composer";
 import { MusicService, musicService } from "@/services/music.service";
 import { formatElapsed } from "@/utils/format";
 
@@ -142,8 +140,13 @@ export function defaultSpawner(
  * Zero-padded to three digits so the sequence sorts lexicographically —
  * `section-002` before `section-010` — which is what lets the clip query
  * below order by `storagePath` and get play order for free.
+ *
+ * Exported for ShortsService, which composes a short out of the same clips
+ * this render plays rather than cropping one out of the finished render — see
+ * `composer.ts`. Two copies of this string would be two chances for a short to
+ * look for footage one directory away from where it was stored.
  */
-function sectionClipPath(videoId: string, index: number): string {
+export function sectionClipPath(videoId: string, index: number): string {
   return storagePath(videoId, "clips", `section-${String(index).padStart(3, "0")}.mp4`);
 }
 
@@ -199,6 +202,13 @@ export class RenderService {
       select: {
         id: true,
         status: true,
+        // Landscape or vertical, decided by the operator at Gate 1 and never
+        // afterwards (see `VideoService.approveScript`). It reaches FFmpeg in
+        // exactly two places — the frame every clip is normalised into, and
+        // which caption geometry is used — because that is all the difference
+        // there is between the two: the timing model, the footage, the
+        // narration and the audio mix are identical.
+        format: true,
         // The one thing this render needs to know about the channel it
         // belongs to: which one. `null` when the video's project has no
         // channel assigned, which brandService.resolve treats exactly like a
@@ -235,6 +245,8 @@ export class RenderService {
 
     const durationSeconds = video.voiceOver.durationSeconds;
     const audioStoragePath = video.voiceOver.audioUrl;
+    const format = video.format;
+    const vertical = format === "VERTICAL";
 
     // Assets carry no direct videoId column — every object (and therefore
     // every Asset that references one) lives under `videos/{videoId}/...`,
@@ -406,7 +418,18 @@ export class RenderService {
       const alignmentBuffer = await getObject(subtitleAsset.storagePath);
       const alignment = JSON.parse(alignmentBuffer.toString("utf-8")) as Alignment;
       const srtPath = path.join(tempDir, "captions.srt");
-      await writeFile(srtPath, buildSrt(alignment));
+      // A vertical frame is 1080px wide, not 1920, and the line that fits
+      // comfortably across a landscape frame wraps into a three-row tower in a
+      // vertical one. The two limits are the ones shorts already use and are
+      // measured rather than guessed — see SHORT_MAX_CHARS_PER_LINE. A
+      // landscape render calls `buildSrt` with no limits at all, exactly as it
+      // always has.
+      await writeFile(
+        srtPath,
+        vertical
+          ? buildSrt(alignment, SHORT_MAX_WORDS_PER_LINE, SHORT_MAX_CHARS_PER_LINE)
+          : buildSrt(alignment),
+      );
 
       onProgress(
         `fetched narration + ${clipAssets.length} clip(s) + captions from storage (${formatElapsed(Date.now() - setupStartedAt)})`,
@@ -478,133 +501,6 @@ export class RenderService {
         );
       }
 
-      // Two passes — see ffmpeg-command.ts for why a single filter graph
-      // cannot do this inside the worker's memory. Pass one normalises each
-      // distinct clip on its own; pass two joins the sequence with the concat
-      // demuxer, which reads one file at a time.
-      const plan = planRender(downloadedClipPaths, tempDir, clipSeconds, style.transitions);
-
-      for (const [index, segment] of plan.segments.entries()) {
-        onProgress(
-          `normalising clip ${index + 1} of ${plan.segments.length}`,
-        );
-
-        // Segments are short and fixed-length, so a percentage of their own
-        // would fight the real render's — null tells the runner to report
-        // none. Cancellation is still honoured during and between them.
-        await this.runFfmpeg(
-          buildSegmentArgs({ ...segment, motion: style.motion }),
-          job.id,
-          null,
-          () => {},
-          shouldCancel,
-        );
-      }
-
-      // A stub that fails to build becomes a hard cut. Half a second of
-      // dissolve is never worth failing a finished render for — but a
-      // cancellation arrives through the same rejection, and swallowing that
-      // would keep encoding after the operator asked to stop.
-      const stubPathByIndex = new Map<number, string>();
-      for (const [index, transition] of plan.transitions.entries()) {
-        onProgress(`building transition ${index + 1} of ${plan.transitions.length}`);
-
-        try {
-          await this.runFfmpeg(
-            buildTransitionArgs(transition),
-            job.id,
-            null,
-            () => {},
-            shouldCancel,
-          );
-          stubPathByIndex.set(index, transition.outputPath);
-        } catch (error) {
-          if (shouldCancel?.()) {
-            throw error;
-          }
-          onProgress(`transition ${index + 1} could not be built; using a hard cut`);
-        }
-      }
-
-      const concatEntries: string[] = [];
-      plan.playOrder.forEach((segmentPath, index) => {
-        const stubPath = stubPathByIndex.get(index);
-        // With no stub covering this boundary, the segment has to keep the
-        // tail it would otherwise have donated — dropping it anyway would
-        // leave a half-second hole in the timeline.
-        const trim = stubPath
-          ? plan.trims[index]
-          : { ...plan.trims[index], outpoint: undefined };
-
-        concatEntries.push(concatListLine(segmentPath, trim));
-        if (stubPath) {
-          concatEntries.push(concatListLine(stubPath));
-        }
-      });
-
-      const concatListPath = path.join(tempDir, "segments.txt");
-      await writeFile(concatListPath, `${concatEntries.join("\n")}\n`);
-
-      // Where each surviving stub lands on the finished timeline — the sum of
-      // everything played before it, stubs included.
-      //
-      // The overlap is added at every boundary the plan has, not only at the
-      // ones a stub was built for, and that is the whole subtlety here. A
-      // segment whose stub failed keeps the tail it would have donated (see
-      // the `outpoint: undefined` above), so half a second is played at that
-      // boundary either way — as a crossfade if the stub exists, as more of
-      // the outgoing clip if it does not. Advancing only for surviving stubs
-      // put every later whoosh half a second early per failed stub, drifting
-      // further the more of them failed. The timeline's total was never
-      // affected; only where the effects land on it, which is the kind of
-      // wrongness nobody spots and everybody feels.
-      const boundarySeconds: number[] = [];
-      let elapsedSeconds = 0;
-      plan.playOrder.forEach((_segmentPath, index) => {
-        elapsedSeconds += plan.trimmedSeconds[index];
-
-        // Undefined for the final segment, which donates no tail and has no
-        // boundary after it. Read off the plan rather than the style so this
-        // cannot disagree with what was actually encoded.
-        const boundaryOverlap = plan.transitions[index]?.durationSeconds;
-        if (boundaryOverlap === undefined) {
-          return;
-        }
-
-        // A boundary with no stub is a hard cut, and it happens at the end of
-        // the retained tail rather than here — but a whoosh is an accent on a
-        // dissolve, not a fallback for one, so a failed stub gets no cue at
-        // all rather than a cue at a different time.
-        if (stubPathByIndex.has(index)) {
-          boundarySeconds.push(elapsedSeconds);
-        }
-        elapsedSeconds += boundaryOverlap;
-      });
-
-      let sfxPath: string | undefined;
-      try {
-        const candidate = path.join(tempDir, "sfx.m4a");
-        await this.runFfmpeg(
-          buildSfxTrackArgs({
-            cues: planSfxCues(boundarySeconds, durationSeconds),
-            durationSeconds,
-            outputPath: candidate,
-          }),
-          job.id,
-          null,
-          () => {},
-          shouldCancel,
-        );
-        sfxPath = candidate;
-      } catch (error) {
-        // Same rule as a failed stub: an enhancement never fails a render, but
-        // a cancellation must still propagate.
-        if (shouldCancel?.()) {
-          throw error;
-        }
-        onProgress("sound effects could not be built; continuing without them");
-      }
-
       // Fetched, never generated, and a video that has none simply renders
       // without it — see MusicService.collect's doc comment.
       //
@@ -624,27 +520,40 @@ export class RenderService {
         await writeFile(musicPath, await getObject(musicStoragePath));
       }
 
-      onProgress(
-        `assembling ${plan.playOrder.length} segment(s) with narration, ` +
-          `captions${musicPath ? " and music" : ""}`,
-      );
-
-      await this.runFfmpeg(
-        buildAssembleArgs({
-          concatListPath,
+      // Everything from here to the finished MP4 is `composer.ts`: the two
+      // passes, the crossfade stubs, the concat list, the effects track and
+      // the assemble. It was moved out of this method verbatim so that
+      // ShortsService can compose a short out of these same section clips
+      // instead of cropping one out of the file this render is about to
+      // produce — see that module's doc comment for the double-caption bug
+      // that made it necessary. For a landscape video nothing about the argv
+      // or the ordering changed.
+      await compose(
+        {
+          tempDir,
+          clipPaths: downloadedClipPaths,
+          clipSeconds,
+          style,
+          // Undefined rather than "LANDSCAPE" for the landscape case, so the
+          // segment argv is byte-for-byte what it was.
+          format: vertical ? "VERTICAL" : undefined,
           audioPath,
-          srtPath,
-          outputPath,
           durationSeconds,
+          srtPath,
+          // The same geometry a short's captions use, and deliberately the
+          // same function: it is a 1080x1920 frame either way, so the safe
+          // area that clears YouTube's action rail and its bottom chrome is
+          // the same safe area. See `verticalCaptionStyle`.
+          captions: vertical ? verticalCaptionStyle(style.captions) : style.captions,
           musicPath,
-          sfxPath,
-          audio: style.audio,
-          captions: style.captions,
-        }),
-        job.id,
-        durationSeconds,
-        onProgress,
-        shouldCancel,
+          outputPath,
+        },
+        {
+          runFfmpeg: (args, runDurationSeconds, report) =>
+            this.runFfmpeg(args, job.id, runDurationSeconds, report, shouldCancel),
+          onProgress,
+          shouldCancel,
+        },
       );
 
       // The finished MP4 lands on this machine's own disk — the app and the

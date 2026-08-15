@@ -410,6 +410,23 @@ enum VideoStatus {
   FAILED
 }
 
+/// What shape of video the renderer is asked to produce, chosen by the operator
+/// at the moment they approve the script (see `VideoService.approveScript`).
+///
+/// This is not a rendering detail that could live in `VideoStyle`: it changes
+/// what the narration, the footage and the captions are composed into, it is
+/// the one property of a finished video that cannot be changed afterwards
+/// without paying for the whole pipeline again, and it decides whether the
+/// video can have shorts cut from it at all — a vertical video already is one.
+enum VideoFormat {
+  /// 1920x1080. What every video produced before this column existed is.
+  LANDSCAPE
+
+  /// 1080x1920, composed natively at that aspect ratio rather than cropped out
+  /// of a landscape render.
+  VERTICAL
+}
+
 model Video {
   id                   String      @id @default(uuid()) @db.Uuid
   title                String
@@ -422,6 +439,11 @@ model Video {
   tags                 String[]
   topic                String?
   status               VideoStatus @default(DRAFT)
+  /// Landscape unless the operator chose otherwise when approving the script.
+  /// Written once, by `approveScript`, and never again — every stage after
+  /// that reads it, and a video whose format changed halfway would have
+  /// narration timed for one shape and footage framed for another.
+  format               VideoFormat @default(LANDSCAPE)
   // Denormalised only as a UI hint; the durable record lives in VideoStatusEvent.
   failureReason        String?
   durationSeconds      Int?
