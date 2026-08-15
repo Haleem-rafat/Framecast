@@ -21,12 +21,21 @@
  * deliberately does NOT touch a template whose name an operator chose — only
  * the ones named below.
  *
+ * The SCRIPT template is not written out here any more: it is the
+ * `default-script` entry of the built-in style catalogue in
+ * `src/lib/script-styles.ts`, read from there so the prompt every operator
+ * starts with and the catalogue's account of that same style cannot drift
+ * apart. The other four styles in that catalogue are deliberately NOT seeded —
+ * an operator adds the ones they want from Browse styles on /prompts, and a
+ * library full of prompts nobody chose is what that surface exists to avoid.
+ *
  * Safe to run against prod and staging, repeatedly.
  */
 import "dotenv/config";
 
 import type { PromptCategory } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
+import { findScriptStyle, SEEDED_SCRIPT_STYLE_ID } from "@/lib/script-styles";
 
 type Variable = {
   key: string;
@@ -54,51 +63,34 @@ type Template = {
  * substitution.
  */
 const TOPIC_VARIABLE: Variable = { key: "topic", label: "Topic", required: true };
+/**
+ * The SCRIPT template, read from the built-in style catalogue rather than
+ * written out here. `src/lib/script-styles.ts` is the one definition of this
+ * prompt: the browse surface on /prompts shows it, this script seeds it, and
+ * neither can describe a style the other does not have.
+ *
+ * Thrown rather than defaulted if the id ever stops resolving. Seeding five
+ * templates and silently skipping the only one the application actually reads
+ * would leave every fresh account with the same `NotFoundError("Default
+ * script prompt")` this script exists to prevent, and nothing in the output
+ * would say so.
+ */
+const SEEDED_SCRIPT_STYLE = findScriptStyle(SEEDED_SCRIPT_STYLE_ID);
+
+if (!SEEDED_SCRIPT_STYLE) {
+  throw new Error(
+    `No script style with id "${SEEDED_SCRIPT_STYLE_ID}" in SCRIPT_STYLES — ` +
+      "seeding would leave every user without a default SCRIPT prompt.",
+  );
+}
+
 const TEMPLATES: Template[] = [
   {
-    name: "Default script",
-    category: "SCRIPT",
-    description: "Baseline narrated explainer. Edit this to change how every script sounds.",
-    content: [
-      "Write a {{duration}}-minute narration script about: {{topic}}",
-      "",
-      "Audience: {{audience}}",
-      "Tone: {{tone}}",
-      "",
-      "LENGTH — this matters more than anything else here.",
-      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words of narration. Each section is about 22 words, so that is well over a hundred sections. Keep writing until you reach that length. A script that runs short is the single most common failure: do not stop at twenty sections and call it finished.",
-      "",
-      "STRUCTURE — hold attention for the whole runtime.",
-      "- Cold open. The first sentence states the strangest, most specific fact you have. Not a summary, not a greeting, not 'in this video'. Something that makes stopping feel like a loss.",
-      "- Then a promise: name the question the rest of the video answers.",
-      "- Then chapters. Four to seven of them, each one a self-contained beat with its own small hook and its own small payoff. A chapter that only sets up the next one is where a viewer leaves.",
-      "- Open a loop early and close it late. Ask something in the first minute you do not answer until the last.",
-      "- Change gear every ninety seconds or so: after a stretch of explanation, land a number, a name, a date, a short story, or a direct question. Sustained exposition is what loses the second half of an audience.",
-      "- Land the payoff before the close. The most satisfying fact goes near the end, not buried in the middle.",
-      "- Close in one or two lines that resolve the opening loop. No subscribe request, no 'thanks for watching'.",
-      "",
-      "VOICE — every word is read aloud by a synthetic voice exactly as typed.",
-      "- Spoken prose only. Never scene directions, speaker labels, headings, bullet points, stage notes, emoji or asterisks. They will be read out.",
-      "- Short sentences, one idea each. A listener cannot re-read a sentence.",
-      "- Write numbers the way they are said: 'nineteen twenty-nine', 'four hundred billion dollars', 'twelve per cent'.",
-      "- Concrete over vague. A named company, a real year, an exact figure — never 'a lot', 'experts say', or 'studies show'.",
-      "- Vary sentence length deliberately. Several short ones, then a longer one. Monotone rhythm is what makes synthetic narration sound synthetic.",
-      "- Never write a URL, a citation or a SOURCES list into the narration. Put every source in the separate sources field, which is published in the description and never spoken.",
-      "",
-      "VISUALS — each section carries a cue, a stock-footage search query for what fills the screen while that line is read.",
-      "- Describe the picture, never the idea: 'printing press running', not 'monetary expansion'. Stock libraries match what a camera can see.",
-      "- Two to five words. Longer queries return nothing.",
-      "- Prefer motion and people over static objects: 'trader shouting on floor' beats 'stock chart'.",
-      "- Change the cue every section. Repeating a query means the same clip twice in a row, which reads as a glitch.",
-      "- Vary the shot scale across neighbouring sections — a wide, then a close-up, then hands or a face. Sequences of identical framing feel like a slideshow.",
-      "- Prefer footage that would plausibly exist in a stock library. Historical or highly specific events do not; find the nearest thing a camera really filmed.",
-    ].join("\n"),
-    variables: [
-      TOPIC_VARIABLE,
-      { key: "duration", label: "Duration (minutes)", defaultValue: "9" },
-      { key: "audience", label: "Audience", defaultValue: "curious general viewers" },
-      { key: "tone", label: "Tone", defaultValue: "clear, direct and energetic" },
-    ],
+    name: SEEDED_SCRIPT_STYLE.name,
+    category: SEEDED_SCRIPT_STYLE.category,
+    description: SEEDED_SCRIPT_STYLE.description,
+    content: SEEDED_SCRIPT_STYLE.content,
+    variables: SEEDED_SCRIPT_STYLE.variables.map((variable) => ({ ...variable })),
   },
   {
     name: "Default thumbnail",

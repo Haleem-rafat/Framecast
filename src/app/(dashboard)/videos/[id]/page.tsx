@@ -23,6 +23,7 @@ import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
+import { promptTemplateService } from "@/services/prompt-template.service";
 import { publishService } from "@/services/publish.service";
 import { settingsService } from "@/services/settings.service";
 import { shortsService } from "@/services/shorts.service";
@@ -326,6 +327,16 @@ export default async function VideoDetailPage({
       ? await publishService.countPublishableShorts(user.id, video.id)
       : 0;
 
+  // Which script prompts the panel's picker offers. Only fetched for a draft:
+  // generating is refused at every other status (`scriptService.generate`), so
+  // for a video past the draft stage this is a query spent on a control the
+  // panel does not render. Three columns per row, never `content` — see
+  // `listForCategory`.
+  const scriptTemplates =
+    video.status === "DRAFT"
+      ? await promptTemplateService.listForCategory(user.id, "SCRIPT")
+      : [];
+
   const script = video.script;
   const activeVersion = script?.activeVersion ?? null;
   const versions = script?.versions ?? [];
@@ -466,6 +477,7 @@ export default async function VideoDetailPage({
                     videoId={video.id}
                     status={video.status}
                     activeVersion={activeVersion}
+                    scriptTemplates={scriptTemplates}
                   />
                 </div>
                 <VersionHistory

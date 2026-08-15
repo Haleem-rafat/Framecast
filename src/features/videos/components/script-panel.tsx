@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useId, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   FileText,
@@ -15,6 +15,14 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   generateScriptAction,
@@ -40,17 +48,51 @@ interface ActiveVersion {
   wordCount: number;
 }
 
+/** One option in the prompt picker — see `listForCategory`, which selects
+ *  exactly these three columns and nothing else. */
+export interface ScriptTemplateOption {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
 export function ScriptPanel({
   videoId,
   status,
   activeVersion,
+  scriptTemplates,
 }: {
   videoId: string;
   status: VideoStatus;
   activeVersion: ActiveVersion | null;
+  /**
+   * The operator's SCRIPT templates, default first, and empty for a video past
+   * the draft stage — the page only fetches them where generating is possible.
+   *
+   * This is what makes a second script style worth having. Until this existed
+   * the template was decided entirely by `UserSetting`'s category default:
+   * `scriptService.generate` accepted a `templateId` and no caller in the app
+   * ever passed one, so writing one video in a different style meant changing
+   * a global default, generating, and changing it back.
+   */
+  scriptTemplates: ScriptTemplateOption[];
 }) {
   const router = useRouter();
   const [content, setContent] = useState(activeVersion?.content ?? "");
+  // Starts on whichever template is the category default — the one the server
+  // would have chosen on its own — so the picker changes what an operator
+  // *can* do without changing what happens if they ignore it. Falls back to
+  // the first option for an operator whose templates have no default at all
+  // (the state `getDefault` throws `NotFoundError` for), which turns that
+  // error into a working generate.
+  const [templateId, setTemplateId] = useState<string | undefined>(
+    () =>
+      scriptTemplates.find((template) => template.isDefault)?.id ??
+      scriptTemplates[0]?.id,
+  );
+  // Generated: nothing stops a future list view mounting two of these, and a
+  // duplicated id would point every label at the first select on the page.
+  const templatePickerId = useId();
   const [isPending, startTransition] = useTransition();
   // Import is its own draft, kept apart from `content` so opening the importer
   // and closing it again cannot destroy edits in progress on the live script.
@@ -67,6 +109,7 @@ export function ScriptPanel({
 
   const isDraft = status === "DRAFT";
   const isDirty = content !== (activeVersion?.content ?? "");
+  const showTemplatePicker = isDraft && scriptTemplates.length > 1;
 
   function onImport() {
     const pasted = importDraft ?? "";
@@ -91,7 +134,12 @@ export function ScriptPanel({
 
   function onGenerate() {
     startTransition(async () => {
-      const result = await generateScriptAction(videoId, {});
+      // `templateId` is undefined only when the operator has no SCRIPT
+      // templates at all, and `generate` falls back to the category default
+      // for an absent one — which then throws the `NotFoundError` that names
+      // the real problem. Sending an empty string instead would send a
+      // template id that cannot exist and report it as a missing template.
+      const result = await generateScriptAction(videoId, { templateId });
 
       if (!result.ok) {
         toast.error("Could not generate a script", {
@@ -206,31 +254,70 @@ export function ScriptPanel({
     );
   }
 
+  /**
+   * Which prompt this generate uses, chosen per video.
+   *
+   * Hidden when there is nothing to choose between — one template, or none.
+   * A select with a single option is a control that cannot be operated, and
+   * this panel already has three buttons competing for a narrow column.
+   */
+  const templatePicker = showTemplatePicker ? (
+    <div className="flex items-center gap-2">
+      <Label htmlFor={templatePickerId} className="text-muted-foreground text-xs">
+        Prompt
+      </Label>
+      <Select
+        value={templateId}
+        onValueChange={setTemplateId}
+        disabled={!isDraft || isPending}
+      >
+        <SelectTrigger id={templatePickerId} size="sm" className="w-52">
+          <SelectValue placeholder="Pick a prompt" />
+        </SelectTrigger>
+        <SelectContent>
+          {scriptTemplates.map((template) => (
+            <SelectItem key={template.id} value={template.id}>
+              {template.name}
+              {template.isDefault ? " (default)" : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  ) : null;
+
   if (!activeVersion) {
     return (
       <div className="py-6">
         <EmptyState
           icon={FileText}
           title="No script yet"
-          description="Generate one from the video's topic using your default script prompt, or import a script you already wrote."
+          description={
+            showTemplatePicker
+              ? "Generate one from the video's topic using any prompt in your library, or import a script you already wrote."
+              : "Generate one from the video's topic using your default script prompt, or import a script you already wrote."
+          }
           action={
-            <div className="flex items-center gap-2">
-              <Button onClick={onGenerate} disabled={!isDraft || isPending}>
-                {isPending ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <Sparkles />
-                )}
-                Generate script
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setImportDraft("")}
-                disabled={!isDraft || isPending}
-              >
-                <Upload />
-                Import script
-              </Button>
+            <div className="flex flex-col items-center gap-3">
+              {templatePicker}
+              <div className="flex items-center gap-2">
+                <Button onClick={onGenerate} disabled={!isDraft || isPending}>
+                  {isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Sparkles />
+                  )}
+                  Generate script
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setImportDraft("")}
+                  disabled={!isDraft || isPending}
+                >
+                  <Upload />
+                  Import script
+                </Button>
+              </div>
             </div>
           }
         />
@@ -248,6 +335,10 @@ export function ScriptPanel({
           Version {activeVersion.version} · {activeVersion.wordCount} words
         </p>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Beside Regenerate rather than above it: the picker only changes
+            * what the next generate does, so reading left to right gives
+            * "this prompt, regenerate". */}
+          {templatePicker}
           <Button
             variant="outline"
             size="sm"
