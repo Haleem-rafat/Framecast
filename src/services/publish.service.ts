@@ -7,7 +7,7 @@ import { ConflictError, InternalError, NotFoundError, ProviderError } from "@/li
 import { prisma } from "@/lib/prisma";
 import { getShortFile } from "@/lib/shorts-storage";
 import { getObject, objectContentType, removeObjects } from "@/lib/storage";
-import { clampDescription, clampTitle } from "@/lib/youtube-limits";
+import { clampTitle, composeDescription } from "@/lib/youtube-limits";
 import { brandService } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
 
@@ -434,23 +434,24 @@ export class PublishService {
     // to be sent — needs no branch.
     const title = clampTitle(video.generatedTitle ?? video.title);
 
-    // sourcesAndCredits goes *first*, generatedDescription second — the
-    // reverse of "natural" reading order — specifically so that when the
-    // combined text is over DESCRIPTION_MAX and clampDescription has to cut
-    // something, the cut lands in the narration summary's tail rather than
-    // in the Pixabay/music credit lines. Losing the end of a generated
-    // summary is a cosmetic loss; losing an attribution those licenses
-    // require is not. clampDescription always runs, even when there is no
-    // generatedDescription: buildDescription's own output is not otherwise
-    // bounded (an unusually long SOURCES list is the only realistic way it
-    // could exceed the limit), and this is the one call site that knows
-    // what's about to be sent to YouTube. See youtube-limits.ts's doc
-    // comment for why this is checked before the upload rather than
-    // discovered from its 400 response after the bytes are already sent.
-    const combinedDescription = video.generatedDescription
-      ? [sourcesAndCredits, video.generatedDescription].filter(Boolean).join("\n\n")
-      : sourcesAndCredits;
-    const description = clampDescription(combinedDescription);
+    // The generated summary leads and the credits follow it. This is the
+    // reverse of what this line used to do, and the reversal is the fix: the
+    // credits went first so that a clamp would eat the summary's tail rather
+    // than an attribution, which worked, at the cost of every published video
+    // opening on a Pixabay credit list. YouTube shows roughly the first 150
+    // characters in search results and above the fold, so the credits were not
+    // merely first — they were, for most viewers, the entire description.
+    //
+    // `composeDescription` gets the same protection without the cost by
+    // reserving the credits' exact length out of DESCRIPTION_MAX before
+    // clamping the summary to what is left, which makes the credits
+    // unconditionally intact rather than merely likely to survive. See its own
+    // doc comment, and youtube-limits.ts's, for why any of this is measured
+    // here rather than discovered from a 400 after the bytes are already sent.
+    const description = composeDescription(
+      video.generatedDescription,
+      sourcesAndCredits,
+    );
 
     // Language and category are the channel's, not this video's — a channel's
     // videos are written, narrated and categorised the same way every time —
@@ -1056,12 +1057,19 @@ export class PublishService {
    * that stored nulls, falls back to the video's own title with its position
    * appended, so an unnamed clip still uploads rather than not uploading.
    *
-   * The description leads with the video's `sourcesAndCredits` block for a
-   * reason that is not cosmetic: the footage in the clip is the same Pixabay
-   * footage the video was rendered from, so the same attribution is owed, and
-   * the same music credit applies to whatever music is audible in the window.
-   * Credits go first so that when `clampDescription` has to cut, it cuts the
-   * tail of the clip's own summary rather than a licence requirement.
+   * The description carries the video's `sourcesAndCredits` block for a reason
+   * that is not cosmetic: the footage in the clip is the same Pixabay footage
+   * the video was rendered from, so the same attribution is owed, and the same
+   * music credit applies to whatever music is audible in the window.
+   *
+   * The clip's own summary goes first and the credits follow, exactly as
+   * `publish()` now arranges the video's own description and for the same
+   * reason — a Shorts description is shown as a couple of lines under the
+   * player, so leading with an attribution block means leading with the only
+   * part of it a viewer will ever see. `composeDescription` reserves the
+   * credits' length before clamping the summary, so putting the summary first
+   * costs the attribution nothing: it is intact by arithmetic rather than by
+   * being lucky enough to sit before the cut.
    */
   private buildShortMetadata(
     short: { index: number; title: string | null; description: string | null },
@@ -1070,9 +1078,7 @@ export class PublishService {
   ): { title: string; description: string } {
     return {
       title: clampTitle(short.title ?? `${videoTitle} — Short ${short.index + 1}`),
-      description: clampDescription(
-        [sourcesAndCredits, short.description].filter(Boolean).join("\n\n"),
-      ),
+      description: composeDescription(short.description, sourcesAndCredits),
     };
   }
 

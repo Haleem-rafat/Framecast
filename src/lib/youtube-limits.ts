@@ -37,6 +37,80 @@ export function clampDescription(value: string): string {
   return truncateOnWord(value.trim(), DESCRIPTION_MAX);
 }
 
+/** What separates the summary from the credits below it. Counted against the
+ *  cap rather than assumed free — two characters is the difference between a
+ *  description that fits and a 400 after the bytes are already sent. */
+const DESCRIPTION_SEPARATOR = "\n\n";
+
+/**
+ * Builds the description YouTube receives: the summary first, the credits
+ * after it, and the credits never cut.
+ *
+ * The order is what a viewer reads, and it is not a cosmetic choice. YouTube
+ * shows roughly the first 150 characters above the fold and in search results,
+ * so whatever leads the description is the whole of what most people ever see
+ * of it. This used to be the credits — the Pixabay line, the music line and
+ * the SOURCES list — which meant every video opened on an attribution block
+ * and the summary the model wrote for exactly that slot was pushed out of
+ * view.
+ *
+ * The obvious way to put the summary first would be to concatenate and let
+ * `clampDescription` cut the tail, and that is precisely what must not happen:
+ * the tail is now the attribution, and losing it breaks a licence term rather
+ * than a sentence. So the credits are measured *first* and their exact length
+ * (plus the separator) is reserved out of `DESCRIPTION_MAX`; the summary is
+ * clamped to whatever is left, on a word boundary. The credits are then intact
+ * by construction — a stronger guarantee than the old credits-first ordering,
+ * which only made them *likely* to survive and would still have truncated them
+ * for a long enough SOURCES list.
+ *
+ * Attribution wins outright in the one case where nothing else can fit: if the
+ * credits alone are at or over the cap there is no room for a summary, and the
+ * credits are returned on their own rather than sacrificing a licence line to
+ * make space for prose.
+ *
+ * `clampDescription` still runs over the assembled result. It cannot fire —
+ * the arithmetic above already guarantees the fit — and that is the point of
+ * keeping it: it is the backstop that holds if this function's reservation is
+ * ever wrong, at the one call site that knows what is about to be sent.
+ */
+export function composeDescription(
+  /** The model's own summary of the video (`Video.generatedDescription`, or a
+   *  short's own). Absent for anything whose metadata stage never ran. */
+  summary: string | null | undefined,
+  /** The Pixabay credit, the music credit and the script's SOURCES list, as
+   *  `buildDescription` assembles them. Owed in full, every time. */
+  credits: string,
+): string {
+  const trimmedSummary = summary?.trim() ?? "";
+  const trimmedCredits = credits.trim();
+
+  if (!trimmedCredits) {
+    return clampDescription(trimmedSummary);
+  }
+
+  if (!trimmedSummary) {
+    return clampDescription(trimmedCredits);
+  }
+
+  const available =
+    DESCRIPTION_MAX - trimmedCredits.length - DESCRIPTION_SEPARATOR.length;
+
+  // No room for a single character of summary alongside the credits, so the
+  // credits stand alone. Still clamped, because `credits.length` can itself be
+  // over the cap — in which case a truncated attribution is all there is, and
+  // it is still better than dropping the block entirely.
+  if (available <= 0) {
+    return clampDescription(trimmedCredits);
+  }
+
+  const clampedSummary = truncateOnWord(trimmedSummary, available);
+
+  return clampDescription(
+    `${clampedSummary}${DESCRIPTION_SEPARATOR}${trimmedCredits}`,
+  );
+}
+
 /**
  * Drops whole tags from the end until the combined length fits.
  *

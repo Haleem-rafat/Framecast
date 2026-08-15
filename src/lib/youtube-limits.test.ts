@@ -4,6 +4,7 @@ import {
   clampDescription,
   clampTags,
   clampTitle,
+  composeDescription,
   DESCRIPTION_MAX,
   TAGS_MAX,
   TITLE_MAX,
@@ -126,5 +127,101 @@ describe("withinLimits", () => {
         tags: [],
       }),
     ).toBe(false);
+  });
+});
+
+/**
+ * The credits block, in the shape `buildDescription` in publish.service.ts
+ * actually produces one: a SOURCES list, the Pixabay line, then the music
+ * line. Written out in full rather than stubbed with "credits", because the
+ * property under test is that these exact lines survive intact.
+ */
+const CREDITS = [
+  "SOURCES",
+  "- https://example.com/federal-reserve-report",
+  "- https://example.com/inflation-study",
+  "",
+  "Video clips courtesy of Pixabay (https://pixabay.com).",
+  "",
+  'Music: "Test Track" by Artist (https://creativecommons.org/licenses/by/3.0/)',
+].join("\n");
+
+describe("composeDescription", () => {
+  it("puts the summary first and the credits after it", () => {
+    const result = composeDescription("Inflation is money losing value.", CREDITS);
+
+    // The whole point of the reorder: YouTube shows roughly the first 150
+    // characters in search results and above the fold, and what sat there was
+    // a Pixabay credit list rather than a word about the video.
+    expect(result.indexOf("Inflation is money losing value.")).toBe(0);
+    expect(result.indexOf("SOURCES")).toBeGreaterThan(
+      result.indexOf("Inflation is money losing value."),
+    );
+    expect(result).toBe(`Inflation is money losing value.\n\n${CREDITS}`);
+  });
+
+  it("cuts the summary, never the credits, when the two together exceed the cap", () => {
+    // Comfortably over on its own, so the clamp genuinely has to fire.
+    const summary = "word ".repeat(1200);
+
+    const result = composeDescription(summary, CREDITS);
+
+    expect(result.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
+    // Every credit line, character for character — not just "contains
+    // Pixabay", which a half-truncated attribution block would also satisfy.
+    expect(result.endsWith(CREDITS)).toBe(true);
+    for (const line of CREDITS.split("\n").filter(Boolean)) {
+      expect(result).toContain(line);
+    }
+    // And the summary is the part that gave way.
+    expect(result.startsWith("word word")).toBe(true);
+    expect(result.length).toBeLessThan(summary.length + CREDITS.length);
+  });
+
+  it("cuts the summary on a word boundary, not mid-word", () => {
+    const summary = "supercalifragilistic ".repeat(400);
+
+    const result = composeDescription(summary, CREDITS);
+    const summaryPart = result.slice(0, result.length - CREDITS.length - 2);
+
+    expect(summaryPart.endsWith("supercalifragilistic")).toBe(true);
+  });
+
+  it("returns the credits alone when there is no generated summary", () => {
+    expect(composeDescription(null, CREDITS)).toBe(CREDITS);
+    expect(composeDescription(undefined, CREDITS)).toBe(CREDITS);
+    expect(composeDescription("   ", CREDITS)).toBe(CREDITS);
+  });
+
+  it("returns the credits alone when they leave no room for a summary", () => {
+    // Attribution wins outright: there is no arrangement here that fits both,
+    // and dropping a licence line to make space for prose is not one of the
+    // options.
+    const hugeCredits = `${"SOURCES\n"}${"- https://example.com/a\n".repeat(300)}`;
+    expect(hugeCredits.length).toBeGreaterThan(DESCRIPTION_MAX);
+
+    const result = composeDescription("A summary nobody will see.", hugeCredits);
+
+    expect(result).not.toContain("A summary nobody will see.");
+    expect(result.startsWith("SOURCES")).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
+  });
+
+  it("returns the summary alone when there are no credits to owe", () => {
+    expect(composeDescription("Just the summary.", "")).toBe("Just the summary.");
+  });
+
+  it("never exceeds the cap, whichever side is oversized", () => {
+    const cases: Array<[string, string]> = [
+      ["x".repeat(DESCRIPTION_MAX * 2), CREDITS],
+      ["Short summary.", "y".repeat(DESCRIPTION_MAX * 2)],
+      ["x".repeat(DESCRIPTION_MAX), "y".repeat(DESCRIPTION_MAX)],
+    ];
+
+    for (const [summary, credits] of cases) {
+      expect(composeDescription(summary, credits).length).toBeLessThanOrEqual(
+        DESCRIPTION_MAX,
+      );
+    }
   });
 });

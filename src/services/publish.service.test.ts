@@ -1195,7 +1195,35 @@ describe("publishService.publish — metadata and visibility", () => {
     expect(publication.publishedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
   });
 
-  it("clamps the combined description to YouTube's limit without losing the credits", async () => {
+  it("leads the description with the summary, not the credits", async () => {
+    // The defect this replaces: the credits were placed first so a clamp would
+    // eat the summary's tail, which meant the ~150 characters YouTube shows in
+    // search results and above the fold were a Pixabay credit list. The first
+    // video this app ever published opened on one.
+    const { videoId } = await makePublishableVideo();
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { generatedDescription: "Inflation is money losing value, explained." },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    const description = body.snippet.description as string;
+
+    expect(description.startsWith("Inflation is money losing value, explained.")).toBe(true);
+    expect(description.indexOf("SOURCES")).toBeGreaterThan(0);
+    expect(description.indexOf("Pixabay")).toBeGreaterThan(
+      description.indexOf("Inflation is money losing value, explained."),
+    );
+
+    // What's persisted must match what YouTube actually received.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.description).toBe(description);
+  });
+
+  it("clamps the summary, never the credits, when the combined text is over the limit", async () => {
     const { videoId } = await makePublishableVideo();
     // Comfortably over DESCRIPTION_MAX even before the sources/Pixabay block
     // is added on top, so this exercises the clamp rather than just missing it.
@@ -1209,16 +1237,47 @@ describe("publishService.publish — metadata and visibility", () => {
     await new PublishService(fetchImpl).publish(userId, videoId);
 
     const body = JSON.parse(calls[0].init!.body as string);
-    expect((body.snippet.description as string).length).toBeLessThanOrEqual(DESCRIPTION_MAX);
-    // sourcesAndCredits is placed first specifically so a cut lands in the
-    // narration summary's tail, never in the licensing-required attribution.
-    expect(body.snippet.description).toContain("Pixabay");
-    expect(body.snippet.description).toContain("SOURCES");
+    const description = body.snippet.description as string;
+    expect(description.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
 
-    // What's persisted must match what YouTube actually received.
+    // The exact credit lines, not a `toContain("Pixabay")` that a
+    // half-truncated attribution block would also satisfy. The credits' length
+    // is reserved out of the cap before the summary is clamped, so they are
+    // intact by arithmetic rather than by sitting on the lucky side of a cut.
+    expect(description).toContain("Video clips courtesy of Pixabay (https://pixabay.com).");
+    expect(description).toContain("SOURCES");
+    expect(description).toContain("- https://example.com/federal-reserve-report");
+    expect(description).toContain("- https://example.com/inflation-study");
+    // And the credits are still last — this fixture has no music asset, so
+    // the Pixabay line is the final one buildDescription emits. Only true if
+    // the summary is what gave way.
+    expect(
+      description.endsWith("Video clips courtesy of Pixabay (https://pixabay.com)."),
+    ).toBe(true);
+    expect(description.startsWith("word word")).toBe(true);
+    expect(description).not.toContain(nearLimitDescription.trim());
+
     const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
     expect(publication.description!.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
-    expect(publication.description).toBe(body.snippet.description);
+    expect(publication.description).toBe(description);
+  });
+
+  it("publishes the credits alone when the metadata stage never wrote a summary", async () => {
+    // The pre-`generatedDescription` shape, and still what a video whose
+    // metadata stage failed gets. Nothing about leading with the summary may
+    // turn "no summary" into "no attribution".
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const body = JSON.parse(calls[0].init!.body as string);
+    const description = body.snippet.description as string;
+
+    expect(description.startsWith("SOURCES")).toBe(true);
+    expect(description).toContain("Video clips courtesy of Pixabay (https://pixabay.com).");
+    // No stray separator where a summary would have been.
+    expect(description.startsWith("\n")).toBe(false);
   });
 });
 
@@ -1541,8 +1600,48 @@ describe("publishService.publish — shorts, when the operator asks for them", (
     expect(uploads).toHaveLength(2);
     expect(result.shorts.map((short) => short.shortId)).toEqual([named.id]);
     expect(uploads[1].title).toBe("How inflation actually works — Short 3");
-    // No clip description, but the attribution is still owed.
+    // No clip description, but the attribution is still owed — and with
+    // nothing to lead with, the credits are the whole description rather than
+    // a description with a blank line on top of it.
     expect(uploads[1].description).toContain("Pixabay");
+    expect(uploads[1].description.startsWith("SOURCES")).toBe(true);
+  });
+
+  it("leads a short's description with the clip's own summary, credits after", async () => {
+    // The same reorder the video's own description got, for the same reason: a
+    // Shorts description shows as a couple of lines under the player, so a
+    // clip that opened on an attribution block opened on the only part of it a
+    // viewer would ever see.
+    const { videoId } = await makePublishableVideo();
+    await makeReadyShort(videoId, 0, { description: "Why inflation is not prices going up." });
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, { includeShorts: true });
+
+    const description = uploads[1].description;
+    expect(description.startsWith("Why inflation is not prices going up.")).toBe(true);
+    expect(description.indexOf("Pixabay")).toBeGreaterThan(0);
+    expect(description).toContain("Video clips courtesy of Pixabay (https://pixabay.com).");
+    expect(description).toContain("SOURCES");
+  });
+
+  it("keeps a short's credits intact when its own summary is too long to fit", async () => {
+    const { videoId } = await makePublishableVideo();
+    const longSummary = "clip ".repeat(1200);
+    await makeReadyShort(videoId, 0, { description: longSummary });
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, { includeShorts: true });
+
+    const description = uploads[1].description;
+    expect(description.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
+    // The exact lines, not a substring that a half-cut block would satisfy.
+    expect(description).toContain("Video clips courtesy of Pixabay (https://pixabay.com).");
+    expect(description).toContain("- https://example.com/federal-reserve-report");
+    expect(
+      description.endsWith("Video clips courtesy of Pixabay (https://pixabay.com)."),
+    ).toBe(true);
+    expect(description.startsWith("clip clip")).toBe(true);
   });
 
   it("leaves the video published when a short fails, and records which one and why", async () => {
