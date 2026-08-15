@@ -30,6 +30,19 @@
  * Safe to run twice: an account that is already an OPERATOR is reported as
  * unchanged and no row is written.
  */
+import { config } from "dotenv";
+
+// .env.local holds local overrides; it must load first so it wins over the
+// docker-compose defaults in .env. Mirrors prisma.config.ts, src/lib/prisma.ts
+// and every other script in this directory.
+config({ path: ".env.local" });
+config({ path: ".env" });
+
+// `@/config/site` is plain constants and reads no environment, so it is safe
+// to import statically. `@/lib/prisma` is not, and is imported inside `main`
+// below — `@/config/env` parses `process.env` at import time, so a static
+// import would run before the two lines above and every variable would read
+// as unset.
 import { OPERATOR_EMAIL } from "@/config/site";
 
 interface Options {
