@@ -7,6 +7,7 @@ import { Video } from "lucide-react";
 import { DataTable, type DataTableColumn } from "@/components/shared/data-table";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RelativeTime } from "@/components/shared/relative-time";
+import { BulkDeleteVideosButton } from "@/features/videos/components/bulk-delete-videos-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import { VideoStatus } from "@/generated/prisma/enums";
 import type { VideoListItem } from "@/features/videos/types";
@@ -102,6 +103,15 @@ export function VideoTable({
       searchPlaceholder="Search videos"
       pageSize={25}
       columnToggle
+      selection={{
+        // The title, not "row 3": a checkbox announced as "Select row 3" is
+        // only marginally better than one announced as "checkbox", and the
+        // number changes the moment the table is sorted.
+        rowLabel: (video) => video.title,
+        actions: ({ rows, clear }) => (
+          <BulkDeleteVideosButton videos={rows} onDone={clear} />
+        ),
+      }}
       empty={
         <EmptyState
           icon={Video}

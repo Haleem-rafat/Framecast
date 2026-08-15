@@ -208,4 +208,39 @@ describe("videoService", () => {
     const busyRow = await prisma.video.findUnique({ where: { id: busy } });
     expect(busyRow?.deletedAt).toBeNull();
   });
+
+  /**
+   * The video list's "Delete selected" posts whatever ids are checked in the
+   * browser, so the only thing standing between a forged payload and another
+   * operator's back catalogue is the `userId` in `removeMany`'s `where`. It is
+   * one clause in one query and nothing else re-checks it — which is exactly
+   * why it is asserted here rather than assumed.
+   */
+  it("cannot bulk-delete a video another operator owns", async () => {
+    const mine = await createApprovableVideo();
+
+    const strangerId = await createTestUser("video-stranger");
+    try {
+      const strangerProject = await projectService.create(strangerId, {
+        name: `stranger-${RUN}`,
+      });
+      const theirs = await videoService.create(strangerId, {
+        projectId: strangerProject.id,
+        title: "Not yours",
+        topic: "ownership",
+      });
+
+      // Both ids in one batch: the foreign one has to be skipped without
+      // taking the legitimate one down with it.
+      const result = await videoService.removeMany(userId, [mine, theirs.id]);
+
+      expect(result.deletedCount).toBe(1);
+      expect(result.skippedCount).toBe(1);
+
+      const theirRow = await prisma.video.findUnique({ where: { id: theirs.id } });
+      expect(theirRow?.deletedAt).toBeNull();
+    } finally {
+      await deleteTestUser(strangerId);
+    }
+  });
 });
