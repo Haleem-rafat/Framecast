@@ -76,7 +76,7 @@ function isActive(pathname: string, href: string): boolean {
  * home indicator; `main` in the dashboard layout reserves matching space so
  * the dock never covers the last row of a table or a form's submit button.
  */
-export function MobileDock() {
+export function MobileDock({ isOperator }: { isOperator: boolean }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -121,7 +121,11 @@ export function MobileDock() {
         />
       </div>
 
-      <MobileNavDrawer open={menuOpen} onOpenChange={setMenuOpen} />
+      <MobileNavDrawer
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        isOperator={isOperator}
+      />
     </>
   );
 }

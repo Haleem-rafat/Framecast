@@ -19,19 +19,21 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { navigation } from "@/config/navigation";
+import { visibleNavigation } from "@/config/navigation";
 import { UserMenu } from "@/components/layout/user-menu";
 import type { SessionUser } from "@/lib/auth";
 
 interface AppSidebarProps {
   user: Pick<SessionUser, "name" | "email" | "image">;
+  /** Decides whether the operator-only entries are listed. See `visibleNavigation`. */
+  isOperator: boolean;
 }
 
 function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export function AppSidebar({ user }: AppSidebarProps) {
+export function AppSidebar({ user, isOperator }: AppSidebarProps) {
   const pathname = usePathname();
   const { isMobile } = useSidebar();
 
@@ -78,7 +80,7 @@ export function AppSidebar({ user }: AppSidebarProps) {
        * breadcrumb ("breadcrumb") and the mobile dock ("Primary") are already
        * navigation landmarks, and three unnamed ones are worse than none. */}
       <SidebarContent role="navigation" aria-label="Studio">
-        {navigation.map((group) => (
+        {visibleNavigation(isOperator).map((group) => (
           <SidebarGroup key={group.label}>
             <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
             <SidebarGroupContent>

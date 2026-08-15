@@ -10,6 +10,7 @@ import {
   Mic,
   MonitorPlay,
   Settings,
+  ShieldCheck,
   UserCheck,
   Sparkles,
   Upload,
@@ -28,6 +29,17 @@ export interface NavItem {
    * "Soon" badge instead of linking, so the sidebar never advertises a 404.
    */
   built: boolean;
+  /**
+   * Hidden from anyone whose role is not OPERATOR — see `visibleNavigation`.
+   *
+   * This is presentation, never protection: the pages behind these entries
+   * gate themselves with `requireOperator()` and would be just as closed if
+   * this flag were deleted. What it buys is that a member is never *shown* a
+   * door they cannot open. /approvals sat in this list with no such flag while
+   * registration was open, so every member's sidebar, ⌘K palette and phone
+   * drawer advertised the account queue to them.
+   */
+  operatorOnly?: boolean;
 }
 
 export interface NavGroup {
@@ -167,6 +179,15 @@ export const navigation: NavGroup[] = [
         icon: UserCheck,
         keywords: ["accounts", "pending", "sign up", "register", "approve"],
         built: true,
+        operatorOnly: true,
+      },
+      {
+        title: "Admin",
+        href: "/admin",
+        icon: ShieldCheck,
+        keywords: ["users", "accounts", "operator", "system", "totals", "storage"],
+        built: true,
+        operatorOnly: true,
       },
       {
         title: "Settings",
@@ -180,6 +201,30 @@ export const navigation: NavGroup[] = [
 ];
 
 export const navItems: NavItem[] = navigation.flatMap((group) => group.items);
+
+/**
+ * The map as one account may see it.
+ *
+ * Every navigation surface — sidebar, ⌘K palette, phone drawer — renders this
+ * rather than `navigation` directly, so an `operatorOnly` entry is hidden in
+ * all three at once instead of in whichever two somebody remembered. A group
+ * left with no items disappears rather than rendering as a bare heading.
+ *
+ * Note what this function is not: it runs in the browser, on data the server
+ * sent, and a member who edits the flag in their own devtools gets a link that
+ * redirects them straight back out. The gate is `requireOperator()` on the
+ * page. This is about not putting a locked door in someone's way.
+ */
+export function visibleNavigation(isOperator: boolean): NavGroup[] {
+  if (isOperator) return navigation;
+
+  return navigation
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.operatorOnly),
+    }))
+    .filter((group) => group.items.length > 0);
+}
 
 /** Longest-prefix match so `/videos/:id` still resolves to the Videos entry. */
 export function findNavItemByPath(pathname: string): NavItem | undefined {

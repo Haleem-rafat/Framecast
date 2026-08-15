@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { Reveal } from "@/components/shared/reveal";
 import { Badge } from "@/components/ui/badge";
 import { PendingAccountList } from "@/features/auth/components/pending-account-list";
-import { requireUser } from "@/server/session";
+import { requireOperator } from "@/server/session";
 import { accountService } from "@/services/account.service";
 
 export const metadata: Metadata = { title: "Approvals" };
@@ -12,14 +12,20 @@ export const metadata: Metadata = { title: "Approvals" };
 /**
  * The queue of accounts waiting to be let in.
  *
- * `requireUser()` is the whole authorization story for this page: the approval
- * gate lives inside it, so reaching this line already means the viewer is an
- * approved operator. A pending account is redirected to /pending before the
- * queue is ever read, and the two actions behind the buttons check again on
- * the server anyway.
+ * This page used to gate on `requireUser()`, and its comment used to say that
+ * reaching that line already meant the viewer was an approved operator. That
+ * was accurate while there was one account; once registration opened it
+ * described the vulnerability rather than the design — every approved member
+ * could read the queue of people waiting (their names and email addresses) and
+ * decide on them.
+ *
+ * `requireOperator()` is the whole authorization story now, and it turns a
+ * member away exactly as it turns away someone who is not signed in at all.
+ * The two actions behind the buttons gate independently: this page is a
+ * convenience, never the boundary.
  */
 export default async function ApprovalsPage() {
-  await requireUser();
+  await requireOperator();
 
   const pending = await accountService.listPending();
 

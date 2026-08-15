@@ -7,6 +7,7 @@ import { MobileDock } from "@/components/layout/mobile-dock";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Appearance } from "@/providers/appearance";
 import { requireUser } from "@/server/session";
+import { accountService } from "@/services/account.service";
 import { settingsService } from "@/services/settings.service";
 
 /**
@@ -76,7 +77,24 @@ export default async function DashboardLayout({
   children: ReactNode;
 }) {
   const user = await requireUser();
-  const appearance = await settingsService.appearance(user.id);
+  const [appearance, role] = await Promise.all([
+    settingsService.appearance(user.id),
+    accountService.roleFor(user.id),
+  ]);
+
+  /**
+   * Decides only what the three navigation surfaces *list*. Every
+   * operator-only page gates itself with `requireOperator()`, so a member who
+   * forges this in devtools gains a link that redirects them straight back
+   * out — see `visibleNavigation` in src/config/navigation.ts.
+   *
+   * `requireUser()` deliberately stays the gate for this layout. Reading the
+   * role here is one extra primary-key lookup on every authenticated request,
+   * paid in parallel with the appearance read that was already happening, and
+   * it is what stops the sidebar advertising the account queue to all 41
+   * approved members the way it did before the role existed.
+   */
+  const isOperator = role === "OPERATOR";
 
   return (
     <SidebarProvider>
@@ -104,6 +122,7 @@ export default async function DashboardLayout({
 
       <AppSidebar
         user={{ name: user.name, email: user.email, image: user.image ?? null }}
+        isOperator={isOperator}
       />
       <SidebarInset>
         <AppTopbar
@@ -112,6 +131,7 @@ export default async function DashboardLayout({
             email: user.email,
             image: user.image ?? null,
           }}
+          isOperator={isOperator}
         />
         <main
           id="main-content"
@@ -149,7 +169,7 @@ export default async function DashboardLayout({
         </main>
       </SidebarInset>
 
-      <MobileDock />
+      <MobileDock isOperator={isOperator} />
     </SidebarProvider>
   );
 }

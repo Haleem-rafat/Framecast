@@ -12,7 +12,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { navigation } from "@/config/navigation";
+import { visibleNavigation } from "@/config/navigation";
 import { cn } from "@/lib/utils";
 
 /**
@@ -31,9 +31,12 @@ import { cn } from "@/lib/utils";
 export function MobileNavDrawer({
   open,
   onOpenChange,
+  isOperator,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** See `visibleNavigation` — the drawer is the phone's whole site map. */
+  isOperator: boolean;
 }) {
   const pathname = usePathname();
 
@@ -57,7 +60,7 @@ export function MobileNavDrawer({
           aria-label="All pages"
           className="flex-1 overflow-y-auto px-4 pb-4"
         >
-          {navigation.map((group) => {
+          {visibleNavigation(isOperator).map((group) => {
             // An `id` may not contain whitespace, and `aria-labelledby` splits
             // on it — so a group label of two words would silently become a
             // reference to two ids that do not exist. Today's labels are all

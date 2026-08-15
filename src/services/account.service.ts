@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { AccountApproval } from "@/generated/prisma/enums";
+import type { AccountApproval, UserRole } from "@/generated/prisma/enums";
 import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 
@@ -45,6 +45,27 @@ export class AccountService {
     });
 
     return user?.approval ?? null;
+  }
+
+  /**
+   * The operator gate's read, and `approvalFor`'s twin — same primary-key
+   * lookup, same "no row means null" contract, same reason for existing
+   * separately from the session cookie: a role revoked has to bite on the next
+   * request, not five minutes later when Better Auth's cookie cache expires.
+   *
+   * Two queries rather than one selecting both columns, because they are asked
+   * on different paths and at different rates. `approvalFor` runs on literally
+   * every authenticated request; the role is only ever needed by the two
+   * operator-gated surfaces, and folding it into the hot read would widen the
+   * common case to pay for the rare one.
+   */
+  async roleFor(userId: string): Promise<UserRole | null> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    return user?.role ?? null;
   }
 
   /**
@@ -131,11 +152,18 @@ export class AccountService {
    *
    * Two things are load-bearing here:
    *
-   * 1. The approver's own status is re-read from the database rather than
-   *    trusted from the caller. The action layer already gates on
-   *    `requireSession()`, but this service is the security boundary the rest
-   *    of the codebase relies on, and "only an approved operator may approve"
+   * 1. The approver's own approval *and role* are re-read from the database
+   *    rather than trusted from the caller. The action layer already gates on
+   *    `requireOperatorSession()`, but this service is the security boundary
+   *    the rest of the codebase relies on, and "only an operator may decide"
    *    is worth enforcing where the write actually happens.
+   *
+   *    The role check is the fix for a real escalation, not belt and braces.
+   *    This method used to require only that the approver was APPROVED, which
+   *    while Framecast was one private account meant "is the owner" and now
+   *    means "is any one of 41 strangers who registered". A caller that
+   *    forgets the action-layer gate — a script, a future route handler —
+   *    is refused here.
    *
    * 2. The update is conditional on the row still being `PENDING`
    *    (`updateMany` with the status in the `where`, not `update` by id). Two
@@ -154,9 +182,14 @@ export class AccountService {
       throw new ForbiddenError("You cannot decide on your own account.");
     }
 
-    if ((await this.approvalFor(approverId)) !== "APPROVED") {
+    const approver = await prisma.user.findUnique({
+      where: { id: approverId },
+      select: { approval: true, role: true },
+    });
+
+    if (approver?.approval !== "APPROVED" || approver.role !== "OPERATOR") {
       throw new ForbiddenError(
-        "Only an approved operator can decide on other accounts.",
+        "Only an operator can decide on other accounts.",
       );
     }
 

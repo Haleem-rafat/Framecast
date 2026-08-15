@@ -32,6 +32,32 @@ enum AccountApproval {
   REJECTED
 }
 
+/// What an account may act on: the studio as a whole, or only its own work.
+///
+/// This column exists because `AccountApproval` was being asked to carry a
+/// second meaning it never had. Approval answers "may this person use the
+/// studio at all", and while Framecast was one private account those two
+/// questions had the same answer, so the approve/reject actions and the
+/// /approvals page gated on approval alone and their comments said — correctly
+/// at the time — that reaching them meant you were *the* operator. Registration
+/// then opened, and with 41 approved accounts that sentence stopped being true
+/// while the code still relied on it: every approved member could approve or
+/// reject anybody. Two orthogonal questions need two columns.
+///
+/// MEMBER is the default and nothing is backfilled to OPERATOR. A migration
+/// that granted privilege by default would recreate the exact bug this column
+/// closes, so the owner's own account is promoted deliberately, by hand, with
+/// `scripts/promote-operator.ts`.
+enum UserRole {
+  /// May decide registrations and read every account's data through /admin.
+  /// The owner's account, and nobody else's unless the owner says so.
+  OPERATOR
+  /// Signs in, produces videos, sees only their own rows. What every
+  /// registration becomes and what every existing account already was in
+  /// everything but name.
+  MEMBER
+}
+
 model User {
   id            String          @id @default(uuid()) @db.Uuid
   name          String
@@ -45,6 +71,11 @@ model User {
   /// default would lock every existing operator out of their own studio.
   approval      AccountApproval @default(PENDING)
   approvedAt    DateTime?
+  /// Orthogonal to `approval` — see the UserRole comment. Deliberately has no
+  /// backfill and no index: "which accounts are operators" is a handful of
+  /// rows out of the whole table, and the only lookups are by primary key
+  /// (the session gate) or by the unique `email` (the promotion script).
+  role          UserRole        @default(MEMBER)
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 

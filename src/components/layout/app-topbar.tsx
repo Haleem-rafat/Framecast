@@ -18,8 +18,11 @@ import type { SessionUser } from "@/lib/auth";
  */
 export function AppTopbar({
   user,
+  isOperator,
 }: {
   user: Pick<SessionUser, "name" | "email" | "image">;
+  /** Passed straight through to the ⌘K palette, which lists the same nav. */
+  isOperator: boolean;
 }) {
   return (
     <header className="bg-background/80 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b px-4 backdrop-blur-lg md:h-16">
@@ -34,7 +37,7 @@ export function AppTopbar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <CommandPalette />
+        <CommandPalette isOperator={isOperator} />
         <div className="hidden md:block">
           <ThemeToggle />
         </div>

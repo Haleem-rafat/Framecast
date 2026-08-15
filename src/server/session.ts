@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 
-import type { AccountApproval } from "@/generated/prisma/enums";
+import type { AccountApproval, UserRole } from "@/generated/prisma/enums";
 import { auth, type Session, type SessionUser } from "@/lib/auth";
 import { ForbiddenError, UnauthorizedError } from "@/lib/errors";
 import { accountService } from "@/services/account.service";
@@ -14,7 +14,7 @@ import { accountService } from "@/services/account.service";
  *
  * Every authenticated surface in this codebase — every server action, every
  * route handler, every dashboard page — reaches the current user through this
- * file and nowhere else (`grep -r requireSession\\|requireUser\\|getSession
+ * file and nowhere else (`grep -rE 'require(Session|User|Operator|OperatorSession)|getSession'
  * src`). That makes it the one choke point where "this account has not been
  * approved yet" can be enforced once and be true everywhere, including for a
  * hand-crafted POST straight at a server action's endpoint that never renders
@@ -56,6 +56,19 @@ const getApproval = cache(
     return accountService.approvalFor(userId);
   },
 );
+
+/**
+ * The role, read fresh per request for exactly the reason `getApproval` is:
+ * demoting an operator has to take effect on their next request rather than
+ * whenever Better Auth's five-minute cookie cache happens to lapse.
+ *
+ * Only the two operator-gated surfaces ask for this, so it costs nothing on
+ * the paths every other request takes. `cache` collapses it per render pass,
+ * same as above.
+ */
+const getRole = cache(async (userId: string): Promise<UserRole | null> => {
+  return accountService.roleFor(userId);
+});
 
 /**
  * Reason text shown when an account exists but may not use the studio.
@@ -118,6 +131,80 @@ export async function requireUser(): Promise<SessionUser> {
   }
 
   return session.user;
+}
+
+/**
+ * The operator gate: `requireUser`'s shape, plus the role.
+ *
+ * Two helpers rather than one, mirroring `requireSession`/`requireUser`
+ * exactly, because the two callers fail differently: a server action has no
+ * page to redirect and a server component has no error boundary that produces
+ * anything a person wants to read. Nothing else about them differs.
+ *
+ * ## Why a member is turned away as though they were a stranger
+ *
+ * Both refuse a non-operator with *the identical outcome an unauthenticated
+ * request gets* — this one redirects to `/sign-in`, its sibling below throws a
+ * bare `UnauthorizedError` — rather than with the honest 403 that says "you are
+ * signed in, you are approved, you are simply not an operator".
+ *
+ * That is deliberate and it is the one place in this file where the friendlier
+ * error is the wrong one. A distinguishable refusal is an oracle: it confirms
+ * to any of the 41 approved accounts that `/admin` is a route that exists, that
+ * `approveAccountAction` is a real endpoint, and that the only thing between
+ * them and it is a flag on their own row. The unhelpfulness is the feature.
+ *
+ * The cost is small and worth naming: a member who somehow reaches `/admin`
+ * lands on `/sign-in`, which — being already signed in and approved — bounces
+ * them straight on to `/dashboard`. They see the studio, not a login form and
+ * not an error. Nothing in the UI links them here in the first place; the nav
+ * entries for both operator surfaces are filtered out for them by the dashboard
+ * layout.
+ *
+ * Approval is still checked first and still reports itself normally: a PENDING
+ * account goes to `/pending` exactly as it does everywhere else. That leaks
+ * nothing new — the waiting screen is a public part of registration — and
+ * hiding it here would only strand someone on a loop.
+ */
+export async function requireOperator(): Promise<SessionUser> {
+  const session = await getRawSession();
+
+  if (!session) {
+    redirect("/sign-in");
+  }
+
+  if ((await getApproval(session.user.id)) !== "APPROVED") {
+    redirect("/pending");
+  }
+
+  if ((await getRole(session.user.id)) !== "OPERATOR") {
+    redirect("/sign-in");
+  }
+
+  return session.user;
+}
+
+/** `requireSession` for operator-only actions. See `requireOperator` above. */
+export async function requireOperatorSession(): Promise<Session> {
+  const session = await getRawSession();
+
+  if (!session) {
+    throw new UnauthorizedError();
+  }
+
+  const approval = await getApproval(session.user.id);
+
+  if (approval !== "APPROVED") {
+    throw new ForbiddenError(refusalFor(approval));
+  }
+
+  if ((await getRole(session.user.id)) !== "OPERATOR") {
+    // The default message, byte for byte what a request with no cookie at all
+    // gets. Anything more specific tells a member the endpoint is real.
+    throw new UnauthorizedError();
+  }
+
+  return session;
 }
 
 export interface AccountStatus {

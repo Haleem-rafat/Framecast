@@ -20,6 +20,22 @@ const RESET_TOKEN_TTL_SECONDS = 60 * 60 * 2;
  * an empty queue there would be nobody who could ever approve anybody. The
  * seeded operator (and anyone in AUTH_ALLOWED_EMAILS) is therefore approved at
  * creation, and every other account waits.
+ *
+ * It grants *approval only*, and deliberately not the OPERATOR role that
+ * deciding registrations now also requires. An env var that silently conferred
+ * privilege on whoever happened to be listed in it is the same implicit grant
+ * the role column exists to remove — see the UserRole comment in
+ * schema.prisma. So the bootstrap on a fresh database is two steps rather than
+ * one: register the address in this list, then run `pnpm promote:operator
+ * <email>` at the server. Until that second step the account can use the
+ * studio and cannot decide anybody else's.
+ *
+ * `role` is likewise absent from `additionalFields` below, and that absence is
+ * load-bearing: Better Auth's adapter drops any field its schema does not
+ * declare, so a sign-up body carrying `"role": "OPERATOR"` cannot reach
+ * Postgres and the column's own `MEMBER` default supplies the value instead.
+ * Declaring it here — even with `input: false` — would be more surface for no
+ * gain, because nothing in the auth layer ever writes it.
  */
 const autoApprovedEmails = new Set(
   [env.SEED_USER_EMAIL, ...(env.AUTH_ALLOWED_EMAILS?.split(",") ?? [])]

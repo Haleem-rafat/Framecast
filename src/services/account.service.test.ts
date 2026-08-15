@@ -25,11 +25,12 @@ beforeEach(async () => {
   approverId = await createTestUser("approver");
   applicantId = await createTestUser("applicant");
 
-  // The approver has to be APPROVED to decide anything; a freshly created row
-  // is PENDING like everyone else.
+  // The approver has to be an APPROVED OPERATOR to decide anything. A freshly
+  // created row is PENDING and MEMBER, like everyone who registers — which is
+  // the whole point of the role: being approved is no longer enough.
   await prisma.user.update({
     where: { id: approverId },
-    data: { approval: "APPROVED", approvedAt: new Date() },
+    data: { approval: "APPROVED", approvedAt: new Date(), role: "OPERATOR" },
   });
 });
 
@@ -124,9 +125,9 @@ describe("accountService.approve", () => {
     const outsiderId = await createTestUser("outsider");
 
     try {
-      // The action layer already gates on requireSession(), which enforces
-      // this too — but the service is the boundary the rest of the codebase
-      // trusts, so it must not depend on the caller having checked.
+      // The action layer already gates on requireOperatorSession(), which
+      // enforces this too — but the service is the boundary the rest of the
+      // codebase trusts, so it must not depend on the caller having checked.
       await expect(
         accountService.approve(outsiderId, applicantId),
       ).rejects.toBeInstanceOf(ForbiddenError);
@@ -164,6 +165,79 @@ describe("accountService.reject", () => {
   });
 });
 
+/**
+ * The escalation this column was added to close, asserted at the write itself.
+ *
+ * Until `role` existed, `decide` required only that the caller was APPROVED.
+ * That meant "is the owner" while Framecast was one private account, and
+ * "is any one of 41 strangers who registered" once registration opened. The
+ * action layer gates first, but this is the boundary a script or a future
+ * route handler would land on, so it must refuse on its own.
+ */
+describe("an approved MEMBER trying to decide someone else's account", () => {
+  let memberId: string;
+
+  beforeEach(async () => {
+    memberId = await createTestUser("member");
+    await prisma.user.update({
+      where: { id: memberId },
+      // APPROVED and MEMBER: exactly the state of every production account.
+      data: { approval: "APPROVED", approvedAt: new Date() },
+    });
+  });
+
+  afterEach(() => deleteTestUser(memberId));
+
+  it("is a MEMBER by default, with no migration having said otherwise", async () => {
+    expect(await accountService.roleFor(memberId)).toBe("MEMBER");
+  });
+
+  it("is refused by approve, and the applicant stays PENDING", async () => {
+    await expect(
+      accountService.approve(memberId, applicantId),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    expect(await accountService.approvalFor(applicantId)).toBe("PENDING");
+  });
+
+  it("is refused by reject, and the applicant stays PENDING", async () => {
+    await expect(
+      accountService.reject(memberId, applicantId),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    expect(await accountService.approvalFor(applicantId)).toBe("PENDING");
+  });
+
+  it("leaves no decision log behind, so a refused attempt cannot look like a decision", async () => {
+    await expect(
+      accountService.approve(memberId, applicantId),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    const logs = await prisma.activityLog.count({
+      where: { entityId: applicantId, action: { startsWith: "account." } },
+    });
+    expect(logs).toBe(0);
+  });
+
+  it("cannot promote itself either — roleFor is a read, and nothing here writes it", async () => {
+    // There is no service method that grants OPERATOR. The only path is
+    // scripts/promote-operator.ts, run by hand at the server.
+    expect(
+      Object.getOwnPropertyNames(Object.getPrototypeOf(accountService)),
+    ).not.toContain("promote");
+  });
+});
+
+describe("accountService.roleFor", () => {
+  it("returns null for an id with no row, so the operator gate fails closed", async () => {
+    expect(await accountService.roleFor(randomUUID())).toBeNull();
+  });
+
+  it("reads OPERATOR once an account has been promoted", async () => {
+    expect(await accountService.roleFor(approverId)).toBe("OPERATOR");
+  });
+});
+
 describe("two operators deciding the same account", () => {
   it("lets the first decision stand and tells the second it lost", async () => {
     const secondApproverId = await createTestUser("approver-2");
@@ -171,7 +245,11 @@ describe("two operators deciding the same account", () => {
     try {
       await prisma.user.update({
         where: { id: secondApproverId },
-        data: { approval: "APPROVED", approvedAt: new Date() },
+        data: {
+          approval: "APPROVED",
+          approvedAt: new Date(),
+          role: "OPERATOR",
+        },
       });
 
       await accountService.approve(approverId, applicantId);

@@ -22,6 +22,7 @@
     "migrate:storage": "tsx --conditions=react-server scripts/migrate-storage.ts",
     "migrate:renders": "tsx --conditions=react-server scripts/migrate-renders.ts",
     "migrate:relink": "tsx --conditions=react-server scripts/relink-renders.ts",
+    "promote:operator": "tsx --conditions=react-server scripts/promote-operator.ts",
     "postinstall": "prisma generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },

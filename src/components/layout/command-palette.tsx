@@ -26,7 +26,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { navigation } from "@/config/navigation";
+import { visibleNavigation } from "@/config/navigation";
 import { useKeyboardShortcut } from "@/hooks/use-keyboard-shortcut";
 // From `@/lib/search`, never from `@/services/search.service` — the service is
 // `server-only` and importing it here would fail the client build.
@@ -95,7 +95,7 @@ function matches(query: string, title: string, keywords: string[]): boolean {
   );
 }
 
-export function CommandPalette() {
+export function CommandPalette({ isOperator }: { isOperator: boolean }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [groups, setGroups] = useState<SearchGroup[]>([]);
@@ -129,12 +129,15 @@ export function CommandPalette() {
   // instant. Unbuilt routes have no page to prefetch.
   useEffect(() => {
     if (!open) return;
-    for (const group of navigation) {
+    // Only what this account can actually reach. Prefetching /admin for a
+    // member would fire a request whose response is a redirect, and would
+    // announce the route to anyone watching the network tab.
+    for (const group of visibleNavigation(isOperator)) {
       for (const item of group.items) {
         if (item.built) router.prefetch(item.href);
       }
     }
-  }, [open, router]);
+  }, [isOperator, open, router]);
 
   // A palette reopened later must not flash the previous search's results
   // under an empty input.
@@ -186,7 +189,7 @@ export function CommandPalette() {
 
   const navGroups = useMemo(
     () =>
-      navigation
+      visibleNavigation(isOperator)
         .map((group) => ({
           label: group.label,
           items: group.items.filter(
@@ -197,7 +200,7 @@ export function CommandPalette() {
           ),
         }))
         .filter((group) => group.items.length > 0),
-    [trimmedQuery],
+    [isOperator, trimmedQuery],
   );
 
   const themeItems = useMemo(

@@ -44,6 +44,8 @@ vi.mock("next/navigation", () => ({
 const {
   getAccountStatus,
   getSession,
+  requireOperator,
+  requireOperatorSession,
   requireSession,
   requireUser,
 } = await import("@/server/session");
@@ -68,6 +70,10 @@ function signedInAs(id: string) {
 
 async function setApproval(approval: "PENDING" | "APPROVED" | "REJECTED") {
   await prisma.user.update({ where: { id: userId }, data: { approval } });
+}
+
+async function setRole(role: "OPERATOR" | "MEMBER") {
+  await prisma.user.update({ where: { id: userId }, data: { role } });
 }
 
 beforeEach(async () => {
@@ -145,6 +151,113 @@ describe.each(["PENDING", "REJECTED"] as const)("a %s account", (approval) => {
 
     expect(status?.user.id).toBe(userId);
     expect(status?.approval).toBe(approval);
+  });
+});
+
+/**
+ * The operator gate.
+ *
+ * `createTestUser` writes no `role`, so its users take the column's MEMBER
+ * default — which is what all 41 approved production accounts are, and what
+ * every one of these tests is about.
+ */
+describe("the operator gate", () => {
+  describe("an approved MEMBER", () => {
+    beforeEach(async () => {
+      await setApproval("APPROVED");
+      await setRole("MEMBER");
+    });
+
+    it("is refused by requireOperator exactly as a signed-out visitor is", async () => {
+      // Not merely "refused" — refused *identically*. A distinguishable
+      // refusal would confirm to any of the 41 approved accounts that /admin
+      // is a real route whose only lock is a flag on their own row.
+      getSessionMock.mockResolvedValue(null);
+      const asStranger = await requireOperator().catch((e: unknown) => e);
+
+      getSessionMock.mockResolvedValue(signedInAs(userId));
+      const asMember = await requireOperator().catch((e: unknown) => e);
+
+      expect((asMember as TestRedirect).destination).toBe("/sign-in");
+      expect((asMember as TestRedirect).destination).toBe(
+        (asStranger as TestRedirect).destination,
+      );
+    });
+
+    it("is refused by requireOperatorSession with the same bare 401 a signed-out request gets", async () => {
+      getSessionMock.mockResolvedValue(null);
+      const asStranger = await requireOperatorSession().catch(
+        (e: unknown) => e,
+      );
+
+      getSessionMock.mockResolvedValue(signedInAs(userId));
+      const asMember = await requireOperatorSession().catch((e: unknown) => e);
+
+      expect(asMember).toBeInstanceOf(UnauthorizedError);
+      // 401 and not 403: a ForbiddenError saying "you are not an operator"
+      // would be the oracle. Byte-for-byte the stranger's message.
+      expect((asMember as UnauthorizedError).httpStatus).toBe(401);
+      expect((asMember as UnauthorizedError).message).toBe(
+        (asStranger as UnauthorizedError).message,
+      );
+    });
+
+    it("still passes the ordinary gates, so nothing else in the studio changed", async () => {
+      expect((await requireUser()).id).toBe(userId);
+      expect((await requireSession()).user.id).toBe(userId);
+      expect((await getSession())?.user.id).toBe(userId);
+    });
+  });
+
+  describe("an approved OPERATOR", () => {
+    beforeEach(async () => {
+      await setApproval("APPROVED");
+      await setRole("OPERATOR");
+    });
+
+    it("passes requireOperator", async () => {
+      expect((await requireOperator()).id).toBe(userId);
+    });
+
+    it("passes requireOperatorSession", async () => {
+      expect((await requireOperatorSession()).user.id).toBe(userId);
+    });
+  });
+
+  describe("an OPERATOR whose account is not approved", () => {
+    // Approval is checked before the role and reports itself normally. The
+    // waiting screen is a public part of registration, so it leaks nothing —
+    // and hiding it here would strand the person on a loop.
+    beforeEach(async () => {
+      await setApproval("PENDING");
+      await setRole("OPERATOR");
+    });
+
+    it("is sent to /pending, not admitted on the strength of the role", async () => {
+      await expect(requireOperator()).rejects.toMatchObject({
+        destination: "/pending",
+      });
+      await expect(requireOperatorSession()).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
+    });
+  });
+
+  describe("a role revoked while the operator is working", () => {
+    it("bites on the very next call, not when the session cookie expires", async () => {
+      await setApproval("APPROVED");
+      await setRole("OPERATOR");
+      expect((await requireOperatorSession()).user.id).toBe(userId);
+
+      // Same cookie, same Better Auth response — only the column moved. A
+      // gate that read the role off the five-minute cookie cache would leave
+      // a demoted operator deciding registrations for five more minutes.
+      await setRole("MEMBER");
+
+      await expect(requireOperatorSession()).rejects.toBeInstanceOf(
+        UnauthorizedError,
+      );
+    });
   });
 });
 
