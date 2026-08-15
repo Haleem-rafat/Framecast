@@ -416,11 +416,18 @@ describe("publishService.publish — Gate 2", () => {
 
   // Visibility-default and "asked-for visibility wins" coverage moved to the
   // "metadata and visibility" describe block below, once uploadToYouTube
-  // stopped hard-coding "unlisted" regardless of caller input. What's left
-  // worth asserting here, on its own, is the one flag that genuinely never
-  // varies by caller input.
-  it("declares every upload not made for kids", async () => {
-    const { videoId } = await makePublishableVideo();
+  // stopped hard-coding "unlisted" regardless of caller input. The audience
+  // declaration used to be the one flag here that never varied by caller
+  // input — it was the literal `false`. It now comes from the channel, and
+  // the tests for it are in their own block below.
+  it("declares not made for kids for a channel that has no brand row at all", async () => {
+    // The state most channels are in, and the one the migration's default
+    // reproduces: no brand row, so `brandService.resolve` falls back. This
+    // has to send exactly what the hardcoded literal sent before the column
+    // existed, or every existing channel's declaration changes under it.
+    const { videoId, channelId } = await makePublishableVideo();
+    expect(await prisma.channelBrand.findUnique({ where: { channelId } })).toBeNull();
+
     const { fetchImpl, calls } = createUploadFetch();
     const service = new PublishService(fetchImpl);
 
@@ -428,6 +435,41 @@ describe("publishService.publish — Gate 2", () => {
 
     const initCall = calls.find((c) => c.url.includes("uploadType=resumable"));
     expect(initCall).toBeDefined();
+    const body = JSON.parse(initCall!.init!.body as string);
+    expect(body.status.selfDeclaredMadeForKids).toBe(false);
+  });
+
+  it("sends the channel's declaration, not a constant, when it is made for kids", async () => {
+    // The bug this whole feature exists for: every upload declared
+    // `selfDeclaredMadeForKids: false` whatever the channel was. Under COPPA
+    // that is a false declaration for a children's channel, not a default.
+    const { videoId, channelId } = await makePublishableVideo();
+    await prisma.channelBrand.create({ data: { channelId, madeForKids: true } });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    const service = new PublishService(fetchImpl);
+
+    await service.publish(userId, videoId);
+
+    const initCall = calls.find((c) => c.url.includes("uploadType=resumable"));
+    const body = JSON.parse(initCall!.init!.body as string);
+    expect(body.status.selfDeclaredMadeForKids).toBe(true);
+  });
+
+  it("sends false for a channel whose brand row says so", async () => {
+    // A brand row exists — set for logo, tone or language — and its
+    // declaration is false. Distinct from the no-row case above: this one
+    // proves the column is read rather than that the fallback happens to
+    // agree with it.
+    const { videoId, channelId } = await makePublishableVideo();
+    await prisma.channelBrand.create({
+      data: { channelId, madeForKids: false, tone: "dry and factual" },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId);
+
+    const initCall = calls.find((c) => c.url.includes("uploadType=resumable"));
     const body = JSON.parse(initCall!.init!.body as string);
     expect(body.status.selfDeclaredMadeForKids).toBe(false);
   });
@@ -1237,6 +1279,10 @@ interface RecordedUpload {
   publishAt?: string;
   language: string;
   categoryId: string;
+  /** `status.selfDeclaredMadeForKids`. Recorded per upload because the whole
+   *  point is that a clip of a kids video must carry the same declaration as
+   *  the video it was cut from. */
+  madeForKids: boolean;
   youtubeVideoId: string | null;
   /** The bytes that were PUT, so a test can prove which file went up. */
   body: string | null;
@@ -1308,7 +1354,11 @@ function createSequenceFetch(
           defaultLanguage: string;
           categoryId: string;
         };
-        status: { privacyStatus: string; publishAt?: string };
+        status: {
+          privacyStatus: string;
+          publishAt?: string;
+          selfDeclaredMadeForKids: boolean;
+        };
       };
 
       const recorded: RecordedUpload = {
@@ -1319,6 +1369,7 @@ function createSequenceFetch(
         publishAt: snippet.status.publishAt,
         language: snippet.snippet.defaultLanguage,
         categoryId: snippet.snippet.categoryId,
+        madeForKids: snippet.status.selfDeclaredMadeForKids,
         youtubeVideoId: null,
         body: null,
       };
@@ -1387,6 +1438,28 @@ describe("publishService.publish — shorts, when the operator asks for them", (
     expect(await statShortFile(short.outputPath!)).not.toBeNull();
   });
 
+  it("carries a made-for-kids channel's declaration onto every short too", async () => {
+    // A clip cut from a children's video is children's content. The short
+    // path takes the declaration from the video's own publish rather than
+    // resolving it again, so this is the test that would catch a short going
+    // up declared not-for-kids from a channel that is.
+    const { videoId, channelId } = await makePublishableVideo();
+    await prisma.channelBrand.create({ data: { channelId, madeForKids: true } });
+    await makeReadyShort(videoId, 0);
+    await makeReadyShort(videoId, 1);
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      includeShorts: true,
+    });
+
+    expect(uploads).toHaveLength(3);
+    // Every upload, not just the first — an assertion on `uploads[0]` alone
+    // would pass with the shorts declaring the opposite.
+    expect(uploads.map((upload) => upload.madeForKids)).toEqual([true, true, true]);
+  });
+
   it("uploads the video and each READY short, and records one publication per short", async () => {
     const { videoId } = await makePublishableVideo();
     const one = await makeReadyShort(videoId, 0);
@@ -1424,10 +1497,12 @@ describe("publishService.publish — shorts, when the operator asks for them", (
       "public",
     ]);
 
-    // And the channel's language and category, exactly as the video gets them.
+    // And the channel's language, category and audience declaration, exactly
+    // as the video gets them.
     for (const upload of uploads) {
       expect(upload.language).toBe(PUBLISHING_DEFAULTS.language);
       expect(upload.categoryId).toBe(PUBLISHING_DEFAULTS.categoryId);
+      expect(upload.madeForKids).toBe(PUBLISHING_DEFAULTS.madeForKids);
     }
 
     // The clip's own title, and the credits the same footage owes wherever it

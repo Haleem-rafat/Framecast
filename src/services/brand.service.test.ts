@@ -199,22 +199,30 @@ describe("brandService — publishing defaults", () => {
       channelId,
       language: "en-GB",
       categoryId: "28",
+      madeForKids: false,
+      footageStyle: "LIVE_ACTION",
     });
 
     expect(await brandService.getPublishingDefaults(userId, channelId)).toEqual({
       language: "en-GB",
       categoryId: "28",
+      madeForKids: false,
+      footageStyle: "LIVE_ACTION",
     });
 
     await brandService.updatePublishingDefaults(userId, {
       channelId,
       language: "pt-BR",
       categoryId: "27",
+      madeForKids: true,
+      footageStyle: "CARTOON",
     });
 
     expect(await brandService.getPublishingDefaults(userId, channelId)).toEqual({
       language: "pt-BR",
       categoryId: "27",
+      madeForKids: true,
+      footageStyle: "CARTOON",
     });
   });
 
@@ -227,6 +235,8 @@ describe("brandService — publishing defaults", () => {
       channelId,
       language: "de",
       categoryId: "28",
+      madeForKids: false,
+      footageStyle: "CARTOON",
     });
 
     const brand = await brandService.resolve(channelId);
@@ -252,6 +262,8 @@ describe("brandService — publishing defaults", () => {
           channelId,
           language: "de",
           categoryId: "28",
+          madeForKids: false,
+          footageStyle: "LIVE_ACTION",
         }),
       ).rejects.toThrow(NotFoundError);
 
@@ -282,7 +294,16 @@ describe("brandService — publishing defaults", () => {
 
       const all = await brandService.listPublishingDefaults(userId);
 
-      expect(all[channelId]).toEqual({ language: "en-GB", categoryId: "28" });
+      // Both rows were created naming only the publishing pair, so the
+      // audience declaration and the footage style come back as their column
+      // defaults — which is the same answer `getPublishingDefaults` and
+      // `resolve` give for a channel with no brand row at all.
+      expect(all[channelId]).toEqual({
+        language: "en-GB",
+        categoryId: "28",
+        madeForKids: false,
+        footageStyle: "LIVE_ACTION",
+      });
       expect(all).not.toHaveProperty(otherChannel.id);
     } finally {
       await deleteTestUser(otherUserId);

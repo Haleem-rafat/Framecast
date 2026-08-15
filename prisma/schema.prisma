@@ -226,6 +226,33 @@ model ChannelBrand {
   /// defaults.
   categoryId String @default("27")
 
+  /// The audience declaration sent as `status.selfDeclaredMadeForKids` on
+  /// every upload from this channel, video and short alike.
+  ///
+  /// This is a legal declaration, not a preference. Under COPPA the US FTC
+  /// has taken enforcement action against creators who declared
+  /// child-directed content otherwise, so the value has to be deliberate:
+  /// it is set once, per channel, by an operator reading YouTube's own
+  /// question, rather than clicked on every publish where one wrong tick is
+  /// the whole risk.
+  ///
+  /// Per channel because a channel has one audience. YouTube itself asks the
+  /// same question at the channel level in Studio, and a channel whose videos
+  /// disagree about who they are for is not a state this pipeline can
+  /// produce — every video from a channel shares its niche, its tone and its
+  /// script prompt.
+  ///
+  /// Default false, and the migration backfills every existing row with
+  /// false. Not because false is the safe answer — it is the *wrong* answer
+  /// for a children's channel and the one YouTube penalises — but because
+  /// this column's whole point is that the declaration is deliberate, and a
+  /// migration cannot know a channel's audience. Silently declaring an
+  /// existing channel as child-directed would strip comments, notifications
+  /// and personalised ads from every video it has. So the migration
+  /// reproduces exactly what `publish.service.ts` hardcoded before this
+  /// column existed, and the operator changes it.
+  madeForKids Boolean @default(false)
+
   /// What the pictures under the narration look like, which decides *which
   /// stock providers this channel's footage is searched for at all* — see
   /// `FOOTAGE_SEARCH_PLAN` in footage.service.ts.

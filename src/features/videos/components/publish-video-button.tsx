@@ -24,6 +24,10 @@ import { publishVideoAction } from "@/actions/publish.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
 import type { SerializedError } from "@/lib/errors";
 import {
+  audienceConsequence,
+  audienceStatement,
+} from "@/lib/youtube-audience";
+import {
   publishVisibilityOptions,
   type PublishVisibilityOption,
 } from "@/schemas/publish.schema";
@@ -136,6 +140,7 @@ export function PublishVideoButton({
   videoId,
   status,
   channelName,
+  channelMadeForKids,
   youtubeVideoId,
   defaultVisibility,
   readyShortCount,
@@ -146,6 +151,18 @@ export function PublishVideoButton({
    * drives both the proactive "connect a channel" state and the
    * confirmation dialog's "publishes to <channel>" line. */
   channelName: string | null;
+  /**
+   * The channel's audience declaration, stated in this dialog and editable
+   * only on `/channels`.
+   *
+   * Deliberately not a control here. It is a COPPA declaration — the US FTC
+   * has taken enforcement action over child-directed content declared
+   * otherwise — and this is the dialog whose button cannot be un-clicked, so
+   * a toggle in it would be a legal statement one stray click from being
+   * false. But it is *shown*, because the operator should never send a
+   * declaration they have not seen.
+   */
+  channelMadeForKids: boolean;
   /** Set once a `Publication` row exists with a recorded YouTube id. */
   youtubeVideoId: string | null;
   /**
@@ -497,6 +514,33 @@ export function PublishVideoButton({
                     </p>
                   </div>
                 )}
+
+                {/* Stated, never asked. The declaration is the channel's and
+                  * is set on /channels; what belongs here is the fact that it
+                  * is about to be sent, on this video and on every short going
+                  * up with it. An operator who has never opened the channel
+                  * dialog sees "not made for kids" here — which is exactly the
+                  * moment to notice it, before the upload rather than after
+                  * YouTube has the declaration. */}
+                <div className="space-y-1 rounded-lg border p-3 text-sm">
+                  <p className="font-medium">
+                    {audienceStatement(channelMadeForKids)}
+                  </p>
+                  <p className="text-muted-foreground text-xs">
+                    {audienceConsequence(channelMadeForKids)}
+                  </p>
+                  <p className="text-muted-foreground text-xs">
+                    Set per channel, and it applies to{" "}
+                    {uploadCount > 1 ? "every file in this upload" : "this upload"}.{" "}
+                    <Link
+                      href="/channels"
+                      className="underline underline-offset-3"
+                    >
+                      Change it on the channel
+                    </Link>{" "}
+                    before publishing if it is wrong.
+                  </p>
+                </div>
 
                 <div className="space-y-2 text-sm text-muted-foreground">
                   <p>

@@ -21,6 +21,7 @@ import { VideoPreview } from "@/features/videos/components/video-preview";
 import { statRenderFile } from "@/lib/render-storage";
 import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
+import { PUBLISHING_DEFAULTS } from "@/lib/youtube-categories";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
 import { promptTemplateService } from "@/services/prompt-template.service";
@@ -367,6 +368,10 @@ export default async function VideoDetailPage({
         projectName={video.project.name}
         wordCount={activeVersion?.wordCount ?? 0}
         channelName={video.project.channel?.title ?? null}
+        channelMadeForKids={
+          video.project.channel?.brand?.madeForKids ??
+          PUBLISHING_DEFAULTS.madeForKids
+        }
         youtubeVideoId={youtubeVideoId}
         defaultVisibility={defaultVisibility}
         readyShortCount={readyShortCount}

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { FOOTAGE_STYLES } from "@/lib/footage-styles";
+
 /**
  * A BCP-47 language tag, restricted to the shape YouTube actually accepts:
  * a two- or three-letter primary subtag, optionally followed by hyphenated
@@ -45,6 +47,23 @@ export const updatePublishingDefaultsSchema = z.object({
     .string()
     .trim()
     .regex(CATEGORY_ID, "Pick a category from the list"),
+  /**
+   * The audience declaration. No `.default()` and no `.optional()`, unlike
+   * almost every other boolean in this codebase: a declaration that can arrive
+   * absent is a declaration something else has to guess, and this is the one
+   * field where a guess is a false legal statement. The form always sends it
+   * because the dialog always shows it.
+   */
+  madeForKids: z.boolean(),
+  /**
+   * Which stock providers this channel's footage is searched for. An enum
+   * rather than a free string because the value is read straight into
+   * `FOOTAGE_SEARCH_PLAN`'s index in footage.service.ts — an unrecognised
+   * value there would be `undefined` and take the whole footage stage down
+   * with it, so it is refused at the boundary instead. Kept in sync with the
+   * Prisma enum by `FOOTAGE_STYLES`, which is typed against it.
+   */
+  footageStyle: z.enum(FOOTAGE_STYLES.map((option) => option.value)),
 });
 
 export type UpdatePublishingDefaultsInput = z.infer<

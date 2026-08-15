@@ -34,6 +34,14 @@ export interface ResolvedBrand {
   language: string;
   /** YouTube's numeric category id as a string, e.g. `"27"`. */
   categoryId: string;
+  /**
+   * The channel's audience declaration, sent as
+   * `status.selfDeclaredMadeForKids` on every upload it makes — the video and
+   * every short cut from it. See the column's comment in schema.prisma: this
+   * is a COPPA declaration, so it is read from the channel rather than
+   * decided anywhere in the publish path.
+   */
+  madeForKids: boolean;
 }
 
 /**
@@ -237,12 +245,17 @@ export class BrandService {
       tone: brand?.tone ?? FALLBACK.tone,
       niche: brand?.niche ?? FALLBACK.niche,
       musicQuery: brand?.musicQuery ?? FALLBACK.musicQuery,
-      // `?.` and `??` for two NOT NULL columns is not belt-and-braces: `brand`
-      // is null for a channel with no row at all, and `findBrand` also returns
-      // null when the lookup itself failed. Both land here, and both have to
-      // publish rather than send YouTube `undefined`.
+      // `?.` and `??` for three NOT NULL columns is not belt-and-braces:
+      // `brand` is null for a channel with no row at all, and `findBrand` also
+      // returns null when the lookup itself failed. Both land here, and both
+      // have to publish rather than send YouTube `undefined`.
       language: brand?.language ?? FALLBACK.language,
       categoryId: brand?.categoryId ?? FALLBACK.categoryId,
+      // Falls back to false, which is what every upload declared before this
+      // column existed — never to true. A lookup that failed is not evidence
+      // a channel is child-directed, and this fallback is reached by the
+      // *error* path as well as the no-row path.
+      madeForKids: brand?.madeForKids ?? FALLBACK.madeForKids,
     };
   }
 
@@ -262,7 +275,16 @@ export class BrandService {
   ): Promise<PublishingDefaults> {
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
-      select: { brand: { select: { language: true, categoryId: true } } },
+      select: {
+        brand: {
+          select: {
+            language: true,
+            categoryId: true,
+            madeForKids: true,
+            footageStyle: true,
+          },
+        },
+      },
     });
 
     if (!channel) {
@@ -272,6 +294,10 @@ export class BrandService {
     return {
       language: channel.brand?.language ?? PUBLISHING_DEFAULTS.language,
       categoryId: channel.brand?.categoryId ?? PUBLISHING_DEFAULTS.categoryId,
+      madeForKids:
+        channel.brand?.madeForKids ?? PUBLISHING_DEFAULTS.madeForKids,
+      footageStyle:
+        channel.brand?.footageStyle ?? PUBLISHING_DEFAULTS.footageStyle,
     };
   }
 
@@ -289,13 +315,19 @@ export class BrandService {
   ): Promise<Record<string, PublishingDefaults>> {
     const brands = await prisma.channelBrand.findMany({
       where: { channel: { userId, deletedAt: null } },
-      select: { channelId: true, language: true, categoryId: true },
+      select: {
+        channelId: true,
+        language: true,
+        categoryId: true,
+        madeForKids: true,
+        footageStyle: true,
+      },
     });
 
     return Object.fromEntries(
-      brands.map(({ channelId, language, categoryId }) => [
+      brands.map(({ channelId, language, categoryId, madeForKids, footageStyle }) => [
         channelId,
-        { language, categoryId },
+        { language, categoryId, madeForKids, footageStyle },
       ]),
     );
   }
@@ -305,14 +337,19 @@ export class BrandService {
    * the same reason: most channels have no `ChannelBrand` row at all, and
    * setting a publishing default is as likely to be the first branding action
    * an operator takes as choosing a logo is. The `create` branch names only
-   * these two columns, so every other brand field lands on its own schema
+   * these three columns, so every other brand field lands on its own schema
    * default.
+   *
+   * `madeForKids` is written from the input on both branches rather than only
+   * when it changed. It is the one field here whose value is a declaration
+   * rather than a preference, and "the operator opened this dialog, read the
+   * question and pressed save" is exactly the event that should record it.
    */
   async updatePublishingDefaults(
     userId: string,
     input: UpdatePublishingDefaultsInput,
   ): Promise<PublishingDefaults> {
-    const { channelId, language, categoryId } = input;
+    const { channelId, language, categoryId, madeForKids, footageStyle } = input;
 
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
@@ -325,9 +362,14 @@ export class BrandService {
 
     const brand = await prisma.channelBrand.upsert({
       where: { channelId },
-      create: { channelId, language, categoryId },
-      update: { language, categoryId },
-      select: { language: true, categoryId: true },
+      create: { channelId, language, categoryId, madeForKids, footageStyle },
+      update: { language, categoryId, madeForKids, footageStyle },
+      select: {
+        language: true,
+        categoryId: true,
+        madeForKids: true,
+        footageStyle: true,
+      },
     });
 
     return brand;

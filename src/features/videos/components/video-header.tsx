@@ -17,6 +17,7 @@ export function VideoHeader({
   projectName,
   wordCount,
   channelName,
+  channelMadeForKids,
   youtubeVideoId,
   defaultVisibility,
   readyShortCount,
@@ -29,6 +30,10 @@ export function VideoHeader({
   /** The video's project's assigned channel, if any — Gate 2's confirmation
    * names it so the operator isn't guessing where the upload goes. */
   channelName: string | null;
+  /** That channel's audience declaration, which the publish dialog states as
+   * a fact about the upload it is about to make. Already defaulted by the
+   * page for a channel with no brand row. */
+  channelMadeForKids: boolean;
   /** Set once Gate 2 has actually published this video. */
   youtubeVideoId: string | null;
   /** `UserSetting.defaultVisibility`, which the publish dialog's picker starts
@@ -75,6 +80,7 @@ export function VideoHeader({
           videoId={videoId}
           status={status}
           channelName={channelName}
+          channelMadeForKids={channelMadeForKids}
           youtubeVideoId={youtubeVideoId}
           defaultVisibility={defaultVisibility}
           readyShortCount={readyShortCount}

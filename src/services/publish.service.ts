@@ -553,6 +553,7 @@ export class PublishService {
           publishAt: opts.scheduledFor,
           language: brand.language,
           categoryId: brand.categoryId,
+          madeForKids: brand.madeForKids,
         },
         fileBuffer,
       );
@@ -677,6 +678,11 @@ export class PublishService {
           tags: video.tags,
           language: brand.language,
           categoryId: brand.categoryId,
+          // A clip of a children's video is children's content. The
+          // declaration travels with the shorts for the same reason the
+          // visibility does — they are the same release, cut from the same
+          // footage, on the same channel.
+          madeForKids: brand.madeForKids,
           sourcesAndCredits,
           videoTitle: title,
         })
@@ -848,6 +854,10 @@ export class PublishService {
     tags: string[];
     language: string;
     categoryId: string;
+    /** The channel's audience declaration, inherited from the video's own
+     *  publish. A clip cut from a children's video is children's content, so
+     *  this is never resolved separately here. */
+    madeForKids: boolean;
     /** The video's own credits block, reused verbatim — see
      *  `buildShortMetadata` for why a clip owes the same attribution. */
     sourcesAndCredits: string;
@@ -968,6 +978,11 @@ export class PublishService {
             publishAt: args.scheduledFor,
             language: args.language,
             categoryId: args.categoryId,
+            // Same reasoning again, and the one that matters most: a clip of
+            // a kids video is kids content, and a short that declared
+            // otherwise would be a false COPPA declaration on a file the
+            // operator never saw a separate question about.
+            madeForKids: args.madeForKids,
           },
           Buffer.from(await new Response(file.stream).arrayBuffer()),
         );
@@ -1314,6 +1329,16 @@ export class PublishService {
       language: string;
       /** YouTube's numeric category id as a string, e.g. `"27"`. */
       categoryId: string;
+      /**
+       * The channel's audience declaration, resolved by the caller from
+       * `brandService.resolve`. Required, with no default: this used to be
+       * the literal `false` written a few lines below, which meant every
+       * upload this app has ever made declared itself not child-directed
+       * whether or not that was true. Making it a required parameter is what
+       * stops a future call site quietly reintroducing that literal — a
+       * caller that forgets it does not compile.
+       */
+      madeForKids: boolean;
     },
     fileBuffer: Buffer,
   ): Promise<string> {
@@ -1346,7 +1371,14 @@ export class PublishService {
           },
           status: {
             privacyStatus,
-            selfDeclaredMadeForKids: false,
+            // The channel's declaration, not a constant. This is a COPPA
+            // declaration: the US FTC has taken enforcement action against
+            // creators who mis-declared child-directed content, so it is
+            // stated once per channel by an operator answering YouTube's own
+            // question (see `MADE_FOR_KIDS_QUESTION`) and carried here
+            // unchanged. Nothing in the publish path may derive, guess or
+            // override it.
+            selfDeclaredMadeForKids: metadata.madeForKids,
             ...(metadata.publishAt && { publishAt: metadata.publishAt.toISOString() }),
           },
         }),

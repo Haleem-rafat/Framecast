@@ -8,27 +8,53 @@
  * first frame. Same split, and the same reason, as `youtube-limits.ts`.
  */
 
-/** The two per-channel publishing fields, as stored. */
+import { DEFAULT_FOOTAGE_STYLE } from "@/lib/footage-styles";
+import type { FootageStyle } from "@/generated/prisma/enums";
+
+/** The per-channel defaults the "Publishing defaults" dialog edits, as stored. */
 export interface PublishingDefaults {
   /** BCP-47, e.g. `en`. */
   language: string;
   /** YouTube's numeric category id as a string, e.g. `"27"`. */
   categoryId: string;
+  /**
+   * Sent as `status.selfDeclaredMadeForKids` on every upload from this
+   * channel. A legal declaration under COPPA, not a preference — see the
+   * column's comment in schema.prisma and `MADE_FOR_KIDS_QUESTION` in
+   * youtube-audience.ts, which is the wording the operator answers.
+   */
+  madeForKids: boolean;
+  /**
+   * What the pictures under the narration look like, which decides which
+   * stock providers this channel's footage is searched for — see
+   * `FOOTAGE_SEARCH_PLAN` in footage.service.ts.
+   *
+   * The one field here that YouTube never sees, and it sits with the others
+   * because it belongs to the same decision: a channel declared made for kids
+   * almost always wants cartoons, and asking the two questions on two
+   * different screens is how they end up disagreeing. The options themselves
+   * live in `footage-styles.ts`, beside the other client-safe copy.
+   */
+  footageStyle: FootageStyle;
 }
 
 /**
- * Mirrors the `language` and `categoryId` column defaults in
+ * Mirrors the `language`, `categoryId` and `madeForKids` column defaults in
  * prisma/schema.prisma, and `BrandService`'s own FALLBACK. All three have to
  * agree: a channel that has never been branded, a brand row created before
  * these columns existed, and a channel with no brand row at all must publish
  * identically, with nothing asked of the operator.
  *
  * 27 is Education — see the column's comment in schema.prisma for why that and
- * not 28.
+ * not 28. `madeForKids: false` is what every upload declared before the column
+ * existed, and is deliberately *not* a guess at a channel's audience — see
+ * that column's comment for why nothing here may guess it.
  */
 export const PUBLISHING_DEFAULTS: PublishingDefaults = {
   language: "en",
   categoryId: "27",
+  madeForKids: false,
+  footageStyle: DEFAULT_FOOTAGE_STYLE,
 };
 
 /** One entry of what `videoCategories.list` returns, narrowed to what a picker

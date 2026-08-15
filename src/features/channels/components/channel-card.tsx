@@ -6,6 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { DisconnectChannelButton } from "@/features/channels/components/disconnect-channel-button";
 import { PublishingDefaultsDialog } from "@/features/channels/components/publishing-defaults-dialog";
+import { footageStyleLabel } from "@/lib/footage-styles";
+import { audienceLabel } from "@/lib/youtube-audience";
 import {
   categoryTitle,
   type PublishingDefaults,
@@ -51,7 +53,21 @@ export function ChannelCard({
             * to reach anyone. */}
           <p className="text-muted-foreground truncate text-xs">
             Publishes in {publishingDefaults.language} ·{" "}
-            {categoryTitle(publishingDefaults.categoryId)}
+            {categoryTitle(publishingDefaults.categoryId)} ·{" "}
+            {/* The audience declaration reads as ordinary text when it is
+              * false and as an emphasised one when it is true, because "this
+              * channel declares every upload as child-directed" is the state
+              * worth spotting from across a list — it strips comments,
+              * notifications and personalised ads from everything the channel
+              * publishes. */}
+            <span
+              className={
+                publishingDefaults.madeForKids ? "text-foreground font-medium" : undefined
+              }
+            >
+              {audienceLabel(publishingDefaults.madeForKids)}
+            </span>{" "}
+            · {footageStyleLabel(publishingDefaults.footageStyle)} footage
           </p>
         </div>
 

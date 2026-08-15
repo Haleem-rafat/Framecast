@@ -1,0 +1,28 @@
+-- The audience declaration YouTube requires on every upload, which this app
+-- has never actually decided: `publish.service.ts` sent
+-- `status.selfDeclaredMadeForKids: false` as a literal on every video and
+-- every short, with no setting behind it and no way for an operator to say
+-- otherwise. For a channel making children's content that literal is not a
+-- default, it is a false declaration — and under COPPA the US FTC has taken
+-- enforcement action against creators over exactly that.
+--
+-- On channel_brand, beside `language` and `categoryId`, because it is a
+-- property of the channel and not of one video: a channel has one audience,
+-- YouTube asks the same question at the channel level in Studio, and asking
+-- it on every publish would put a legal declaration one stray click away from
+-- being wrong. The publish dialog states which declaration is about to be
+-- sent; it does not offer to change it.
+--
+-- NOT NULL DEFAULT false, so every existing brand row is backfilled by the
+-- ALTER itself and every channel without a brand row keeps working untouched
+-- (`BrandService.resolve` returns the same value for a channel with no row —
+-- see FALLBACK there, which mirrors this default deliberately).
+--
+-- false is chosen because it is what every upload already declared, not
+-- because it is the cautious answer. The cautious-looking alternative —
+-- backfilling true — would silently strip comments, notifications and
+-- personalised ads from every video on every existing channel, and would
+-- itself be a false declaration for every channel that is not child-directed.
+-- A migration cannot know a channel's audience. The operator states it.
+ALTER TABLE "channel_brand"
+  ADD COLUMN "madeForKids" BOOLEAN NOT NULL DEFAULT false;

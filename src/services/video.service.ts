@@ -65,11 +65,25 @@ export class VideoService {
         // making the operator guess. Only `id`/`title` selected: never the
         // token columns (see channel.service.ts's SUMMARY_SELECT for the
         // same discipline).
+        //
+        // `brand.madeForKids` joins them because the same dialog states the
+        // audience declaration this publish is about to send. Read here, on a
+        // query the page already makes, rather than as a second
+        // `brandService` round trip: the brand row is optional, so a channel
+        // that has never been branded arrives as `brand: null` and the page
+        // falls back to `PUBLISHING_DEFAULTS` — the same answer
+        // `brandService.resolve` gives the upload itself.
         project: {
           select: {
             id: true,
             name: true,
-            channel: { select: { id: true, title: true } },
+            channel: {
+              select: {
+                id: true,
+                title: true,
+                brand: { select: { madeForKids: true } },
+              },
+            },
           },
         },
         // `select`, not `include`. An `include` here pulled every column of
