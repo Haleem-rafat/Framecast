@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
+import { env } from "@/config/env";
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStyle } from "@/lib/video-style";
@@ -14,6 +15,9 @@ import {
 } from "@/lib/youtube-categories";
 import type { UpdateBrandingInput } from "@/schemas/channel.schema";
 import { channelService } from "@/services/channel.service";
+import { providerCredentialService } from "@/services/provider-credential.service";
+import { elevenLabsProvider } from "@/services/providers/elevenlabs.provider";
+import type { SpeechProvider, SpeechVoice } from "@/services/providers/types";
 
 /** Injectable so tests never make a real call to YouTube. Same seam, and the
  *  same reason, as `PublishService` and `ChannelService` have one. */
@@ -42,6 +46,21 @@ export interface ResolvedBrand {
    * decided anywhere in the publish path.
    */
   madeForKids: boolean;
+  /**
+   * The ElevenLabs voice this channel narrates in — always a usable id, never
+   * null. A channel that has never chosen one resolves to
+   * `env.ELEVENLABS_VOICE_ID`, which is the single voice every video in this
+   * app used before the column existed, so `voiceover.service.ts` has one
+   * value to pass to the provider and no fallback of its own to get wrong.
+   */
+  voiceId: string;
+  /**
+   * The name that voice had when it was chosen, or null when the channel is on
+   * the deployment default (whose name is not this table's to know — see
+   * `KNOWN_VOICE_NAMES` in voiceover.service.ts) or when the picker had no
+   * name to record. Display only.
+   */
+  voiceName: string | null;
 }
 
 /**
@@ -65,6 +84,15 @@ const FALLBACK = {
   // The publishing pair lives in youtube-categories.ts, because the dialog
   // that edits it is a client component and this module is `server-only`.
   ...PUBLISHING_DEFAULTS,
+  /**
+   * The one fallback here that is read from the environment rather than
+   * written down, and it has to be: this is the voice every video this app has
+   * ever narrated used, so the value that keeps an untouched channel sounding
+   * unchanged is whatever that deployment is configured with — not a voice id
+   * hardcoded in this file, which would be an assertion about somebody's
+   * ElevenLabs account.
+   */
+  voiceId: env.ELEVENLABS_VOICE_ID,
 } as const;
 
 /**
@@ -90,9 +118,36 @@ export interface ChannelBranding extends PublishingDefaults {
   tone: string | null;
   niche: string | null;
   musicQuery: string | null;
+  /**
+   * Null where `ResolvedBrand.voiceId` is never null, and for the same reason
+   * the three prompt fields differ between the two shapes: the picker has a
+   * "use the default voice" option, and it can only be shown as *chosen*
+   * rather than as a voice the operator appears to have picked from the list
+   * if the screen can tell "nobody has chosen" from "this id was chosen".
+   */
+  voiceId: string | null;
+  /** The name recorded beside `voiceId`, so a saved voice can be named on the
+   *  screen even when ElevenLabs cannot be reached to list it. */
+  voiceName: string | null;
   /** Null for a channel with no brand row, which the screen reports as
    *  "never saved" rather than inventing a date. */
   updatedAt: Date | null;
+}
+
+/** Which of the three honest answers the picker is being given. `ok` with an
+ *  empty list is a real answer — an account with no voices — and is not the
+ *  same as either failure. */
+export type VoiceListStatus =
+  /** Fetched. `voices` is what the account actually has, empty or not. */
+  | "ok"
+  /** No ElevenLabs credential is stored, so there was nothing to ask with. */
+  | "no-credential"
+  /** A credential exists and ElevenLabs did not answer usefully. */
+  | "unavailable";
+
+export interface VoiceList {
+  voices: SpeechVoice[];
+  status: VoiceListStatus;
 }
 
 export interface VideoCategoryList {
@@ -231,8 +286,29 @@ type StoredBranding = {
   categoryId: string;
   madeForKids: boolean;
   footageStyle: PublishingDefaults["footageStyle"];
+  voiceId: string | null;
+  voiceName: string | null;
   updatedAt: Date;
 } | null;
+
+/** The columns `getBranding` and `updateBranding` both read back, named once so
+ *  the two cannot select different sets and hand `toBranding` different rows. */
+const BRANDING_SELECT = {
+  logoPath: true,
+  primaryColour: true,
+  secondaryColour: true,
+  headlineFont: true,
+  tone: true,
+  niche: true,
+  musicQuery: true,
+  language: true,
+  categoryId: true,
+  madeForKids: true,
+  footageStyle: true,
+  voiceId: true,
+  voiceName: true,
+  updatedAt: true,
+} as const;
 
 /**
  * One mapping from stored columns to `ChannelBranding`, shared by the read and
@@ -256,6 +332,12 @@ function toBranding(brand: StoredBranding): ChannelBranding {
     categoryId: brand?.categoryId ?? PUBLISHING_DEFAULTS.categoryId,
     madeForKids: brand?.madeForKids ?? PUBLISHING_DEFAULTS.madeForKids,
     footageStyle: brand?.footageStyle ?? PUBLISHING_DEFAULTS.footageStyle,
+    voiceId: brand?.voiceId ?? null,
+    // Never a name without an id. The column pair is written together and
+    // cleared together, but a row edited by hand could hold one without the
+    // other, and a picker showing a name against no selection is worse than
+    // showing nothing.
+    voiceName: brand?.voiceId ? (brand.voiceName ?? null) : null,
     updatedAt: brand?.updatedAt ?? null,
   };
 }
@@ -294,7 +376,14 @@ function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle 
 }
 
 export class BrandService {
-  constructor(private readonly fetchImpl: FetchLike = fetch) {}
+  constructor(
+    private readonly fetchImpl: FetchLike = fetch,
+    /** The speech provider the voice picker is populated from. Injectable for
+     *  the same reason `fetchImpl` is, and with one extra edge: the real
+     *  provider's other method spends the operator's ElevenLabs allowance, so
+     *  no test may ever be one mistake away from calling it. */
+    private readonly speechProvider: SpeechProvider = elevenLabsProvider,
+  ) {}
 
   /**
    * The one way anything reads a channel's identity.
@@ -329,6 +418,15 @@ export class BrandService {
       // a channel is child-directed, and this fallback is reached by the
       // *error* path as well as the no-row path.
       madeForKids: brand?.madeForKids ?? FALLBACK.madeForKids,
+      // Where narration stops being one voice for the whole deployment. The
+      // fallback is reached by three routes that must all sound the same as
+      // they did before this column existed: a channel with no brand row, a
+      // brand row whose `voiceId` was never set, and a lookup that failed.
+      voiceId: brand?.voiceId ?? FALLBACK.voiceId,
+      // Only ever the name of a *chosen* voice. A channel on the fallback has
+      // no name here — see `KNOWN_VOICE_NAMES` in voiceover.service.ts, which
+      // is the one place that knows what the deployment default is called.
+      voiceName: brand?.voiceId ? (brand.voiceName ?? null) : null,
     };
   }
 
@@ -357,22 +455,7 @@ export class BrandService {
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
       select: {
-        brand: {
-          select: {
-            logoPath: true,
-            primaryColour: true,
-            secondaryColour: true,
-            headlineFont: true,
-            tone: true,
-            niche: true,
-            musicQuery: true,
-            language: true,
-            categoryId: true,
-            madeForKids: true,
-            footageStyle: true,
-            updatedAt: true,
-          },
-        },
+        brand: { select: BRANDING_SELECT },
       },
     });
 
@@ -457,27 +540,76 @@ export class BrandService {
       throw new NotFoundError("Channel");
     }
 
+    // The name is not independently settable: it describes `voiceId`, and a
+    // save that clears the voice back to the deployment default must not leave
+    // the previous voice's name behind for the narration library to print
+    // against the new one. Normalised here, at the write, rather than trusted
+    // from the form — the schema can bound the two strings but it cannot know
+    // that one is meaningless without the other.
+    const written = {
+      ...fields,
+      voiceName: fields.voiceId ? fields.voiceName : null,
+    };
+
     const brand = await prisma.channelBrand.upsert({
       where: { channelId },
-      create: { channelId, ...fields },
-      update: fields,
-      select: {
-        logoPath: true,
-        primaryColour: true,
-        secondaryColour: true,
-        headlineFont: true,
-        tone: true,
-        niche: true,
-        musicQuery: true,
-        language: true,
-        categoryId: true,
-        madeForKids: true,
-        footageStyle: true,
-        updatedAt: true,
-      },
+      create: { channelId, ...written },
+      update: written,
+      select: BRANDING_SELECT,
     });
 
     return toBranding(brand);
+  }
+
+  /**
+   * The voices the operator's own ElevenLabs account can narrate with.
+   *
+   * Fetched, never hardcoded, and this is the field where that rule matters
+   * most. Which voices exist is a fact about one account: a curated list would
+   * offer voices this account may not have, and a voice it does not have is
+   * not a cosmetic mistake — it is a narration that fails after the operator
+   * has already saved the channel and queued a video. So when the list cannot
+   * be fetched the answer is "we could not ask", not a shorter list of
+   * plausible ids.
+   *
+   * Takes no `channelId`, unlike `listCategories`, because there is nothing
+   * channel-shaped about the answer: the credential is the operator's, the
+   * same list serves every channel they own, and adding an id to check would
+   * be an ownership check on a value that plays no part in the query. Scoping
+   * is `resolveKey(userId, …)` itself — it reads only this operator's row, so
+   * two operators with different keys cannot see each other's voices, and an
+   * operator with no key sees none.
+   *
+   * The key is resolved, put in a request header by the provider, and dropped.
+   * It is not returned, not logged, and not part of any error: the catch below
+   * records only the provider's own key-free message.
+   *
+   * Never throws. This is a picker on a screen with nine other controls, and
+   * an ElevenLabs outage must not be the reason an operator cannot change
+   * their channel's colours — or, worse, cannot save at all, which would put
+   * the voice they already have at risk.
+   */
+  async listVoices(userId: string): Promise<VoiceList> {
+    const apiKey = await providerCredentialService.resolveKey(userId, "ELEVENLABS");
+
+    if (!apiKey) {
+      return { voices: [], status: "no-credential" };
+    }
+
+    if (!this.speechProvider.listVoices) {
+      return { voices: [], status: "unavailable" };
+    }
+
+    try {
+      return { voices: await this.speechProvider.listVoices(apiKey), status: "ok" };
+    } catch (error) {
+      console.error(
+        "brandService.listVoices: could not list ElevenLabs voices: " +
+          (error instanceof Error ? error.message : String(error)),
+      );
+
+      return { voices: [], status: "unavailable" };
+    }
   }
 
   /**

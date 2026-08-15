@@ -78,6 +78,45 @@ function promptText(max: number) {
 }
 
 /**
+ * An ElevenLabs voice id: their ids are 20-character alphanumeric strings, and
+ * nothing here needs to be stricter than "a token, not a sentence".
+ *
+ * The bound that matters is the character class, not the length. This value is
+ * interpolated straight into the synthesis URL
+ * (`/text-to-speech/${voiceId}/with-timestamps`), so a slash or a `?` in it
+ * would be a different request to a different endpoint. Refusing everything
+ * but letters and digits at the boundary is what makes that interpolation safe
+ * to read.
+ *
+ * Which ids are *real* is deliberately not validated: that is a fact about the
+ * operator's ElevenLabs account, the picker only ever offers ids that account
+ * returned, and a voice deleted upstream after being saved is a synthesis
+ * failure no regex could have caught.
+ */
+const VOICE_ID = /^[A-Za-z0-9]{1,64}$/;
+
+/**
+ * The chosen voice, or null for "narrate with the deployment default".
+ *
+ * Null is a first-class answer here in exactly the way it is for `tone` — it
+ * is how a channel goes back to `ELEVENLABS_VOICE_ID`, which is what every
+ * channel used before this existed — and it takes both shapes for the same
+ * round-trip reason `promptText` does: the resolver in the browser and the
+ * action on the server parse the same value, so the transform has to accept
+ * its own output.
+ */
+const voiceIdField = z
+  .union([z.string(), z.null()])
+  .transform((value) => value?.trim() ?? "")
+  .transform((value) => (value.length === 0 ? null : value))
+  .pipe(
+    z.union([
+      z.string().max(64).regex(VOICE_ID, "That is not an ElevenLabs voice id"),
+      z.null(),
+    ]),
+  );
+
+/**
  * Long enough for a real answer, short enough that the field cannot become a
  * second script prompt. These strings are interpolated into the thumbnail,
  * logo, shorts and metadata prompts — see `updateBrandingSchema` below — and
@@ -88,6 +127,10 @@ const TONE_MAX = 120;
 const NICHE_MAX = 120;
 /** Jamendo's search takes a handful of words; a sentence returns nothing. */
 const MUSIC_QUERY_MAX = 160;
+/** A voice's name as ElevenLabs gave it — "Roger", "Charlotte". Generous
+ *  because a cloned voice can be named anything, bounded because it is stored
+ *  and printed in a table cell. */
+const VOICE_NAME_MAX = 120;
 
 /**
  * Everything about a channel the branding screen edits, in one object,
@@ -133,6 +176,24 @@ export const updateBrandingSchema = z.object({
   niche: promptText(NICHE_MAX),
   /** What Jamendo is searched for. See the column comment in schema.prisma. */
   musicQuery: promptText(MUSIC_QUERY_MAX),
+
+  /** Which ElevenLabs voice narrates this channel, or null for the
+   *  deployment's own. */
+  voiceId: voiceIdField,
+  /**
+   * The name that voice had in the list the operator picked it from, so the
+   * narration library can print a name rather than an id.
+   *
+   * Sent by the form rather than re-derived on the server, because deriving it
+   * would mean a second call to ElevenLabs on every Save — on a screen whose
+   * other nine fields need no network at all — and a save that failed because
+   * a *label* could not be looked up would be an absurd way to lose a colour
+   * change. It is display text for the operator's own narration, bounded here
+   * like every other free string, and `BrandService.updateBranding` drops it
+   * outright whenever `voiceId` is null so it can never describe a voice that
+   * is not set.
+   */
+  voiceName: promptText(VOICE_NAME_MAX),
 
   language: z
     .string()

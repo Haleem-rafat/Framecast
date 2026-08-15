@@ -1,10 +1,10 @@
 import "server-only";
 
-import { env } from "@/config/env";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
 import { DEFAULT_STYLE } from "@/lib/video-style";
+import { brandService } from "@/services/brand.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import type { AliasRule } from "@/services/pronunciation.service";
 import { pronunciationService } from "@/services/pronunciation.service";
@@ -36,9 +36,23 @@ export type VoiceOverProgress = (message: string) => void;
 const noopProgress: VoiceOverProgress = () => {};
 
 /**
- * ElevenLabs' with-timestamps endpoint doesn't return a human name for the
- * voice, only its id. Filled in for the one voice this app defaults to;
- * anything else stores no name rather than a guess.
+ * The name of the one voice this app can name without asking anybody.
+ *
+ * ElevenLabs' with-timestamps endpoint returns no human name for the voice,
+ * only the id it was given — so `VoiceOver.voiceName`, which the narration
+ * library lists, has to be filled in from somewhere else. This map is that
+ * somewhere for the deployment default alone: `CwhRBWXzGAHq8TQ4Fs17` is the
+ * default of `env.ELEVENLABS_VOICE_ID`, and it narrated every video in this
+ * app before channels could choose.
+ *
+ * It must not grow. Now that voices are *chosen* rather than fixed, adding
+ * entries here would be building a catalogue of voice ids in the app's source
+ * — the same catalogue the picker deliberately refuses to invent, because the
+ * only account that knows which voices exist is the operator's. A channel that
+ * has chosen a voice carries the name ElevenLabs gave it at the moment it was
+ * chosen (`ChannelBrand.voiceName`), which is both more accurate than a table
+ * here and impossible to get wrong for a voice this map has never heard of.
+ * The lookup below is therefore a fallback for the *unchosen* case only.
  */
 const KNOWN_VOICE_NAMES: Record<string, string> = {
   CwhRBWXzGAHq8TQ4Fs17: "Roger",
@@ -183,7 +197,41 @@ export class VoiceOverService {
       }
     }
 
-    const voiceId = env.ELEVENLABS_VOICE_ID;
+    // The channel the video belongs to, read once: the voice below and the
+    // pronunciation dictionary inside the try are both per channel, and this
+    // is the same `channelId` both used before either had a reason to be
+    // resolved early.
+    const channelId = video.project?.channelId ?? null;
+
+    /**
+     * The voice, from the channel rather than from the environment.
+     *
+     * This one line is the whole behavioural change. `brandService.resolve`
+     * applies the fallback — a channel that has never chosen a voice, a video
+     * with no channel at all, and a brand lookup that failed all come back
+     * with `env.ELEVENLABS_VOICE_ID`, which is exactly what this line used to
+     * read directly. So nothing that narrates today sounds different
+     * tomorrow, and two channels with different voices produce two different
+     * requests to ElevenLabs.
+     *
+     * Safe to put in front of a synthesis because `resolve` is documented as
+     * never throwing: an unreachable database or a malformed brand row cannot
+     * become the reason a video has no narration.
+     */
+    const { voiceId, voiceName } = await brandService.resolve(channelId);
+
+    /**
+     * A name for the narration library to print instead of a 20-character id.
+     *
+     * Two sources, in the order of how much they know. A channel that chose a
+     * voice recorded what ElevenLabs called it at the time, which is right for
+     * any voice on the operator's account including ones cloned yesterday. A
+     * channel on the deployment default has no such record, and
+     * `KNOWN_VOICE_NAMES` names that one voice — see its comment for why it
+     * names only that one. Null when neither applies, which
+     * `narration-library.tsx` already renders as the bare id.
+     */
+    const resolvedVoiceName = voiceName ?? KNOWN_VOICE_NAMES[voiceId] ?? null;
 
     // Declared outside the try so the catch block can report real spend if
     // the provider already succeeded and a later step (upload, transaction)
@@ -198,7 +246,6 @@ export class VoiceOverService {
       // synthesised without pronunciation help, which is exactly what every
       // video did before this existed. Nothing here may stop a video being
       // narrated at all.
-      const channelId = video.project?.channelId;
       const locator = channelId
         ? await pronunciationService.ensureDictionary(apiKey, channelId, content, (terms) =>
             proposeAliases(terms, userId),
@@ -250,14 +297,14 @@ export class VoiceOverService {
             videoId,
             provider: "ELEVENLABS",
             voiceId,
-            voiceName: KNOWN_VOICE_NAMES[voiceId] ?? null,
+            voiceName: resolvedVoiceName,
             audioUrl,
             durationSeconds,
           },
           update: {
             provider: "ELEVENLABS",
             voiceId,
-            voiceName: KNOWN_VOICE_NAMES[voiceId] ?? null,
+            voiceName: resolvedVoiceName,
             audioUrl,
             durationSeconds,
           },

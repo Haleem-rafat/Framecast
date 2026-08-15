@@ -299,6 +299,45 @@ model ChannelBrand {
   /// migration needs no backfill and no existing channel changes behaviour.
   footageStyle FootageStyle @default(LIVE_ACTION)
 
+  /// Which ElevenLabs voice reads this channel's narration.
+  ///
+  /// Per channel for the plainest possible reason: the operator runs a finance
+  /// channel and a children's channel from the same account, at the same time,
+  /// and one voice cannot be right for both. A per-user default could not
+  /// separate them — both accounts are his — and the voice belongs beside
+  /// `tone`, `niche` and `footageStyle`, which are the other three answers to
+  /// "what is this channel like".
+  ///
+  /// Nullable, and null is not a gap to be filled in: it means "whatever the
+  /// deployment's ELEVENLABS_VOICE_ID says", which is exactly what every video
+  /// ever narrated by this app used. So the migration needs no backfill, and a
+  /// channel nobody has touched narrates in the same voice tomorrow as today.
+  /// `BrandService.resolve` is where that fallback is applied — once, so
+  /// nothing downstream has to know the column can be null.
+  ///
+  /// Not validated against ElevenLabs here. Which ids exist is a property of
+  /// the operator's own account, the picker only ever offers ids that account
+  /// returned, and a voice deleted upstream after being chosen is a failure at
+  /// synthesis time that no column constraint could have prevented.
+  voiceId String?
+
+  /// The human name ElevenLabs gave `voiceId` at the moment it was chosen.
+  ///
+  /// Stored rather than looked up, because the only two alternatives are
+  /// worse. The with-timestamps synthesis endpoint does not return a name, so
+  /// resolving one at narration time would mean an extra call to
+  /// `GET /v1/voices` inside the one path that must not grow new ways to fail;
+  /// and hardcoding a name table in the app would be inventing a catalogue of
+  /// voices the operator's account may not even have. The picker already knows
+  /// the name — it is what the operator read before clicking — so it writes it
+  /// down.
+  ///
+  /// Only ever meaningful alongside `voiceId`: clearing the voice clears this
+  /// too (see `BrandService.updateBranding`). It exists for display alone —
+  /// `VoiceOver.voiceName`, which the narration library lists — and nothing
+  /// reads it to decide anything.
+  voiceName String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

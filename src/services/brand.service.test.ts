@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { NotFoundError } from "@/lib/errors";
+import { env } from "@/config/env";
+import { NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_STYLE } from "@/lib/video-style";
 import {
@@ -12,6 +13,8 @@ import {
 import type { UpdateBrandingInput } from "@/schemas/channel.schema";
 import { BrandService, brandService, type FetchLike } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
+import { providerCredentialService } from "@/services/provider-credential.service";
+import type { SpeechProvider, SpeechVoice } from "@/services/providers/types";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 let userId: string;
@@ -183,28 +186,35 @@ describe("brandService.resolve", () => {
   });
 });
 
+/** A complete, valid input, so each test can name only the field it is about.
+ *  Every field is required on the way in — the branding screen has one Save
+ *  and sends all of them. Module-scoped because the narration-voice block
+ *  below writes through the same one Save. */
+function brandingInput(
+  overrides: Partial<UpdateBrandingInput> = {},
+): UpdateBrandingInput {
+  return {
+    channelId,
+    primaryColour: "#FFCC00",
+    secondaryColour: "#101010",
+    headlineFont: "DejaVu Sans",
+    tone: "dry and factual",
+    niche: "business history",
+    musicQuery: "calm ambient documentary",
+    language: "en-GB",
+    categoryId: "28",
+    madeForKids: false,
+    footageStyle: "LIVE_ACTION",
+    // Null is the ordinary case, not an omission: it is what a channel that
+    // has never chosen a voice sends, and what the picker sends when the
+    // operator goes back to the deployment default.
+    voiceId: null,
+    voiceName: null,
+    ...overrides,
+  };
+}
+
 describe("brandService — branding", () => {
-  /** A complete, valid input, so each test can name only the field it is
-   *  about. Every field is required on the way in — the branding screen has
-   *  one Save and sends all of them. */
-  function brandingInput(
-    overrides: Partial<UpdateBrandingInput> = {},
-  ): UpdateBrandingInput {
-    return {
-      channelId,
-      primaryColour: "#FFCC00",
-      secondaryColour: "#101010",
-      headlineFont: "DejaVu Sans",
-      tone: "dry and factual",
-      niche: "business history",
-      musicQuery: "calm ambient documentary",
-      language: "en-GB",
-      categoryId: "28",
-      madeForKids: false,
-      footageStyle: "LIVE_ACTION",
-      ...overrides,
-    };
-  }
 
   it("returns en and Education for a channel that has never been branded", async () => {
     // Every channel connected before these columns existed lands here, and
@@ -485,5 +495,239 @@ describe("brandService.listCategories", () => {
     ).toBe(true);
 
     consoleError.mockRestore();
+  });
+});
+
+describe("brandService — narration voice", () => {
+  it("falls back to the deployment's voice for a channel that has never chosen one", async () => {
+    // The compatibility promise of the whole feature: every channel that
+    // existed before this column narrates with exactly the voice it always
+    // did, and nobody has to do anything.
+    const brand = await brandService.resolve(channelId);
+
+    expect(brand.voiceId).toBe(env.ELEVENLABS_VOICE_ID);
+    expect(brand.voiceName).toBeNull();
+  });
+
+  it("falls back for a video with no channel at all, and for a lookup that fails", async () => {
+    expect((await brandService.resolve(null)).voiceId).toBe(env.ELEVENLABS_VOICE_ID);
+
+    // `resolve` is documented as never throwing; narration now depends on that,
+    // because the voice is read from it before a single character is spent.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await brandService.resolve("not-a-uuid")).voiceId).toBe(
+      env.ELEVENLABS_VOICE_ID,
+    );
+    consoleError.mockRestore();
+  });
+
+  it("resolves the channel's own voice once one is chosen", async () => {
+    await brandService.updateBranding(
+      userId,
+      brandingInput({ voiceId: "AbC123voice", voiceName: "Charlotte" }),
+    );
+
+    const brand = await brandService.resolve(channelId);
+
+    expect(brand.voiceId).toBe("AbC123voice");
+    expect(brand.voiceName).toBe("Charlotte");
+  });
+
+  it("reports the voice as unchosen to the screen, where the render sees a fallback", async () => {
+    // The same split the three prompt fields have, and for the same reason:
+    // the picker has to be able to show "the deployment default" as the
+    // selected option rather than as a voice the operator appears to have
+    // picked out of a list.
+    const branding = await brandService.getBranding(userId, channelId);
+
+    expect(branding.voiceId).toBeNull();
+    expect(branding.voiceName).toBeNull();
+  });
+
+  it("stores the chosen voice and the name it had when it was chosen", async () => {
+    const saved = await brandService.updateBranding(
+      userId,
+      brandingInput({ voiceId: "XyZ789voice", voiceName: "Roger" }),
+    );
+
+    expect(saved.voiceId).toBe("XyZ789voice");
+    expect(saved.voiceName).toBe("Roger");
+    expect(await brandService.getBranding(userId, channelId)).toMatchObject({
+      voiceId: "XyZ789voice",
+      voiceName: "Roger",
+    });
+  });
+
+  it("drops the name when the voice goes back to the deployment default", async () => {
+    await brandService.updateBranding(
+      userId,
+      brandingInput({ voiceId: "XyZ789voice", voiceName: "Roger" }),
+    );
+
+    // A form that sent a stale name alongside a cleared voice would otherwise
+    // leave the narration library printing "Roger" against a voice that is no
+    // longer Roger.
+    const cleared = await brandService.updateBranding(
+      userId,
+      brandingInput({ voiceId: null, voiceName: "Roger" }),
+    );
+
+    expect(cleared.voiceId).toBeNull();
+    expect(cleared.voiceName).toBeNull();
+    expect((await brandService.resolve(channelId)).voiceId).toBe(
+      env.ELEVENLABS_VOICE_ID,
+    );
+  });
+
+  it("refuses to set a voice on another operator's channel", async () => {
+    const otherUserId = await createTestUser("brand-voice-other");
+
+    try {
+      await expect(
+        brandService.updateBranding(
+          otherUserId,
+          brandingInput({ voiceId: "AbC123voice", voiceName: "X" }),
+        ),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+});
+
+describe("brandService.listVoices", () => {
+  /** A speech provider that records the key it was handed. Injected for the
+   *  usual reason and one sharper one: the real provider's other method
+   *  spends the operator's ElevenLabs allowance. */
+  function fakeSpeech(
+    behaviour: { voices?: SpeechVoice[]; fail?: boolean } = {},
+  ): { provider: SpeechProvider; keys: string[] } {
+    const keys: string[] = [];
+
+    return {
+      keys,
+      provider: {
+        synthesize: async () => {
+          throw new Error("no test in this file may ever synthesise");
+        },
+        listVoices: async (apiKey: string) => {
+          keys.push(apiKey);
+          if (behaviour.fail) {
+            throw new ProviderError("ELEVENLABS", "ElevenLabs refused (503).", true);
+          }
+          return behaviour.voices ?? [];
+        },
+      },
+    };
+  }
+
+  const VOICE: SpeechVoice = {
+    voiceId: "AbC123voice",
+    name: "Charlotte",
+    description: "Warm and unhurried",
+    labels: [
+      { name: "accent", value: "british" },
+      { name: "use case", value: "narration" },
+    ],
+    previewUrl: "https://storage.googleapis.com/eleven/charlotte.mp3",
+  };
+
+  it("asks with the operator's own stored key", async () => {
+    await providerCredentialService.upsert(userId, {
+      provider: "ELEVENLABS",
+      apiKey: "sk_operator_key_1234",
+    });
+    const { provider, keys } = fakeSpeech({ voices: [VOICE] });
+
+    const list = await new BrandService(fetch, provider).listVoices(userId);
+
+    expect(list.status).toBe("ok");
+    expect(list.voices).toEqual([VOICE]);
+    expect(keys).toEqual(["sk_operator_key_1234"]);
+  });
+
+  it("gives each operator their own account's voices, never another's key", async () => {
+    const otherUserId = await createTestUser("brand-voices-other");
+
+    try {
+      await providerCredentialService.upsert(userId, {
+        provider: "ELEVENLABS",
+        apiKey: "sk_mine_1111",
+      });
+      await providerCredentialService.upsert(otherUserId, {
+        provider: "ELEVENLABS",
+        apiKey: "sk_theirs_2222",
+      });
+      const { provider, keys } = fakeSpeech({ voices: [VOICE] });
+      const service = new BrandService(fetch, provider);
+
+      await service.listVoices(userId);
+      await service.listVoices(otherUserId);
+
+      // Each call carried exactly the key of the operator who made it. There
+      // is no channel id and nothing else the browser sends that could point
+      // this at somebody else's credential.
+      expect(keys).toEqual(["sk_mine_1111", "sk_theirs_2222"]);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+
+  it("never returns the key in what it hands back", async () => {
+    await providerCredentialService.upsert(userId, {
+      provider: "ELEVENLABS",
+      apiKey: "sk_secret_key_9999",
+    });
+    const { provider } = fakeSpeech({ voices: [VOICE] });
+
+    const list = await new BrandService(fetch, provider).listVoices(userId);
+
+    // The whole payload, not just the fields anyone thought to check — this
+    // travels to the browser through a server action.
+    expect(JSON.stringify(list)).not.toContain("sk_secret_key_9999");
+  });
+
+  it("says no credential is stored rather than showing an empty account", async () => {
+    const { provider, keys } = fakeSpeech({ voices: [VOICE] });
+
+    const list = await new BrandService(fetch, provider).listVoices(userId);
+
+    expect(list).toEqual({ voices: [], status: "no-credential" });
+    // Nothing was asked, because there was nothing to ask with.
+    expect(keys).toEqual([]);
+  });
+
+  it("reports an unreachable ElevenLabs rather than inventing a voice list", async () => {
+    // The rule this test exists for: there is no offline catalogue to fall
+    // back to. A hardcoded list would offer voices this account may not have,
+    // and choosing one of those is a narration that fails after a video has
+    // been queued.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    await providerCredentialService.upsert(userId, {
+      provider: "ELEVENLABS",
+      apiKey: "sk_operator_key_1234",
+    });
+    const { provider } = fakeSpeech({ fail: true });
+
+    const list = await new BrandService(fetch, provider).listVoices(userId);
+
+    expect(list).toEqual({ voices: [], status: "unavailable" });
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain(
+      "sk_operator_key_1234",
+    );
+    consoleError.mockRestore();
+  });
+
+  it("treats an account with no voices as an answer, not a failure", async () => {
+    await providerCredentialService.upsert(userId, {
+      provider: "ELEVENLABS",
+      apiKey: "sk_operator_key_1234",
+    });
+    const { provider } = fakeSpeech({ voices: [] });
+
+    expect(await new BrandService(fetch, provider).listVoices(userId)).toEqual({
+      voices: [],
+      status: "ok",
+    });
   });
 });

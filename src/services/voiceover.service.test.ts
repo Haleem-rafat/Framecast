@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { env } from "@/config/env";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import type { SpeechProvider } from "@/services/providers/types";
@@ -283,5 +285,119 @@ describe("voiceOverService.generate", () => {
     });
     expect(usage.succeeded).toBe(true);
     expect(usage.inputTokens).toBe(5);
+  });
+});
+
+/**
+ * The voice used to be `env.ELEVENLABS_VOICE_ID` — one voice, from one
+ * environment variable, for every video on every channel. It now comes from
+ * the channel, and these tests are the contract that says so without ever
+ * calling ElevenLabs: the provider is the same injected fake as above, so
+ * "which voice was requested" is read off the fake's arguments and no
+ * characters are spent.
+ */
+describe("voiceOverService.generate — which voice narrates", () => {
+  /** A channel with an optional chosen voice, and a project pointed at it, so
+   *  the video under test resolves a brand at all. */
+  async function videoOnChannel(voice: { voiceId: string; voiceName: string } | null) {
+    const channel = await channelService.connect(userId, {
+      youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
+      title: "Test channel",
+      accessToken: "ya29.test",
+      refreshToken: "1//test",
+      expiresInSeconds: 3600,
+      scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+    });
+
+    if (voice) {
+      await prisma.channelBrand.create({ data: { channelId: channel.id, ...voice } });
+    }
+
+    const project = await projectService.create(userId, {
+      name: `test-voiceover-channel-${randomUUID().slice(0, 8)}`,
+      channelId: channel.id,
+    });
+    const video = await videoService.create(userId, {
+      projectId: project.id,
+      title: "How inflation actually works",
+      topic: "inflation",
+    });
+
+    const script = await prisma.script.create({ data: { videoId: video.id } });
+    const version = await prisma.scriptVersion.create({
+      data: { scriptId: script.id, version: 1, content: SCRIPT_CONTENT, wordCount: 1 },
+    });
+    await prisma.script.update({
+      where: { id: script.id },
+      data: { activeVersionId: version.id },
+    });
+    await prisma.video.update({
+      where: { id: video.id },
+      data: { status: "QUEUED" },
+    });
+
+    return video.id;
+  }
+
+  /** The voice id the fake provider was asked for on its nth call. */
+  function requestedVoice(call: number): string {
+    return (fakeProvider.synthesize as ReturnType<typeof vi.fn>).mock.calls[call][0]
+      .voiceId;
+  }
+
+  it("narrates with the channel's chosen voice", async () => {
+    const id = await videoOnChannel({
+      voiceId: "AbC123kidsvoice",
+      voiceName: "Charlotte",
+    });
+
+    await service.generate(userId, id);
+
+    expect(requestedVoice(0)).toBe("AbC123kidsvoice");
+    // And the name the operator saw when they chose it, so the narration
+    // library prints a name rather than a 20-character id.
+    const voiceOver = await prisma.voiceOver.findUniqueOrThrow({
+      where: { videoId: id },
+    });
+    expect(voiceOver.voiceId).toBe("AbC123kidsvoice");
+    expect(voiceOver.voiceName).toBe("Charlotte");
+  });
+
+  it("falls back to the deployment's voice for a channel that has not chosen one", async () => {
+    // Every channel that existed before this feature is in exactly this state,
+    // and has to narrate identically to how it did before.
+    const id = await videoOnChannel(null);
+
+    await service.generate(userId, id);
+
+    expect(requestedVoice(0)).toBe(env.ELEVENLABS_VOICE_ID);
+  });
+
+  it("falls back for a video whose project has no channel at all", async () => {
+    // The fixture at the top of this file is exactly that video.
+    await approveScriptFixture();
+
+    await service.generate(userId, videoId);
+
+    expect(requestedVoice(0)).toBe(env.ELEVENLABS_VOICE_ID);
+  });
+
+  it("sends two different voices for two channels narrated back to back", async () => {
+    // The reason this lives on the channel rather than on the operator: both
+    // channels belong to the same person, and both need their own voice at the
+    // same time. A per-user default could not express this.
+    const finance = await videoOnChannel({
+      voiceId: "AbC123finance",
+      voiceName: "Roger",
+    });
+    const kids = await videoOnChannel({ voiceId: "XyZ789kids", voiceName: "Charlotte" });
+
+    await service.generate(userId, finance);
+    await service.generate(userId, kids);
+
+    expect([requestedVoice(0), requestedVoice(1)]).toEqual([
+      "AbC123finance",
+      "XyZ789kids",
+    ]);
   });
 });

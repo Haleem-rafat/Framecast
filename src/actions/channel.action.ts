@@ -13,6 +13,7 @@ import {
   brandService,
   type ChannelBranding,
   type VideoCategoryList,
+  type VoiceList,
 } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
 import { logoService } from "@/services/logo.service";
@@ -143,5 +144,30 @@ export async function listVideoCategoriesAction(
   return run(async () => {
     const session = await requireSession();
     return brandService.listCategories(session.user.id, channelId);
+  });
+}
+
+/**
+ * The voices the branding screen's narration picker offers.
+ *
+ * Takes no arguments at all, which is the point: the answer depends on the
+ * signed-in operator's own ElevenLabs credential and on nothing the browser
+ * sends. There is no id to tamper with, no channel to confuse for someone
+ * else's, and two operators calling this get two different lists because
+ * `resolveKey` reads only their own row.
+ *
+ * The key itself never comes back. `VoiceList` is names, labels and public
+ * preview URLs — the service resolves the credential, hands it to the
+ * provider as a request header, and returns none of it.
+ *
+ * Like `listVideoCategoriesAction`, the service below never throws for a
+ * reachability reason: a missing credential and an unreachable API are both
+ * reported as a `status` the picker explains in words, so this action's error
+ * branch exists only for the session check.
+ */
+export async function listVoicesAction(): Promise<ActionResult<VoiceList>> {
+  return run(async () => {
+    const session = await requireSession();
+    return brandService.listVoices(session.user.id);
   });
 }
