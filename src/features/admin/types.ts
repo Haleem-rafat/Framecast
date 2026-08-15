@@ -165,7 +165,12 @@ export interface AdminUserDetail {
   publications: AdminPublicationSummary[];
   credentials: AdminCredentialSummary[];
   recentActivity: AdminActivityEntry[];
-  /** Sum of `Asset.sizeBytes` beneath this user's videos. */
+  /**
+   * Sum of `Asset.sizeBytes` beneath this user's videos, scoped by the
+   * `videos/{videoId}/` storage-path prefix rather than by the `Asset.scene`
+   * relation — see the query in `adminService.getUser` for why the obvious
+   * join reports zero for everybody.
+   */
   storageBytes: number;
   shorts: { total: number; byStatus: { status: ShortStatus; count: number }[] };
 }

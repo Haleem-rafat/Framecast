@@ -163,6 +163,15 @@ export class AdminService {
 
     await this.recordUserView(operatorId, userId, user.email);
 
+    // Every id, not the `VIDEO_LIMIT` page rendered below: this is what the
+    // storage sum is scoped by, and a total that silently covered only the
+    // hundred most recent videos would be worse than no total. Id-only off
+    // `Video(userId, status, deletedAt)`, so it stays cheap.
+    const videoIds = await prisma.video.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
     const [
       projects,
       videos,
@@ -286,12 +295,33 @@ export class AdminService {
           createdAt: true,
         },
       }),
-      // Assets have no `userId`; they hang off a scene, which hangs off a
-      // video, which is where ownership lives.
-      prisma.asset.aggregate({
-        where: { deletedAt: null, scene: { video: { userId } } },
-        _sum: { sizeBytes: true },
-      }),
+      /**
+       * An `Asset` has no `userId`, and — this is the trap — its `sceneId` is
+       * nullable and in practice always null: nothing in the pipeline attaches
+       * one. Scoping through `scene.video.userId`, which is the join the
+       * schema's relations invite, therefore matches zero rows and reports
+       * every account as using no storage at all.
+       *
+       * The real convention is stated in `Asset`'s own schema comment: every
+       * object lives under `videos/{videoId}/...` and `storagePath` prefix
+       * matching is how an asset is scoped to its video. So that is what this
+       * sums, one prefix per video the account owns.
+       *
+       * The `OR` is as long as the account has videos. At the tens-of-videos
+       * scale this product operates at that is fine; it is the one query here
+       * that would need rethinking for an account with thousands.
+       */
+      videoIds.length === 0
+        ? Promise.resolve({ _sum: { sizeBytes: null } })
+        : prisma.asset.aggregate({
+            where: {
+              deletedAt: null,
+              OR: videoIds.map((video) => ({
+                storagePath: { startsWith: `videos/${video.id}/` },
+              })),
+            },
+            _sum: { sizeBytes: true },
+          }),
       prisma.short.groupBy({
         by: ["status"],
         where: { video: { userId } },

@@ -158,6 +158,60 @@ describe("adminService.getUser", () => {
     expect(video?.leaseExpiresAt?.getTime()).toBeLessThan(Date.now());
   });
 
+  it("sums storage by the videos/{id}/ path prefix, not by the Asset.scene relation", async () => {
+    // The trap this pins down: `Asset.sceneId` is nullable and nothing in the
+    // pipeline ever sets it, so scoping storage through `scene.video.userId`
+    // — the join the schema's relations invite — matches nothing and reports
+    // every account as using no storage at all. `Asset`'s own comment says the
+    // convention is the `videos/{videoId}/...` prefix; this proves the service
+    // follows it.
+    await prisma.asset.createMany({
+      data: [
+        {
+          kind: "VIDEO",
+          storagePath: `videos/${videoId}/clips/section-000.mp4`,
+          sizeBytes: 1_500_000,
+        },
+        {
+          kind: "AUDIO",
+          storagePath: `videos/${videoId}/narration.mp3`,
+          sizeBytes: 500_000,
+        },
+        // Somebody else's video, under the same root. Must not be counted.
+        {
+          kind: "VIDEO",
+          storagePath: `videos/${randomUUID()}/clips/section-000.mp4`,
+          sizeBytes: 9_000_000,
+        },
+      ],
+    });
+
+    try {
+      const detail = await adminService.getUser(operatorId, subjectId);
+      expect(detail.storageBytes).toBe(2_000_000);
+    } finally {
+      await prisma.asset.deleteMany({
+        where: { storagePath: { contains: "/clips/section-000.mp4" } },
+      });
+      await prisma.asset.deleteMany({
+        where: { storagePath: `videos/${videoId}/narration.mp3` },
+      });
+    }
+  });
+
+  it("reports no storage for an account with no videos, without a query it cannot build", async () => {
+    const emptyId = await createTestUser("admin-empty");
+
+    try {
+      const detail = await adminService.getUser(operatorId, emptyId);
+      // An empty `OR` array matches everything in Prisma, so the zero-video
+      // case is short-circuited rather than aggregated.
+      expect(detail.storageBytes).toBe(0);
+    } finally {
+      await deleteTestUser(emptyId);
+    }
+  });
+
   it("refuses an id with no account rather than returning an empty shell", async () => {
     await expect(
       adminService.getUser(operatorId, randomUUID()),
