@@ -31,6 +31,20 @@ export type PublishVisibilityOption = (typeof publishVisibilityOptions)[number];
  */
 export const publishVideoSchema = z.object({
   visibility: z.enum(publishVisibilityOptions),
+  /**
+   * Whether this click also uploads the video's READY shorts, each as its own
+   * video on the same channel.
+   *
+   * Unlike `visibility` this *does* carry a default, and the direction is why.
+   * A default visibility would be a second opinion about how public an
+   * irreversible upload is; a default of `false` here can only ever result in
+   * *fewer* things reaching YouTube. Shorts were unpublishable by construction
+   * until this landed (see the `ShortStatus` comment in schema.prisma), so a
+   * request that never mentions them — an older client, a hand-made call —
+   * must behave exactly as it did then. `publishService.publish` defaults the
+   * same way, independently, for callers that never reach this schema.
+   */
+  includeShorts: z.boolean().default(false),
 });
 
 export type PublishVideoInput = z.infer<typeof publishVideoSchema>;

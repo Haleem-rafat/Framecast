@@ -5,6 +5,7 @@ import type { PublishStatus, PublishVisibility } from "@/generated/prisma/enums"
 import { deleteRenderFile, getRenderFile, RenderFileMissingError } from "@/lib/render-storage";
 import { ConflictError, InternalError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { getShortFile } from "@/lib/shorts-storage";
 import { getObject, objectContentType, removeObjects } from "@/lib/storage";
 import { clampDescription, clampTitle } from "@/lib/youtube-limits";
 import { brandService } from "@/services/brand.service";
@@ -28,8 +29,99 @@ function isUniqueConstraintViolation(
   );
 }
 
+/**
+ * YouTube's daily quota resets at midnight **Pacific Time**, not at midnight
+ * wherever the operator or the server happens to be — see "Quota usage" in the
+ * Data API's getting-started guide. Named here because the one thing an
+ * operator needs when they hit the limit is when it lifts, and "tomorrow" is
+ * the wrong answer for anyone east of California in the evening.
+ */
+const QUOTA_RESET_ZONE = "America/Los_Angeles";
+
+/**
+ * Whole hours until the next midnight Pacific, rounded up and never less than
+ * one — "in about 0 hours" reads as "right now", which is exactly what a
+ * quota-exceeded message must not imply.
+ *
+ * Exported for the test that pins the arithmetic; nothing else calls it.
+ */
+export function hoursUntilQuotaReset(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: QUOTA_RESET_ZONE,
+    hour: "numeric",
+    minute: "numeric",
+    // h23, not the default h12: this is arithmetic, and "12 AM" parses to 12.
+    hourCycle: "h23",
+  }).formatToParts(now);
+
+  const value = (type: string) =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
+
+  return Math.max(1, Math.ceil(24 - value("hour") - value("minute") / 60));
+}
+
+/**
+ * The 403 that means "you are out of uploads for today", separated from every
+ * other 403 because it is the only one where waiting is the fix.
+ *
+ * The numbers, verified against Google's own documentation rather than the
+ * figure this codebase used to carry: a project gets **100 `videos.insert`
+ * calls per day** in a bucket of their own (each call costs 1 unit of it),
+ * alongside 100 `search.list` calls and 10,000 units per day shared by every
+ * other endpoint — `thumbnails.set`, at 50 units, spends that second pool. The
+ * often-quoted "1,600 units per upload, so six videos a day" was true until
+ * **4 December 2025**, when the revision history records the cost of a video
+ * upload dropping "from approximately 1600 units to approximately 100 units";
+ * the quota tables now describe uploads as their own 100-a-day allocation. A
+ * video plus three shorts is four of those hundred, not most of a day's budget.
+ *
+ * A `ProviderError` subclass rather than a new `AppErrorCode`, so it serialises
+ * as PROVIDER_ERROR and reaches the dialog with its own sentence intact — the
+ * button matches on that sentence, the same way it already distinguishes the
+ * "assign a channel" conflict from every other conflict.
+ *
+ * Not retryable: `retryable` means "worth re-queueing now", and nothing about
+ * this is worth re-queueing before the reset.
+ */
+export class YouTubeQuotaError extends ProviderError {
+  constructor(what: string, now: Date = new Date()) {
+    const hours = hoursUntilQuotaReset(now);
+    super(
+      "YOUTUBE",
+      `YouTube's daily upload allowance for this project is used up, so ${what} ` +
+        `could not be uploaded. The allowance is 100 uploads a day and it resets ` +
+        `at midnight Pacific Time — about ${hours} hour${hours === 1 ? "" : "s"} ` +
+        `from now. Nothing retries automatically.`,
+      false,
+    );
+  }
+}
+
+/** What one short's upload did, recorded per short so the operator can see
+ *  which of three succeeded rather than a single verdict for all of them. */
+export interface ShortPublishOutcome {
+  shortId: string;
+  /** 0-based, the same number the panel lists them by — the UI shows
+   *  `index + 1`. */
+  index: number;
+  /** What was actually sent to YouTube, so a success line names the clip the
+   *  operator will find on the channel. */
+  title: string;
+  youtubeVideoId: string | null;
+  /** Null on success. On failure, a complete sentence safe to show verbatim —
+   *  including "this was never attempted", for the shorts after one that ran
+   *  the daily allowance out. */
+  error: string | null;
+}
+
 export interface PublishResult {
   youtubeVideoId: string;
+  /**
+   * One entry per short this publish tried, in play order. Empty when the
+   * operator did not tick the box — which is the default — and empty when they
+   * did but the video has no READY, unpublished shorts left.
+   */
+  shorts: ShortPublishOutcome[];
 }
 
 /**
@@ -51,6 +143,19 @@ export interface PublishOptions {
   visibility?: PublishVisibility;
   playlistId?: string;
   scheduledFor?: Date;
+  /**
+   * Upload this video's READY shorts in the same call. Defaults to **false**,
+   * and every caller has to say so explicitly.
+   *
+   * The default is the whole of the safety argument. Shorts used to be
+   * unpublishable by construction (see the `ShortStatus` comment in
+   * schema.prisma, which used to say so and now says what is true instead);
+   * lifting that constraint keeps its intent only if nothing reaches YouTube
+   * that the operator did not tick a box for. An option defaulting to `true`
+   * would silently publish four videos for every caller written against the
+   * old signature.
+   */
+  includeShorts?: boolean;
 }
 
 /**
@@ -146,6 +251,17 @@ function readStoredSources(value: unknown): string[] | null {
  * it's called twice — a real retry needs a separate, explicit action (not
  * built by this task) that resets or removes the failed row first. Trading
  * "no built-in retry yet" for "no accidental retry storm."
+ *
+ * Shorts ride along, but only when asked. `opts.includeShorts` — false unless a
+ * caller sets it, and set only by the dialog's checkbox, which is itself
+ * unticked by default — uploads this video's READY shorts in the same call, one
+ * per YouTube video of their own. Everything above applies to each of them
+ * separately: a claim row taken before any byte is sent (`ShortPublication`,
+ * `shortId` `@unique`), a FAILED row kept rather than deleted, and no retry.
+ * What does *not* cross between them is failure: the shorts are uploaded after
+ * the video's own publish has committed, and `publishShorts` cannot throw, so
+ * the video's outcome is decided before the first clip is read off disk. Gate 2
+ * is unchanged by all of this — nothing publishes without a click.
  */
 export class PublishService {
   constructor(private readonly fetchImpl: FetchLike = fetch) {}
@@ -429,6 +545,7 @@ export class PublishService {
       youtubeVideoId = await this.uploadToYouTube(
         accessToken,
         {
+          label: "this video",
           title,
           description,
           tags: video.tags,
@@ -535,6 +652,36 @@ export class PublishService {
       .update({ where: { id: publication.id }, data: { thumbnailApplied } })
       .catch(() => {});
 
+    // The shorts, if the operator asked for them — after the video's own
+    // publish has fully committed, and before either reclaim below.
+    //
+    // Order is deliberate on both sides. *After* the transaction, because the
+    // video's publish either succeeded or it did not, and no number of failed
+    // short uploads may turn a video that is live on YouTube into a FAILED row
+    // (`publishShorts` cannot throw, for the same reason). *Before* the
+    // reclaims, because those are the steps that start deleting things: a short
+    // is cut from the render at *generate* time, not here — every READY short
+    // already has its own independent file at `shorts/<shortId>.mp4` (see
+    // shorts-storage.ts) and `reclaimRenderStorage` only removes
+    // `renders/<videoId>.mp4`, so no short's bytes are at risk either way — but
+    // sequencing the uploads ahead of the tidy-up keeps that true by
+    // construction rather than by a reader checking two path prefixes.
+    const shorts = opts.includeShorts
+      ? await this.publishShorts({
+          userId,
+          videoId,
+          channelId,
+          accessToken,
+          visibility,
+          scheduledFor: opts.scheduledFor,
+          tags: video.tags,
+          language: brand.language,
+          categoryId: brand.categoryId,
+          sourcesAndCredits,
+          videoTitle: title,
+        })
+      : [];
+
     // Deliberately outside the transaction above and after it has already
     // committed. YouTube has accepted the upload and the video is genuinely
     // PUBLISHED at this point; a storage hiccup while reclaiming clips must
@@ -548,7 +695,43 @@ export class PublishService {
     // doc comment for why this runs here and nowhere else.
     await this.reclaimRenderStorage(userId, videoId, outputUrl);
 
-    return { youtubeVideoId };
+    return { youtubeVideoId, shorts };
+  }
+
+  /**
+   * How many of this video's shorts a publish would actually upload right now.
+   *
+   * READY only (a queued or failed short has no file), and only shorts with no
+   * `ShortPublication` row — publishing a short is one-shot, so one that has
+   * been uploaded is not offered again. Read by the video page to decide
+   * whether the dialog shows the "also publish N shorts" control at all: zero
+   * means the control is not rendered, rather than rendered disabled.
+   *
+   * The same `where` the upload loop uses, deliberately, so the number in the
+   * dialog and the number that goes up cannot describe different sets. They can
+   * still differ by *time* — a fourth short may finish encoding between the
+   * page load and the click — and the outcome list is what reports what
+   * actually happened.
+   */
+  async countPublishableShorts(userId: string, videoId: string): Promise<number> {
+    return prisma.short.count({
+      where: this.publishableShortsWhere(userId, videoId),
+    });
+  }
+
+  private publishableShortsWhere(userId: string, videoId: string) {
+    return {
+      videoId,
+      status: "READY",
+      // Belt and braces: `renderShort` writes READY and `outputPath` in one
+      // update precisely so the two cannot disagree, but this is the query
+      // that decides whether bytes get read off disk.
+      outputPath: { not: null },
+      // One-shot: any row at all blocks a second attempt, FAILED included —
+      // the same rule `Publication.videoId` enforces for the video.
+      publication: { is: null },
+      video: { userId, deletedAt: null },
+    } satisfies Prisma.ShortWhereInput;
   }
 
   /**
@@ -592,8 +775,9 @@ export class PublishService {
 
       const objectPath = thumbnail?.activeVersion?.imageUrl;
       if (!objectPath) {
-        // No thumbnail to apply — 50 quota units against the same daily
-        // allowance the upload itself spends 1,600 of, not worth spending on
+        // No thumbnail to apply — 50 units against the 10,000-a-day pool every
+        // endpoint except uploads and search shares (uploads have their own
+        // 100-a-day bucket; see `YouTubeQuotaError`), not worth spending on
         // nothing.
         return false;
       }
@@ -634,6 +818,247 @@ export class PublishService {
       );
       return false;
     }
+  }
+
+  /**
+   * Uploads this video's READY shorts, one at a time, and records what each one
+   * did.
+   *
+   * Never throws. Every call site consequence of that is deliberate: this runs
+   * after the video is already live on YouTube, so the *only* honest report is
+   * "the video published, and here is what happened to each clip". A throw here
+   * would surface to the operator as a failed publish for a video that plainly
+   * succeeded, and — worse — the caller's `catch` is long gone by this point, so
+   * there is nothing left that could mark anything FAILED coherently anyway.
+   *
+   * Sequential, not `Promise.all`. Each short is buffered whole into memory to
+   * be sent (the same `X-Upload-Content-Length` constraint the video's own
+   * upload has — see `publish()`), and tens of megabytes at a time is the
+   * difference between one clip's buffer and three of them landing on top of a
+   * 170MB one that has only just been released. Three uploads take seconds each;
+   * there is nothing to win by overlapping them.
+   */
+  private async publishShorts(args: {
+    userId: string;
+    videoId: string;
+    channelId: string;
+    accessToken: string;
+    visibility: PublishVisibility;
+    scheduledFor?: Date;
+    tags: string[];
+    language: string;
+    categoryId: string;
+    /** The video's own credits block, reused verbatim — see
+     *  `buildShortMetadata` for why a clip owes the same attribution. */
+    sourcesAndCredits: string;
+    /** Already clamped: the fallback title for a short the model never named. */
+    videoTitle: string;
+  }): Promise<ShortPublishOutcome[]> {
+    const outcomes: ShortPublishOutcome[] = [];
+
+    let shorts;
+    try {
+      shorts = await prisma.short.findMany({
+        where: this.publishableShortsWhere(args.userId, args.videoId),
+        orderBy: { index: "asc" },
+        select: {
+          id: true,
+          index: true,
+          title: true,
+          description: true,
+          outputPath: true,
+        },
+      });
+    } catch (error) {
+      // The list itself failing is the one case with nothing per-short to
+      // report, so it is logged and reported as an empty result rather than
+      // thrown past a video that is already published.
+      console.error(
+        `Could not list the shorts to publish for video ${args.videoId}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return outcomes;
+    }
+
+    /** Set once the daily allowance runs out: every short after that one is
+     *  reported as not attempted rather than sent to be refused. Crucially it
+     *  also leaves them with **no** `ShortPublication` row, so the one-shot
+     *  claim is not spent on an upload that never happened — only the short
+     *  that actually met the 403 loses its one attempt. */
+    let quotaExhausted: string | null = null;
+
+    for (const short of shorts) {
+      const { title, description } = this.buildShortMetadata(
+        short,
+        args.videoTitle,
+        args.sourcesAndCredits,
+      );
+
+      if (quotaExhausted) {
+        outcomes.push({
+          shortId: short.id,
+          index: short.index,
+          title,
+          youtubeVideoId: null,
+          error: `Not attempted — ${quotaExhausted}`,
+        });
+        continue;
+      }
+
+      // The claim, taken before a byte is sent, exactly as `publish()` takes
+      // the video's: `ShortPublication.shortId` is `@unique`, so a second
+      // concurrent publish loses here and never reaches YouTube.
+      let publicationId: string;
+      try {
+        const created = await prisma.shortPublication.create({
+          data: {
+            shortId: short.id,
+            channelId: args.channelId,
+            title,
+            description,
+            visibility: args.visibility,
+            status: "UPLOADING",
+          },
+          select: { id: true },
+        });
+        publicationId = created.id;
+      } catch (error) {
+        outcomes.push({
+          shortId: short.id,
+          index: short.index,
+          title,
+          youtubeVideoId: null,
+          error: isUniqueConstraintViolation(error)
+            ? "This short has already been published, or is being published right now."
+            : `Could not record this short's upload, so it was not sent: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+        });
+        continue;
+      }
+
+      try {
+        // `outputPath` is non-null by the query above; the check is what turns
+        // the type into one, and a file the disk no longer has is a real state
+        // (a hand-deleted clip) with its own sentence.
+        const file = short.outputPath
+          ? await getShortFile(short.outputPath)
+          : null;
+
+        if (file === null || file === "unsatisfiable") {
+          throw new ConflictError(
+            "This short's file is no longer on disk, so there was nothing to upload.",
+          );
+        }
+
+        const youtubeVideoId = await this.uploadToYouTube(
+          args.accessToken,
+          {
+            label: `short ${short.index + 1}`,
+            title,
+            description,
+            tags: args.tags,
+            // Inherited from the video's own publish, never chosen separately.
+            // A clip of a private video that is itself public is a leak with
+            // extra steps, and a public video whose clips are private is a
+            // promotion that reaches nobody — and the dialog asks the
+            // visibility question once, about this release, not once per file.
+            visibility: args.visibility,
+            // Same reasoning: if the video is held back until a timestamp, its
+            // clips must not go live before it.
+            publishAt: args.scheduledFor,
+            language: args.language,
+            categoryId: args.categoryId,
+          },
+          Buffer.from(await new Response(file.stream).arrayBuffer()),
+        );
+
+        await prisma.shortPublication.update({
+          where: { id: publicationId },
+          data: {
+            status: args.scheduledFor ? "SCHEDULED" : "PUBLISHED",
+            youtubeVideoId,
+            publishedAt: args.scheduledFor ? null : new Date(),
+          },
+        });
+
+        outcomes.push({
+          shortId: short.id,
+          index: short.index,
+          title,
+          youtubeVideoId,
+          error: null,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+
+        if (error instanceof YouTubeQuotaError) {
+          // Stop, rather than firing the remaining uploads at a quota that has
+          // already said no: each one would spend its own one-shot claim on a
+          // 403.
+          quotaExhausted = message;
+        }
+
+        // The claim row is kept and marked FAILED, never deleted — the same
+        // rule the video's Publication follows, and for the same reason: it is
+        // the record that an attempt happened, and it is what stops a second
+        // click re-uploading a clip YouTube may already hold.
+        await prisma.shortPublication
+          .update({
+            where: { id: publicationId },
+            data: { status: "FAILED", error: message },
+          })
+          .catch(() => {
+            // Best-effort: the outcome below is what the operator reads, and a
+            // bookkeeping write that fails must not take the loop down with it.
+          });
+
+        console.error(
+          `Could not publish short ${short.id} of video ${args.videoId}: ${message}`,
+        );
+
+        outcomes.push({
+          shortId: short.id,
+          index: short.index,
+          title,
+          youtubeVideoId: null,
+          error: message,
+        });
+      }
+    }
+
+    return outcomes;
+  }
+
+  /**
+   * What one short is uploaded as.
+   *
+   * The title is the model's own (it was asked for a standalone Shorts title
+   * that makes sense to someone who never saw the video — see
+   * `momentSchema` in shorts.service.ts), clamped for the same reason the
+   * video's is: a title one character over YouTube's limit costs a 400 *after*
+   * the bytes are sent, and the claim row that failure leaves behind blocks
+   * every retry. A short generated before those columns existed, or by a run
+   * that stored nulls, falls back to the video's own title with its position
+   * appended, so an unnamed clip still uploads rather than not uploading.
+   *
+   * The description leads with the video's `sourcesAndCredits` block for a
+   * reason that is not cosmetic: the footage in the clip is the same Pixabay
+   * footage the video was rendered from, so the same attribution is owed, and
+   * the same music credit applies to whatever music is audible in the window.
+   * Credits go first so that when `clampDescription` has to cut, it cuts the
+   * tail of the clip's own summary rather than a licence requirement.
+   */
+  private buildShortMetadata(
+    short: { index: number; title: string | null; description: string | null },
+    videoTitle: string,
+    sourcesAndCredits: string,
+  ): { title: string; description: string } {
+    return {
+      title: clampTitle(short.title ?? `${videoTitle} — Short ${short.index + 1}`),
+      description: clampDescription(
+        [sourcesAndCredits, short.description].filter(Boolean).join("\n\n"),
+      ),
+    };
   }
 
   /**
@@ -828,9 +1253,57 @@ export class PublishService {
    * them out is not neutral — it is delegating the audience question to a
    * heuristic.
    */
+  /**
+   * Turns a 403 that means "out of quota" into `YouTubeQuotaError`, and leaves
+   * every other failed response for the caller to describe.
+   *
+   * The status alone is not enough to tell them apart: `videos.insert` answers
+   * 403 for a channel that cannot upload, for a suspended account, and for a
+   * spent allowance, and only the last of those is fixed by waiting. Google
+   * puts the distinguishing token in the body — `error.errors[].reason`, which
+   * is `quotaExceeded` for the daily unit pool, `uploadLimitExceeded` for the
+   * per-day upload count, and `dailyLimitExceeded` for the older wording.
+   *
+   * Reading the body is best-effort by construction. A non-JSON error page
+   * (Google's edge returns HTML for some 5xx) must not replace a real failure
+   * with a parse error, so anything unreadable simply means "not a quota
+   * failure" and the caller's own message stands.
+   */
+  private async throwIfQuotaExceeded(
+    response: Response,
+    label = "this video",
+  ): Promise<void> {
+    if (response.status !== 403) {
+      return;
+    }
+
+    const reasons = await response
+      .json()
+      .then((body: unknown) => {
+        const errors = (body as { error?: { errors?: Array<{ reason?: string }> } })
+          ?.error?.errors;
+        return Array.isArray(errors)
+          ? errors.map((entry) => entry?.reason ?? "")
+          : [];
+      })
+      .catch(() => [] as string[]);
+
+    const isQuota = reasons.some((reason) =>
+      ["quotaExceeded", "uploadLimitExceeded", "dailyLimitExceeded"].includes(reason),
+    );
+
+    if (isQuota) {
+      throw new YouTubeQuotaError(label);
+    }
+  }
+
   private async uploadToYouTube(
     accessToken: string,
     metadata: {
+      /** Names this upload in a quota-exceeded message ("this video", "short
+       *  2"). Never sent to YouTube — it is the one thing the operator needs
+       *  when four files go up in one click and one of them is refused. */
+      label?: string;
       title: string;
       description: string;
       tags: string[];
@@ -881,6 +1354,10 @@ export class PublishService {
     );
 
     if (!initResponse.ok) {
+      // Quota first: "403" alone would send the operator looking for a
+      // permissions problem that isn't there, and this is the one failure whose
+      // fix is a clock rather than an action.
+      await this.throwIfQuotaExceeded(initResponse, metadata.label);
       throw new ProviderError(
         "YOUTUBE",
         `Could not start the YouTube upload (${initResponse.status}).`,
@@ -907,6 +1384,11 @@ export class PublishService {
     });
 
     if (!uploadResponse.ok) {
+      // Checked on this leg too: the resumable init can succeed and the PUT
+      // still come back 403 `uploadLimitExceeded` when the allowance runs out
+      // between the two calls — which is exactly what publishing four files in
+      // one click makes possible.
+      await this.throwIfQuotaExceeded(uploadResponse, metadata.label);
       throw new ProviderError(
         "YOUTUBE",
         `The YouTube upload failed (${uploadResponse.status}).`,

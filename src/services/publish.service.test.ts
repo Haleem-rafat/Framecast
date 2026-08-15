@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError } from "@/lib/errors";
-import type { VideoStatus } from "@/generated/prisma/enums";
+import type { ShortStatus, VideoStatus } from "@/generated/prisma/enums";
 import { deleteRenderFile, renderPath, statRenderFile, writeRenderFile } from "@/lib/render-storage";
 import { prisma } from "@/lib/prisma";
+import { deleteShortFile, statShortFile, writeShortFile } from "@/lib/shorts-storage";
 import { getObject, putObject, removeObjects, storagePath } from "@/lib/storage";
+import { PUBLISHING_DEFAULTS } from "@/lib/youtube-categories";
 import { DESCRIPTION_MAX } from "@/lib/youtube-limits";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
@@ -14,6 +19,7 @@ import type { FetchLike } from "@/services/publish.service";
 import {
   buildDescription,
   extractSourcesSection,
+  hoursUntilQuotaReset,
   PublishService,
 } from "@/services/publish.service";
 import { videoService } from "@/services/video.service";
@@ -64,6 +70,11 @@ const publishedVideoIds: string[] = [];
  * can't reach these rows either. */
 const clipStoragePaths: string[] = [];
 
+/** Short files written under RENDER_ROOT by `makeReadyShort` below. `Short`
+ * rows go with the user's cascade; their files do not, exactly like the
+ * renders tracked above. */
+const shortFilePaths: string[] = [];
+
 beforeEach(async () => {
   userId = await createTestUser("publish");
 });
@@ -84,6 +95,9 @@ afterEach(async () => {
   await deleteTestUser(userId);
   await Promise.all(
     publishedVideoIds.splice(0).map((id) => deleteRenderFile(renderPath(id)).catch(() => {})),
+  );
+  await Promise.all(
+    shortFilePaths.splice(0).map((location) => deleteShortFile(location).catch(() => {})),
   );
 });
 
@@ -1163,5 +1177,554 @@ describe("publishService.publish — metadata and visibility", () => {
     const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
     expect(publication.description!.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
     expect(publication.description).toBe(body.snippet.description);
+  });
+});
+
+/**
+ * One short, as the worker would leave it: a row plus a real file under
+ * RENDER_ROOT at `shorts/<id>.mp4`.
+ *
+ * The file is written for real rather than stubbed because two of the
+ * properties below are about files — that a short's bytes are read from the
+ * shorts path and not from the render, and that reclaiming the render after
+ * publishing leaves them alone.
+ */
+async function makeReadyShort(
+  videoId: string,
+  index: number,
+  opts: { title?: string | null; description?: string | null; status?: ShortStatus } = {},
+): Promise<{ id: string; outputPath: string | null }> {
+  const status = opts.status ?? "READY";
+
+  const short = await prisma.short.create({
+    data: {
+      videoId,
+      index,
+      startSeconds: index * 60,
+      endSeconds: index * 60 + 40,
+      title: opts.title === undefined ? `Short about inflation ${index + 1}` : opts.title,
+      description:
+        opts.description === undefined ? `What this clip covers, ${index + 1}.` : opts.description,
+      reason: "It stands on its own.",
+      status,
+    },
+    select: { id: true },
+  });
+
+  // Only a READY short has a file — the whole point of the status.
+  if (status !== "READY") {
+    return { id: short.id, outputPath: null };
+  }
+
+  const sourcePath = path.join(tmpdir(), `framecast-test-short-${short.id}.mp4`);
+  await writeFile(sourcePath, Buffer.from(`fake-short-${short.id}`));
+  const outputPath = await writeShortFile(short.id, sourcePath);
+  await rm(sourcePath, { force: true });
+  shortFilePaths.push(outputPath);
+
+  await prisma.short.update({ where: { id: short.id }, data: { outputPath } });
+
+  return { id: short.id, outputPath };
+}
+
+/** One recorded `videos.insert`, in the order the uploads happened: the video
+ *  first, then each short. */
+interface RecordedUpload {
+  title: string;
+  description: string;
+  tags: string[];
+  privacyStatus: string;
+  publishAt?: string;
+  language: string;
+  categoryId: string;
+  youtubeVideoId: string | null;
+  /** The bytes that were PUT, so a test can prove which file went up. */
+  body: string | null;
+}
+
+/**
+ * A resumable-upload endpoint that can be made to fail on the *nth* upload,
+ * which is the whole point of it: publishing a video with three shorts is four
+ * uploads through one code path, and every interesting property here is about
+ * what happens to the other three when one of them fails.
+ *
+ * Uploads are numbered from zero in call order, so 0 is always the video.
+ */
+function createSequenceFetch(
+  opts: {
+    /** Fail this upload's init with a plain 500. */
+    failAt?: number;
+    /** Fail this upload's init with the 403 body YouTube sends when the daily
+     *  allowance is gone. */
+    quotaAt?: number;
+  } = {},
+): { fetchImpl: FetchLike; uploads: RecordedUpload[] } {
+  const uploads: RecordedUpload[] = [];
+  /** Attempt number, counted on every init — including the ones made to fail,
+   *  which is the difference between "the third upload" and "the third
+   *  successful upload". `uploads` holds only the ones that got as far as
+   *  sending metadata, so the two are indexed separately. */
+  const byAttempt = new Map<number, RecordedUpload>();
+  let attempts = 0;
+
+  const fetchImpl: FetchLike = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    if (url.includes("uploadType=resumable")) {
+      const at = attempts++;
+
+      if (opts.quotaAt === at) {
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers(),
+          // The real shape, verbatim from the Data API's error documentation —
+          // the reason token in the body is the only thing separating this
+          // from a 403 for an unverified or suspended channel.
+          json: async () => ({
+            error: {
+              code: 403,
+              message: "The request cannot be completed because you have exceeded your quota.",
+              errors: [{ domain: "youtube.quota", reason: "quotaExceeded" }],
+            },
+          }),
+        } as unknown as Response;
+      }
+
+      if (opts.failAt === at) {
+        return {
+          ok: false,
+          status: 500,
+          headers: new Headers(),
+          json: async () => ({}),
+        } as unknown as Response;
+      }
+
+      const snippet = JSON.parse(init!.body as string) as {
+        snippet: {
+          title: string;
+          description: string;
+          tags: string[];
+          defaultLanguage: string;
+          categoryId: string;
+        };
+        status: { privacyStatus: string; publishAt?: string };
+      };
+
+      const recorded: RecordedUpload = {
+        title: snippet.snippet.title,
+        description: snippet.snippet.description,
+        tags: snippet.snippet.tags,
+        privacyStatus: snippet.status.privacyStatus,
+        publishAt: snippet.status.publishAt,
+        language: snippet.snippet.defaultLanguage,
+        categoryId: snippet.snippet.categoryId,
+        youtubeVideoId: null,
+        body: null,
+      };
+      uploads.push(recorded);
+      byAttempt.set(at, recorded);
+
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          location: `https://upload.example.invalid/resumable/${at}`,
+        }),
+        json: async () => ({}),
+      } as unknown as Response;
+    }
+
+    if (url.includes("thumbnails/set")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({}),
+      } as unknown as Response;
+    }
+
+    // The PUT of the bytes, back to the location handed out above.
+    const at = Number(url.slice(url.lastIndexOf("/") + 1));
+    const youtubeVideoId = `yt_upload_${at}`;
+    const recorded = byAttempt.get(at)!;
+    recorded.youtubeVideoId = youtubeVideoId;
+    recorded.body = Buffer.from(init!.body as ArrayBuffer).toString("utf-8");
+
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ id: youtubeVideoId }),
+    } as unknown as Response;
+  }) as FetchLike;
+
+  return { fetchImpl, uploads };
+}
+
+describe("publishService.publish — shorts, when the operator asks for them", () => {
+  it("uploads only the video when the box is not ticked, whatever shorts exist", async () => {
+    // The default, and the one that must never drift: shorts could not be
+    // published at all until this feature landed, so a publish that does not
+    // ask for them has to behave exactly as it did then.
+    const { videoId } = await makePublishableVideo();
+    const first = await makeReadyShort(videoId, 0);
+    await makeReadyShort(videoId, 1);
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+    });
+
+    expect(uploads).toHaveLength(1);
+    expect(result.shorts).toEqual([]);
+    expect(await prisma.shortPublication.count({ where: { short: { videoId } } })).toBe(0);
+
+    // And the shorts are untouched, still READY with their files — not
+    // consumed, not marked as anything.
+    const short = await prisma.short.findUniqueOrThrow({ where: { id: first.id } });
+    expect(short.status).toBe("READY");
+    expect(await statShortFile(short.outputPath!)).not.toBeNull();
+  });
+
+  it("uploads the video and each READY short, and records one publication per short", async () => {
+    const { videoId } = await makePublishableVideo();
+    const one = await makeReadyShort(videoId, 0);
+    const two = await makeReadyShort(videoId, 1);
+    const three = await makeReadyShort(videoId, 2);
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      includeShorts: true,
+    });
+
+    // Four uploads: the video, then the shorts in play order.
+    expect(uploads).toHaveLength(4);
+    expect(result.youtubeVideoId).toBe("yt_upload_0");
+    expect(result.shorts.map((short) => short.shortId)).toEqual([one.id, two.id, three.id]);
+    expect(result.shorts.map((short) => short.youtubeVideoId)).toEqual([
+      "yt_upload_1",
+      "yt_upload_2",
+      "yt_upload_3",
+    ]);
+    expect(result.shorts.every((short) => short.error === null)).toBe(true);
+
+    // Each short's own bytes went up, not the render's — the clips are
+    // separate files at `shorts/<id>.mp4` and are never re-cut here.
+    expect(uploads[1].body).toBe(`fake-short-${one.id}`);
+    expect(uploads[3].body).toBe(`fake-short-${three.id}`);
+
+    // Shorts inherit the publish's visibility rather than choosing their own:
+    // a public clip of a private video would be a leak with extra steps.
+    expect(uploads.map((upload) => upload.privacyStatus)).toEqual([
+      "public",
+      "public",
+      "public",
+      "public",
+    ]);
+
+    // And the channel's language and category, exactly as the video gets them.
+    for (const upload of uploads) {
+      expect(upload.language).toBe(PUBLISHING_DEFAULTS.language);
+      expect(upload.categoryId).toBe(PUBLISHING_DEFAULTS.categoryId);
+    }
+
+    // The clip's own title, and the credits the same footage owes wherever it
+    // is used — Pixabay's terms do not stop applying because the clip is
+    // vertical.
+    expect(uploads[1].title).toBe("Short about inflation 1");
+    expect(uploads[1].description).toContain("Pixabay");
+    expect(uploads[1].description).toContain("What this clip covers, 1.");
+
+    const publications = await prisma.shortPublication.findMany({
+      where: { shortId: { in: [one.id, two.id, three.id] } },
+    });
+    expect(publications).toHaveLength(3);
+    for (const publication of publications) {
+      expect(publication.status).toBe("PUBLISHED");
+      expect(publication.visibility).toBe("PUBLIC");
+      expect(publication.youtubeVideoId).toMatch(/^yt_upload_/);
+      expect(publication.publishedAt).not.toBeNull();
+      expect(publication.error).toBeNull();
+    }
+  });
+
+  it("skips shorts that are not READY, and falls back to the video's title for an unnamed one", async () => {
+    const { videoId } = await makePublishableVideo();
+    await makeReadyShort(videoId, 0, { status: "QUEUED" });
+    await makeReadyShort(videoId, 1, { status: "FAILED" });
+    const named = await makeReadyShort(videoId, 2, { title: null, description: null });
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      includeShorts: true,
+    });
+
+    // A queued short has no file and a failed one never produced bytes;
+    // uploading either is not a degraded publish, it is an impossible one.
+    expect(uploads).toHaveLength(2);
+    expect(result.shorts.map((short) => short.shortId)).toEqual([named.id]);
+    expect(uploads[1].title).toBe("How inflation actually works — Short 3");
+    // No clip description, but the attribution is still owed.
+    expect(uploads[1].description).toContain("Pixabay");
+  });
+
+  it("leaves the video published when a short fails, and records which one and why", async () => {
+    // The property the whole feature turns on: four uploads, one click, and
+    // the video's own outcome decided before any clip is read off disk.
+    const { videoId } = await makePublishableVideo();
+    const one = await makeReadyShort(videoId, 0);
+    const two = await makeReadyShort(videoId, 1);
+    const three = await makeReadyShort(videoId, 2);
+
+    // Upload 2 is the second short — the video is 0.
+    const { fetchImpl, uploads } = createSequenceFetch({ failAt: 2 });
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "UNLISTED",
+      includeShorts: true,
+    });
+
+    // Not a throw. The publish did not fail; two thirds of the shorts did not
+    // fail either, and reporting the whole thing as failed would be a lie
+    // about something that cannot be repeated.
+    expect(result.youtubeVideoId).toBe("yt_upload_0");
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("PUBLISHED");
+    expect(video.failureReason).toBeNull();
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("PUBLISHED");
+
+    // The failure is attributed to the one short that had it, by index, with a
+    // reason — not to "the shorts".
+    expect(result.shorts).toHaveLength(3);
+    expect(result.shorts[0]).toMatchObject({ shortId: one.id, index: 0, error: null });
+    expect(result.shorts[1]).toMatchObject({ shortId: two.id, index: 1, youtubeVideoId: null });
+    expect(result.shorts[1].error).toMatch(/YouTube upload/i);
+    expect(result.shorts[2]).toMatchObject({ shortId: three.id, index: 2, error: null });
+
+    // The one after the failure still went up: one clip failing must not
+    // abandon the rest.
+    expect(uploads).toHaveLength(3);
+
+    const failed = await prisma.shortPublication.findUniqueOrThrow({
+      where: { shortId: two.id },
+    });
+    expect(failed.status).toBe("FAILED");
+    expect(failed.error).toMatch(/YouTube upload/i);
+    expect(failed.youtubeVideoId).toBeNull();
+
+    const succeeded = await prisma.shortPublication.findUniqueOrThrow({
+      where: { shortId: three.id },
+    });
+    expect(succeeded.status).toBe("PUBLISHED");
+  });
+
+  it("records a short whose file has gone missing, and publishes the rest", async () => {
+    const { videoId } = await makePublishableVideo();
+    const gone = await makeReadyShort(videoId, 0);
+    const kept = await makeReadyShort(videoId, 1);
+
+    // A hand-deleted clip: the row still says READY with an outputPath.
+    await deleteShortFile(gone.outputPath!);
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      includeShorts: true,
+    });
+
+    expect(uploads).toHaveLength(2);
+    expect(result.shorts[0].error).toMatch(/no longer on disk/i);
+    expect(result.shorts[1].youtubeVideoId).toBe("yt_upload_1");
+    expect(
+      (await prisma.shortPublication.findUniqueOrThrow({ where: { shortId: gone.id } })).status,
+    ).toBe("FAILED");
+    expect(
+      (await prisma.shortPublication.findUniqueOrThrow({ where: { shortId: kept.id } })).status,
+    ).toBe("PUBLISHED");
+  });
+
+  it("never re-publishes a short that already has a publication row, failed or not", async () => {
+    // One-shot per short, enforced exactly the way the video's is: a row on
+    // the `@unique` shortId, taken before any byte is sent. A FAILED row
+    // blocks just as hard as a published one — the attempt happened, and
+    // YouTube may already hold the clip.
+    const { videoId, channelId } = await makePublishableVideo();
+    const alreadyTried = await makeReadyShort(videoId, 0);
+    const fresh = await makeReadyShort(videoId, 1);
+
+    await prisma.shortPublication.create({
+      data: {
+        shortId: alreadyTried.id,
+        channelId,
+        title: "An earlier attempt",
+        status: "FAILED",
+        error: "Something went wrong the first time.",
+      },
+    });
+
+    const service = new PublishService(createSequenceFetch().fetchImpl);
+    // The count the dialog shows comes from the same query the upload loop
+    // uses, so the offer and the action cannot describe different sets.
+    expect(await service.countPublishableShorts(userId, videoId)).toBe(1);
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      includeShorts: true,
+    });
+
+    expect(uploads).toHaveLength(2);
+    expect(result.shorts.map((short) => short.shortId)).toEqual([fresh.id]);
+
+    // Untouched, including its original error — a refused re-publish must not
+    // quietly overwrite the record of the attempt that blocked it.
+    const untouched = await prisma.shortPublication.findUniqueOrThrow({
+      where: { shortId: alreadyTried.id },
+    });
+    expect(untouched.status).toBe("FAILED");
+    expect(untouched.title).toBe("An earlier attempt");
+  });
+
+  it("refuses a second publish for the video and never reaches its shorts", async () => {
+    // The video's own one-shot is what makes a second shorts publish
+    // unreachable in practice: the claim on Publication.videoId is taken
+    // first, so the second click stops before a single clip is considered.
+    const { videoId } = await makePublishableVideo();
+    await makeReadyShort(videoId, 0);
+
+    const first = createSequenceFetch();
+    await new PublishService(first.fetchImpl).publish(userId, videoId, {
+      includeShorts: true,
+    });
+    expect(first.uploads).toHaveLength(2);
+
+    const second = createSequenceFetch();
+    await expect(
+      new PublishService(second.fetchImpl).publish(userId, videoId, { includeShorts: true }),
+    ).rejects.toThrow(ConflictError);
+
+    expect(second.uploads).toHaveLength(0);
+    // Still exactly one row per short, with the id from the first publish.
+    const publications = await prisma.shortPublication.findMany({
+      where: { short: { videoId } },
+    });
+    expect(publications).toHaveLength(1);
+    expect(publications[0].youtubeVideoId).toBe("yt_upload_1");
+  });
+
+  it("keeps every short's file when publishing reclaims the render", async () => {
+    // Reclaiming deletes `renders/<videoId>.mp4` and the `videos/<id>/clips/`
+    // objects. Shorts live at `shorts/<shortId>.mp4`, written at generate
+    // time, and are cut from the render long before this — so publishing must
+    // leave them exactly where they are, whether or not they were uploaded.
+    const { videoId, outputUrl } = await makePublishableVideo();
+    const uploaded = await makeReadyShort(videoId, 0);
+    const untouched = await makeReadyShort(videoId, 1, { status: "QUEUED" });
+
+    const { fetchImpl } = createSequenceFetch();
+    await new PublishService(fetchImpl).publish(userId, videoId, { includeShorts: true });
+
+    expect(await statRenderFile(outputUrl)).toBeNull();
+    expect(await statShortFile(uploaded.outputPath!)).not.toBeNull();
+    // A queued short has no file to keep, and nothing tried to publish it.
+    expect(untouched.outputPath).toBeNull();
+    expect(
+      await prisma.shortPublication.count({ where: { shortId: untouched.id } }),
+    ).toBe(0);
+  });
+
+  it("carries a scheduled publish's timestamp onto its shorts, so no clip goes live first", async () => {
+    const { videoId } = await makePublishableVideo();
+    await makeReadyShort(videoId, 0);
+    const scheduledFor = new Date("2030-01-01T12:00:00.000Z");
+
+    const { fetchImpl, uploads } = createSequenceFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      scheduledFor,
+      includeShorts: true,
+    });
+
+    expect(uploads[1].privacyStatus).toBe("private");
+    expect(uploads[1].publishAt).toBe(scheduledFor.toISOString());
+
+    const publication = await prisma.shortPublication.findUniqueOrThrow({
+      where: { shortId: result.shorts[0].shortId },
+    });
+    expect(publication.status).toBe("SCHEDULED");
+    expect(publication.publishedAt).toBeNull();
+  });
+});
+
+describe("publishService.publish — the daily upload allowance", () => {
+  it("says when the quota resets instead of surfacing a bare 403", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    const { fetchImpl } = createSequenceFetch({ quotaAt: 0 });
+    let message = "";
+    try {
+      await new PublishService(fetchImpl).publish(userId, videoId);
+      expect.unreachable("a spent quota must not look like a successful publish");
+    } catch (thrown) {
+      message = (thrown as Error).message;
+    }
+
+    // Not "Could not start the YouTube upload (403)" — the operator would go
+    // looking for a permissions problem that is not there. This is the one
+    // failure whose fix is a clock.
+    expect(message).toMatch(/daily upload allowance/i);
+    expect(message).toMatch(/midnight Pacific/i);
+    expect(message).toMatch(/100 uploads a day/i);
+
+    // Everything else about a failed publish is unchanged: the claim row is
+    // kept as FAILED so nothing re-fires, and the video is FAILED with it.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.status).toBe("FAILED");
+    expect((await prisma.video.findUniqueOrThrow({ where: { id: videoId } })).status).toBe(
+      "FAILED",
+    );
+  });
+
+  it("stops uploading shorts once the allowance is gone, and spends no further claims", async () => {
+    const { videoId } = await makePublishableVideo();
+    const one = await makeReadyShort(videoId, 0);
+    const two = await makeReadyShort(videoId, 1);
+    const three = await makeReadyShort(videoId, 2);
+
+    // The video goes up, then the first short meets the limit.
+    const { fetchImpl, uploads } = createSequenceFetch({ quotaAt: 1 });
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      includeShorts: true,
+    });
+
+    expect(result.youtubeVideoId).toBe("yt_upload_0");
+    expect(uploads).toHaveLength(1);
+
+    expect(result.shorts[0].error).toMatch(/daily upload allowance/i);
+    // The two after it are reported as not attempted rather than as failures
+    // of their own — and, crucially, they keep their one attempt: no claim row
+    // is spent on an upload that never happened.
+    expect(result.shorts[1].error).toMatch(/^Not attempted/);
+    expect(result.shorts[2].error).toMatch(/^Not attempted/);
+
+    expect(
+      (await prisma.shortPublication.findUniqueOrThrow({ where: { shortId: one.id } })).status,
+    ).toBe("FAILED");
+    expect(await prisma.shortPublication.count({ where: { shortId: { in: [two.id, three.id] } } })).toBe(0);
+
+    // Tomorrow's dialog can still offer the two that were never tried.
+    expect(await new PublishService(fetchImpl).countPublishableShorts(userId, videoId)).toBe(2);
+  });
+
+  it("counts the hours to midnight Pacific, never down to zero", () => {
+    // 03:00 in Los Angeles (PDT, UTC-7) — twenty-one hours left of the day.
+    expect(hoursUntilQuotaReset(new Date("2026-08-15T10:00:00.000Z"))).toBe(21);
+    // 23:45 there: rounded up to one, because "in about 0 hours" reads as
+    // "right now", which is the one thing this must not say.
+    expect(hoursUntilQuotaReset(new Date("2026-08-16T06:45:00.000Z"))).toBe(1);
+    // Winter, so the same wall-clock hour is a different UTC instant — the
+    // zone does the work, not a fixed offset.
+    expect(hoursUntilQuotaReset(new Date("2026-01-15T11:00:00.000Z"))).toBe(21);
   });
 });
