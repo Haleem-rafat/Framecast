@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { BRAND_FONTS } from "@/lib/brand-fonts";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
 
 /**
@@ -31,12 +32,108 @@ const BCP_47 = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const CATEGORY_ID = /^[0-9]{1,3}$/;
 
 /**
- * What a channel sends YouTube on every upload, edited per channel because
- * that is where it belongs: a channel's videos are written, narrated and
- * categorised the same way every time.
+ * A six-digit hex colour and nothing else — not a CSS colour name, not
+ * `rgb()`, not eight digits with alpha.
+ *
+ * The narrowness is copied from the far end rather than invented here.
+ * `resolveHeadlineColour` in thumbnail-command.ts already applies exactly
+ * this allowlist before the value reaches FFmpeg, and silently substitutes
+ * white for anything that fails it — because `primaryColour` is an
+ * unvalidated `String?` column and a value like `white:x=0` would otherwise
+ * parse as valid drawtext syntax carrying its own extra options. Refusing the
+ * same shapes at the boundary is what makes the two agree: whatever this
+ * accepts is what the thumbnail actually draws, so the preview beside the
+ * field is not a lie.
  */
-export const updatePublishingDefaultsSchema = z.object({
+const HEX_COLOUR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * The three prompt fields — tone, niche and music query — are optional in the
+ * one specific sense that matters: an operator may clear one back to empty,
+ * and it is then stored as `NULL` so `BrandService.resolve` hands out its
+ * documented fallback again. There is no other way back to the default once a
+ * value has been typed, and "general interest" is a better answer for a
+ * channel that no longer means what it once said than a stale niche nobody
+ * remembers setting.
+ *
+ * Trimmed before the length check and before the emptiness test, so a field
+ * holding one space is a cleared field rather than a one-character tone.
+ *
+ * It accepts a null as well as a string, and that is not decoration. This
+ * schema is parsed twice — once by the resolver in the browser, against what
+ * the input holds, and again by the action, against what the browser sent. The
+ * first parse is what turns an emptied box into a null, so the second parse is
+ * handed the null its own transform produced. A bare `z.string()` here rejects
+ * it, and because a `ZodError` is not an `AppError` the operator is told
+ * "something went wrong on our end" for the entirely ordinary act of clearing
+ * a field. Accepting both shapes is what makes the transform idempotent, which
+ * is what a schema applied on both sides of a round trip has to be.
+ */
+function promptText(max: number) {
+  return z
+    .union([z.string(), z.null()])
+    .transform((value) => value?.trim() ?? "")
+    .pipe(z.string().max(max))
+    .transform((value) => (value.length === 0 ? null : value));
+}
+
+/**
+ * Long enough for a real answer, short enough that the field cannot become a
+ * second script prompt. These strings are interpolated into the thumbnail,
+ * logo, shorts and metadata prompts — see `updateBrandingSchema` below — and
+ * a paragraph pasted into "tone" does not describe a tone, it displaces the
+ * instructions around it.
+ */
+const TONE_MAX = 120;
+const NICHE_MAX = 120;
+/** Jamendo's search takes a handful of words; a sentence returns nothing. */
+const MUSIC_QUERY_MAX = 160;
+
+/**
+ * Everything about a channel the branding screen edits, in one object,
+ * because one screen writes them in one upsert.
+ *
+ * The publishing half (language, category, audience, footage) used to have a
+ * schema of its own behind the "Publishing defaults" dialog. That dialog is
+ * now a card on `/channels/[id]` beside the logo, colours, voice and music,
+ * and splitting one Save across two writes would mean a half-saved channel
+ * whenever the second one failed. The rules for those four fields are
+ * unchanged, comment for comment.
+ */
+export const updateBrandingSchema = z.object({
   channelId: z.uuid(),
+
+  /** Burned into the thumbnail headline by `drawtext`. */
+  primaryColour: z
+    .string()
+    .trim()
+    .regex(HEX_COLOUR, "Use a six-digit hex colour like #FFCC00"),
+  /**
+   * Held to the same shape as `primaryColour` even though nothing in the
+   * render path reads it yet. A column that is going to be a colour should
+   * never have been allowed to hold something that is not one, and the screen
+   * says plainly that this one is stored rather than drawn.
+   */
+  secondaryColour: z
+    .string()
+    .trim()
+    .regex(HEX_COLOUR, "Use a six-digit hex colour like #101010"),
+  /**
+   * An enum, not a string, and the one field on this screen where free text
+   * would be actively harmful: drawtext and libass both fall back to a default
+   * face *silently* on a name they cannot resolve, so an uninstalled font is
+   * indistinguishable from no font at all. `BRAND_FONTS` mirrors what
+   * worker/Dockerfile installs — see that module's comment.
+   */
+  headlineFont: z.enum(BRAND_FONTS.map((font) => font.value)),
+
+  /** Reaches the thumbnail prompt, the logo prompt, the shorts moment-picker
+   *  and the generated title, description and tags. */
+  tone: promptText(TONE_MAX),
+  niche: promptText(NICHE_MAX),
+  /** What Jamendo is searched for. See the column comment in schema.prisma. */
+  musicQuery: promptText(MUSIC_QUERY_MAX),
+
   language: z
     .string()
     .trim()
@@ -52,7 +149,7 @@ export const updatePublishingDefaultsSchema = z.object({
    * almost every other boolean in this codebase: a declaration that can arrive
    * absent is a declaration something else has to guess, and this is the one
    * field where a guess is a false legal statement. The form always sends it
-   * because the dialog always shows it.
+   * because the screen always shows it.
    */
   madeForKids: z.boolean(),
   /**
@@ -66,21 +163,51 @@ export const updatePublishingDefaultsSchema = z.object({
   footageStyle: z.enum(FOOTAGE_STYLES.map((option) => option.value)),
 });
 
-export type UpdatePublishingDefaultsInput = z.infer<
-  typeof updatePublishingDefaultsSchema
->;
+export type UpdateBrandingInput = z.infer<typeof updateBrandingSchema>;
 
 /**
- * The form's own schema. Same fields and the same rules — the values are
- * already in their stored shape in the browser, so unlike the settings form
- * there is no transform to keep the two apart, but they stay separate types
- * so a future transform doesn't have to be retrofitted into the server's
- * boundary.
+ * The form's own schema: the same fields and the same rules, minus the
+ * `channelId` the page already knows.
+ *
+ * Its *input* type is all strings — that is what the inputs hold — while its
+ * output has `tone`, `niche` and `musicQuery` narrowed to `string | null` by
+ * the transform above. The form declares both, the way `SettingsForm` does,
+ * so `handleSubmit` hands the action a value already in the shape the server
+ * will re-parse it into rather than one the action has to convert.
  */
-export const publishingDefaultsFormSchema = updatePublishingDefaultsSchema.omit({
+export const brandingFormSchema = updateBrandingSchema.omit({
   channelId: true,
 });
 
-export type PublishingDefaultsFormValues = z.infer<
-  typeof publishingDefaultsFormSchema
->;
+/** What the controls hold: every field a string, before the transform. */
+export type BrandingFormValues = z.input<typeof brandingFormSchema>;
+/** What `handleSubmit` produces, and what the action is sent. */
+export type BrandingFormOutput = z.output<typeof brandingFormSchema>;
+
+/**
+ * Choosing one of the generated logo options, and reading one back out of
+ * storage to show it.
+ *
+ * A bare filename, never a path. `ChannelBrand.logoPath` is handed straight
+ * to `getObject` by `thumbnail.service.ts` at render time, so a caller that
+ * could set it to an arbitrary string could point a channel's logo at any
+ * object in the bucket. The action rebuilds the full path with
+ * `storagePath(channelId, "logos", filename)` instead of accepting one, which
+ * pins it under the channel's own prefix by construction and puts it through
+ * `storagePath`'s own refusal of `/` and `..`. The regex below is the same
+ * bound stated one layer earlier, so a malformed value is a validation error
+ * rather than a 500 out of the storage layer.
+ */
+export const logoFilenameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9._-]+$/, "Not a logo filename");
+
+export const chooseLogoSchema = z.object({
+  channelId: z.uuid(),
+  filename: logoFilenameSchema,
+});
+
+export type ChooseLogoInput = z.infer<typeof chooseLogoSchema>;

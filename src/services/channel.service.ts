@@ -64,6 +64,28 @@ export class ChannelService {
   }
 
   /**
+   * One channel, for the page that is about a single channel.
+   *
+   * Scoped by `userId` in the query rather than fetched and checked
+   * afterwards, so a foreign id and an invented one are indistinguishable —
+   * both are `NotFoundError`, which the route turns into a 404. The same
+   * `SUMMARY_SELECT` as `list`, so the tokens cannot leak through this door
+   * either.
+   */
+  async get(userId: string, channelId: string): Promise<ChannelSummary> {
+    const channel = await prisma.channel.findFirst({
+      where: { id: channelId, userId, deletedAt: null },
+      select: SUMMARY_SELECT,
+    });
+
+    if (!channel) {
+      throw new NotFoundError("Channel");
+    }
+
+    return channel;
+  }
+
+  /**
    * Upserts on `[userId, youtubeChannelId]` so reconnecting the same channel
    * replaces its tokens and metadata rather than creating a duplicate row.
    */

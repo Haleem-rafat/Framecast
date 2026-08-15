@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { FetchLike } from "@/services/channel.service";
 import { ChannelService, channelService } from "@/services/channel.service";
@@ -95,6 +96,51 @@ describe("channelService", () => {
     const mine = await channelService.list(userId);
     expect(mine).toHaveLength(1);
     expect(mine[0].title).toBe("Money Mechanics (renamed)");
+  });
+
+  it("get returns one channel without its tokens", async () => {
+    const connected = await channelService.connect(userId, {
+      youtubeChannelId: YOUTUBE_CHANNEL_ID,
+      title: "Money Mechanics",
+      handle: "@moneymechanics",
+      ...TOKENS,
+    });
+
+    const channel = await channelService.get(userId, connected.id);
+
+    expect(channel.title).toBe("Money Mechanics");
+    expect(channel.handle).toBe("@moneymechanics");
+    // `SUMMARY_SELECT` omits them by construction rather than filtering them
+    // out afterwards, so this door cannot leak them either.
+    expect(channel).not.toHaveProperty("accessToken");
+    expect(channel).not.toHaveProperty("refreshToken");
+  });
+
+  it("get refuses another operator's channel, and a disconnected one", async () => {
+    // The branding route reaches this straight from a URL, so a foreign or
+    // invented id has to be indistinguishable — both are NotFoundError, which
+    // the route turns into a 404 rather than an answer to "does this exist".
+    const connected = await channelService.connect(userId, {
+      youtubeChannelId: YOUTUBE_CHANNEL_ID,
+      title: "Money Mechanics",
+      ...TOKENS,
+    });
+
+    const otherUserId = await createTestUser("channel-other");
+
+    try {
+      await expect(
+        channelService.get(otherUserId, connected.id),
+      ).rejects.toThrow(NotFoundError);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+
+    // Disconnect is a soft delete, so the row survives an id somebody kept.
+    await channelService.disconnect(userId, connected.id);
+    await expect(channelService.get(userId, connected.id)).rejects.toThrow(
+      NotFoundError,
+    );
   });
 
   it("disconnect removes the stored tokens", async () => {

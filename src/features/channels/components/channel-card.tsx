@@ -1,11 +1,12 @@
-import { MonitorPlay } from "lucide-react";
+import Link from "next/link";
+import { MonitorPlay, Palette } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { DisconnectChannelButton } from "@/features/channels/components/disconnect-channel-button";
-import { PublishingDefaultsDialog } from "@/features/channels/components/publishing-defaults-dialog";
 import { footageStyleLabel } from "@/lib/footage-styles";
 import { audienceLabel } from "@/lib/youtube-audience";
 import {
@@ -38,8 +39,20 @@ export function ChannelCard({
             {/* The channel name is this card's title, so it should be a
               * heading — a screen-reader user skimming a page of connected
               * channels by heading would otherwise find nothing at all. h3
-              * sits under the page h1 and the section that holds the list. */}
-            <h3 className="truncate font-medium">{channel.title}</h3>
+              * sits under the page h1 and the section that holds the list.
+              *
+              * The heading is also the link to the channel's own screen, so
+              * the obvious thing to click is the thing that is named — rather
+              * than a card-wide click target that would swallow the buttons
+              * on the right of it. */}
+            <h3 className="truncate font-medium">
+              <Link
+                href={`/channels/${channel.id}`}
+                className="focus-visible:ring-ring/50 rounded-sm outline-none hover:underline focus-visible:ring-3"
+              >
+                {channel.title}
+              </Link>
+            </h3>
             {!channel.isActive && <Badge variant="outline">Inactive</Badge>}
           </div>
           <p className="text-muted-foreground truncate text-xs">
@@ -72,11 +85,17 @@ export function ChannelCard({
         </div>
 
         <div className="flex items-center gap-2">
-          <PublishingDefaultsDialog
-            channelId={channel.id}
-            channelTitle={channel.title}
-            defaults={publishingDefaults}
-          />
+          {/* Was a "Publishing defaults" dialog, which had grown three
+            * settings and was about to grow the logo, the colours, the font,
+            * the tone, the niche and the music query. All of it lives on the
+            * channel's own screen now — see the note on that page for why a
+            * route rather than a bigger dialog. */}
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/channels/${channel.id}`}>
+              <Palette />
+              Branding
+            </Link>
+          </Button>
           <DisconnectChannelButton
             channelId={channel.id}
             channelTitle={channel.title}

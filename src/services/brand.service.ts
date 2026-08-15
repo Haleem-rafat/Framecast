@@ -12,7 +12,7 @@ import {
   type PublishingDefaults,
   type VideoCategory,
 } from "@/lib/youtube-categories";
-import type { UpdatePublishingDefaultsInput } from "@/schemas/channel.schema";
+import type { UpdateBrandingInput } from "@/schemas/channel.schema";
 import { channelService } from "@/services/channel.service";
 
 /** Injectable so tests never make a real call to YouTube. Same seam, and the
@@ -66,6 +66,34 @@ const FALLBACK = {
   // that edits it is a client component and this module is `server-only`.
   ...PUBLISHING_DEFAULTS,
 } as const;
+
+/**
+ * A channel's brand as the screen that edits it needs to see it, which is not
+ * the same shape a render needs (`ResolvedBrand` above).
+ *
+ * Two differences, both deliberate. `tone`, `niche` and `musicQuery` are
+ * nullable here: a form has to distinguish "the operator chose this" from
+ * "nobody has ever chosen, so the fallback applies", and a render never does.
+ * And `videoStyle` is absent, because this screen does not edit it — the
+ * colours, font, tone, niche and music query are the brand; `videoStyle` is
+ * the render's own dials, has no editor yet, and would be silently blanked by
+ * any write that pretended to include it.
+ */
+export interface ChannelBranding extends PublishingDefaults {
+  /** The storage path of the chosen logo, or null. Written by
+   *  `LogoService.choose`, never by `updateBranding`. */
+  logoPath: string | null;
+  primaryColour: string;
+  secondaryColour: string;
+  headlineFont: string;
+  /** Null means "never set" — the screen shows the fallback as a placeholder. */
+  tone: string | null;
+  niche: string | null;
+  musicQuery: string | null;
+  /** Null for a channel with no brand row, which the screen reports as
+   *  "never saved" rather than inventing a date. */
+  updatedAt: Date | null;
+}
 
 export interface VideoCategoryList {
   categories: VideoCategory[];
@@ -187,6 +215,51 @@ type ParsedVideoStyle = z.infer<typeof videoStyleSchema>;
  * value, which is the difference between a thread to pull and a shrug.
  * `channelId` is carried in for the log line alone.
  */
+/**
+ * The columns the branding screen reads, exactly as selected from the row, or
+ * `null` for a channel that has no row at all.
+ */
+type StoredBranding = {
+  logoPath: string | null;
+  primaryColour: string | null;
+  secondaryColour: string | null;
+  headlineFont: string | null;
+  tone: string | null;
+  niche: string | null;
+  musicQuery: string | null;
+  language: string;
+  categoryId: string;
+  madeForKids: boolean;
+  footageStyle: PublishingDefaults["footageStyle"];
+  updatedAt: Date;
+} | null;
+
+/**
+ * One mapping from stored columns to `ChannelBranding`, shared by the read and
+ * the write so the values an operator sees after saving are the same ones a
+ * reload would show them. Two copies of this drifted apart is precisely how a
+ * settings screen ends up displaying something the database does not hold.
+ *
+ * The colours and the font resolve to their fallbacks; the three prompt fields
+ * stay null. See `getBranding` for why the two halves are treated differently.
+ */
+function toBranding(brand: StoredBranding): ChannelBranding {
+  return {
+    logoPath: brand?.logoPath ?? null,
+    primaryColour: brand?.primaryColour ?? FALLBACK.primaryColour,
+    secondaryColour: brand?.secondaryColour ?? FALLBACK.secondaryColour,
+    headlineFont: brand?.headlineFont ?? FALLBACK.headlineFont,
+    tone: brand?.tone ?? null,
+    niche: brand?.niche ?? null,
+    musicQuery: brand?.musicQuery ?? null,
+    language: brand?.language ?? PUBLISHING_DEFAULTS.language,
+    categoryId: brand?.categoryId ?? PUBLISHING_DEFAULTS.categoryId,
+    madeForKids: brand?.madeForKids ?? PUBLISHING_DEFAULTS.madeForKids,
+    footageStyle: brand?.footageStyle ?? PUBLISHING_DEFAULTS.footageStyle,
+    updatedAt: brand?.updatedAt ?? null,
+  };
+}
+
 function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle {
   const result = videoStyleSchema.safeParse(stored);
 
@@ -260,7 +333,7 @@ export class BrandService {
   }
 
   /**
-   * The publishing half of a channel's brand, for the dialog that edits it.
+   * Everything the branding screen edits, for one channel.
    *
    * Scoped to the operator — every other read in this service takes a
    * `channelId` that a *caller* has already proven ownership of (rendering a
@@ -268,20 +341,36 @@ export class BrandService {
    * belonging to somebody else is `NotFoundError`, not defaults: silently
    * showing `en`/`27` for a foreign id would let an operator discover which
    * channel ids exist.
+   *
+   * Unlike `resolve()`, the three prompt fields come back as `null` when the
+   * column is null rather than filled in with the fallback. The distinction is
+   * the whole difference between the two callers: a render needs *a* tone and
+   * must never be handed nothing, while a form needs to know whether the
+   * operator has ever chosen one — so it can show the fallback as a
+   * placeholder the operator can clear back to instead of as a value they
+   * appear to have typed. The colours and the font are resolved the other way,
+   * to their fallbacks, because their controls cannot represent "unset": a
+   * colour input has to be *some* colour, and it may as well be the one the
+   * thumbnail would actually draw.
    */
-  async getPublishingDefaults(
-    userId: string,
-    channelId: string,
-  ): Promise<PublishingDefaults> {
+  async getBranding(userId: string, channelId: string): Promise<ChannelBranding> {
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
       select: {
         brand: {
           select: {
+            logoPath: true,
+            primaryColour: true,
+            secondaryColour: true,
+            headlineFont: true,
+            tone: true,
+            niche: true,
+            musicQuery: true,
             language: true,
             categoryId: true,
             madeForKids: true,
             footageStyle: true,
+            updatedAt: true,
           },
         },
       },
@@ -291,14 +380,7 @@ export class BrandService {
       throw new NotFoundError("Channel");
     }
 
-    return {
-      language: channel.brand?.language ?? PUBLISHING_DEFAULTS.language,
-      categoryId: channel.brand?.categoryId ?? PUBLISHING_DEFAULTS.categoryId,
-      madeForKids:
-        channel.brand?.madeForKids ?? PUBLISHING_DEFAULTS.madeForKids,
-      footageStyle:
-        channel.brand?.footageStyle ?? PUBLISHING_DEFAULTS.footageStyle,
-    };
+    return toBranding(channel.brand);
   }
 
   /**
@@ -333,23 +415,38 @@ export class BrandService {
   }
 
   /**
+   * The branding screen's one write, for the ten columns it edits.
+   *
+   * One method and one upsert rather than one per group, because the screen
+   * has one Save. Splitting it would mean a channel could come out of a failed
+   * save with new colours and an old audience declaration, and no way to see
+   * which half landed. `videoStyle` and `logoPath` are deliberately absent:
+   * the first is not edited here at all, and the second is written by
+   * `LogoService.choose` at the moment an option is picked, so naming it on
+   * the `update` branch would let a Save that happened to be in flight put the
+   * previous logo back.
+   *
    * Upserts rather than updates, exactly as `LogoService.choose` does and for
    * the same reason: most channels have no `ChannelBrand` row at all, and
-   * setting a publishing default is as likely to be the first branding action
-   * an operator takes as choosing a logo is. The `create` branch names only
-   * these three columns, so every other brand field lands on its own schema
-   * default.
+   * opening this screen and pressing Save is as likely to be the first
+   * branding action an operator takes as choosing a logo is. The `create`
+   * branch names only these columns, so every other brand field lands on its
+   * own schema default.
    *
    * `madeForKids` is written from the input on both branches rather than only
    * when it changed. It is the one field here whose value is a declaration
-   * rather than a preference, and "the operator opened this dialog, read the
+   * rather than a preference, and "the operator opened this screen, read the
    * question and pressed save" is exactly the event that should record it.
+   *
+   * `tone`, `niche` and `musicQuery` arrive as `string | null` and null is
+   * written through as null, which is how a field is cleared back to the
+   * documented fallback — see `promptText` in channel.schema.ts.
    */
-  async updatePublishingDefaults(
+  async updateBranding(
     userId: string,
-    input: UpdatePublishingDefaultsInput,
-  ): Promise<PublishingDefaults> {
-    const { channelId, language, categoryId, madeForKids, footageStyle } = input;
+    input: UpdateBrandingInput,
+  ): Promise<ChannelBranding> {
+    const { channelId, ...fields } = input;
 
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
@@ -362,17 +459,25 @@ export class BrandService {
 
     const brand = await prisma.channelBrand.upsert({
       where: { channelId },
-      create: { channelId, language, categoryId, madeForKids, footageStyle },
-      update: { language, categoryId, madeForKids, footageStyle },
+      create: { channelId, ...fields },
+      update: fields,
       select: {
+        logoPath: true,
+        primaryColour: true,
+        secondaryColour: true,
+        headlineFont: true,
+        tone: true,
+        niche: true,
+        musicQuery: true,
         language: true,
         categoryId: true,
         madeForKids: true,
         footageStyle: true,
+        updatedAt: true,
       },
     });
 
-    return brand;
+    return toBranding(brand);
   }
 
   /**

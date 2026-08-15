@@ -9,6 +9,7 @@ import {
   CURATED_CATEGORIES,
   PUBLISHING_DEFAULTS,
 } from "@/lib/youtube-categories";
+import type { UpdateBrandingInput } from "@/schemas/channel.schema";
 import { BrandService, brandService, type FetchLike } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
@@ -182,43 +183,100 @@ describe("brandService.resolve", () => {
   });
 });
 
-describe("brandService — publishing defaults", () => {
+describe("brandService — branding", () => {
+  /** A complete, valid input, so each test can name only the field it is
+   *  about. Every field is required on the way in — the branding screen has
+   *  one Save and sends all of them. */
+  function brandingInput(
+    overrides: Partial<UpdateBrandingInput> = {},
+  ): UpdateBrandingInput {
+    return {
+      channelId,
+      primaryColour: "#FFCC00",
+      secondaryColour: "#101010",
+      headlineFont: "DejaVu Sans",
+      tone: "dry and factual",
+      niche: "business history",
+      musicQuery: "calm ambient documentary",
+      language: "en-GB",
+      categoryId: "28",
+      madeForKids: false,
+      footageStyle: "LIVE_ACTION",
+      ...overrides,
+    };
+  }
+
   it("returns en and Education for a channel that has never been branded", async () => {
     // Every channel connected before these columns existed lands here, and
     // has to publish with nothing asked of the operator.
-    const defaults = await brandService.getPublishingDefaults(userId, channelId);
+    const branding = await brandService.getBranding(userId, channelId);
 
-    expect(defaults).toEqual(PUBLISHING_DEFAULTS);
+    expect(branding).toMatchObject(PUBLISHING_DEFAULTS);
+  });
+
+  it("reports an unbranded channel's colours and font as the fallbacks a render would use", async () => {
+    // The form's controls cannot represent "unset" — a colour input has to be
+    // some colour — so these resolve, and they resolve to exactly what
+    // `resolve()` hands the thumbnail compositor for the same channel.
+    const branding = await brandService.getBranding(userId, channelId);
+    const resolved = await brandService.resolve(channelId);
+
+    expect(branding.primaryColour).toBe(resolved.primaryColour);
+    expect(branding.secondaryColour).toBe(resolved.secondaryColour);
+    expect(branding.headlineFont).toBe(resolved.headlineFont);
+  });
+
+  it("reports the three prompt fields as null until they are chosen", async () => {
+    // Unlike the colours: the form has to tell "the operator typed this" apart
+    // from "nobody has, so the fallback applies", so it can show the fallback
+    // as a placeholder that can be cleared back to.
+    const branding = await brandService.getBranding(userId, channelId);
+
+    expect(branding.tone).toBeNull();
+    expect(branding.niche).toBeNull();
+    expect(branding.musicQuery).toBeNull();
+    expect(branding.logoPath).toBeNull();
+    expect(branding.updatedAt).toBeNull();
   });
 
   it("creates the brand row on first save, and updates it afterwards", async () => {
-    // Setting a publishing default is as likely to be an operator's first
-    // branding action as choosing a logo is, so this upserts rather than
+    // Opening this screen and pressing Save is as likely to be an operator's
+    // first branding action as choosing a logo is, so this upserts rather than
     // failing on a channel with no row.
-    await brandService.updatePublishingDefaults(userId, {
-      channelId,
+    const saved = await brandService.updateBranding(userId, brandingInput());
+
+    expect(saved).toMatchObject({
+      primaryColour: "#FFCC00",
+      secondaryColour: "#101010",
+      headlineFont: "DejaVu Sans",
+      tone: "dry and factual",
+      niche: "business history",
+      musicQuery: "calm ambient documentary",
       language: "en-GB",
       categoryId: "28",
       madeForKids: false,
       footageStyle: "LIVE_ACTION",
     });
 
-    expect(await brandService.getPublishingDefaults(userId, channelId)).toEqual({
-      language: "en-GB",
-      categoryId: "28",
-      madeForKids: false,
-      footageStyle: "LIVE_ACTION",
-    });
+    // What the write returned and what a reload reads have to be the same
+    // thing, or the screen shows something the database does not hold.
+    expect(await brandService.getBranding(userId, channelId)).toEqual(saved);
 
-    await brandService.updatePublishingDefaults(userId, {
-      channelId,
-      language: "pt-BR",
-      categoryId: "27",
-      madeForKids: true,
-      footageStyle: "CARTOON",
-    });
+    const updated = await brandService.updateBranding(
+      userId,
+      brandingInput({
+        primaryColour: "#00FF00",
+        headlineFont: "DejaVu Serif",
+        language: "pt-BR",
+        categoryId: "27",
+        madeForKids: true,
+        footageStyle: "CARTOON",
+      }),
+    );
 
-    expect(await brandService.getPublishingDefaults(userId, channelId)).toEqual({
+    expect(updated).toMatchObject({
+      primaryColour: "#00FF00",
+      headlineFont: "DejaVu Serif",
       language: "pt-BR",
       categoryId: "27",
       madeForKids: true,
@@ -226,24 +284,45 @@ describe("brandService — publishing defaults", () => {
     });
   });
 
-  it("leaves the rest of the brand alone when saving the publishing pair", async () => {
+  it("clears a prompt field back to the documented fallback when it is saved as null", async () => {
+    // The only way back to "general interest" once something has been typed —
+    // see `promptText` in channel.schema.ts, which maps an emptied box to null.
+    await brandService.updateBranding(userId, brandingInput());
+    await brandService.updateBranding(
+      userId,
+      brandingInput({ tone: null, niche: null, musicQuery: null }),
+    );
+
+    const branding = await brandService.getBranding(userId, channelId);
+    expect(branding.tone).toBeNull();
+
+    // And the render sees the fallback again, not an empty string — which
+    // would reach the thumbnail and shorts prompts as a blank.
+    const resolved = await brandService.resolve(channelId);
+    expect(resolved.tone).toBe("clear and factual");
+    expect(resolved.niche).toBe("general interest");
+    expect(resolved.musicQuery).toBe("calm ambient instrumental");
+  });
+
+  it("leaves the logo and the videoStyle alone when the form saves", async () => {
+    // `logoPath` is written by LogoService.choose at the moment an option is
+    // picked. Naming it here would let a Save that happened to be in flight
+    // put the previous logo back.
     await prisma.channelBrand.create({
-      data: { channelId, tone: "dry and factual", logoPath: "logos/one.png" },
+      data: {
+        channelId,
+        logoPath: "logos/one.png",
+        videoStyle: { transitions: { durationSeconds: 0.25 } },
+      },
     });
 
-    await brandService.updatePublishingDefaults(userId, {
-      channelId,
-      language: "de",
-      categoryId: "28",
-      madeForKids: false,
-      footageStyle: "CARTOON",
-    });
+    await brandService.updateBranding(userId, brandingInput());
 
     const brand = await brandService.resolve(channelId);
-    expect(brand.language).toBe("de");
-    expect(brand.categoryId).toBe("28");
-    expect(brand.tone).toBe("dry and factual");
     expect(brand.logoPath).toBe("logos/one.png");
+    expect(brand.videoStyle.transitions.durationSeconds).toBe(0.25);
+    expect(brand.language).toBe("en-GB");
+    expect(brand.tone).toBe("dry and factual");
   });
 
   it("refuses to read or write another operator's channel", async () => {
@@ -254,23 +333,27 @@ describe("brandService — publishing defaults", () => {
 
     try {
       await expect(
-        brandService.getPublishingDefaults(otherUserId, channelId),
+        brandService.getBranding(otherUserId, channelId),
       ).rejects.toThrow(NotFoundError);
 
       await expect(
-        brandService.updatePublishingDefaults(otherUserId, {
-          channelId,
-          language: "de",
-          categoryId: "28",
-          madeForKids: false,
-          footageStyle: "LIVE_ACTION",
-        }),
+        brandService.updateBranding(otherUserId, brandingInput()),
       ).rejects.toThrow(NotFoundError);
 
       expect(await prisma.channelBrand.count({ where: { channelId } })).toBe(0);
     } finally {
       await deleteTestUser(otherUserId);
     }
+  });
+
+  it("refuses a channel that has been disconnected", async () => {
+    // `disconnect` is a soft delete, so the row is still there to be found by
+    // an id somebody kept — the scoping has to exclude it explicitly.
+    await channelService.disconnect(userId, channelId);
+
+    await expect(
+      brandService.getBranding(userId, channelId),
+    ).rejects.toThrow(NotFoundError);
   });
 
   it("lists every branded channel's pair in one lookup, scoped to the operator", async () => {
