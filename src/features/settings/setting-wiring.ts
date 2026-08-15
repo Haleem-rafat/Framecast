@@ -56,10 +56,16 @@ export const SETTING_WIRING: Record<SettingKey, SettingWiring> = {
     actualSource:
       "Narration always calls ElevenLabs — it is the only speech provider implemented.",
   },
+  // Superseded rather than merely unwired, and the note says which control
+  // *does* work so this field cannot be mistaken for the one that lost. The
+  // voice is per channel now: one account runs a finance channel and a
+  // children's channel, and a single per-user default could never have served
+  // both. The column stays because removing a column is a migration and this
+  // is a value somebody may have typed; nothing reads it, and nothing should.
   defaultVoiceId: {
     applied: false,
     actualSource:
-      "The voice is fixed for the whole deployment by the ELEVENLABS_VOICE_ID environment variable.",
+      "Superseded. Each channel picks its own narration voice on its branding screen, under Channels — a channel that has not picked one uses the ELEVENLABS_VOICE_ID environment variable. Nothing reads this field.",
   },
   // Read by the video page and used to seed the publish dialog's visibility
   // picker. A seed rather than a silent default: the operator still confirms
