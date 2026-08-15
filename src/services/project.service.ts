@@ -55,6 +55,82 @@ export class ProjectService {
   }
 
   /**
+   * The way back from `archive`, and the reason that button can now honestly
+   * call itself reversible. Restoring puts the project back in the new-video
+   * picker (`/videos` filters that list to `ACTIVE`), which is the whole of
+   * what archiving took away.
+   *
+   * Deliberately the mirror image of `archive` down to the `where` clause —
+   * same `{ id, userId, deletedAt: null }` scoping, so a project belonging to
+   * anyone else bounces off it with `NotFoundError` exactly as archiving does,
+   * and same conditional `updateMany` rather than a read-then-write. In
+   * particular it does *not* additionally require `status: "ARCHIVED"`:
+   * restoring an already-active project is idempotent, and narrowing the
+   * `where` would turn that harmless no-op into "Project was not found",
+   * which is a lie about ownership.
+   */
+  async unarchive(userId: string, id: string) {
+    const { count } = await prisma.project.updateMany({
+      where: { id, userId, deletedAt: null },
+      data: { status: "ACTIVE", archivedAt: null },
+    });
+
+    if (count === 0) {
+      throw new NotFoundError("Project");
+    }
+  }
+
+  /**
+   * What `remove` would do to this project, read at the moment the operator is
+   * being asked to confirm it — the numbers the delete confirmation states out
+   * loud, and the pre-check for the one reason `remove` refuses.
+   *
+   * Read on demand rather than folded into `list`: `activeRenderCount` is the
+   * refusal condition, and it is a function of `leaseExpiresAt > now`, so a
+   * value baked into the page at render time is stale by the time anyone
+   * clicks. It cannot close the race — `remove` re-checks inside its
+   * transaction, and that check is the authority — but it is the difference
+   * between telling the operator why the button will fail before they press it
+   * and telling them afterwards. `videoCount` deliberately uses the same
+   * `{ projectId, userId, deletedAt: null }` scope as `remove`'s cascading
+   * `updateMany`, so the number in the confirmation is the number that goes.
+   */
+  async deletionImpact(
+    userId: string,
+    id: string,
+  ): Promise<{
+    videoCount: number;
+    publishedCount: number;
+    activeRenderCount: number;
+  }> {
+    const project = await prisma.project.findFirst({
+      where: { id, userId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!project) {
+      throw new NotFoundError("Project");
+    }
+
+    const scope = { projectId: id, userId, deletedAt: null } as const;
+    const now = new Date();
+
+    const [videoCount, publishedCount, activeRenderCount] = await Promise.all([
+      prisma.video.count({ where: scope }),
+      prisma.video.count({ where: { ...scope, status: "PUBLISHED" } }),
+      prisma.video.count({
+        where: {
+          ...scope,
+          status: { in: ["GENERATING", "RENDERING"] },
+          leaseExpiresAt: { gt: now },
+        },
+      }),
+    ]);
+
+    return { videoCount, publishedCount, activeRenderCount };
+  }
+
+  /**
    * Soft delete, cascading to every one of this project's videos — see
    * `VideoService.remove` for what a video delete itself does (soft, files
    * left in place, YouTube untouched). Deliberately cascades rather than

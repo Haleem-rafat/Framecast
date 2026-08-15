@@ -26,12 +26,21 @@ import type { ProjectWithVideoCount } from "@/features/projects/types";
  * Archive and not delete, deliberately. `deleteProjectAction` cascades: it
  * soft-deletes the project *and every video in it*, and refuses outright if
  * any of those videos is mid-render (see `ProjectService.remove`). One project
- * at a time that is a confirmable trade — the single-row dialog can name the
- * project and the operator knows what is in it. Multiplied across a checked
- * page it is a control whose blast radius nobody can hold in their head:
- * "delete 6 projects" could be 200 videos, and there is no undo in this UI. So
- * bulk stops at archiving, which is reversible in effect and touches no video
- * rows at all.
+ * at a time that is a confirmable trade — `DeleteProjectButton` names the
+ * project, counts its videos and says which are published before it arms.
+ * Multiplied across a checked page it is a control whose blast radius nobody
+ * can hold in their head: "delete 6 projects" could be 200 videos, and none of
+ * it comes back. So bulk stops at archiving, which `UnarchiveProjectButton`
+ * undoes one row at a time and which touches no video rows at all.
+ *
+ * No bulk Restore beside it, either. The two are not symmetric jobs: archiving
+ * in bulk is a real one — clearing a season's worth of finished projects out
+ * of the picker in one pass — while restoring is something you do to one named
+ * project because you have a video to put in it, and that is a single click on
+ * its row with no dialog to sit through. Adding it would put two controls in
+ * this bar that each silently skip the rows in the wrong state, which is a
+ * worse thing to hand someone with a mixed selection than one control that
+ * does.
  *
  * A loop of `archiveProjectAction` rather than a new bulk service method:
  * `ProjectService.archive` is a conditional `updateMany` scoped to

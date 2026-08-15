@@ -10,7 +10,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArchiveProjectButton } from "@/features/projects/components/archive-project-button";
 import { BulkArchiveProjectsButton } from "@/features/projects/components/bulk-archive-projects-button";
+import { DeleteProjectButton } from "@/features/projects/components/delete-project-button";
 import { ProjectDialog } from "@/features/projects/components/project-dialog";
+import { UnarchiveProjectButton } from "@/features/projects/components/unarchive-project-button";
 import type { ProjectWithVideoCount } from "@/features/projects/types";
 
 export function ProjectTable({
@@ -111,11 +113,21 @@ export function ProjectTable({
       {
         id: "actions",
         header: "Actions",
-        // Edit stays on archived projects: an archived project can still be
-        // renamed or pointed at a different channel, and it is the row the
-        // operator is most likely to be repairing. Archive does not — there is
-        // nothing left to archive, and an empty slot says so more quietly than
-        // a disabled control would.
+        /**
+         * Edit stays on archived projects: an archived project can still be
+         * renamed or pointed at a different channel, and it is the row the
+         * operator is most likely to be repairing. Archive does not — there is
+         * nothing left to archive, and an empty slot says so more quietly than
+         * a disabled control would.
+         *
+         * Restore and Delete are the archived row's other half, and Delete is
+         * there and nowhere else on purpose. It is the only irreversible
+         * control in this table and it takes every video in the project with
+         * it; requiring the project to be archived first makes that a
+         * deliberate two-step rather than a neighbour of Edit. Archiving costs
+         * nothing now that Restore undoes it, so nothing is trapped behind the
+         * extra step. See `DeleteProjectButton`.
+         */
         cell: (project) => (
           <div className="flex items-center justify-end gap-1">
             <ProjectDialog
@@ -133,11 +145,23 @@ export function ProjectTable({
                 </Button>
               }
             />
-            {project.status === "ACTIVE" && (
+            {project.status === "ACTIVE" ? (
               <ArchiveProjectButton
                 projectId={project.id}
                 projectName={project.name}
+                videoCount={project._count.videos}
               />
+            ) : (
+              <>
+                <UnarchiveProjectButton
+                  projectId={project.id}
+                  projectName={project.name}
+                />
+                <DeleteProjectButton
+                  projectId={project.id}
+                  projectName={project.name}
+                />
+              </>
             )}
           </div>
         ),

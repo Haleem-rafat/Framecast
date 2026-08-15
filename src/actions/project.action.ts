@@ -44,8 +44,49 @@ export async function archiveProjectAction(
     await projectService.archive(session.user.id, id);
 
     revalidatePath("/projects");
+    // `/videos` too: its new-video picker is `projectService.list` filtered to
+    // `ACTIVE`, so the whole visible effect of archiving lands on that page.
+    // Without this the archived project keeps offering itself as a target
+    // until something else happens to revalidate it.
+    revalidatePath("/videos");
 
     return null;
+  });
+}
+
+/** Restores an archived project to `ACTIVE`. See `projectService.unarchive`. */
+export async function unarchiveProjectAction(
+  id: string,
+): Promise<ActionResult<null>> {
+  return run(async () => {
+    const session = await requireSession();
+    await projectService.unarchive(session.user.id, id);
+
+    revalidatePath("/projects");
+    revalidatePath("/videos");
+
+    return null;
+  });
+}
+
+/**
+ * Counts for the delete confirmation, fetched when the dialog opens rather
+ * than carried in the page's row data — see `projectService.deletionImpact`
+ * for why the mid-render count has to be read late to be worth anything.
+ */
+export async function projectDeletionImpactAction(
+  id: string,
+): Promise<
+  ActionResult<{
+    videoCount: number;
+    publishedCount: number;
+    activeRenderCount: number;
+  }>
+> {
+  return run(async () => {
+    const session = await requireSession();
+
+    return projectService.deletionImpact(session.user.id, id);
   });
 }
 
