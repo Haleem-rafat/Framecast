@@ -144,10 +144,11 @@ model Channel {
   userId String @db.Uuid
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  statistics   ChannelStatistic[]
-  publications Publication[]
-  projects     Project[]
-  brand        ChannelBrand?
+  statistics        ChannelStatistic[]
+  publications      Publication[]
+  shortPublications ShortPublication[]
+  projects          Project[]
+  brand             ChannelBrand?
 
   @@unique([userId, youtubeChannelId])
   @@index([userId, deletedAt])
@@ -584,14 +585,29 @@ model RenderLog {
 /// the same worker loop a Video is (see shorts.service.ts's claimNext/heartbeat/
 /// release), not merely a record of one FFmpeg invocation the way a RenderJob is.
 ///
-/// There is no PUBLISHED member and no CANCELLED member, both deliberately.
-/// Shorts are never auto-published — generation produces drafts an operator
-/// reviews — so nothing in this codebase may move a Short past READY. And a
-/// short is at most a minute of already-rendered footage re-encoded from one
-/// local file, which takes seconds; cooperative cancellation exists for the
-/// ten-minute full render, and adding a `cancelRequestedAt` here would be a
-/// second cancellation protocol guarding something that finishes before an
-/// operator could press the button.
+/// Shorts CAN now be published, which reverses what this comment used to say.
+/// The publish dialog offers "also publish these shorts" as an explicit,
+/// off-by-default choice, and `publish.service.ts` uploads the READY ones in the
+/// same click that uploads the video. What has not changed is that nothing
+/// reaches YouTube without the operator ticking that box: `/automation` and the
+/// schedules still stop at a READY video, and the button is still the only
+/// caller.
+///
+/// There is still no PUBLISHED member, but the reason is now different. This
+/// enum tracks the *encode* — queued, being cut, cut, or unable to be cut —
+/// and a short that has been uploaded is still a cut short with a playable file
+/// underneath it; folding "on YouTube" into the same column would make READY
+/// mean "has a file" in three places and "has a file and has not been uploaded"
+/// in a fourth. The upload is recorded on `ShortPublication` instead, one row
+/// per short, whose `@unique` `shortId` is also what makes publishing a short
+/// one-shot — exactly the way `Publication.videoId` does it for the video.
+///
+/// No CANCELLED member either, and that reason is unchanged: a short is at most
+/// a minute of already-rendered footage re-encoded from one local file, which
+/// takes seconds; cooperative cancellation exists for the ten-minute full
+/// render, and adding a `cancelRequestedAt` here would be a second cancellation
+/// protocol guarding something that finishes before an operator could press the
+/// button.
 enum ShortStatus {
   QUEUED
   RENDERING
@@ -634,8 +650,11 @@ model Short {
 
   /// Written by the same model that chose the window, in the same structured
   /// response. Kept nullable because a short is renderable and reviewable
-  /// without them — they are for the operator's eventual manual upload, and
-  /// nothing in this codebase publishes a short.
+  /// without them, and because they were written for an operator's manual
+  /// upload before this app could publish a short at all. Publishing now uses
+  /// them when they are there and falls back to the parent video's own title
+  /// and description when they are not — see `buildShortMetadata` in
+  /// publish.service.ts.
   title       String?
   description String?
   /// One sentence on why this moment was picked, shown in the panel. The
@@ -664,6 +683,16 @@ model Short {
 
   videoId String @db.Uuid
   video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  /// At most one, and it is the record of this short's single upload — see
+  /// ShortPublication. Cascades away with the row, which matters because
+  /// regenerating a set hard-deletes it: a published short whose set is
+  /// regenerated loses its local record while the clip stays up on YouTube.
+  /// Regeneration after publishing is already a dead end for other reasons
+  /// (the render it would re-cut from was reclaimed at publish time, so every
+  /// new short fails), so this is not a new trap, but it is the one thing this
+  /// cascade gives up.
+  publication ShortPublication?
 
   /// Doubles as the panel's list index: "every short for one video, in play
   /// order" is a prefix scan of this same b-tree, so no second `@@index`
@@ -724,6 +753,60 @@ model Publication {
   @@index([channelId, status])
   @@index([scheduledFor])
   @@map("publication")
+}
+
+/// One short's upload to YouTube. Publication's smaller twin, and deliberately
+/// a separate table rather than a nullable set of columns on Short.
+///
+/// The reason is the `@unique` on `shortId`. Publishing a short is one-shot for
+/// the same reason publishing a video is — the upload cannot be undone from
+/// this app, and a retry that silently uploaded a second copy would be worse
+/// than no retry at all — and the way `publish.service.ts` enforces that for a
+/// video is to `create()` the claim row *before* a single byte is sent, letting
+/// Postgres' unique index settle any race. A status column on Short would need
+/// a conditional update to do the same job less directly, and would collide
+/// with the encode lifecycle `ShortStatus` already tracks (see its comment).
+///
+/// A FAILED row is kept, never deleted, exactly as Publication's is: it is the
+/// record that an attempt happened, and it is what stops a second click firing
+/// another upload at a short that may already be on YouTube. There is no retry
+/// path here either — clearing the row is a manual step.
+///
+/// No `scheduledFor` of its own. A short is published in the same click as its
+/// parent video and inherits that publish's schedule and visibility outright
+/// (there is no second picker), so a column here could only ever disagree with
+/// the Publication row next to it.
+model ShortPublication {
+  id             String            @id @default(uuid()) @db.Uuid
+  youtubeVideoId String?
+  /// What was actually sent, not what the Short row says now — the same
+  /// "record what YouTube was told" rule Publication.title follows, and the
+  /// only place the clamped, credit-bearing text that went up is kept.
+  title          String
+  description    String?
+  /// Always the parent publish's visibility. Stored rather than derived so a
+  /// clip that went out public is still recorded as public after someone
+  /// changes anything else.
+  visibility     PublishVisibility @default(PRIVATE)
+  status         PublishStatus     @default(UPLOADING)
+  error          String?
+  publishedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  shortId String @unique @db.Uuid
+  short   Short  @relation(fields: [shortId], references: [id], onDelete: Cascade)
+
+  /// The channel the clip was uploaded to. Reachable through
+  /// `short.video.project.channel`, but denormalised for the same reason
+  /// Publication denormalises it: a project can be reassigned to another
+  /// channel afterwards, and the row must keep saying where the upload
+  /// actually went.
+  channelId String  @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, status])
+  @@map("short_publication")
 }
 
 /// Daily analytics snapshot per publication.
