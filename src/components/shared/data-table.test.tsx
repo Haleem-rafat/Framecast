@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { filterRows, sortRows } from "@/components/shared/data-table";
+import {
+  describeSelection,
+  filterRows,
+  sortRows,
+  togglePageSelection,
+  toggleRowSelection,
+} from "@/components/shared/data-table";
 
 /**
- * Covers the two pure functions behind `DataTable` rather than the rendered
- * table: the repo's Vitest environment is `node`, so there is no DOM to render
- * into, and in any case the decisions worth protecting from a future edit all
- * live here — where blanks end up, whether ties stay put, and what a
- * multi-word search means.
+ * Covers the pure functions behind `DataTable` rather than the rendered table:
+ * the repo's Vitest environment is `node`, so there is no DOM to render into,
+ * and in any case the decisions worth protecting from a future edit all live
+ * here — where blanks end up, whether ties stay put, what a multi-word search
+ * means, and what a selection is allowed to claim about itself.
  */
 
 interface Row {
@@ -101,5 +107,80 @@ describe("sortRows", () => {
     sortRows(rows, (row) => row.title, "desc");
 
     expect(rows).toEqual(original);
+  });
+});
+
+describe("toggleRowSelection", () => {
+  it("adds and removes one id", () => {
+    expect(toggleRowSelection(["a"], "b", true)).toEqual(["a", "b"]);
+    expect(toggleRowSelection(["a", "b"], "a", false)).toEqual(["b"]);
+  });
+
+  it("cannot list the same id twice", () => {
+    // A double event from one checkbox would otherwise inflate every count
+    // the bar shows and every confirmation built from it.
+    expect(toggleRowSelection(["a"], "a", true)).toEqual(["a"]);
+  });
+
+  it("is a no-op when unticking something that was never ticked", () => {
+    expect(toggleRowSelection(["a"], "b", false)).toEqual(["a"]);
+  });
+});
+
+describe("togglePageSelection", () => {
+  it("selects every row on the page when some are unselected", () => {
+    expect(togglePageSelection(["b"], ["a", "b", "c"]).sort()).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("deselects the page when the whole page is already selected", () => {
+    expect(togglePageSelection(["a", "b"], ["a", "b"])).toEqual([]);
+  });
+
+  it("never reaches beyond the ids it was handed", () => {
+    // The header checkbox is given `pageRows`, never the filtered set — this
+    // is the property that keeps "select all" from meaning all 47.
+    expect(togglePageSelection(["z"], ["a", "b"]).sort()).toEqual([
+      "a",
+      "b",
+      "z",
+    ]);
+    expect(togglePageSelection(["a", "z"], ["a"])).toEqual(["z"]);
+  });
+
+  it("leaves the selection alone on an empty page", () => {
+    expect(togglePageSelection(["a"], [])).toEqual(["a"]);
+  });
+});
+
+describe("describeSelection", () => {
+  it("names the page when a full page is not the whole result", () => {
+    // The distinction the wording exists for: 25 of 47 checked is not "all
+    // 47 selected", and an operator who reads it that way deletes half of
+    // what they meant to and stops.
+    expect(describeSelection({ selected: 25, onPage: 25, total: 47 })).toBe(
+      "All 25 on this page selected — 22 more not selected",
+    );
+  });
+
+  it("says all only when the page really is everything", () => {
+    expect(describeSelection({ selected: 3, onPage: 3, total: 3 })).toBe(
+      "All 3 selected",
+    );
+  });
+
+  it("counts a partial selection against the page it is on", () => {
+    expect(describeSelection({ selected: 3, onPage: 25, total: 47 })).toBe(
+      "3 of 25 on this page selected",
+    );
+  });
+
+  it("has something to say when nothing is selected", () => {
+    expect(describeSelection({ selected: 0, onPage: 25, total: 47 })).toBe(
+      "No rows selected",
+    );
   });
 });

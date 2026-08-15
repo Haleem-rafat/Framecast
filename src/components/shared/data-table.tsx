@@ -1,7 +1,16 @@
 "use client";
 
 import { Fragment, useMemo, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronsUpDown, Columns3 } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  ChevronsUpDown,
+  Columns3,
+  Minus,
+} from "lucide-react";
+import { Checkbox as CheckboxPrimitive } from "radix-ui";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -68,6 +77,31 @@ export interface DataTableColumn<Row> {
   alwaysVisible?: boolean;
 }
 
+/**
+ * Turns on the checkbox column and the bulk action bar.
+ *
+ * Passed as one object rather than three loose props so that a table either
+ * has multi-select in full — checkboxes, a page select-all, an announced bar —
+ * or does not have it at all. There is no half-configured state where rows can
+ * be checked and nothing can be done with them.
+ */
+export interface DataTableSelection<Row> {
+  /**
+   * The accessible name for this row's checkbox. Every checkbox in a column of
+   * identical checkboxes is otherwise announced as just "checkbox", which is
+   * the single most common defect in a table like this — so it is required,
+   * not optional. Return the row's own identity: "Episode 10", not "Select
+   * row" (the word "Select" is added here).
+   */
+  rowLabel: (row: Row) => string;
+  /**
+   * The bar's controls. Receives exactly the rows that are both checked *and*
+   * currently on screen — never an id the operator cannot see — and a `clear`
+   * to call once an action has landed.
+   */
+  actions: (context: { rows: Row[]; clear: () => void }) => ReactNode;
+}
+
 interface DataTableProps<Row> {
   rows: Row[];
   columns: DataTableColumn<Row>[];
@@ -89,6 +123,8 @@ interface DataTableProps<Row> {
   /** Shown only when at least one column defines `filterValue`. */
   searchPlaceholder?: string;
   columnToggle?: boolean;
+  /** Omit for a table with no multi-select. See `DataTableSelection`. */
+  selection?: DataTableSelection<Row>;
 }
 
 /**
@@ -124,6 +160,7 @@ export function DataTable<Row>({
   pageSize,
   searchPlaceholder,
   columnToggle = false,
+  selection,
 }: DataTableProps<Row>) {
   // Starts unsorted on purpose: every caller's rows arrive in an order the
   // server chose deliberately, and that order is worth showing on load.
@@ -133,6 +170,12 @@ export function DataTable<Row>({
   const [query, setQuery] = useState("");
   const [pageIndex, setPageIndex] = useState(0);
   const [hiddenColumnIds, setHiddenColumnIds] = useState<string[]>([]);
+  /**
+   * Checked row ids, not checked rows: ids survive the new object identities a
+   * `router.refresh()` hands back, which is what keeps a selection intact
+   * while a bulk action is settling.
+   */
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const visibleColumns = useMemo(
     () => columns.filter((column) => !hiddenColumnIds.includes(column.id)),
@@ -183,8 +226,50 @@ export function DataTable<Row>({
     ? sortedRows.slice(safePageIndex * pageSize, safePageIndex * pageSize + pageSize)
     : sortedRows;
 
+  /**
+   * The selection, intersected with what is actually on screen.
+   *
+   * Ids are kept across a sort or a search — check three rows, sort by status,
+   * and they are still checked — but a row the current query has filtered out
+   * is not in `pageRows`, so it is not in here either and no bulk action can
+   * reach it. That intersection is the whole safety property: what the bar
+   * counts, what it announces and what it acts on are the same rows the
+   * operator can see ticked. Clearing the search brings them back.
+   *
+   * `pageRows` is at most one page (25), so the `includes` scan is not worth
+   * a `Set`.
+   */
+  const selectedRows = selection
+    ? pageRows.filter((row) => selectedIds.includes(getRowId(row)))
+    : [];
+  const allOnPageSelected =
+    pageRows.length > 0 && selectedRows.length === pageRows.length;
+  const selectionSummary = describeSelection({
+    selected: selectedRows.length,
+    onPage: pageRows.length,
+    total: sortedRows.length,
+  });
+
   if (rows.length === 0 && empty) {
     return <>{empty}</>;
+  }
+
+  function clearSelection() {
+    setSelectedIds([]);
+  }
+
+  /**
+   * Paging clears the selection rather than carrying it.
+   *
+   * Cross-page selection is only correct if the header checkbox, the count and
+   * the confirmation all keep saying which rows they mean on every page, and
+   * getting any one of those wrong deletes rows the operator never looked at.
+   * A selection that resets is a visible, recoverable annoyance; one that
+   * quietly spans pages is not.
+   */
+  function goToPage(index: number) {
+    setPageIndex(index);
+    clearSelection();
   }
 
   function onSort(column: DataTableColumn<Row>) {
@@ -377,6 +462,42 @@ export function DataTable<Row>({
         </p>
       )}
 
+      {selection && (
+        <>
+          {/* Rendered whether or not anything is checked, and empty when
+              nothing is. A live region only announces changes to a node that
+              was already in the accessibility tree — mount the region and its
+              first message together and most screen readers say nothing at
+              all, which is exactly the "the action bar appeared and I never
+              heard it" defect. So the region is permanent and only its text
+              changes. */}
+          <p role="status" className="sr-only">
+            {selectedRows.length === 0
+              ? ""
+              : `${selectionSummary}. Bulk actions available above the table.`}
+          </p>
+
+          {selectedRows.length > 0 && (
+            <div
+              // A landmark rather than a bare div: the bar sits above the
+              // table, so a keyboard user who has just ticked a row shift-tabs
+              // to reach it, and a named region is how they find it again.
+              role="region"
+              aria-label="Bulk actions"
+              className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2"
+            >
+              <p className="text-sm font-medium">{selectionSummary}</p>
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {selection.actions({ rows: selectedRows, clear: clearSelection })}
+                <Button variant="ghost" size="sm" onClick={clearSelection}>
+                  Clear
+                </Button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* Two layouts over one `pageRows`, rather than one table reflowed into
           cards with CSS: overriding `display` on rows and cells used to strip
           the grid's semantics outright, and while current browsers repair
@@ -392,6 +513,36 @@ export function DataTable<Row>({
           <TableCaption className="sr-only">{caption}</TableCaption>
           <TableHeader>
             <TableRow>
+              {selection && (
+                <TableHead className="w-10">
+                  <SelectionCheckbox
+                    // Indeterminate as soon as the page is partly checked, so
+                    // the header never reads as "nothing here is selected"
+                    // while three rows below it are.
+                    checked={
+                      allOnPageSelected
+                        ? true
+                        : selectedRows.length > 0
+                          ? "indeterminate"
+                          : false
+                    }
+                    disabled={pageRows.length === 0}
+                    // Names the scope out loud. "Select all" on a paginated
+                    // table is the ambiguity this whole component is trying
+                    // not to have.
+                    label={
+                      allOnPageSelected
+                        ? `Deselect the ${pageRows.length} rows on this page`
+                        : `Select the ${pageRows.length} rows on this page`
+                    }
+                    onCheckedChange={() =>
+                      setSelectedIds((current) =>
+                        togglePageSelection(current, pageRows.map(getRowId)),
+                      )
+                    }
+                  />
+                </TableHead>
+              )}
               {visibleColumns.map((column) => {
                 const sorted = sort?.columnId === column.id ? sort.direction : null;
 
@@ -442,15 +593,39 @@ export function DataTable<Row>({
             {pageRows.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={visibleColumns.length}
+                  colSpan={visibleColumns.length + (selection ? 1 : 0)}
                   className="text-muted-foreground h-24 text-center"
                 >
                   {emptyMessage}
                 </TableCell>
               </TableRow>
             ) : (
-              pageRows.map((row) => (
-                <TableRow key={getRowId(row)}>
+              pageRows.map((row) => {
+                const rowId = getRowId(row);
+                const isSelected = selectedIds.includes(rowId);
+
+                return (
+                <TableRow
+                  key={rowId}
+                  // Consumed by `TableRow`'s own `data-[state=selected]` rule,
+                  // so a checked row is tinted without this file owning a
+                  // second, slightly-different idea of what selected looks
+                  // like.
+                  data-state={selection && isSelected ? "selected" : undefined}
+                >
+                  {selection && (
+                    <TableCell className="w-10">
+                      <SelectionCheckbox
+                        checked={isSelected}
+                        label={`Select ${selection.rowLabel(row)}`}
+                        onCheckedChange={(next) =>
+                          setSelectedIds((current) =>
+                            toggleRowSelection(current, rowId, next),
+                          )
+                        }
+                      />
+                    </TableCell>
+                  )}
                   {visibleColumns.map((column) => (
                     <TableCell
                       key={column.id}
@@ -463,7 +638,8 @@ export function DataTable<Row>({
                     </TableCell>
                   ))}
                 </TableRow>
-              ))
+                );
+              })
             )}
           </TableBody>
         </Table>
@@ -491,30 +667,56 @@ export function DataTable<Row>({
                 .map((column) => ({ column, node: column.cell(row) }))
                 .filter((entry) => entry.node !== null && entry.node !== undefined);
 
+              const rowId = getRowId(row);
+              const isSelected = selectedIds.includes(rowId);
+
               return (
-                <li key={getRowId(row)}>
-                  <Card size="sm">
+                <li key={rowId}>
+                  <Card size="sm" className={cn(isSelected && "bg-muted")}>
                     <CardHeader>
-                      {/* A heading, so the cards can be walked with a screen
-                          reader's heading shortcut the way the rows of a
-                          table can be walked with its table keys. `role` and
-                          `aria-level` rather than a real `<h3>` because the
-                          heading content is a consumer's `cell` output, and
-                          two of them render paragraphs inside a link —
-                          flow content an `<h3>` may not legally contain. */}
-                      <CardTitle
-                        role="heading"
-                        aria-level={3}
-                        // `min-w-0` because `CardHeader` is a grid and a grid
-                        // item's automatic minimum size is its content's: the
-                        // video title cell has a `truncate` second line, whose
-                        // nowrap text pushed the whole header 490px wider than
-                        // the card and was then silently cut off by the card's
-                        // own `overflow-hidden` instead of ellipsised.
-                        className={cn("min-w-0", headingColumn.cellClassName)}
-                      >
-                        {headingColumn.cell(row)}
-                      </CardTitle>
+                      {/* One grid item holding the checkbox and the heading
+                          side by side. The checkbox is deliberately *outside*
+                          `CardTitle`: a control nested inside a heading gets
+                          folded into that heading's accessible name, so the
+                          card would announce as "Select Episode 10, heading"
+                          and the heading shortcut would land on a checkbox. */}
+                      <div className="flex min-w-0 items-start gap-3">
+                        {selection && (
+                          <SelectionCheckbox
+                            className="mt-0.5"
+                            checked={isSelected}
+                            label={`Select ${selection.rowLabel(row)}`}
+                            onCheckedChange={(next) =>
+                              setSelectedIds((current) =>
+                                toggleRowSelection(current, rowId, next),
+                              )
+                            }
+                          />
+                        )}
+                        {/* A heading, so the cards can be walked with a screen
+                            reader's heading shortcut the way the rows of a
+                            table can be walked with its table keys. `role` and
+                            `aria-level` rather than a real `<h3>` because the
+                            heading content is a consumer's `cell` output, and
+                            two of them render paragraphs inside a link —
+                            flow content an `<h3>` may not legally contain. */}
+                        <CardTitle
+                          role="heading"
+                          aria-level={3}
+                          // `min-w-0` because `CardHeader` is a grid and a grid
+                          // item's automatic minimum size is its content's: the
+                          // video title cell has a `truncate` second line, whose
+                          // nowrap text pushed the whole header 490px wider than
+                          // the card and was then silently cut off by the card's
+                          // own `overflow-hidden` instead of ellipsised.
+                          className={cn(
+                            "min-w-0 flex-1",
+                            headingColumn.cellClassName,
+                          )}
+                        >
+                          {headingColumn.cell(row)}
+                        </CardTitle>
+                      </div>
                     </CardHeader>
                     {detailColumns.length > 0 && (
                       <CardContent>
@@ -568,12 +770,17 @@ export function DataTable<Row>({
             {safePageIndex * pageSize + 1}–
             {Math.min((safePageIndex + 1) * pageSize, sortedRows.length)} of{" "}
             {sortedRows.length}
+            {selection && selectedRows.length > 0 && (
+              // Stated before the click, not discovered after it. See
+              // `goToPage` for why paging drops the selection.
+              <span className="ml-2">Changing page clears the selection.</span>
+            )}
           </p>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPageIndex(safePageIndex - 1)}
+              onClick={() => goToPage(safePageIndex - 1)}
               disabled={safePageIndex === 0}
             >
               Previous
@@ -581,7 +788,7 @@ export function DataTable<Row>({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPageIndex(safePageIndex + 1)}
+              onClick={() => goToPage(safePageIndex + 1)}
               disabled={safePageIndex >= pageCount - 1}
             >
               Next
@@ -590,6 +797,64 @@ export function DataTable<Row>({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The one checkbox this file draws, in the header and in every row.
+ *
+ * Local to `DataTable` rather than a new `components/ui/checkbox.tsx`: nothing
+ * else in the app has a checkbox that is not a menu item, and a shared
+ * primitive with exactly one consumer is a file to keep in sync for no gain.
+ * Radix's own primitive underneath, so `role="checkbox"`, `aria-checked`
+ * (including `mixed`), Space-to-toggle and the tab order come from the same
+ * place every other control here gets them — `Table`'s
+ * `[&:has([role=checkbox])]:pr-0` rule was already written expecting it.
+ *
+ * `label` is required. A column of anonymous checkboxes is the defect this
+ * whole component exists to avoid shipping.
+ */
+function SelectionCheckbox({
+  checked,
+  onCheckedChange,
+  label,
+  disabled,
+  className,
+}: {
+  checked: boolean | "indeterminate";
+  onCheckedChange: (checked: boolean) => void;
+  label: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <CheckboxPrimitive.Root
+      checked={checked}
+      disabled={disabled}
+      aria-label={label}
+      // Radix hands back `true | false | "indeterminate"`; only the header can
+      // be indeterminate and it never asks to *become* indeterminate, so
+      // anything that is not `true` is an unchecking.
+      onCheckedChange={(next) => onCheckedChange(next === true)}
+      className={cn(
+        // The `dark:` duplicates are not redundant. `dark:bg-input/30` and
+        // `data-[state=checked]:bg-primary` are both one-variant rules of
+        // equal specificity, and Tailwind emits `dark:` last — so in dark mode
+        // a ticked box kept the unticked background and drew a near-black
+        // check on it, which is to say drew nothing. Restating the checked
+        // colours under `dark:` is how the upstream component solves it too.
+        "peer border-input dark:bg-input/30 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary dark:data-[state=checked]:bg-primary data-[state=indeterminate]:bg-primary data-[state=indeterminate]:text-primary-foreground data-[state=indeterminate]:border-primary dark:data-[state=indeterminate]:bg-primary focus-visible:border-ring focus-visible:ring-ring/50 size-4 shrink-0 rounded-[4px] border shadow-xs outline-none transition-shadow focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
+        className,
+      )}
+    >
+      <CheckboxPrimitive.Indicator className="flex items-center justify-center text-current">
+        {checked === "indeterminate" ? (
+          <Minus className="size-3.5" />
+        ) : (
+          <Check className="size-3.5" />
+        )}
+      </CheckboxPrimitive.Indicator>
+    </CheckboxPrimitive.Root>
   );
 }
 
@@ -606,6 +871,79 @@ function isActionColumn<Row>(column: DataTableColumn<Row>): boolean {
     column.id === "actions" ||
     (column.align === "right" && column.alwaysVisible === true)
   );
+}
+
+/**
+ * Ticks or unticks one row. Set semantics over an array, so a double event
+ * from the same checkbox cannot list an id twice and inflate the count.
+ *
+ * Exported for the same reason `filterRows` and `sortRows` are: these three
+ * selection helpers are where the decisions worth pinning down live, and the
+ * repo's Vitest environment is `node`, so a rendered table cannot be asserted
+ * against anyway.
+ */
+export function toggleRowSelection(
+  selectedIds: string[],
+  id: string,
+  selected: boolean,
+): string[] {
+  if (selected) {
+    return selectedIds.includes(id) ? selectedIds : [...selectedIds, id];
+  }
+
+  return selectedIds.filter((one) => one !== id);
+}
+
+/**
+ * The header checkbox: ticks every row on the page, or unticks them if they
+ * are already all ticked.
+ *
+ * Scoped to the ids it is handed — the *page*, never the whole filtered set.
+ * Ids from other pages are left alone rather than cleared, which matters only
+ * because it makes this function honest in isolation; `DataTable` clears the
+ * selection on a page change, so in practice there are none.
+ */
+export function togglePageSelection(
+  selectedIds: string[],
+  pageIds: string[],
+): string[] {
+  if (pageIds.length === 0) return selectedIds;
+
+  const selected = new Set(selectedIds);
+  const allSelected = pageIds.every((id) => selected.has(id));
+
+  for (const id of pageIds) {
+    if (allSelected) selected.delete(id);
+    else selected.add(id);
+  }
+
+  return [...selected];
+}
+
+/**
+ * The sentence the action bar shows and the screen reader announces.
+ *
+ * The distinction it exists to keep: "all 25 on this page" is not "all 47".
+ * An operator who reads the second and gets the first deletes a quarter of
+ * what they meant to and thinks they are done — so a full page is never
+ * described as "all" unless the page really is every matching row.
+ */
+export function describeSelection({
+  selected,
+  onPage,
+  total,
+}: {
+  selected: number;
+  onPage: number;
+  total: number;
+}): string {
+  if (selected === 0) return "No rows selected";
+  if (selected < onPage) return `${selected} of ${onPage} on this page selected`;
+  if (total > onPage) {
+    return `All ${selected} on this page selected — ${total - selected} more not selected`;
+  }
+
+  return `All ${selected} selected`;
 }
 
 /**
