@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { env } from "@/config/env";
+
 import { STATE_COOKIE_NAME, buildAuthUrl } from "@/lib/youtube-oauth";
 import { requireSession } from "@/server/session";
 
@@ -13,7 +15,9 @@ export async function GET(request: NextRequest) {
   try {
     await requireSession();
   } catch {
-    return NextResponse.redirect(new URL("/sign-in", request.url));
+    return // Same reason as the callback route: behind Caddy `request.url` is the
+    // container's bind address, not the site.
+    NextResponse.redirect(new URL("/sign-in", env.BETTER_AUTH_URL));
   }
 
   // Random per attempt, bound to this browser via an httpOnly cookie. The
