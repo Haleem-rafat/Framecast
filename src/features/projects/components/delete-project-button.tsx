@@ -22,12 +22,11 @@ import {
   deleteProjectAction,
   projectDeletionImpactAction,
 } from "@/actions/project.action";
-
-interface DeletionImpact {
-  videoCount: number;
-  publishedCount: number;
-  activeRenderCount: number;
-}
+import {
+  describeDeletion,
+  describeRefusal,
+  type DeletionImpact,
+} from "@/features/projects/deletion-copy";
 
 /**
  * Delete a project and, with it, every video in it.
@@ -108,7 +107,7 @@ export function DeleteProjectButton({
     });
   }
 
-  const blocked = (impact?.activeRenderCount ?? 0) > 0;
+  const refusal = impact ? describeRefusal(impact) : null;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -122,46 +121,21 @@ export function DeleteProjectButton({
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {projectName}?</AlertDialogTitle>
           <AlertDialogDescription>
-            {impactError ? (
-              `Could not check what this would delete — ${impactError}`
-            ) : !impact ? (
-              "Checking what this would delete…"
-            ) : (
-              <>
-                {/* The count, before the click. "Delete project" reads as
-                    removing a folder; it removes everything in it. */}
-                This permanently removes the project
-                {impact.videoCount === 0
-                  ? ", which has no videos, from Framecast."
-                  : ` and its ${impact.videoCount === 1 ? "1 video" : `${impact.videoCount} videos`} — their scripts and renders included — from Framecast.`}{" "}
-                It cannot be undone.
-                {impact.publishedCount > 0 && (
-                  <>
-                    {" "}
-                    {impact.publishedCount === 1
-                      ? "1 of those videos is published"
-                      : `${impact.publishedCount} of those videos are published`}{" "}
-                    on YouTube and will stay there: deleting the record here
-                    takes nothing down. Removing{" "}
-                    {impact.publishedCount === 1 ? "it" : "them"} from YouTube
-                    is a separate step in YouTube Studio.
-                  </>
-                )}
-              </>
-            )}
+            {/* The count, before the click: "delete project" reads as removing
+                a folder, and it removes everything in it. See
+                `describeDeletion` for the wording and why it is testable. */}
+            {impactError
+              ? `Could not check what this would delete — ${impactError}`
+              : impact
+                ? describeDeletion(impact)
+                : "Checking what this would delete…"}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        {blocked && (
+        {refusal && (
           <Alert variant="destructive">
             <TriangleAlert />
-            <AlertDescription>
-              {impact!.activeRenderCount === 1
-                ? "1 video in this project is being rendered right now, so this delete will be refused."
-                : `${impact!.activeRenderCount} videos in this project are being rendered right now, so this delete will be refused.`}{" "}
-              Cancel the render{impact!.activeRenderCount === 1 ? "" : "s"} on
-              the Videos page first.
-            </AlertDescription>
+            <AlertDescription>{refusal}</AlertDescription>
           </Alert>
         )}
 
@@ -172,7 +146,7 @@ export function DeleteProjectButton({
             onClick={onConfirm}
             // Not armed until the consequence is on screen: an operator who
             // confirms during the "Checking…" state has confirmed a blank.
-            disabled={isPending || blocked || !impact}
+            disabled={isPending || refusal !== null || !impact}
           >
             {isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
             Delete project
