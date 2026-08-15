@@ -699,7 +699,13 @@ describe("footageService.collect for a cartoon channel", () => {
    * Its own project, not the module-level one, so a cartoon channel in one
    * test can't change what a live-action test in the same file collects.
    */
-  async function makeStyledVideo(footageStyle: "LIVE_ACTION" | "CARTOON"): Promise<string> {
+  async function makeStyledVideo(
+    footageStyle: "LIVE_ACTION" | "CARTOON",
+    /** Section cues, when the test needs the per-cue path rather than the
+     *  topic-level one. A real generated script always has these, so this is
+     *  the path a kids video actually takes in production. */
+    cues?: { anchor: string; cue: string }[],
+  ): Promise<string> {
     const channel = await prisma.channel.create({
       data: {
         userId,
@@ -727,6 +733,23 @@ describe("footageService.collect for a cartoon channel", () => {
     });
     cartoonVideoIds.push(video.id);
 
+    if (cues?.length) {
+      // Same section shape as `makeVideoWithCues` above: each cue's anchor
+      // opens its own sentence, so `anchorCues` finds every one of them in
+      // order against the joined narration.
+      const content = cues
+        .map((c) => `${c.anchor} — the rest of this section's narration follows here.`)
+        .join(" ");
+      const script = await prisma.script.create({ data: { videoId: video.id } });
+      const version = await prisma.scriptVersion.create({
+        data: { scriptId: script.id, version: 1, content, cues },
+      });
+      await prisma.script.update({
+        where: { id: script.id },
+        data: { activeVersionId: version.id },
+      });
+    }
+
     await prisma.voiceOver.create({
       data: {
         videoId: video.id,
@@ -738,6 +761,49 @@ describe("footageService.collect for a cartoon channel", () => {
 
     return video.id;
   }
+
+  it("keeps a cued kids video on cartoon footage for every section, including the topic fallback", async () => {
+    // The production path: a generated script has cues, so `collectPerCue`
+    // runs. Section 1's own cue finds nothing, which is exactly the moment a
+    // live-action clip could slip in — it must reach the cartoon topic pool
+    // instead, never Pexels.
+    const videoId = await makeStyledVideo("CARTOON", [
+      { anchor: "Meet Rex the dinosaur", cue: "friendly dinosaur waving" },
+      { anchor: "Rex can count to three", cue: "__no_results__" },
+    ]);
+
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-live-action")]);
+    const pixabay = fakeProvider([makeClip("PIXABAY", "pix-live-action")]);
+    const cartoon: StockFootageProvider = {
+      search: vi.fn(async (query: string) =>
+        query === "__no_results__"
+          ? []
+          : [makeClip("PIXABAY", `pix-cartoon-${query.replace(/\W+/g, "-")}`)],
+      ),
+    };
+
+    const service = new FootageService(
+      { PEXELS: pexels, PIXABAY: pixabay, PIXABAY_CARTOON: cartoon },
+      makeDownloader(),
+    );
+
+    await service.collect(userId, videoId);
+
+    expect(pexels.search).not.toHaveBeenCalled();
+    expect(pixabay.search).not.toHaveBeenCalled();
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+      orderBy: { storagePath: "asc" },
+    });
+
+    expect(assets.map((a) => a.storagePath)).toEqual([
+      `videos/${videoId}/clips/section-000.mp4`,
+      `videos/${videoId}/clips/section-001.mp4`,
+    ]);
+    expect(assets.every((a) => a.provider === "PIXABAY")).toBe(true);
+    expect(assets.every((a) => a.externalId?.startsWith("pix-cartoon"))).toBe(true);
+  });
 
   it("searches only the cartoon provider — never Pexels, never unfiltered Pixabay", async () => {
     const videoId = await makeStyledVideo("CARTOON");
