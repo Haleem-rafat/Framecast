@@ -19,6 +19,7 @@ export function VideoHeader({
   channelName,
   youtubeVideoId,
   defaultVisibility,
+  readyShortCount,
 }: {
   videoId: string;
   title: string;
@@ -33,6 +34,9 @@ export function VideoHeader({
   /** `UserSetting.defaultVisibility`, which the publish dialog's picker starts
    * on — see `PublishVideoButton`. */
   defaultVisibility: PublishVisibilityOption;
+  /** How many shorts the publish dialog could upload alongside the video —
+   * READY, with a file, never published. Zero hides the offer entirely. */
+  readyShortCount: number;
 }) {
   const estimatedMinutes = wordCount > 0 ? wordCount / WORDS_PER_MINUTE : 0;
   const canApprove = status === "DRAFT" && wordCount > 0;
@@ -73,6 +77,7 @@ export function VideoHeader({
           channelName={channelName}
           youtubeVideoId={youtubeVideoId}
           defaultVisibility={defaultVisibility}
+          readyShortCount={readyShortCount}
         />
       </div>
     </div>

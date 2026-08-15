@@ -23,6 +23,7 @@ import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
+import { publishService } from "@/services/publish.service";
 import { settingsService } from "@/services/settings.service";
 import { shortsService } from "@/services/shorts.service";
 import { videoService } from "@/services/video.service";
@@ -313,6 +314,18 @@ export default async function VideoDetailPage({
   // that already makes several.
   const { defaultVisibility } = await settingsService.get(user.id);
 
+  // Whether the dialog offers "also publish these shorts", and for how many.
+  // Only asked for a video that can actually be published — the button renders
+  // nothing at any other status, so a count taken for a draft would be one
+  // indexed query spent on a control that is not on the page. The shorts panel
+  // below loads its own list inside a Suspense boundary; this is the count the
+  // *header* needs before that boundary resolves, which is why it is not read
+  // from the same place.
+  const readyShortCount =
+    video.status === "READY"
+      ? await publishService.countPublishableShorts(user.id, video.id)
+      : 0;
+
   const script = video.script;
   const activeVersion = script?.activeVersion ?? null;
   const versions = script?.versions ?? [];
@@ -345,6 +358,7 @@ export default async function VideoDetailPage({
         channelName={video.project.channel?.title ?? null}
         youtubeVideoId={youtubeVideoId}
         defaultVisibility={defaultVisibility}
+        readyShortCount={readyShortCount}
       />
 
       {/* Everything about the video on one page, folded, in the order its

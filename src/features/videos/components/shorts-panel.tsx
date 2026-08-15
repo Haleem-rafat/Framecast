@@ -198,10 +198,20 @@ export function useShortsSummary(
  * encodes them one at a time and this poll watches them turn READY. Waiting for
  * the whole thing inside the action would hold a request open for three encodes.
  *
- * Nothing here publishes anything, and there is no button that could. Shorts
- * are drafts an operator reviews and uploads by hand — see the `ShortStatus`
- * comment in schema.prisma for why the status enum has no PUBLISHED member to
- * make that a rule rather than an omission.
+ * Nothing *here* publishes anything, and there is still no button in this panel
+ * that could — but shorts can now be published, which reverses what this
+ * comment used to say. The one way it happens is the publish dialog: it offers
+ * "also publish N ready shorts" as an unticked box beside the video's own
+ * visibility picker, and ticking it uploads them in the same click as the
+ * video. See `PublishVideoButton`, and the `ShortStatus` comment in
+ * schema.prisma for why the enum still has no PUBLISHED member (the upload is
+ * recorded on `ShortPublication`; this column tracks the encode).
+ *
+ * That leaves this panel as review-and-play, which is what it was for. Two
+ * things worth knowing while reading it: publishing is one-shot per short, so a
+ * short that went up with its video is not offered again, and it is only ever
+ * offered *with* the video — a video that was published without its shorts
+ * cannot come back for them later, because there is no second publish.
  */
 export function ShortsPanel({
   videoId,
@@ -263,8 +273,9 @@ export function ShortsPanel({
           would scroll the page sideways to reach the button. */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <p className="text-muted-foreground max-w-prose text-xs">
-          Vertical clips cut from the best moments of this video. Drafts —
-          review and upload them yourself.
+          Vertical clips cut from the best moments of this video. Review them
+          here; the publish dialog can upload the ready ones alongside the
+          video, or you can upload them yourself.
         </p>
 
         <Button
