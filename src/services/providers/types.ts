@@ -107,6 +107,41 @@ export interface SpeechQuota {
   limitCharacters: number;
 }
 
+/** One of the provider's own labels for a voice — `accent: american`,
+ *  `use case: narration`. Kept as pairs rather than flattened into a sentence
+ *  because which labels a voice carries is up to the account, and a picker
+ *  showing "accent" beside its value is legible where a comma-joined string of
+ *  bare values is not. */
+export interface SpeechVoiceLabel {
+  name: string;
+  value: string;
+}
+
+/**
+ * A voice the operator's own account can synthesise with, as the picker needs
+ * to show it.
+ *
+ * Everything here comes from the provider. There is no hardcoded voice
+ * anywhere in this app on purpose: which voices exist is a property of one
+ * ElevenLabs account, a curated list would offer voices the operator may not
+ * have, and choosing one they do not have is a failed narration rather than a
+ * bad default.
+ */
+export interface SpeechVoice {
+  voiceId: string;
+  name: string;
+  /** The provider's free-text blurb, when it has one. */
+  description: string | null;
+  /** `accent`, `age`, `gender`, `use case`, … — whatever the voice carries. */
+  labels: SpeechVoiceLabel[];
+  /**
+   * A plain, unauthenticated audio URL the browser can play directly, or null
+   * for a voice with no sample. Nothing about it is secret and no key is
+   * involved — it is handed to an `<audio src>` as-is.
+   */
+  previewUrl: string | null;
+}
+
 export interface SpeechProvider {
   synthesize(input: SpeechSynthesisInput): Promise<SpeechSynthesisResult>;
   /**
@@ -116,6 +151,17 @@ export interface SpeechProvider {
    * new way for narration to be blocked.
    */
   getQuota?(apiKey: string): Promise<SpeechQuota | null>;
+  /**
+   * The voices this key may synthesise with. Optional for the same reason
+   * `getQuota` is: a provider that cannot enumerate its voices says nothing,
+   * and the screen that asks reports that it could not offer a choice rather
+   * than inventing one.
+   *
+   * Throws rather than returning an empty list on failure — "the account has
+   * no voices" and "we could not ask" are different things to put in front of
+   * an operator, and only a throw distinguishes them.
+   */
+  listVoices?(apiKey: string): Promise<SpeechVoice[]>;
 }
 
 export type StockFootageSource = "PEXELS" | "PIXABAY";

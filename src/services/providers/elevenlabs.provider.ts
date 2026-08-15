@@ -7,6 +7,8 @@ import type {
   SpeechQuota,
   SpeechSynthesisInput,
   SpeechSynthesisResult,
+  SpeechVoice,
+  SpeechVoiceLabel,
 } from "@/services/providers/types";
 
 /** Exported so ProviderCredentialService.test() can hit the same host for its own check. */
@@ -26,6 +28,71 @@ interface ElevenLabsTimestampedResponse {
 
 /** The endpoint accepts at most three; more is a 422 rather than a truncation. */
 const MAX_DICTIONARY_LOCATORS = 3;
+
+/**
+ * `GET /v1/voices`, as much of it as a picker needs. Everything is `unknown`
+ * because this is somebody else's JSON: a voice with no labels, a label whose
+ * value is a number, a `preview_url` of null are all shapes the API really
+ * returns, and each one has to narrow to something showable rather than throw
+ * away the whole list.
+ */
+interface ElevenLabsVoicesResponse {
+  voices?: {
+    voice_id?: unknown;
+    name?: unknown;
+    description?: unknown;
+    labels?: unknown;
+    preview_url?: unknown;
+  }[];
+}
+
+/**
+ * The labels ElevenLabs files a voice under, as displayable pairs.
+ *
+ * Not an allowlist of known keys. Which labels a voice carries depends on
+ * where it came from — a premade voice has `accent`/`age`/`gender`/`use_case`,
+ * a cloned one may have none, and the set is the account's to change. Taking
+ * whatever string-valued keys are there means a new label shows up in the
+ * picker on its own; naming them here would mean the picker quietly hides
+ * anything ElevenLabs adds.
+ *
+ * `use_case` reads as "use case" — the key is an API identifier, and this is
+ * the only place it is ever shown to a person.
+ */
+function toLabels(raw: unknown): SpeechVoiceLabel[] {
+  if (typeof raw !== "object" || raw === null) {
+    return [];
+  }
+
+  return Object.entries(raw as Record<string, unknown>).flatMap(([name, value]) =>
+    typeof value === "string" && value.trim().length > 0
+      ? [{ name: name.replaceAll("_", " "), value: value.trim() }]
+      : [],
+  );
+}
+
+/**
+ * A preview URL only if it is one a browser can safely be pointed at.
+ *
+ * This value ends up as an `<audio src>` in the operator's page, so the scheme
+ * is checked rather than assumed. https alone: ElevenLabs serves its samples
+ * from public object storage over https, an http URL would be blocked as mixed
+ * content on the deployed site anyway, and anything else — a `data:` or
+ * `javascript:` URL in a field this app does not control — has no business
+ * reaching the DOM. A voice that fails the check simply has no preview, which
+ * is a state the picker already handles.
+ */
+function toPreviewUrl(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return null;
+  }
+
+  try {
+    return new URL(raw).protocol === "https:" ? raw : null;
+  } catch {
+    return null;
+  }
+}
 
 /** 429 and 5xx are transient; everything else means the request itself is wrong. */
 function isRetryable(status: number): boolean {
@@ -115,6 +182,72 @@ export class ElevenLabsProvider implements SpeechProvider {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Every voice this key may synthesise with, in the order ElevenLabs returns
+   * them.
+   *
+   * Free to call — listing voices costs no characters, unlike synthesising
+   * with one — which is what makes it usable behind a picker the operator
+   * opens whenever they like.
+   *
+   * Throws on failure rather than returning `[]`. A caller has to be able to
+   * tell "this account has no voices" from "we could not ask", because the
+   * honest thing to show for the second is not an empty list — it is a note
+   * saying the account could not be reached and that whatever the channel
+   * already has is untouched.
+   *
+   * The key goes in the header and nowhere else: it is never logged, never put
+   * in the URL, and `readErrorStatus` deliberately reads only ElevenLabs'
+   * machine token out of a failure body.
+   */
+  async listVoices(apiKey: string): Promise<SpeechVoice[]> {
+    let response: Response;
+
+    try {
+      response = await fetch(`${ELEVENLABS_API_BASE}/voices`, {
+        headers: { "xi-api-key": apiKey },
+      });
+    } catch (cause) {
+      throw new ProviderError(
+        "ELEVENLABS",
+        "Could not reach ElevenLabs to list the available voices.",
+        true,
+        { cause },
+      );
+    }
+
+    if (!response.ok) {
+      throw new ProviderError(
+        "ELEVENLABS",
+        `ElevenLabs refused to list voices (${response.status}: ${await readErrorStatus(response)}).`,
+        isRetryable(response.status),
+      );
+    }
+
+    const body = (await response.json()) as ElevenLabsVoicesResponse;
+
+    // A voice with no id or no name cannot be offered — the first is what
+    // would be saved and the second is the only thing the operator picks by —
+    // so it is dropped rather than rendered as a blank row. Everything else
+    // about a voice is optional.
+    return (body.voices ?? []).flatMap((voice) =>
+      typeof voice.voice_id === "string" && typeof voice.name === "string"
+        ? [
+            {
+              voiceId: voice.voice_id,
+              name: voice.name,
+              description:
+                typeof voice.description === "string" && voice.description.trim()
+                  ? voice.description.trim()
+                  : null,
+              labels: toLabels(voice.labels),
+              previewUrl: toPreviewUrl(voice.preview_url),
+            },
+          ]
+        : [],
+    );
   }
 
   async synthesize(input: SpeechSynthesisInput): Promise<SpeechSynthesisResult> {

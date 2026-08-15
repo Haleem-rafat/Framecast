@@ -242,3 +242,137 @@ describe("ElevenLabsProvider request body", () => {
     expect(body.pronunciation_dictionary_locators).toBeUndefined();
   });
 });
+
+describe("ElevenLabsProvider.listVoices", () => {
+  function voicesResponse(voices: unknown[]): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ voices }),
+    } as Response;
+  }
+
+  it("asks the voices endpoint with the key in the header and nowhere else", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(voicesResponse([]));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await new ElevenLabsProvider().listVoices("sk_secret_1234");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.elevenlabs.io/v1/voices");
+    // Not in the query string, where it would land in every access log and
+    // every Referer along the way.
+    expect(url).not.toContain("sk_secret_1234");
+    expect(init.headers["xi-api-key"]).toBe("sk_secret_1234");
+  });
+
+  it("maps a voice to what a picker needs, labels and preview included", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      voicesResponse([
+        {
+          voice_id: "AbC123",
+          name: "Charlotte",
+          description: "  Warm and unhurried  ",
+          labels: { accent: "british", use_case: "narration", age: "" },
+          preview_url: "https://storage.googleapis.com/eleven/charlotte.mp3",
+        },
+      ]),
+    ) as unknown as typeof fetch;
+
+    const [voice] = await new ElevenLabsProvider().listVoices("k");
+
+    expect(voice).toEqual({
+      voiceId: "AbC123",
+      name: "Charlotte",
+      description: "Warm and unhurried",
+      // `use_case` is an API identifier; this is the only place it is shown to
+      // a person. An empty label is not a label.
+      labels: [
+        { name: "accent", value: "british" },
+        { name: "use case", value: "narration" },
+      ],
+      previewUrl: "https://storage.googleapis.com/eleven/charlotte.mp3",
+    });
+  });
+
+  it("keeps a voice that has no labels, no description and no sample", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(voicesResponse([{ voice_id: "AbC123", name: "Cloned" }])) as unknown as typeof fetch;
+
+    const [voice] = await new ElevenLabsProvider().listVoices("k");
+
+    // A cloned voice usually has none of the three. It is still choosable.
+    expect(voice).toEqual({
+      voiceId: "AbC123",
+      name: "Cloned",
+      description: null,
+      labels: [],
+      previewUrl: null,
+    });
+  });
+
+  it("drops a voice with no id or no name rather than rendering a blank row", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      voicesResponse([
+        { name: "Nameless id" },
+        { voice_id: "AbC123" },
+        { voice_id: "XyZ789", name: "Real" },
+      ]),
+    ) as unknown as typeof fetch;
+
+    // The id is what gets saved and the name is the only thing anyone picks
+    // by; a row missing either cannot be offered.
+    expect(await new ElevenLabsProvider().listVoices("k")).toEqual([
+      {
+        voiceId: "XyZ789",
+        name: "Real",
+        description: null,
+        labels: [],
+        previewUrl: null,
+      },
+    ]);
+  });
+
+  it("refuses a preview URL that is not https", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      voicesResponse([
+        { voice_id: "a", name: "Insecure", preview_url: "http://example.com/a.mp3" },
+        { voice_id: "b", name: "Hostile", preview_url: "javascript:alert(1)" },
+      ]),
+    ) as unknown as typeof fetch;
+
+    // This value becomes an `<audio src>` in the operator's page.
+    const voices = await new ElevenLabsProvider().listVoices("k");
+    expect(voices.map((voice) => voice.previewUrl)).toEqual([null, null]);
+  });
+
+  it("throws rather than returning an empty list when ElevenLabs refuses", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => JSON.stringify({ detail: { status: "invalid_api_key" } }),
+    } as Response) as unknown as typeof fetch;
+
+    // "This account has no voices" and "we could not ask" are different things
+    // to put in front of an operator, and only a throw distinguishes them.
+    await expect(new ElevenLabsProvider().listVoices("sk_secret_1234")).rejects.toThrow(
+      /invalid_api_key/,
+    );
+    await expect(
+      new ElevenLabsProvider().listVoices("sk_secret_1234"),
+    ).rejects.not.toThrow(/sk_secret_1234/);
+  });
+
+  it("throws when ElevenLabs cannot be reached at all", async () => {
+    global.fetch = vi
+      .fn()
+      .mockRejectedValue(new Error("getaddrinfo ENOTFOUND")) as unknown as typeof fetch;
+
+    await expect(new ElevenLabsProvider().listVoices("k")).rejects.toThrow(
+      /Could not reach ElevenLabs/,
+    );
+  });
+});
