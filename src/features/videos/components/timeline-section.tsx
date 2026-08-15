@@ -1,5 +1,6 @@
 import { Skeleton } from "@/components/ui/skeleton";
 import { TimelinePanel } from "@/features/videos/components/timeline-panel";
+import type { VideoFormat } from "@/generated/prisma/enums";
 import { timelineService } from "@/services/timeline.service";
 
 /**
@@ -21,9 +22,16 @@ import { timelineService } from "@/services/timeline.service";
 export async function TimelineSection({
   userId,
   videoId,
+  format,
 }: {
   userId: string;
   videoId: string;
+  /** Passed down rather than added to `VideoTimeline`: the format is a
+   *  property of the video, which the page already has, and `timelineService`
+   *  is about where the script lands in time — nothing it computes depends on
+   *  the shape of the frame. The panel needs it for one thing only, which is
+   *  not drawing a 16:9 player around a 9:16 render. */
+  format: VideoFormat;
 }) {
   const timeline = await timelineService.get(userId, videoId).catch(() => null);
 
@@ -36,7 +44,7 @@ export async function TimelineSection({
     );
   }
 
-  return <TimelinePanel timeline={timeline} />;
+  return <TimelinePanel timeline={timeline} format={format} />;
 }
 
 /** Mirrors the panel — a 16:9 player over a strip over a few rows — so the

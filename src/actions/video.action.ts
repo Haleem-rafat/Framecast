@@ -3,7 +3,11 @@
 import { revalidatePath } from "next/cache";
 
 import { run, type ActionResult } from "@/actions/action-result";
-import { createVideoSchema, deleteVideosSchema } from "@/schemas/video.schema";
+import {
+  approveScriptSchema,
+  createVideoSchema,
+  deleteVideosSchema,
+} from "@/schemas/video.schema";
 import { requireSession } from "@/server/session";
 import { jobService } from "@/services/job.service";
 import type { PipelineLogStream, PipelineState } from "@/services/pipeline.service";
@@ -24,12 +28,23 @@ export async function createVideoAction(
   });
 }
 
+/**
+ * Gate 1, and the one place a video's output format is decided.
+ *
+ * `input` is parsed rather than taken at its word: it arrives from a dialog,
+ * and the value it carries is what the renderer will spend narration quota and
+ * a full encode producing. An unparseable one is a rejected action, not a
+ * silent fall back to landscape — an operator who asked for a short and got a
+ * nine-minute widescreen video would only find out after paying for it.
+ */
 export async function approveScriptAction(
   videoId: string,
+  input: unknown,
 ): Promise<ActionResult<null>> {
   return run(async () => {
     const session = await requireSession();
-    await videoService.approveScript(session.user.id, videoId);
+    const { format } = approveScriptSchema.parse(input);
+    await videoService.approveScript(session.user.id, videoId, format);
 
     revalidatePath("/videos");
     revalidatePath(`/videos/${videoId}`);

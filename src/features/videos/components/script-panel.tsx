@@ -30,6 +30,12 @@ import {
   saveScriptEditAction,
 } from "@/actions/script.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
+import {
+  estimateSpokenSeconds,
+  formatFit,
+  formatRuntime,
+  VERTICAL_MAX_SECONDS,
+} from "@/lib/video-format";
 
 /** Live word count for the importer, so an operator pasting a script can see
  * whether it is anywhere near the length they asked the prompt for before
@@ -384,6 +390,21 @@ export function ScriptPanel({
         disabled={!isDraft || isPending}
         placeholder="Script content"
       />
+
+      {/* Which output this script can actually become, said where the script
+        * is read rather than only in the approve dialog. Approving is the
+        * moment the choice is committed, but this is the moment it can still
+        * be changed — regenerating a shorter script is a click away here and
+        * impossible one screen later. */}
+      {isDraft && activeVersion.wordCount > 0 && (
+        <p className="text-muted-foreground text-xs">
+          About {formatRuntime(estimateSpokenSeconds(activeVersion.wordCount))}{" "}
+          spoken.{" "}
+          {formatFit("VERTICAL", activeVersion.wordCount).verdict === "fits"
+            ? "Short enough for either a full video or a vertical Short."
+            : `Suits a full video — a Short has to be under ${formatRuntime(VERTICAL_MAX_SECONDS)}, so regenerate with a shorter target if you want one.`}
+        </p>
+      )}
 
       {!isDraft && (
         <p className="text-muted-foreground text-xs">

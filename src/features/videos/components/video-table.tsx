@@ -10,6 +10,7 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { BulkDeleteVideosButton } from "@/features/videos/components/bulk-delete-videos-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import { VideoStatus } from "@/generated/prisma/enums";
+import { VIDEO_FORMATS } from "@/lib/video-format";
 import type { VideoListItem } from "@/features/videos/types";
 
 const STATUS_ORDER: string[] = Object.values(VideoStatus);
@@ -81,6 +82,21 @@ export function VideoTable({
         // Underscores become spaces so a future multi-word status is still
         // findable by the words the badge shows; case is handled by the search.
         filterValue: (video) => video.status.replace(/_/g, " "),
+      },
+      {
+        id: "format",
+        header: "Format",
+        // The label, not the pixel dimensions: this column exists so a list
+        // of twenty videos shows at a glance which three are vertical, and
+        // "1080×1920" is a number to decode where "Short" is a word to read.
+        // The detail page's badge carries both.
+        cell: (video) => VIDEO_FORMATS[video.format].label,
+        // Landscape first, matching the approve dialog's own order and the
+        // enum's declaration order — grouping the two is the whole question
+        // this column gets asked.
+        sortValue: (video) => (video.format === "LANDSCAPE" ? 0 : 1),
+        filterValue: (video) => VIDEO_FORMATS[video.format].label,
+        cellClassName: "text-muted-foreground text-sm",
       },
       {
         id: "updatedAt",

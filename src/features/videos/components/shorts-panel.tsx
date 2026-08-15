@@ -13,7 +13,7 @@ import {
   listShortsAction,
 } from "@/actions/shorts.action";
 import { VideoSection } from "@/features/videos/components/video-section";
-import type { VideoStatus } from "@/generated/prisma/enums";
+import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import { cn } from "@/lib/utils";
 import type { ShortSummary } from "@/services/shorts.service";
 import { formatDuration } from "@/utils/format";
@@ -216,10 +216,12 @@ export function useShortsSummary(
 export function ShortsPanel({
   videoId,
   status,
+  format,
   initialShorts,
 }: {
   videoId: string;
   status: VideoStatus;
+  format: VideoFormat;
   initialShorts: ShortSummary[];
 }) {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -229,11 +231,18 @@ export function ShortsPanel({
     initialShorts,
   );
 
-  // Shorts are cut out of a finished render, so there is nothing to offer
-  // before one exists. PUBLISHED counts: publishing reclaims the section clips
-  // but leaves the render itself, and a live video is exactly the one an
-  // operator wants shorts from.
-  const canGenerate = status === "READY" || status === "PUBLISHED";
+  // A vertical video already IS a short — there is nothing to cut out of it,
+  // and `ShortsService` refuses to try. Said here rather than left to a
+  // ConflictError after the click, because a disabled button with no
+  // explanation reads as a bug and a click that spends a round trip to be told
+  // "no" reads as one too.
+  const isVertical = format === "VERTICAL";
+
+  // Shorts are composed from the footage of a finished video, so there is
+  // nothing to offer before one exists. PUBLISHED is offered but will refuse:
+  // publishing reclaims that footage, which the service explains in a sentence
+  // naming publishing as the cause.
+  const canGenerate = !isVertical && (status === "READY" || status === "PUBLISHED");
 
   async function onGenerate() {
     setIsGenerating(true);
@@ -273,25 +282,40 @@ export function ShortsPanel({
           would scroll the page sideways to reach the button. */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <p className="text-muted-foreground max-w-prose text-xs">
-          Vertical clips cut from the best moments of this video. Review them
-          here; the publish dialog can upload the ready ones alongside the
-          video, or you can upload them yourself.
+          {isVertical
+            ? "This video is already a vertical short."
+            : "Vertical clips composed from the best moments of this video — from " +
+              "the same footage it was built from, so they carry only their own " +
+              "captions. Review them here; the publish dialog can upload the ready " +
+              "ones alongside the video, or you can upload them yourself."}
         </p>
 
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onGenerate}
-          disabled={!canGenerate || isGenerating}
-        >
-          {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-          {shorts.length > 0 ? "Regenerate" : "Generate"}
-        </Button>
+        {/* Withdrawn entirely for a vertical video rather than disabled: a
+            greyed-out Generate invites the operator to work out what would
+            re-enable it, and nothing would. */}
+        {!isVertical && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onGenerate}
+            disabled={!canGenerate || isGenerating}
+          >
+            {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+            {shorts.length > 0 ? "Regenerate" : "Generate"}
+          </Button>
+        )}
       </div>
 
-      {!canGenerate ? (
+      {isVertical ? (
+        <p className="text-muted-foreground max-w-prose text-sm">
+          It was rendered at 1080×1920 for the Shorts feed, so there is nothing
+          to cut out of it — publish it as it is. Shorts are cut from full
+          videos; approve a script as a full video if you want clips from it.
+        </p>
+      ) : !canGenerate ? (
         <p className="text-muted-foreground text-sm">
-          Shorts are cut out of a finished video. Render this one first.
+          Shorts are composed from a finished video&apos;s footage. Render this
+          one first.
         </p>
       ) : shorts.length === 0 ? (
         <p className="text-muted-foreground text-sm">
@@ -309,7 +333,7 @@ export function ShortsPanel({
         </div>
       )}
 
-      {shorts.length > 0 && (
+      {!isVertical && shorts.length > 0 && (
         <p className="text-muted-foreground text-xs">
           Regenerating replaces this set and deletes their files.
         </p>
@@ -331,11 +355,13 @@ export function ShortsPanel({
 export function ShortsSection({
   videoId,
   status,
+  format,
   initialShorts,
   defaultOpen,
 }: {
   videoId: string;
   status: VideoStatus;
+  format: VideoFormat;
   initialShorts: ShortSummary[];
   defaultOpen: boolean;
 }) {
@@ -345,13 +371,17 @@ export function ShortsSection({
     <VideoSection
       id="shorts"
       title="Shorts"
-      summary={label}
+      // The header is the only part of a folded section anyone reads, so it
+      // has to carry the answer too — "None yet" on a vertical video reads as
+      // "not yet", which is the opposite of what is true.
+      summary={format === "VERTICAL" ? "This video is one" : label}
       defaultOpen={defaultOpen}
       active={rendering}
     >
       <ShortsPanel
         videoId={videoId}
         status={status}
+        format={format}
         initialShorts={initialShorts}
       />
     </VideoSection>

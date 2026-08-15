@@ -22,6 +22,7 @@ import { VideoPreview } from "@/features/videos/components/video-preview";
 import { statRenderFile } from "@/lib/render-storage";
 import { isAppError } from "@/lib/errors";
 import { objectSizeBytes } from "@/lib/storage";
+import { VIDEO_FORMATS } from "@/lib/video-format";
 import { PUBLISHING_DEFAULTS } from "@/lib/youtube-categories";
 import { requireUser } from "@/server/session";
 import { pipelineService } from "@/services/pipeline.service";
@@ -31,7 +32,7 @@ import { settingsService } from "@/services/settings.service";
 import { shortsService } from "@/services/shorts.service";
 import { videoService } from "@/services/video.service";
 import { formatDuration } from "@/utils/format";
-import type { VideoStatus } from "@/generated/prisma/enums";
+import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = { title: "Video" };
 
@@ -186,12 +187,16 @@ function sectionOrderFor(status: VideoStatus): keyof typeof ORDERED_SECTIONS {
 
 async function PreviewSection({
   videoId,
+  format,
   renderOutputUrl,
   audioPath,
   durationSeconds,
   youtubeVideoId,
 }: {
   videoId: string;
+  /** Decides the player's shape and the resolution it reports. A 9:16 render
+   * inside a 16:9 player is two black pillars and a stamp-sized video. */
+  format: VideoFormat;
   renderOutputUrl: string | null;
   audioPath: string | null;
   durationSeconds: number | null;
@@ -208,6 +213,7 @@ async function PreviewSection({
 
   return (
     <VideoPreview
+      format={format}
       render={render}
       audio={audio}
       durationSeconds={durationSeconds}
@@ -228,11 +234,15 @@ async function ShortsSectionData({
   userId,
   videoId,
   status,
+  format,
   defaultOpen,
 }: {
   userId: string;
   videoId: string;
   status: VideoStatus;
+  /** A vertical video already is a short, so the panel offers nothing and says
+   * why — see `ShortsPanel`. */
+  format: VideoFormat;
   defaultOpen: boolean;
 }) {
   const shorts = await shortsService.list(userId, videoId).catch(() => []);
@@ -241,6 +251,7 @@ async function ShortsSectionData({
     <ShortsSection
       videoId={videoId}
       status={status}
+      format={format}
       initialShorts={shorts}
       defaultOpen={defaultOpen}
     />
@@ -287,13 +298,6 @@ function PreviewFallback() {
   );
 }
 
-/** Renders always land at 1920x1080 — WIDTH/HEIGHT are hardcoded in the render
- * pipeline (ffmpeg-command.ts), so this is a fixed label rather than per-video
- * metadata pulled from a column. Duplicated from `VideoPreview` deliberately:
- * the section header needs it before that component is even reached, and one
- * shared constant would mean this server component importing a client one. */
-const RENDER_RESOLUTION = "1920×1080";
-
 export default async function VideoDetailPage({
   params,
 }: VideoDetailPageProps) {
@@ -324,8 +328,10 @@ export default async function VideoDetailPage({
   // below loads its own list inside a Suspense boundary; this is the count the
   // *header* needs before that boundary resolves, which is why it is not read
   // from the same place.
+  // A vertical video can have no shorts (`ShortsService` refuses one), so
+  // there is never an offer to make and the count is not worth a query.
   const readyShortCount =
-    video.status === "READY"
+    video.status === "READY" && video.format === "LANDSCAPE"
       ? await publishService.countPublishableShorts(user.id, video.id)
       : 0;
 
@@ -377,8 +383,10 @@ export default async function VideoDetailPage({
         videoId={video.id}
         title={video.title}
         status={video.status}
+        format={video.format}
         projectName={video.project.name}
         wordCount={activeVersion?.wordCount ?? 0}
+        characterCount={activeVersion?.content.length ?? 0}
         channelName={video.project.channel?.title ?? null}
         channelMadeForKids={
           video.project.channel?.brand?.madeForKids ??
@@ -450,7 +458,7 @@ export default async function VideoDetailPage({
                 title="Preview"
                 summary={
                   renderOutputUrl || youtubeVideoId
-                    ? [durationLabel, RENDER_RESOLUTION]
+                    ? [durationLabel, VIDEO_FORMATS[video.format].dimensions]
                         .filter(Boolean)
                         .join(" · ")
                     : "Narration only"
@@ -467,6 +475,7 @@ export default async function VideoDetailPage({
                 <Suspense fallback={<PreviewFallback />}>
                   <PreviewSection
                     videoId={video.id}
+                    format={video.format}
                     renderOutputUrl={renderOutputUrl}
                     audioPath={audioPath}
                     durationSeconds={durationSeconds}
@@ -535,7 +544,11 @@ export default async function VideoDetailPage({
                 defaultOpen={isOpenByDefault(key)}
               >
                 <Suspense fallback={<TimelineFallback />}>
-                  <TimelineSection userId={user.id} videoId={video.id} />
+                  <TimelineSection
+                    userId={user.id}
+                    videoId={video.id}
+                    format={video.format}
+                  />
                 </Suspense>
               </VideoSection>
             );
@@ -551,6 +564,7 @@ export default async function VideoDetailPage({
                   userId={user.id}
                   videoId={video.id}
                   status={video.status}
+                  format={video.format}
                   defaultOpen={isOpenByDefault(key)}
                 />
               </Suspense>

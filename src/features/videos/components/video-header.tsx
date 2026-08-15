@@ -1,21 +1,22 @@
 import { Clock } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { ApproveScriptButton } from "@/features/videos/components/approve-script-button";
 import { DeleteVideoButton } from "@/features/videos/components/delete-video-button";
 import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
-import type { VideoStatus } from "@/generated/prisma/enums";
+import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import type { PublishVisibilityOption } from "@/schemas/publish.schema";
-
-/** Reading pace used to translate a script's word count into a runtime estimate. */
-const WORDS_PER_MINUTE = 150;
+import { VIDEO_FORMATS, WORDS_PER_MINUTE } from "@/lib/video-format";
 
 export function VideoHeader({
   videoId,
   title,
   status,
+  format,
   projectName,
   wordCount,
+  characterCount,
   channelName,
   channelMadeForKids,
   youtubeVideoId,
@@ -25,8 +26,17 @@ export function VideoHeader({
   videoId: string;
   title: string;
   status: VideoStatus;
+  /** Landscape until the operator approves the script as something else. Shown
+   *  beside the status because it is the other thing about a video that cannot
+   *  be changed after Gate 1, and because everything below the header — the
+   *  player, the timeline, the shorts panel — is a different shape because of
+   *  it. */
+  format: VideoFormat;
   projectName: string;
   wordCount: number;
+  /** The active script's length in characters. Only the approve dialog uses
+   *  it, and only to state what the narration will actually be billed. */
+  characterCount: number;
   /** The video's project's assigned channel, if any — Gate 2's confirmation
    * names it so the operator isn't guessing where the upload goes. */
   channelName: string | null;
@@ -54,6 +64,15 @@ export function VideoHeader({
             {title}
           </h1>
           <VideoStatusBadge status={status} />
+          {/* Only once it means something. A draft's format is still the
+            * approve dialog's to decide, and a badge saying "Full video" on a
+            * video nobody has approved yet would be stating a default as a
+            * decision. */}
+          {status !== "DRAFT" && (
+            <Badge variant="outline" className="font-normal">
+              {VIDEO_FORMATS[format].label} · {VIDEO_FORMATS[format].dimensions}
+            </Badge>
+          )}
         </div>
         <p className="text-muted-foreground flex items-center gap-3 text-sm">
           <span>{projectName}</span>
@@ -75,7 +94,12 @@ export function VideoHeader({
           status={status}
           redirectToList
         />
-        <ApproveScriptButton videoId={videoId} canApprove={canApprove} />
+        <ApproveScriptButton
+          videoId={videoId}
+          canApprove={canApprove}
+          wordCount={wordCount}
+          characterCount={characterCount}
+        />
         <PublishVideoButton
           videoId={videoId}
           status={status}

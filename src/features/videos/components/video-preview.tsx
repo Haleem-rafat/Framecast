@@ -5,12 +5,10 @@ import { Download, Mic, Video as VideoIcon } from "lucide-react";
 
 import { MediaPlayer } from "@/components/shared/media-player";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import type { VideoFormat } from "@/generated/prisma/enums";
+import { VIDEO_FORMATS } from "@/lib/video-format";
 import { formatBytes, formatDuration } from "@/utils/format";
-
-/** Renders always land at 1920x1080 — WIDTH/HEIGHT are hardcoded in
- * the render pipeline (ffmpeg-command.ts), so this is a fixed label rather than
- * per-video metadata pulled from a column. */
-const RENDER_RESOLUTION = "1920×1080";
 
 interface PreviewAsset {
   /** Null when the underlying row exists but signing its path failed — the
@@ -51,10 +49,25 @@ function UnavailableNotice() {
  * private studio page, and there is no reason for viewing your own draft to
  * seed advertising cookies.
  */
-function YouTubeEmbed({ youtubeVideoId }: { youtubeVideoId: string }) {
+function YouTubeEmbed({
+  youtubeVideoId,
+  vertical,
+}: {
+  youtubeVideoId: string;
+  /** A 9:16 upload in a 16:9 iframe is a stamp between two black pillars.
+   *  Constrained by height rather than width for the same reason
+   *  `MediaPlayer`'s vertical shape is — a full-width 9:16 frame on a desktop
+   *  is taller than the screen. */
+  vertical: boolean;
+}) {
   return (
     <iframe
-      className="aspect-video w-full rounded-md bg-black"
+      className={cn(
+        "rounded-md bg-black",
+        vertical
+          ? "mx-auto aspect-[9/16] h-96 max-h-[70svh] w-auto"
+          : "aspect-video w-full",
+      )}
       src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(youtubeVideoId)}`}
       title="Published video"
       allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -69,11 +82,17 @@ const RECLAIMED_MESSAGE =
   "The local render is no longer on disk. Publishing deletes it once YouTube confirms the upload — YouTube now holds the only copy.";
 
 export function VideoPreview({
+  format,
   render,
   audio,
   durationSeconds,
   youtubeVideoId = null,
 }: {
+  /** What shape this video actually is. Everything visual below reads it: the
+   *  player, the YouTube embed, and the resolution printed under both. Before
+   *  formats existed this component asserted 1920x1080 as a constant, which was
+   *  true then and would have quietly mislabelled every vertical render. */
+  format: VideoFormat;
   render: PreviewAsset | null;
   audio: PreviewAsset | null;
   durationSeconds: number | null;
@@ -91,6 +110,9 @@ export function VideoPreview({
    * and the embed is the same fallback the server-side case already uses.
    */
   const [renderGone, setRenderGone] = useState(false);
+
+  const vertical = format === "VERTICAL";
+  const resolution = VIDEO_FORMATS[format].dimensions;
 
   // Neither a RenderJob nor a VoiceOver exists yet — nothing to preview, and
   // no section-shaped hole where one would otherwise go.
@@ -116,7 +138,7 @@ export function VideoPreview({
           {render?.url && !(renderGone && youtubeVideoId) ? (
             <>
               <MediaPlayer
-                shape="landscape"
+                shape={vertical ? "vertical" : "landscape"}
                 label="Rendered video"
                 src={render.url}
                 errorMessage={RECLAIMED_MESSAGE}
@@ -126,7 +148,7 @@ export function VideoPreview({
                 <p className="text-muted-foreground text-xs">
                   {metaLine([
                     durationLabel,
-                    RENDER_RESOLUTION,
+                    resolution,
                     render.sizeBytes != null
                       ? formatBytes(render.sizeBytes)
                       : null,
@@ -156,11 +178,11 @@ export function VideoPreview({
             </>
           ) : youtubeVideoId ? (
             <>
-              <YouTubeEmbed youtubeVideoId={youtubeVideoId} />
+              <YouTubeEmbed youtubeVideoId={youtubeVideoId} vertical={vertical} />
               <p className="text-muted-foreground text-xs">
                 {metaLine([
                   durationLabel,
-                  RENDER_RESOLUTION,
+                  resolution,
                   "playing from YouTube — the local render was reclaimed after publishing",
                 ])}
               </p>

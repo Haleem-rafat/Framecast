@@ -16,6 +16,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { TimelineFootageDialog } from "@/features/videos/components/timeline-footage-dialog";
+import type { VideoFormat } from "@/generated/prisma/enums";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 import type {
@@ -359,7 +360,16 @@ function BlockRow({
  * Nothing here edits the finished MP4, and the card says so wherever an edit is
  * offered: a swap replaces the footage the *next* render will use.
  */
-export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
+export function TimelinePanel({
+  timeline,
+  format,
+}: {
+  timeline: VideoTimeline;
+  /** The scrubbing player's shape. Every timing below is read off the
+   *  narration and is identical either way — only the frame the render is
+   *  played back in changes. */
+  format: VideoFormat;
+}) {
   const playerRef = useRef<MediaPlayerHandle>(null);
   const reducedMotion = usePrefersReducedMotion();
   const [currentTime, setCurrentTime] = useState(0);
@@ -436,7 +446,7 @@ export function TimelinePanel({ timeline }: { timeline: VideoTimeline }) {
           // `timeupdate`, `seeked` and `loadedmetadata`, and nothing else.
           <MediaPlayer
             ref={playerRef}
-            shape="landscape"
+            shape={format === "VERTICAL" ? "vertical" : "landscape"}
             label="Rendered video"
             src={timeline.renderUrl}
             onTimeChange={setCurrentTime}
