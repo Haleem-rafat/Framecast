@@ -215,7 +215,7 @@ describe("PixabayProvider.search", () => {
 // Pixabay's "animation" bucket is "rendered rather than filmed", and includes
 // photoreal 3D creatures and abstract motion graphics. Measured live against
 // the real API over ten representative cues, the share of top-20 results
-// carrying a cartoon-ish tag was 12% unfiltered, 25% with `video_type=animation`
+// carrying a cartoon-ish tag was 9% unfiltered, 25% with `video_type=animation`
 // alone, and 56% with the filter plus the `cartoon` query prefix. Both levers
 // are load-bearing, so both are asserted here.
 // ---------------------------------------------------------------------------

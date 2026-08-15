@@ -316,7 +316,7 @@ interface PixabayVariant {
    * dinosaur teaching numbers" with `video_type=animation` returns a
    * photorealistic T-rex tagged `realistic` as its third hit. Measured over
    * ten representative cues, the share of top-20 results carrying a cartoon-ish
-   * tag went 12% on a plain search, 25% with `video_type=animation` alone, and
+   * tag went 9% on a plain search, 25% with `video_type=animation` alone, and
    * 56% with `video_type=animation` plus this prefix. The prefix is doing most
    * of the work; the filter is what stops live action getting back in.
    */
