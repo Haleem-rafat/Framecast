@@ -37,6 +37,17 @@
  * graphics. A style that says "show the number on screen" describes a video
  * the renderer cannot produce, so every entry states its structure in terms of
  * what can be *said* and what a camera can be *pointed at*.
+ *
+ * ── The developer styles, and why none of them is a tutorial ────────────────
+ * The same limit decides the shape of every technical entry here. There is no
+ * syntax-highlighted code renderer, no screen recording and no editor capture:
+ * footage is stock video matched per section by keyword, so "let's look at
+ * this function" buys a clip of somebody at a laptop. That rules out the
+ * tutorial genre entirely and leaves the one this pipeline is actually good
+ * at — narrated explainers whose value is carried by the words: architecture,
+ * post-mortems, origin histories, comparisons, essays about the craft. Each of
+ * those entries says so in the prompt itself, because the model has to know it
+ * is writing for the ear alone.
  */
 
 import type { PromptCategory } from "@/generated/prisma/enums";
@@ -110,6 +121,41 @@ const SOURCING_RULES = [
   "- Every figure, date, name and quoted claim comes from something you can point at. List each one in the sources field.",
   "- If you cannot source a claim, cut the claim. Do not soften it into 'some say' and keep it.",
   "- Never invent a study, a statistic, an expert or a quotation. An invented source is worse than no claim at all, because the description presents it as checked.",
+].join("\n");
+
+/**
+ * Shared by the developer styles, because it is the single constraint that
+ * decides whether a technical script is usable here at all — a property of the
+ * renderer, like the voice and cue rules above, rather than of any one format.
+ * Written into the prompt and not just this comment: the model cannot infer
+ * from a topic that the pictures are stock B-roll it does not control.
+ */
+const NO_CODE_RULES = [
+  "NO CODE ON SCREEN — this pipeline has no code renderer, no screen recording and no editor capture. The picture is stock footage matched to a short search query, so while you describe a caching layer the screen shows somebody at a laptop.",
+  "- The narration must stand alone. The pictures are illustrative, not instructional. A listener with the video in a background tab has to lose nothing at all.",
+  "- Never write 'look at this', 'as you can see', 'on screen', 'in this diagram', 'here in the code', or 'follow along'. There is nothing to look at and nothing to follow.",
+  "- Never dictate code, syntax, flags, commands or file paths. Nobody can copy them down, and the voice reads punctuation aloud as words.",
+  "- Say what the code does instead, in ordinary words. 'The handler checks the cache first, and only asks the database when the cache misses' carries the idea. Reading out a function signature carries nothing.",
+  "- Name things in speakable form: 'Postgres', 'a hash map', 'the load balancer'. Never a symbol, a command line or an identifier in snake case.",
+  "- Keep structure the ear can hold. At most three things in a list, named in order, and named again in that order when you come back to them.",
+  "- Where a shape matters, describe it physically — a queue is a line, a tree branches, a cache sits in front of the thing it protects. That is also the picture the footage can actually show.",
+  "- This is not a tutorial. Nobody can follow steps from it. Aim for the thing a developer understands after listening, not the thing they can type.",
+].join("\n");
+
+/**
+ * Also shared by the developer styles. The general sourcing rules cover
+ * invented facts; this covers the way technical claims go wrong instead —
+ * true in twenty nineteen, true on one platform, true before a rewrite. An
+ * audience that writes software notices within a minute.
+ */
+const TECHNICAL_ACCURACY_RULES = [
+  "TECHNICAL ACCURACY — this audience writes software and will catch a wrong claim immediately, so accuracy outranks fluency here.",
+  "- Prefer the well established over the current. Behaviour that has held for years is safer than behaviour that changed last month and may have changed again since.",
+  "- Name versions and dates wherever they change the answer. 'Node has this built in' is wrong somewhere; 'Node has shipped this since version eighteen' is a claim that can be checked.",
+  "- Where the field genuinely disagrees, say that it disagrees and give each side its own best argument. Never flatten a contested question into one confident sentence to make a segment land.",
+  "- Never give a performance number, a benchmark or an adoption figure without saying what was measured and where it came from. A benchmark with no workload attached means nothing.",
+  "- Do not describe a company's internal system as though you had read the code. Say what has been published, and say who published it.",
+  "- If you are not sure something is still true, leave it out. There is always another accurate thing to say.",
 ].join("\n");
 
 export const SCRIPT_STYLES: readonly ScriptStyle[] = [
@@ -386,6 +432,328 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "curious general viewers",
       },
       { key: "tone", label: "Tone", defaultValue: "fair-minded and precise" },
+    ],
+  },
+
+  {
+    id: "system-design-explainer",
+    name: "System design explainer",
+    description:
+      "How one system works, traced along a single request from the first hop to the last. Suits explaining an architecture to developers when there is nothing to put on screen.",
+    category: "SCRIPT",
+    // Nine minutes because the format has a fixed spine — job, constraints,
+    // the traced path, the trade-off, the failure mode — and the path is the
+    // part that needs room. At 150 words a minute that is 1,350 words, around
+    // 60 sections, which is what the default style already renders.
+    targetLength: "About 9 minutes",
+    content: [
+      "Write a {{duration}}-minute narration script explaining how this works, end to end: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "This is an architecture explainer for people who build software. The whole video is one system, taken apart in the order a request moves through it.",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words. At about 22 words a section that is around 60 sections. Keep writing until the path is genuinely traced end to end at that length.",
+      "",
+      "STRUCTURE — one path, followed in order.",
+      "- Open on what the system costs when it is absent or when it fails: a delay a user feels, an outage, a bill, a number. Not a definition, and never 'in this video'.",
+      "- Then state the system's job in one sentence a non-specialist would follow. Everything after this is how that sentence is achieved.",
+      "- Then the constraints, before any component. What is scarce here: requests a second, bytes, latency budget, money, the fact that a disk is a thousand times slower than memory. A design is only sensible against its constraints, and naming them first is what makes the rest feel inevitable rather than arbitrary.",
+      "- Then trace one single request from the outside in. One component per beat, in the order it is reached. For each: what it is, what it does to the request, and why it is there at all. Never introduce a component before the request arrives at it.",
+      "- Say what each hop costs. Roughly, honestly, in units the ear holds: a memory read is instant, a disk seek is slow, a call across the internet is far slower than both.",
+      "- Then the hard part. Every design gives something up — consistency, cost, latency, operational simplicity. Name what this one gives up and who pays for it. This is the beat the audience came for; do not rush it.",
+      "- Then the failure mode. Remove one component and say what a user sees. Then say what the system does about it: a retry, a queue, a replica, a degraded response.",
+      "- Then scale. What breaks first when the load is ten times larger, and what is done about that.",
+      "- Close by walking the path again in three or four steps, quickly. The recap is the diagram this video cannot draw, so it earns its place here even though most formats should never repeat themselves.",
+      "",
+      NO_CODE_RULES,
+      "- Trace the path in speech the way you would draw it on a whiteboard: 'in front of', 'behind', 'to one side', 'and then'. Position words are what let a listener hold a shape.",
+      "",
+      VOICE_RULES,
+      "- Introduce every term the first time it is used, in the same sentence, in six words or fewer. Then use it consistently and never swap in a synonym.",
+      "- Vary sentence length deliberately. Several short ones, then a longer one. Monotone rhythm is what makes synthetic narration sound synthetic.",
+      "",
+      TECHNICAL_ACCURACY_RULES,
+      "",
+      SOURCING_RULES,
+      "",
+      CUE_RULES,
+      "- Cue the physical world the system lives in: server rooms, cabling, technicians, network operations centres, fibre being spliced, delivery vans, warehouse conveyors, traffic junctions, water flowing through pipes.",
+      "- Never cue a screen full of code or a text editor. It is the one shot that makes a stock library look like a stock library, and it matches nothing you are saying.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "9" },
+      {
+        key: "audience",
+        label: "Audience",
+        defaultValue: "working software developers",
+      },
+      { key: "tone", label: "Tone", defaultValue: "precise and plain-spoken" },
+    ],
+  },
+
+  {
+    id: "incident-postmortem",
+    name: "Incident post-mortem",
+    description:
+      "One real outage told as a timeline: what broke, what the responders saw, and what actually fixed it. Blameless, and specific about the contributing causes.",
+    category: "SCRIPT",
+    // Seven minutes, matching the case study it is a sibling of: a timeline
+    // with a diagnosis and a set of remediations has a natural end, and
+    // padding an incident produces invented minutes. 1,050 words, ~48 sections.
+    targetLength: "About 7 minutes",
+    content: [
+      "Write a {{duration}}-minute narration script reconstructing one incident: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "This is a post-mortem, told the way a good internal write-up reads: a clock, a diagnosis, and what was changed afterwards. It is one incident, not a survey of outages.",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words, or about 48 sections at 22 words each. If the public record does not fill that, spend the extra time on the conditions that made the failure possible — never on invented detail.",
+      "",
+      "STRUCTURE — the clock runs forward, once.",
+      "- Open at detection. The time, what fired, and what a user was seeing at that moment. Before any explanation of the system.",
+      "- Then the impact, plainly and with figures: who was affected, in which regions, for how long, and what it cost, if that was published. Say if the true blast radius was only understood later.",
+      "- Then the setup: the change, the deploy, the config edit or the traffic shift that started the clock, and how long it had been in place before anything went wrong. Latent failures often ship days early.",
+      "- Then the timeline in order, with clock times, one beat per event. What the responders saw, what they believed, what they tried, and what that did. Never jump ahead to the answer and come back for it.",
+      "- Name the misleading signal. Almost every long incident has one: a dashboard that looked fine, an alert that pointed at the wrong service, a retry storm that hid its own cause. The time lost to it is the real story.",
+      "- Separate the trigger from the cause. The deploy is the trigger. The cause is the condition that made a routine deploy capable of doing this — a missing limit, an unbounded retry, a default nobody chose, a dependency nobody knew was in the path.",
+      "- Then mitigation, then repair. They are different: the thing that stopped the bleeding, and the thing that made a recurrence impossible. Say how long each took.",
+      "- Then the remediations that followed, and whether they were actually shipped. An action item nobody completed is part of the story.",
+      "- Close on the one condition that generalises to other systems. One paragraph, stated once.",
+      "",
+      "BLAMELESS — this is a rule about the script, not a disclaimer to read out.",
+      "- Never name an individual as the person who broke it, and never imply one. Name the system that allowed it: the missing guardrail, the default, the review that could not have caught it, the alert that did not exist.",
+      "- Treat every action taken during the incident as reasonable given what the responder knew at that minute. Hindsight is not evidence of carelessness.",
+      "- No mockery of the company, no 'how did nobody think of this', no implication that the audience would have done better.",
+      "",
+      "EVIDENCE.",
+      "- Times, durations and figures come from the published post-mortem, status page or filing. If a time was never published, say the order of events without inventing a clock.",
+      "- No invented dialogue, no imagined panic in the room, no reconstructed thoughts. Say what was done and what was recorded.",
+      "- If the cause was never publicly established, say that, and say what the plausible explanations are and who holds them.",
+      "",
+      NO_CODE_RULES,
+      "",
+      VOICE_RULES,
+      "- Say times the way a person says them: 'twelve minutes past two in the morning, Pacific time'.",
+      "",
+      TECHNICAL_ACCURACY_RULES,
+      "",
+      SOURCING_RULES,
+      "- The post-mortem, the status page updates, the incident report and the reporting on it are the sources. List them.",
+      "",
+      CUE_RULES,
+      "- Cue the shape of a response, not the fault: phones lighting up, an operations room at night, someone woken by a pager, engineers around one desk, traffic at a standstill, an empty shop floor, lights going out across a building.",
+      "- Match the clock. Night-time footage while the timeline is at three in the morning, daylight when it reaches the next afternoon.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "7" },
+      {
+        key: "audience",
+        label: "Audience",
+        defaultValue: "working software developers",
+      },
+      { key: "tone", label: "Tone", defaultValue: "calm and forensic" },
+    ],
+  },
+
+  {
+    id: "why-it-exists",
+    name: "Why it exists",
+    description:
+      "The origin story of a technology: the problem before it, who built it and when, and what adopting it cost. Suits 'why do we even have this' questions.",
+    category: "SCRIPT",
+    // Eight minutes: a history needs the before, the build, the displacement
+    // and the has-it-aged beat, and each is a real segment. 1,200 words,
+    // ~55 sections.
+    targetLength: "About 8 minutes",
+    content: [
+      "Write a {{duration}}-minute narration script on why this exists at all: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "This is a history, told to people who use the thing every day and have never asked where it came from. The payoff is not what it is. The payoff is what the world was like that made someone build it.",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words, or about 55 sections at 22 words each. Keep writing until the history reaches the present at that length.",
+      "",
+      "STRUCTURE — before, during, after, and still true?",
+      "- Open inside the pain. One concrete task from before it existed, described so the audience feels the tedium or the risk: what a developer physically did, how long it took, how often it went wrong.",
+      "- Then the constraints of that era, with numbers and years. What memory cost, how fast a network was, how big a team was, what a release cycle looked like. Half of every design decision in this story is an artefact of something that was expensive then and is free now.",
+      "- Then the people. Who built it, where they worked, what year, and what problem they had been handed. Real names, real dates, real employers.",
+      "- Then the first version. What it actually did on release, and what it pointedly did not do. First versions are almost always smaller than the audience assumes, and that gap is the most interesting thing in the segment.",
+      "- Then what it displaced, and why the incumbent lost. Rarely because it was worse at everything. Usually because it was worse at the one thing that had started to matter most.",
+      "- Then the cost of adoption. Every technology trades something away: complexity, control, performance, portability, a whole class of bug that did not exist before. Name the trade and say who has been paying it since.",
+      "- Then the beat this format exists for. Is the original constraint still there? Say plainly what has changed, and whether the thing is now solving a problem the audience no longer has.",
+      "- Close by naming the condition under which it stops being the right answer — not a prediction, a condition.",
+      "",
+      "HISTORY DISCIPLINE.",
+      "- No origin myths. If the well-known story is a simplification or is disputed, say so and say what the record shows.",
+      "- No inevitability. Nothing in this story had to happen; say what the live alternatives were at the time and why they lost.",
+      "- Judge decisions against what was known then, never against what is obvious now.",
+      "- Dates and version numbers throughout: which year, which release, which company.",
+      "",
+      NO_CODE_RULES,
+      "",
+      VOICE_RULES,
+      "- Vary sentence length deliberately. Several short ones, then a longer one. Monotone rhythm is what makes synthetic narration sound synthetic.",
+      "",
+      TECHNICAL_ACCURACY_RULES,
+      "",
+      SOURCING_RULES,
+      "- Founding stories attract invented quotations more than any other kind of technical writing. If a famous line is only attributed second-hand, say so or leave it out.",
+      "",
+      CUE_RULES,
+      "- Follow the era. Old hardware, tape reels, printouts, telephone exchanges, workshops and factory floors for the early beats; modern rooms, cities and devices as the story reaches now. The visual shift from old to new is doing half the work of the history.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "8" },
+      {
+        key: "audience",
+        label: "Audience",
+        defaultValue: "working software developers",
+      },
+      { key: "tone", label: "Tone", defaultValue: "curious and unhurried" },
+    ],
+  },
+
+  {
+    id: "head-to-head",
+    name: "Head to head",
+    description:
+      "Two technologies compared against a stated set of criteria, ending in a verdict with its conditions attached. Suits a decision the audience is about to make.",
+    category: "SCRIPT",
+    // Seven minutes: an opening, four criteria at roughly a minute each, and
+    // a verdict that has room for its conditions. 1,050 words, ~48 sections.
+    targetLength: "About 7 minutes",
+    content: [
+      "Write a {{duration}}-minute narration script comparing two things and reaching a verdict: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "If the subject names both sides, compare those two. If it names only one, choose the alternative it is most often weighed against, say in the first thirty seconds which one you chose, and say why that is the real comparison.",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words, or about 48 sections at 22 words each. The {{count}} criteria get comparable shares of the body. A criterion that runs three times longer than its neighbours says the others were filler.",
+      "",
+      "STRUCTURE — the same order, every round.",
+      "- Open on what choosing wrong costs: a migration somebody had to do twice, a rewrite, a bill, a team that lost a year. Then name the two things being compared.",
+      "- Give each side one fair sentence: what problem it was built to solve, and by whom. Both descriptions written as their own advocates would write them.",
+      "- Then declare the criteria before comparing anything. {{count}} of them, named in the order you will take them, and say why those are the ones that decide it. An unstated criterion is where this format loses its audience's trust.",
+      "- Then one criterion per segment. Always the same shape: what the first does, what the second does, which one wins here, and what the winner gives up to win. Never change the order of the two sides between segments; the ear tracks position.",
+      "- Say where they are equivalent, and say it clearly. Most comparisons are decided by one or two criteria and are a coin toss on everything else. Pretending all {{count}} are decisive is the dishonest version of this format.",
+      "- Then the verdict. Actually pick one. A comparison that ends in 'it depends' wasted the runtime — but attach the conditions: which one to choose given a small team, a hard deadline, an unusual scale, an existing stack.",
+      "- Then name the case where the loser is the right answer, specifically. There always is one, and saying it is what makes the verdict credible.",
+      "- Close in two lines on the question the viewer should ask themselves to decide, not on a summary of the scores.",
+      "",
+      "FAIRNESS — the failure mode of this format is a rigged fight.",
+      "- Take each side at its strongest and most current. Comparing today's version of one against the version of the other from five years ago is the most common way these go wrong.",
+      "- Never argue against a position nobody holds. If a criticism only applies to a misuse, say that it is a misuse.",
+      "- Separate what is true of the technology from what is true of its community, its documentation or its job market. All four are fair to discuss; conflating them is not.",
+      "- Say which version of each you are describing, and when. Comparisons rot faster than anything else on a developer channel.",
+      "",
+      NO_CODE_RULES,
+      "- Compare behaviour and consequence, never syntax. 'One fails at compile time, the other at three in the morning' is a comparison a listener can hold. Two code samples are not.",
+      "",
+      VOICE_RULES,
+      "- Name both sides in full at the start of each segment. A listener who joined late must never have to guess which one you are talking about.",
+      "",
+      TECHNICAL_ACCURACY_RULES,
+      "",
+      SOURCING_RULES,
+      "- Benchmarks need the workload, the hardware, the versions and the author named, or they do not go in.",
+      "",
+      CUE_RULES,
+      "- Cue the choice, not the products: two roads diverging, a fork in a river, weighing scales, a workshop with two different tools, two teams working differently, a crossroads at rush hour. Alternate which side of a frame the motion comes from as you alternate sides.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "7" },
+      { key: "count", label: "How many criteria", defaultValue: "4" },
+      {
+        key: "audience",
+        label: "Audience",
+        defaultValue: "working software developers",
+      },
+      { key: "tone", label: "Tone", defaultValue: "even-handed and decisive" },
+    ],
+  },
+
+  {
+    id: "craft-essay",
+    name: "Craft essay",
+    description:
+      "One argued opinion about how software gets made, with the strongest objection to it taken seriously. Suits practice and career subjects rather than tools.",
+    category: "SCRIPT",
+    // Six minutes. An essay is one thesis, its evidence, its best
+    // counterargument and its limits; past that it starts restating itself.
+    // 900 words, ~40 sections — the same budget as the countdown.
+    targetLength: "About 6 minutes",
+    content: [
+      "Write a {{duration}}-minute narration script arguing one thing about the craft of software: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "This is an essay, not an explainer. It takes a position and defends it. The audience has done this job and will recognise a position that costs the writer nothing.",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words, or about 40 sections at 22 words each. Write the whole length, and spend it on argument rather than on restating the thesis in new words.",
+      "",
+      "STRUCTURE — one argument, taken seriously.",
+      "- Open on a specific scene from working life, thirty seconds of it. A review that went badly, a deadline met the wrong way, an on-call night, a rewrite that solved nothing, a first week on a new team. Concrete and small. No thesis yet.",
+      "- Then the thesis, in one sentence, stated once and plainly. If it cannot be said in one sentence it is two videos.",
+      "- Say what the common position is, fairly, in the words the people who hold it use. You are disagreeing with something real.",
+      "- Then the evidence, in three different kinds: something from how the work is actually done, something from the history of the field with names and dates, and something measurable that you can source. Three kinds beats three anecdotes.",
+      "- Then the strongest objection, given a full beat of its own and argued as well as its holders argue it. Not the weakest one you can answer easily. This is the segment that decides whether the essay is worth anything.",
+      "- Then your answer to it, which may concede part of it. A conceded point makes the rest more believable, not less.",
+      "- Then the limits. Where does the thesis stop being true — a different size of team, a different industry, a regulated domain, a prototype instead of a product? An argument with no stated limits is a slogan.",
+      "- Then the practical turn: what somebody would do differently on Monday. Specific, and in prose. Never a numbered checklist; the voice reads it as a list and it stops being an essay.",
+      "- Close by returning to the opening scene and saying what it looks like the other way. Two or three lines.",
+      "",
+      "DISCIPLINE — this format fails by being flattering, so guard against it.",
+      "- No contempt. Never for junior developers, never for a language's users, never for managers, never for a previous generation of engineers, never for whoever wrote the code you are describing.",
+      "- No industry clichés doing the work of an argument: ten times engineers, 'developers just want to rewrite everything', 'nobody reads documentation', 'AI will replace all of this'. If a sentence would fit on a conference slide, cut it.",
+      "- No claims about what the industry does or believes unless you can point at a survey, a report or a study, with its year and its sample. If you cannot, argue from the specific case instead.",
+      "- Distinguish your argument from established fact, out loud. 'This is what I think follows' is allowed and honest. Presenting a preference as a finding is not.",
+      "- No career advice that depends on the listener's circumstances being yours. Say who the advice is for.",
+      "",
+      NO_CODE_RULES,
+      "",
+      VOICE_RULES,
+      "- Write it as one person talking, in the first person, at an even pace. Vary sentence length deliberately — several short ones, then a longer one — because an essay read in a monotone stops sounding like a person.",
+      "",
+      TECHNICAL_ACCURACY_RULES,
+      "",
+      SOURCING_RULES,
+      "- An essay's evidence gets checked more aggressively than an explainer's, because the audience already disagrees with somebody in it. Every study, survey, figure and quotation goes in the sources field.",
+      "",
+      CUE_RULES,
+      "- Cue the human side of the work rather than the machinery: hands on a keyboard in a quiet room, a whiteboard being erased, two people arguing at a desk, a commute, an empty office at night, a notebook, a coffee going cold.",
+      "- Return to the opening scene's imagery at the close, once, so the ending lands visually as well as in the words.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "6" },
+      {
+        key: "audience",
+        label: "Audience",
+        defaultValue: "working software developers",
+      },
+      {
+        key: "tone",
+        label: "Tone",
+        defaultValue: "personal, plain and unhurried",
+      },
     ],
   },
 ];

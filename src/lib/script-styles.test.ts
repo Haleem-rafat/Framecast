@@ -9,15 +9,19 @@ import {
 
 /**
  * The catalogue is data, so these are the assertions that would otherwise be
- * a reviewer reading five prompts carefully every time one is edited.
+ * a reviewer reading every prompt carefully each time one is edited.
  *
  * No database and no network: `SCRIPT_STYLES` is a module-level constant, and
  * every property worth checking about it is a property of the strings.
  */
 describe("SCRIPT_STYLES", () => {
-  it("ships between four and six styles, with unique ids and unique names", () => {
+  it("ships a browsable number of styles, with unique ids and unique names", () => {
+    // The bounds are about the browse dialog rather than about correctness:
+    // the list is read top to bottom before anything is added, and a
+    // catalogue nobody scrolls to the end of is a catalogue whose later
+    // entries may as well not ship.
     expect(SCRIPT_STYLES.length).toBeGreaterThanOrEqual(4);
-    expect(SCRIPT_STYLES.length).toBeLessThanOrEqual(6);
+    expect(SCRIPT_STYLES.length).toBeLessThanOrEqual(12);
 
     // Names have to be unique because they land on `@@unique([userId, name])`
     // — two styles sharing one would make the second un-addable for anybody
@@ -166,5 +170,157 @@ describe("the children's style", () => {
     // survive an invented one.
     expect(kids!.content).toContain("sources field");
     expect(kids!.content.toLowerCase()).toContain("never invent");
+  });
+});
+
+describe("the developer styles", () => {
+  /**
+   * The technical entries, which share two constraints the rest of the
+   * catalogue does not have: the renderer cannot show code, and the audience
+   * checks claims. Listed here rather than derived from the catalogue so that
+   * deleting one fails a test instead of silently shrinking the coverage.
+   */
+  const DEVELOPER_STYLE_IDS = [
+    "system-design-explainer",
+    "incident-postmortem",
+    "why-it-exists",
+    "head-to-head",
+    "craft-essay",
+  ] as const;
+
+  const developerStyles = DEVELOPER_STYLE_IDS.map((id) => {
+    const style = findScriptStyle(id);
+    if (!style) throw new Error(`no script style with id "${id}"`);
+    return style;
+  });
+
+  it("are all in the catalogue, and all in it once", () => {
+    const ids = SCRIPT_STYLES.map((style) => style.id);
+
+    for (const id of DEVELOPER_STYLE_IDS) {
+      expect(ids.filter((one) => one === id)).toEqual([id]);
+    }
+  });
+
+  it("tells the model the pipeline cannot show code", () => {
+    // The constraint that decides whether any of these is usable. It has to
+    // be in the string sent to the model — a comment in the source file does
+    // not reach it, and nothing about a topic implies that the footage is
+    // stock B-roll the model does not control.
+    for (const style of developerStyles) {
+      const content = style.content.toLowerCase();
+
+      expect(
+        content,
+        `${style.name} never says there is no code renderer`,
+      ).toContain("no code renderer");
+      expect(
+        content,
+        `${style.name} never says the narration has to stand alone`,
+      ).toContain("narration must stand alone");
+      expect(
+        content,
+        `${style.name} never rules out dictating code`,
+      ).toContain("never dictate code");
+      expect(
+        content,
+        `${style.name} does not say it is not a tutorial`,
+      ).toContain("this is not a tutorial");
+    }
+  });
+
+  it("carries the accuracy discipline a technical audience needs", () => {
+    // Each of these is a way a technical claim goes wrong that the general
+    // sourcing rules do not catch: right in the wrong version, right in the
+    // wrong year, or a contested question flattened into a confident line.
+    for (const style of developerStyles) {
+      const content = style.content.toLowerCase();
+
+      for (const phrase of [
+        "name versions and dates",
+        "well established",
+        "disagrees",
+        "benchmark",
+      ]) {
+        expect(content, `${style.name} never mentions ${phrase}`).toContain(
+          phrase,
+        );
+      }
+    }
+  });
+
+  it("keeps the catalogue's sourcing convention", () => {
+    for (const style of developerStyles) {
+      expect(style.content, `${style.name} drops the sources field`).toContain(
+        "sources field",
+      );
+      expect(
+        style.content.toLowerCase(),
+        `${style.name} drops the never-invent rule`,
+      ).toContain("never invent");
+    }
+  });
+
+  it("keeps the voice and cue rules the renderer imposes", () => {
+    for (const style of developerStyles) {
+      expect(style.content, `${style.name} drops the voice rules`).toContain(
+        "read aloud by a synthetic voice",
+      );
+      expect(style.content, `${style.name} drops the cue rules`).toContain(
+        "stock-footage search query",
+      );
+    }
+  });
+
+  it("asks for a length the renderer can actually produce", () => {
+    // The arithmetic the whole catalogue runs on: 150 words a minute, and a
+    // target length on the browse card that agrees with the duration the
+    // prompt will be rendered with.
+    for (const style of developerStyles) {
+      const duration = Number(
+        style.variables.find((variable) => variable.key === "duration")
+          ?.defaultValue,
+      );
+
+      expect(duration, `${style.name} has no numeric duration`).toBeGreaterThanOrEqual(
+        5,
+      );
+      expect(duration, `${style.name} asks for more than the house style`).toBeLessThanOrEqual(
+        10,
+      );
+      expect(
+        style.targetLength,
+        `${style.name}'s card says ${style.targetLength} but renders ${duration} minutes`,
+      ).toContain(String(duration));
+      expect(style.content, `${style.name} never states the word rate`).toContain(
+        "150 words a minute",
+      );
+    }
+  });
+
+  it("gives each one a distinct structure rather than one prompt reworded", () => {
+    // Five entries whose bodies were near-copies would browse as five
+    // choices and produce one video, so each has to name a spine of its own.
+    const spines: Record<(typeof DEVELOPER_STYLE_IDS)[number], string> = {
+      "system-design-explainer": "trace one single request",
+      "incident-postmortem": "Separate the trigger from the cause",
+      "why-it-exists": "Then what it displaced",
+      "head-to-head": "Then the verdict",
+      "craft-essay": "Then the strongest objection",
+    };
+
+    for (const style of developerStyles) {
+      const spine = spines[style.id as (typeof DEVELOPER_STYLE_IDS)[number]];
+
+      expect(style.content, `${style.name} lost its own spine`).toContain(spine);
+
+      for (const other of developerStyles) {
+        if (other.id === style.id) continue;
+        expect(
+          other.content,
+          `${other.name} shares ${style.name}'s structure`,
+        ).not.toContain(spine);
+      }
+    }
   });
 });
