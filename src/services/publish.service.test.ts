@@ -1018,36 +1018,285 @@ describe("publishService.publish — thumbnail", () => {
     expect(publication.thumbnailApplied).toBe(false);
   });
 
-  it("survives any other thumbnail failure just as completely", async () => {
+  it("records why the thumbnail failed, rather than only that it did", async () => {
+    // The actual defect. `thumbnailApplied: false` was written correctly and
+    // told the operator nothing; the reason went to a console.error in a
+    // container log that the next deploy discards. The one video this happened
+    // to has no surviving record of what YouTube said.
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl } = createUploadFetch({ failThumbnail: 403 });
+    const result = await new PublishService(fetchImpl).publish(userId, videoId);
+
+    // In the publish result, so the dialog can say so at the one moment the
+    // operator is definitely looking.
+    expect(result.thumbnail.applied).toBe(false);
+    expect(result.thumbnail.error).toMatch(/phone-verified/);
+    expect(result.thumbnail.error).toMatch(/youtube\.com\/verify/);
+
+    // Durably, on the row.
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailApplied).toBe(false);
+    expect(publication.thumbnailError).toMatch(/phone-verified/);
+
+    // And in the Activity list on the video page, which is where an operator
+    // who comes back tomorrow will look. PUBLISHED -> PUBLISHED: the video's
+    // status did not change, because the publish genuinely succeeded.
+    const events = await prisma.videoStatusEvent.findMany({ where: { videoId } });
+    const notice = events.find((event) =>
+      event.message?.startsWith("Thumbnail could not be applied:"),
+    );
+    expect(notice).toBeDefined();
+    expect(notice!.from).toBe("PUBLISHED");
+    expect(notice!.to).toBe("PUBLISHED");
+    expect(notice!.message).toMatch(/phone-verified/);
+  });
+
+  it("survives any other thumbnail failure just as completely, and still says why", async () => {
     const { videoId } = await makePublishableVideo();
     await giveVideoAThumbnail(videoId);
 
     const { fetchImpl } = createUploadFetch({ failThumbnail: 500 });
 
-    await expect(new PublishService(fetchImpl).publish(userId, videoId)).resolves
-      .toMatchObject({ youtubeVideoId: expect.any(String) });
+    const result = await new PublishService(fetchImpl).publish(userId, videoId);
+    expect(result.youtubeVideoId).toEqual(expect.any(String));
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("PUBLISHED");
 
     const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
     expect(publication.thumbnailApplied).toBe(false);
+    // Not the verification sentence — a 500 is YouTube's problem, not the
+    // operator's account, and telling them to go verify a channel that is
+    // already verified is worse than saying nothing.
+    expect(publication.thumbnailError).toContain("500");
+    expect(publication.thumbnailError).not.toMatch(/phone-verified/);
   });
 
-  it("skips the thumbnail call entirely when the video has none", async () => {
+  it("skips the thumbnail call entirely when the video has none, and reports no failure", async () => {
     const { videoId } = await makePublishableVideo();
 
     const { fetchImpl, calls } = createUploadFetch();
-    await new PublishService(fetchImpl).publish(userId, videoId);
+    const result = await new PublishService(fetchImpl).publish(userId, videoId);
 
-    // 50 quota units, against the same daily allowance as the 1,600 the upload
-    // itself costs — not free, and not worth spending on nothing.
+    // 50 quota units, against the 10,000-a-day pool — not free, and not worth
+    // spending on nothing.
     expect(calls.some((call) => call.url.includes("thumbnails/set"))).toBe(false);
 
     // No thumbnail existed to attach, so this must read false, not the
     // "attached" default a missing write would be indistinguishable from.
     const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
     expect(publication.thumbnailApplied).toBe(false);
+    // And crucially no reason: this is the one `applied: false` that is not a
+    // failure, and the video page draws a warning off the reason, not off the
+    // boolean. A message here would put a red notice on every video published
+    // without a thumbnail.
+    expect(publication.thumbnailError).toBeNull();
+    expect(result.thumbnail).toEqual({ applied: false, error: null });
+  });
+
+  it("clears the reason when the thumbnail does attach", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const { fetchImpl } = createUploadFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId);
+
+    expect(result.thumbnail).toEqual({ applied: true, error: null });
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailApplied).toBe(true);
+    expect(publication.thumbnailError).toBeNull();
+
+    const events = await prisma.videoStatusEvent.findMany({ where: { videoId } });
+    expect(
+      events.some((event) => event.message?.startsWith("Thumbnail could not be applied")),
+    ).toBe(false);
+  });
+
+  it("refuses an oversized image locally rather than spending quota to be told", async () => {
+    const { videoId } = await makePublishableVideo();
+    const objectPath = storagePath(videoId, "thumbnails", "thumbnail-001.jpg");
+    // 2MB is YouTube's documented cap for a custom thumbnail.
+    await putObject(objectPath, Buffer.alloc(2 * 1024 * 1024 + 1, 0x41), "image/jpeg");
+    clipStoragePaths.push(objectPath);
+
+    const thumbnail = await prisma.thumbnail.create({ data: { videoId } });
+    const version = await prisma.thumbnailVersion.create({
+      data: { thumbnailId: thumbnail.id, version: 1, imageUrl: objectPath, prompt: "big" },
+    });
+    await prisma.thumbnail.update({
+      where: { id: thumbnail.id },
+      data: { activeVersionId: version.id },
+    });
+
+    const { fetchImpl, calls } = createUploadFetch();
+    const result = await new PublishService(fetchImpl).publish(userId, videoId);
+
+    expect(calls.some((call) => call.url.includes("thumbnails/set"))).toBe(false);
+    expect(result.thumbnail.applied).toBe(false);
+    expect(result.thumbnail.error).toMatch(/2MB/);
+    expect(result.thumbnail.error).toMatch(/2\.0MB/);
+  });
+});
+
+describe("publishService.retryThumbnail", () => {
+  it("attaches the thumbnail after an earlier failure, and clears the reason", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    // First: the publish, whose thumbnail YouTube refuses.
+    const failing = createUploadFetch({ failThumbnail: 403 });
+    await new PublishService(failing.fetchImpl).publish(userId, videoId);
+
+    const afterPublish = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(afterPublish.thumbnailApplied).toBe(false);
+    expect(afterPublish.thumbnailError).not.toBeNull();
+
+    // Then: the operator verifies the channel and presses retry. A different
+    // fetch client, because the account changed, not the code.
+    const retrying = createUploadFetch();
+    const outcome = await new PublishService(retrying.fetchImpl).retryThumbnail(
+      userId,
+      videoId,
+    );
+
+    expect(outcome).toEqual({ applied: true, error: null });
+
+    // Exactly one call, and it is thumbnails.set. Nothing about a retry may
+    // reach videos.insert — that is the one-shot part, and it is untouched.
+    expect(retrying.calls).toHaveLength(1);
+    expect(retrying.calls[0].url).toContain("thumbnails/set");
+    expect(retrying.calls[0].url).toContain(`videoId=${afterPublish.youtubeVideoId}`);
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailApplied).toBe(true);
+    // The stale sentence has to go: leaving "could not be applied" on the page
+    // under a thumbnail that is now live is its own wrong report.
+    expect(publication.thumbnailError).toBeNull();
+    // The publish itself is untouched — same YouTube id, still one row.
+    expect(publication.youtubeVideoId).toBe(afterPublish.youtubeVideoId);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(1);
+  });
+
+  it("records the new reason when the retry is refused too", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    await new PublishService(createUploadFetch({ failThumbnail: 403 }).fetchImpl).publish(
+      userId,
+      videoId,
+    );
+
+    const outcome = await new PublishService(
+      createUploadFetch({ failThumbnail: 500 }).fetchImpl,
+    ).retryThumbnail(userId, videoId);
+
+    expect(outcome.applied).toBe(false);
+    expect(outcome.error).toContain("500");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.thumbnailError).toContain("500");
+  });
+
+  it("is repeatable — the one-shot guard does not apply to it", async () => {
+    // `thumbnails.set` replaces rather than adds, so unlike videos.insert
+    // there is nothing a second call can duplicate. Three refused attempts in
+    // a row must each actually run.
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    await new PublishService(createUploadFetch({ failThumbnail: 403 }).fetchImpl).publish(
+      userId,
+      videoId,
+    );
+
+    const retries = createUploadFetch({ failThumbnail: 403 });
+    const service = new PublishService(retries.fetchImpl);
+    await service.retryThumbnail(userId, videoId);
+    await service.retryThumbnail(userId, videoId);
+    await service.retryThumbnail(userId, videoId);
+
+    expect(retries.calls).toHaveLength(3);
+    expect(retries.calls.every((call) => call.url.includes("thumbnails/set"))).toBe(true);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(1);
+  });
+
+  it("refuses when the thumbnail is already on YouTube, rather than spending 50 units to change nothing", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    await new PublishService(createUploadFetch().fetchImpl).publish(userId, videoId);
+
+    const retries = createUploadFetch();
+    await expect(
+      new PublishService(retries.fetchImpl).retryThumbnail(userId, videoId),
+    ).rejects.toThrow(ConflictError);
+    expect(retries.calls).toHaveLength(0);
+  });
+
+  it("refuses for a video that was never published", async () => {
+    const { videoId } = await makePublishableVideo();
+
+    await expect(
+      new PublishService(createUploadFetch().fetchImpl).retryThumbnail(userId, videoId),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it("refuses for a video that belongs to somebody else", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+    await new PublishService(createUploadFetch({ failThumbnail: 403 }).fetchImpl).publish(
+      userId,
+      videoId,
+    );
+
+    const strangerId = await createTestUser("publish-stranger");
+    try {
+      await expect(
+        new PublishService(createUploadFetch().fetchImpl).retryThumbnail(
+          strangerId,
+          videoId,
+        ),
+      ).rejects.toThrow(NotFoundError);
+    } finally {
+      await deleteTestUser(strangerId);
+    }
+  });
+});
+
+describe("publishService.getThumbnailState", () => {
+  it("reports nothing for a video that was never published", async () => {
+    const { videoId } = await makePublishableVideo();
+    await expect(
+      new PublishService(createUploadFetch().fetchImpl).getThumbnailState(userId, videoId),
+    ).resolves.toBeNull();
+  });
+
+  it("hands the video page the recorded reason", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const service = new PublishService(createUploadFetch({ failThumbnail: 403 }).fetchImpl);
+    await service.publish(userId, videoId);
+
+    const state = await service.getThumbnailState(userId, videoId);
+    expect(state?.applied).toBe(false);
+    expect(state?.error).toMatch(/phone-verified/);
+  });
+
+  it("reports a clean success as no reason at all", async () => {
+    const { videoId } = await makePublishableVideo();
+    await giveVideoAThumbnail(videoId);
+
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    await service.publish(userId, videoId);
+
+    await expect(service.getThumbnailState(userId, videoId)).resolves.toEqual({
+      applied: true,
+      error: null,
+    });
   });
 });
 

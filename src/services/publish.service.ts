@@ -97,6 +97,83 @@ export class YouTubeQuotaError extends ProviderError {
   }
 }
 
+/**
+ * YouTube's own cap on a custom thumbnail image, from the `thumbnails.set`
+ * reference. Checked before the call rather than after, for the same reason
+ * `youtube-limits.ts` checks the title's length before the upload.
+ */
+const THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Turns a failed `thumbnails.set` response into a sentence the operator can
+ * act on, ending without a full stop so callers can frame it ("Thumbnail could
+ * not be applied: <this>.").
+ *
+ * The status code alone is not an answer, and 403 in particular is not one.
+ * Google returns it both for a channel that has not been phone-verified —
+ * which is what custom thumbnails actually require, and which no code here can
+ * fix — and for a spent quota, which fixes itself in hours. The distinguishing
+ * token is `error.errors[].reason` in the body, so the body is read.
+ *
+ * Reading it is best-effort by construction, the same as
+ * `throwIfQuotaExceeded`'s: Google's edge answers some failures with an HTML
+ * page, and a parse error must not replace a real reason with a worse one. An
+ * unreadable body falls back to the status code plus, for a 403, the
+ * verification explanation — which is the overwhelmingly likely cause and the
+ * one thing worth saying if only one thing can be said.
+ */
+async function describeThumbnailFailure(response: Response): Promise<string> {
+  const body = await response
+    .json()
+    .then((parsed: unknown) => parsed as {
+      error?: { message?: string; errors?: Array<{ reason?: string }> };
+    })
+    .catch(() => null);
+
+  const reasons = (body?.error?.errors ?? [])
+    .map((entry) => entry?.reason)
+    .filter((reason): reason is string => Boolean(reason));
+  const detail = body?.error?.message?.trim();
+
+  // The one an operator can actually do something about, and the reason this
+  // function exists. Phone verification is a YouTube account setting, not an
+  // OAuth scope and not anything this app can grant itself, so the message
+  // names the page that grants it.
+  const unverified =
+    response.status === 403 &&
+    (reasons.length === 0 ||
+      reasons.some((reason) =>
+        ["forbidden", "youtubeSignupRequired", "authorizationError"].includes(reason),
+      ));
+
+  if (unverified) {
+    return (
+      `YouTube refused the custom thumbnail (403). Custom thumbnails require a ` +
+      `phone-verified channel — verify it at youtube.com/verify and retry` +
+      (detail ? ` (YouTube said: ${detail})` : "")
+    );
+  }
+
+  if (reasons.some((reason) => ["quotaExceeded", "rateLimitExceeded"].includes(reason))) {
+    return (
+      `YouTube's API quota is spent, so the thumbnail was refused (${response.status}). ` +
+      `The allowance resets at midnight Pacific Time — retry after that`
+    );
+  }
+
+  if (reasons.includes("invalidImage") || reasons.includes("mediaBodyRequired")) {
+    return (
+      `YouTube could not read the image (${response.status}). Regenerate the ` +
+      `thumbnail and retry`
+    );
+  }
+
+  return (
+    `YouTube refused the thumbnail (${response.status})` +
+    (detail ? `: ${detail}` : "")
+  );
+}
+
 /** What one short's upload did, recorded per short so the operator can see
  *  which of three succeeded rather than a single verdict for all of them. */
 export interface ShortPublishOutcome {
@@ -114,6 +191,22 @@ export interface ShortPublishOutcome {
   error: string | null;
 }
 
+/**
+ * What `thumbnails.set` did, as something the operator can be shown.
+ *
+ * The pair matters more than either half. `applied: false` with a null `error`
+ * is "there was no thumbnail to attach", which is not a problem and must not
+ * be reported as one; `applied: false` with a message is "YouTube refused
+ * it", which is. A lone boolean — which is all `Publication.thumbnailApplied`
+ * used to be — cannot tell those apart, and the app told the operator neither.
+ */
+export interface ThumbnailOutcome {
+  applied: boolean;
+  /** Null on success and null when there was nothing to apply. Otherwise a
+   *  complete sentence, safe to show verbatim. */
+  error: string | null;
+}
+
 export interface PublishResult {
   youtubeVideoId: string;
   /**
@@ -122,6 +215,16 @@ export interface PublishResult {
    * did but the video has no READY, unpublished shorts left.
    */
   shorts: ShortPublishOutcome[];
+  /**
+   * Whether the custom thumbnail reached YouTube, and why not if it did not.
+   *
+   * Part of the result rather than only a column, because the publish dialog
+   * is the one moment the operator is definitely looking. A video that went up
+   * with a YouTube-chosen frame is a real, visible outcome and reporting it
+   * only in a database column — which is what this app did — is the same as
+   * not reporting it.
+   */
+  thumbnail: ThumbnailOutcome;
 }
 
 /**
@@ -645,14 +748,8 @@ export class PublishService {
     // — it can only be called once the video exists on YouTube to attach to,
     // which is precisely now. See `applyThumbnail`'s own doc comment for why
     // its failure can never unwind a publish that already succeeded.
-    const thumbnailApplied = await this.applyThumbnail(accessToken, videoId, youtubeVideoId);
-    // Best-effort, same shape as the failure-path writes above: a bookkeeping
-    // column that fails to update must not throw past a publish that has
-    // already succeeded, and the default (`false`) already describes the
-    // operator-visible reality — "no thumbnail" — if this write is lost.
-    await prisma.publication
-      .update({ where: { id: publication.id }, data: { thumbnailApplied } })
-      .catch(() => {});
+    const thumbnail = await this.applyThumbnail(accessToken, videoId, youtubeVideoId);
+    await this.recordThumbnailOutcome(videoId, publication.id, thumbnail);
 
     // The shorts, if the operator asked for them — after the video's own
     // publish has fully committed, and before either reclaim below.
@@ -702,7 +799,7 @@ export class PublishService {
     // doc comment for why this runs here and nowhere else.
     await this.reclaimRenderStorage(userId, videoId, outputUrl);
 
-    return { youtubeVideoId, shorts };
+    return { youtubeVideoId, shorts, thumbnail };
   }
 
   /**
@@ -742,6 +839,154 @@ export class PublishService {
   }
 
   /**
+   * What the operator can see about their published video's thumbnail.
+   *
+   * Read by the video page, which cannot get this from `videoService.get`
+   * without widening a select another feature owns. Cheap and deliberately
+   * only asked for a video that has actually reached YouTube — the same shape
+   * `countPublishableShorts` above follows.
+   *
+   * `null` for a video that was never published. `applied: false, error: null`
+   * for one published without a thumbnail at all, which is not a failure and
+   * the page must not draw a warning for.
+   */
+  async getThumbnailState(
+    userId: string,
+    videoId: string,
+  ): Promise<ThumbnailOutcome | null> {
+    const publication = await prisma.publication.findFirst({
+      where: { videoId, video: { userId, deletedAt: null } },
+      select: { thumbnailApplied: true, thumbnailError: true, youtubeVideoId: true },
+    });
+
+    if (!publication?.youtubeVideoId) {
+      return null;
+    }
+
+    return {
+      applied: publication.thumbnailApplied,
+      error: publication.thumbnailError,
+    };
+  }
+
+  /**
+   * Re-attaches a published video's thumbnail, after an attempt that failed.
+   *
+   * Deliberately outside the one-shot rule the rest of this class enforces,
+   * and the exception is narrow enough to state exactly: publishing is
+   * one-shot because `videos.insert` cannot be undone, so a second call would
+   * put a second copy of the video on the channel. None of that is true here.
+   * `thumbnails.set` is a different endpoint, it *replaces* rather than adds,
+   * it costs 50 units against the 10,000-a-day pool rather than one of the 100
+   * daily uploads, and calling it twice with the same image leaves YouTube in
+   * exactly the state one call would. So the `Publication` row is read, never
+   * claimed, and this may be pressed as many times as the operator likes.
+   *
+   * It throws, unlike `applyThumbnail` below — a retry is a foreground action
+   * the operator is watching, so "nothing happened" is not an acceptable
+   * answer to a click. The refusals are the two states where a retry is
+   * meaningless: a video that never reached YouTube (there is nothing to
+   * attach to) and one whose thumbnail is already there (the call would spend
+   * quota to change nothing).
+   */
+  async retryThumbnail(userId: string, videoId: string): Promise<ThumbnailOutcome> {
+    const publication = await prisma.publication.findFirst({
+      where: { videoId, video: { userId, deletedAt: null } },
+      select: {
+        id: true,
+        channelId: true,
+        youtubeVideoId: true,
+        thumbnailApplied: true,
+      },
+    });
+
+    if (!publication) {
+      throw new NotFoundError("Publication");
+    }
+
+    if (!publication.youtubeVideoId) {
+      throw new ConflictError(
+        "This video is not on YouTube yet, so there is nothing to attach a " +
+          "thumbnail to. Publish it first.",
+      );
+    }
+
+    if (publication.thumbnailApplied) {
+      throw new ConflictError("This video's thumbnail is already on YouTube.");
+    }
+
+    const accessToken = await channelService.resolveAccessToken(
+      userId,
+      publication.channelId,
+    );
+
+    const outcome = await this.applyThumbnail(
+      accessToken,
+      videoId,
+      publication.youtubeVideoId,
+    );
+
+    await this.recordThumbnailOutcome(videoId, publication.id, outcome);
+
+    return outcome;
+  }
+
+  /**
+   * Writes what the thumbnail attempt did, and — when it failed — says so
+   * somewhere the operator actually looks.
+   *
+   * The status event is the half that was missing. `Publication.thumbnailApplied`
+   * has always been written; it is a boolean in a table nothing renders, so a
+   * video that published with a YouTube-chosen frame reported that fact to
+   * nobody. The Activity list on the video page is this codebase's existing
+   * channel for "something happened to your video that you should know about"
+   * (see `reclaimClipStorage`'s `ActivityLog` write for the same reasoning
+   * applied to a different failure), and PUBLISHED -> PUBLISHED is the honest
+   * pair for it: the video's status did not change, because the publish
+   * genuinely succeeded. Only the thumbnail did not.
+   *
+   * Best-effort throughout, for the same reason the failure-path writes in
+   * `publish()` are: this runs after a publish that has already committed, and
+   * a bookkeeping write that fails must not throw past it. A lost write leaves
+   * `thumbnailApplied` at its `false` default with a null reason, which is the
+   * pre-existing behaviour rather than a new wrong state.
+   *
+   * Nothing is written on success beyond clearing the columns, and clearing
+   * them is the point: a retry that works must leave no stale "could not be
+   * applied" sentence on the page underneath a thumbnail that is now live.
+   */
+  private async recordThumbnailOutcome(
+    videoId: string,
+    publicationId: string,
+    outcome: ThumbnailOutcome,
+  ): Promise<void> {
+    await prisma.publication
+      .update({
+        where: { id: publicationId },
+        data: {
+          thumbnailApplied: outcome.applied,
+          thumbnailError: outcome.error,
+        },
+      })
+      .catch(() => {});
+
+    if (!outcome.error) {
+      return;
+    }
+
+    await prisma.videoStatusEvent
+      .create({
+        data: {
+          videoId,
+          from: "PUBLISHED",
+          to: "PUBLISHED",
+          message: `Thumbnail could not be applied: ${outcome.error}`,
+        },
+      })
+      .catch(() => {});
+  }
+
+  /**
    * Attaches the video's thumbnail on YouTube.
    *
    * Never throws, and deliberately runs outside the try/catch that marks a
@@ -750,11 +995,18 @@ export class PublishService {
    * already succeeded over a thumbnail would be the wrong trade — the same
    * reasoning `reclaimClipStorage` below is built on.
    *
-   * The most likely failure is not a bug. `thumbnails.set` returns 403 for a
-   * channel that has not been verified, which is a property of the
-   * operator's YouTube account that no amount of code here can satisfy — so
-   * it is reported (via `Publication.thumbnailApplied`, updated by the
-   * caller), not retried.
+   * Failing softly is right; failing *silently* was the bug. This used to
+   * return a bare `false` and write the reason to `console.error`, which on
+   * the deployed box means a Docker log buffer that is discarded the next time
+   * the container is recreated — so the one video this actually happened to
+   * has no surviving record of why. Every exit below now carries a sentence,
+   * and `recordThumbnailOutcome` above puts it somewhere durable.
+   *
+   * The most likely failure is still not a bug. `thumbnails.set` returns 403
+   * for a channel that has not been phone-verified, which is a property of the
+   * operator's YouTube account that no amount of code here can satisfy — the
+   * fix is at youtube.com/verify, so the message says so rather than making
+   * the operator search for it.
    *
    * `Content-Type` is read back from what `putObject` actually stored rather
    * than assumed: `ThumbnailVersion.imageUrl` is usually a composited JPEG,
@@ -773,7 +1025,7 @@ export class PublishService {
     accessToken: string,
     videoId: string,
     youtubeVideoId: string,
-  ): Promise<boolean> {
+  ): Promise<ThumbnailOutcome> {
     try {
       const thumbnail = await prisma.thumbnail.findUnique({
         where: { videoId },
@@ -785,11 +1037,29 @@ export class PublishService {
         // No thumbnail to apply — 50 units against the 10,000-a-day pool every
         // endpoint except uploads and search shares (uploads have their own
         // 100-a-day bucket; see `YouTubeQuotaError`), not worth spending on
-        // nothing.
-        return false;
+        // nothing. Reported with a null reason, not a message: this is the one
+        // `applied: false` that is not a failure, and drawing a warning over it
+        // would train the operator to ignore the ones that are.
+        return { applied: false, error: null };
       }
 
       const bytes = await getObject(objectPath);
+
+      // Checked here rather than discovered from the response, exactly as the
+      // title's length is (see `clampTitle`'s call site): YouTube caps a custom
+      // thumbnail at 2MB and answers an oversized one with a 400 whose body
+      // does not name the size. Refusing locally spends no quota and produces a
+      // message with the actual number in it.
+      if (bytes.byteLength > THUMBNAIL_MAX_BYTES) {
+        return {
+          applied: false,
+          error:
+            `the image is ${(bytes.byteLength / (1024 * 1024)).toFixed(1)}MB, and ` +
+            `YouTube's limit for a custom thumbnail is 2MB. Regenerate the ` +
+            `thumbnail to get a smaller one.`,
+        };
+      }
+
       const contentType =
         (await objectContentType(objectPath)) ??
         (objectPath.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
@@ -807,23 +1077,16 @@ export class PublishService {
       );
 
       if (!response.ok) {
-        console.error(
-          `Could not set the thumbnail for video ${videoId} ` +
-            `(${response.status})` +
-            (response.status === 403
-              ? ": the YouTube channel is not verified, which custom thumbnails require."
-              : "."),
-        );
-        return false;
+        const error = await describeThumbnailFailure(response);
+        console.error(`Could not set the thumbnail for video ${videoId}: ${error}`);
+        return { applied: false, error };
       }
 
-      return true;
+      return { applied: true, error: null };
     } catch (error) {
-      console.error(
-        `Could not set the thumbnail for video ${videoId}: ` +
-          (error instanceof Error ? error.message : String(error)),
-      );
-      return false;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Could not set the thumbnail for video ${videoId}: ${message}`);
+      return { applied: false, error: message };
     }
   }
 

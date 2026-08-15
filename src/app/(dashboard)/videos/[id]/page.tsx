@@ -15,6 +15,7 @@ import {
   type VideoSectionKey,
 } from "@/features/videos/components/video-section";
 import { StatusEventsList } from "@/features/videos/components/status-events-list";
+import { ThumbnailNotice } from "@/features/videos/components/thumbnail-notice";
 import { VersionHistory } from "@/features/videos/components/version-history";
 import { VideoHeader } from "@/features/videos/components/video-header";
 import { VideoPreview } from "@/features/videos/components/video-preview";
@@ -345,6 +346,17 @@ export default async function VideoDetailPage({
   const renderOutputUrl = video.renderJobs[0]?.outputUrl ?? null;
   const audioPath = video.voiceOver?.audioUrl ?? null;
   const youtubeVideoId = video.publication?.youtubeVideoId ?? null;
+
+  // Why the published video's custom thumbnail is not on YouTube, when it is
+  // not. Read only for a video that actually reached YouTube — for anything
+  // else there is no `Publication` row to ask about, and this would be one
+  // indexed query spent on a notice that cannot render. Null covers both "it
+  // attached" and "there was no thumbnail to attach", which is the common case
+  // and draws nothing; see `ThumbnailNotice` for why silence is right there.
+  const thumbnailError = youtubeVideoId
+    ? ((await publishService.getThumbnailState(user.id, video.id))?.error ?? null)
+    : null;
+
   const durationSeconds = video.voiceOver?.durationSeconds ?? null;
   const durationLabel =
     durationSeconds != null ? formatDuration(durationSeconds) : null;
@@ -444,7 +456,14 @@ export default async function VideoDetailPage({
                     : "Narration only"
                 }
                 defaultOpen={isOpenByDefault(key)}
+                bodyClassName="space-y-4"
               >
+                {/* Above the player, not below it: this is the section an
+                    operator opens after publishing, and the fact that the
+                    video went up with a YouTube-chosen frame has to be visible
+                    without scrolling past a 16:9 embed to find it. Renders
+                    nothing at all unless a failure was actually recorded. */}
+                <ThumbnailNotice videoId={video.id} error={thumbnailError} />
                 <Suspense fallback={<PreviewFallback />}>
                   <PreviewSection
                     videoId={video.id}

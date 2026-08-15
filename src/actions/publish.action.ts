@@ -4,7 +4,11 @@ import { revalidatePath } from "next/cache";
 
 import { run, type ActionResult } from "@/actions/action-result";
 import { publishVideoSchema } from "@/schemas/publish.schema";
-import { publishService, type ShortPublishOutcome } from "@/services/publish.service";
+import {
+  publishService,
+  type ShortPublishOutcome,
+  type ThumbnailOutcome,
+} from "@/services/publish.service";
 import { requireSession } from "@/server/session";
 
 /**
@@ -42,7 +46,11 @@ export async function publishVideoAction(
   videoId: string,
   input: unknown,
 ): Promise<
-  ActionResult<{ youtubeVideoId: string; shorts: ShortPublishOutcome[] }>
+  ActionResult<{
+    youtubeVideoId: string;
+    shorts: ShortPublishOutcome[];
+    thumbnail: ThumbnailOutcome;
+  }>
 > {
   return run(async () => {
     const session = await requireSession();
@@ -57,5 +65,38 @@ export async function publishVideoAction(
     revalidatePath(`/videos/${videoId}`);
 
     return result;
+  });
+}
+
+/**
+ * Re-attaches a published video's thumbnail, and the one publish-path action
+ * that is safe to press twice.
+ *
+ * Nothing about this weakens Gate 2. The one-shot rule exists because
+ * `videos.insert` cannot be undone, so a second publish would put a second
+ * copy of the video on the channel; `thumbnails.set` replaces rather than
+ * adds, costs 50 units against a different allowance from the daily upload
+ * count, and is idempotent with the same image. `publishService.retryThumbnail`
+ * therefore reads the `Publication` row rather than claiming one, and refuses
+ * only the two cases where a retry means nothing — a video that is not on
+ * YouTube, and a thumbnail that is already attached. It cannot start an upload:
+ * there is no path from here to `videos.insert` at all.
+ *
+ * Takes no input beyond the video id on purpose. The image is whichever
+ * `ThumbnailVersion` is active at the moment it runs, so regenerating the
+ * thumbnail and retrying does the obvious thing without this action needing to
+ * know that a regeneration happened.
+ */
+export async function retryThumbnailAction(
+  videoId: string,
+): Promise<ActionResult<ThumbnailOutcome>> {
+  return run(async () => {
+    const session = await requireSession();
+
+    const outcome = await publishService.retryThumbnail(session.user.id, videoId);
+
+    revalidatePath(`/videos/${videoId}`);
+
+    return outcome;
   });
 }

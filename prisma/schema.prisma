@@ -796,7 +796,24 @@ model Publication {
   /// often because the YouTube channel is not verified, which custom
   /// thumbnails require. Not a publish failure; a thing the operator can fix
   /// and retry.
+  ///
+  /// False on its own is not a report, which is what `thumbnailError` beside
+  /// it is for: this column alone cannot tell "there was no thumbnail to
+  /// attach" apart from "YouTube refused it", and the first video this app
+  /// ever published went up with a YouTube-chosen frame and nothing anywhere
+  /// saying why.
   thumbnailApplied Boolean           @default(false)
+  /// Why the thumbnail did not attach, in a sentence safe to show the
+  /// operator verbatim. Null when it attached, and null when the video had no
+  /// thumbnail to attach in the first place — a `false`/`null` pair means
+  /// "nothing to do", a `false` with a message means "YouTube said no".
+  ///
+  /// Cleared on a successful retry (`publishService.retryThumbnail`), which is
+  /// deliberately *not* covered by the one-shot publish guard: `thumbnails.set`
+  /// is a separate endpoint from `videos.insert`, costs 50 units, and attaching
+  /// the same image twice is idempotent — none of the reasons publishing is
+  /// one-shot apply to it.
+  thumbnailError   String?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
