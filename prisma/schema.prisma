@@ -226,6 +226,21 @@ model ChannelBrand {
   /// defaults.
   categoryId String @default("27")
 
+  /// What the pictures under the narration look like, which decides *which
+  /// stock providers this channel's footage is searched for at all* — see
+  /// `FOOTAGE_SEARCH_PLAN` in footage.service.ts.
+  ///
+  /// Per channel, not per video, for the same reason as everything else in
+  /// this table: a channel that alternates between cartoon and live-action
+  /// footage does not have an identity. The owner's kids channel wants
+  /// cartoons; their other channels want live action; one column separates
+  /// them.
+  ///
+  /// LIVE_ACTION is the default and reproduces exactly what every channel got
+  /// before this column existed (Pexels and Pixabay, unfiltered), so the
+  /// migration needs no backfill and no existing channel changes behaviour.
+  footageStyle FootageStyle @default(LIVE_ACTION)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -233,6 +248,22 @@ model ChannelBrand {
   channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
 
   @@map("channel_brand")
+}
+
+/// Which stock-footage providers a channel's clips are searched for.
+///
+/// Two values rather than a provider name, because the operator is choosing
+/// what the video looks like, not who hosts it — and the mapping from one to
+/// the other is not one-to-one. CARTOON is served by Pixabay's animation
+/// filter alone; Pexels has no content-type filter to set and its video
+/// library is live-action first, so a cartoon channel never asks it.
+enum FootageStyle {
+  /// Pexels and Pixabay, unfiltered. What every channel did before this
+  /// existed.
+  LIVE_ACTION
+  /// Pixabay with `video_type=animation`, `safesearch=true` and a `cartoon`
+  /// query prefix. Never Pexels — see `pixabayCartoonProvider`.
+  CARTOON
 }
 
 // ---------------------------------------------------------------------------

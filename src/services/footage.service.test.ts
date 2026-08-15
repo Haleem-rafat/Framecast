@@ -42,6 +42,16 @@ function fakeProvider(clips: StockClip[]): StockFootageProvider {
   return { search: vi.fn(async () => clips) };
 }
 
+/**
+ * The two slots a live-action channel actually searches. Every test in this
+ * file below the cartoon block runs against a video whose project has no
+ * channel, which resolves to LIVE_ACTION — so `PIXABAY_CARTOON` is never
+ * reached and deliberately not injected. Naming the pair rather than using
+ * `Partial<FootageProviders>` keeps `providers.PEXELS.search` non-optional at
+ * the assertion sites.
+ */
+type LiveActionProviders = Pick<FootageProviders, "PEXELS" | "PIXABAY">;
+
 function makeDownloader(): ClipDownloader {
   return vi.fn(async (clip: StockClip) =>
     Buffer.from(`fake-clip-bytes-${clip.source}-${clip.externalId}`),
@@ -97,7 +107,7 @@ afterEach(async () => {
 
 describe("footageService.collect", () => {
   it("refuses a video with no narration yet, since clip count depends on its duration", async () => {
-    const providers: FootageProviders = { PEXELS: fakeProvider([]), PIXABAY: fakeProvider([]) };
+    const providers: LiveActionProviders = { PEXELS: fakeProvider([]), PIXABAY: fakeProvider([]) };
     const service = new FootageService(providers, makeDownloader());
 
     await expect(service.collect(userId, videoId)).rejects.toBeInstanceOf(ConflictError);
@@ -216,7 +226,7 @@ describe("footageService.collect", () => {
     await createVoiceOverFixture(25); // 5 clips
     const pexelsClips = [1, 2, 3, 4, 5].map((n) => makeClip("PEXELS", `pex-${n}`));
     const pixabayClips = [1, 2, 3, 4, 5].map((n) => makeClip("PIXABAY", `pix-${n}`));
-    const providers: FootageProviders = {
+    const providers: LiveActionProviders = {
       PEXELS: fakeProvider(pexelsClips),
       PIXABAY: fakeProvider(pixabayClips),
     };
@@ -283,7 +293,7 @@ describe("footageService.collect", () => {
   it("collects from the surviving source when the other's search fails transiently", async () => {
     await createVoiceOverFixture(1); // needs 3 clips
     const pexelsClips = [1, 2, 3].map((n) => makeClip("PEXELS", `pex-${n}`));
-    const providers: FootageProviders = {
+    const providers: LiveActionProviders = {
       PEXELS: fakeProvider(pexelsClips),
       PIXABAY: {
         search: vi.fn(async () => {
@@ -304,7 +314,7 @@ describe("footageService.collect", () => {
 
   it("throws when every source's search fails", async () => {
     await createVoiceOverFixture(1);
-    const providers: FootageProviders = {
+    const providers: LiveActionProviders = {
       PEXELS: {
         search: vi.fn(async () => {
           throw new ProviderError("PEXELS", "PEXELS_API_KEY is not configured.", false);
@@ -502,7 +512,7 @@ describe("footageService.collect with anchored cues", () => {
     // (cues === null) must not accidentally fall into the per-cue path and
     // come away with zero clips.
     await createVoiceOverFixture(25); // ceil(25/12) + 2 = 5
-    const providers: FootageProviders = {
+    const providers: LiveActionProviders = {
       PEXELS: fakeProvider([1, 2, 3, 4, 5].map((n) => makeClip("PEXELS", `pex-${n}`))),
       PIXABAY: fakeProvider([1, 2, 3, 4, 5].map((n) => makeClip("PIXABAY", `pix-${n}`))),
     };
@@ -658,5 +668,187 @@ describe("footageService.collect with anchored cues", () => {
     expect(assets).toHaveLength(1);
     expect(assets[0].externalId).toBe("pix-rescue");
     expect(assets[0].provider).toBe("PIXABAY");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-channel footage style
+//
+// The pipeline never asks for a style — `collect()` reads it off the video's
+// own channel, so these tests set it where the operator sets it (the brand
+// row) and then call `collect()` exactly as pipeline-runner.ts does.
+// ---------------------------------------------------------------------------
+
+describe("footageService.collect for a cartoon channel", () => {
+  let cartoonVideoIds: string[];
+
+  beforeEach(() => {
+    cartoonVideoIds = [];
+  });
+
+  afterEach(async () => {
+    // Same reason as the cue block's own afterEach: Asset carries no FK back
+    // to Video, so the user cascade cannot reach these rows.
+    for (const id of cartoonVideoIds) {
+      await prisma.asset.deleteMany({ where: { storagePath: { startsWith: `videos/${id}/` } } });
+    }
+  });
+
+  /**
+   * A video whose project points at a channel branded with `footageStyle`.
+   * Its own project, not the module-level one, so a cartoon channel in one
+   * test can't change what a live-action test in the same file collects.
+   */
+  async function makeStyledVideo(footageStyle: "LIVE_ACTION" | "CARTOON"): Promise<string> {
+    const channel = await prisma.channel.create({
+      data: {
+        userId,
+        youtubeChannelId: `UC-footage-${randomUUID()}`,
+        title: "Test cartoon channel",
+        accessToken: "fake-access-token",
+        refreshToken: "fake-refresh-token",
+        tokenExpiresAt: new Date(Date.now() + 3600_000),
+      },
+    });
+    await prisma.channelBrand.create({ data: { channelId: channel.id, footageStyle } });
+
+    const project = await projectService.create(userId, {
+      name: `test-footage-style-${randomUUID().slice(0, 8)}`,
+    });
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { channelId: channel.id },
+    });
+
+    const video = await videoService.create(userId, {
+      projectId: project.id,
+      title: "Counting with dinosaurs",
+      topic: "friendly dinosaur teaching numbers",
+    });
+    cartoonVideoIds.push(video.id);
+
+    await prisma.voiceOver.create({
+      data: {
+        videoId: video.id,
+        provider: "ELEVENLABS",
+        voiceId: "test-voice",
+        durationSeconds: 24,
+      },
+    });
+
+    return video.id;
+  }
+
+  it("searches only the cartoon provider — never Pexels, never unfiltered Pixabay", async () => {
+    const videoId = await makeStyledVideo("CARTOON");
+
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-live-action")]);
+    const pixabay = fakeProvider([makeClip("PIXABAY", "pix-live-action")]);
+    const cartoon = fakeProvider([
+      makeClip("PIXABAY", "pix-cartoon-1"),
+      makeClip("PIXABAY", "pix-cartoon-2"),
+      makeClip("PIXABAY", "pix-cartoon-3"),
+      makeClip("PIXABAY", "pix-cartoon-4"),
+    ]);
+
+    const service = new FootageService(
+      { PEXELS: pexels, PIXABAY: pixabay, PIXABAY_CARTOON: cartoon },
+      makeDownloader(),
+    );
+
+    await service.collect(userId, videoId);
+
+    expect(cartoon.search).toHaveBeenCalled();
+    // The two live-action slots are not merely deprioritised — they are not
+    // in this channel's plan at all, so nothing can reach them.
+    expect(pexels.search).not.toHaveBeenCalled();
+    expect(pixabay.search).not.toHaveBeenCalled();
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+    expect(assets.length).toBeGreaterThan(0);
+    expect(assets.map((a) => a.externalId).every((id) => id?.startsWith("pix-cartoon"))).toBe(
+      true,
+    );
+  });
+
+  /**
+   * The whole point of the feature: a children's video that cannot find a
+   * cartoon must come back short, not come back with live action in it.
+   */
+  it("collects nothing rather than substituting live action when the cartoon search is empty", async () => {
+    const videoId = await makeStyledVideo("CARTOON");
+
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-live-action")]);
+    const pixabay = fakeProvider([makeClip("PIXABAY", "pix-live-action")]);
+    const service = new FootageService(
+      { PEXELS: pexels, PIXABAY: pixabay, PIXABAY_CARTOON: fakeProvider([]) },
+      makeDownloader(),
+    );
+
+    const messages: string[] = [];
+    const result = await service.collect(userId, videoId, (line) => messages.push(line));
+
+    expect(result.clipCount).toBe(0);
+    expect(await prisma.asset.count({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    })).toBe(0);
+    expect(pexels.search).not.toHaveBeenCalled();
+    expect(pixabay.search).not.toHaveBeenCalled();
+
+    // And it says which providers it looked at, so "three clips" on a kids
+    // video reads as a thin animation library rather than a broken stage.
+    expect(messages.some((line) => line.includes("footage style CARTOON"))).toBe(true);
+  });
+
+  it("records the source on every stored clip, so the description's credit is derived and not assumed", async () => {
+    const videoId = await makeStyledVideo("CARTOON");
+
+    const service = new FootageService(
+      {
+        PIXABAY_CARTOON: fakeProvider([
+          makeClip("PIXABAY", "pix-cartoon-1"),
+          makeClip("PIXABAY", "pix-cartoon-2"),
+          makeClip("PIXABAY", "pix-cartoon-3"),
+          makeClip("PIXABAY", "pix-cartoon-4"),
+        ]),
+      },
+      makeDownloader(),
+    );
+
+    const result = await service.collect(userId, videoId);
+
+    const assets = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/` } },
+    });
+
+    // `PIXABAY`, not a new provider value. Cartoon clips come from the same
+    // Pixabay account under the same licence, so the credit publish.service.ts
+    // already writes ("Video clips courtesy of Pixabay") is the correct one
+    // and needs no new branch — the attribution is still derived from what
+    // the render actually used, which is the property that matters.
+    expect(assets.every((a) => a.provider === "PIXABAY")).toBe(true);
+    expect(assets.every((a) => a.externalId !== null)).toBe(true);
+    expect(result.bySource).toEqual({ PIXABAY: assets.length });
+  });
+
+  it("leaves a live-action channel searching both providers exactly as before", async () => {
+    const videoId = await makeStyledVideo("LIVE_ACTION");
+
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-1"), makeClip("PEXELS", "pex-2")]);
+    const pixabay = fakeProvider([makeClip("PIXABAY", "pix-1"), makeClip("PIXABAY", "pix-2")]);
+    const cartoon = fakeProvider([makeClip("PIXABAY", "pix-cartoon-1")]);
+
+    const service = new FootageService(
+      { PEXELS: pexels, PIXABAY: pixabay, PIXABAY_CARTOON: cartoon },
+      makeDownloader(),
+    );
+
+    await service.collect(userId, videoId);
+
+    expect(pexels.search).toHaveBeenCalled();
+    expect(pixabay.search).toHaveBeenCalled();
+    expect(cartoon.search).not.toHaveBeenCalled();
   });
 });

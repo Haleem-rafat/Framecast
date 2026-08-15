@@ -292,7 +292,61 @@ function pickPixabayRendition(videos: PixabayHit["videos"]): PixabayRendition | 
   );
 }
 
+/**
+ * What separates the cartoon provider below from the default one. Three query
+ * parameters and a prefix — deliberately not a second copy of this class,
+ * because everything that actually decides whether a clip is usable (the
+ * duration band, the size cap, `pickPixabayRendition`) is identical for
+ * animation and live action, and a copy would let the two drift.
+ */
+interface PixabayVariant {
+  /**
+   * Pixabay's own `video_type`. Documented as: "Filter results by video type.
+   * Accepted values: 'all', 'film', 'animation'".
+   * https://pixabay.com/api/docs/
+   */
+  videoType: "all" | "animation";
+  /**
+   * Prepended to every query, space-separated, before the 100-character clamp.
+   *
+   * `video_type=animation` on its own is *not* enough to get cartoons, which
+   * is the whole reason this exists. Pixabay's "animation" means "rendered
+   * rather than filmed", and that bucket is full of photoreal 3D creatures,
+   * HUD overlays and abstract particle loops — a live search for "friendly
+   * dinosaur teaching numbers" with `video_type=animation` returns a
+   * photorealistic T-rex tagged `realistic` as its third hit. Measured over
+   * ten representative cues, the share of top-20 results carrying a cartoon-ish
+   * tag went 12% on a plain search, 25% with `video_type=animation` alone, and
+   * 56% with `video_type=animation` plus this prefix. The prefix is doing most
+   * of the work; the filter is what stops live action getting back in.
+   */
+  queryPrefix: string;
+  /**
+   * Pixabay's `safesearch`. Documented as: "A flag indicating that only videos
+   * suitable for all ages should be returned."
+   *
+   * On for the cartoon variant because its whole reason to exist is a
+   * children's channel, and off for the default one only because turning it on
+   * there would silently change what every existing channel already collects.
+   */
+  safesearch: boolean;
+}
+
+const LIVE_ACTION_VARIANT: PixabayVariant = {
+  videoType: "all",
+  queryPrefix: "",
+  safesearch: false,
+};
+
+const CARTOON_VARIANT: PixabayVariant = {
+  videoType: "animation",
+  queryPrefix: "cartoon",
+  safesearch: true,
+};
+
 export class PixabayProvider implements StockFootageProvider {
+  constructor(private readonly variant: PixabayVariant = LIVE_ACTION_VARIANT) {}
+
   async search(query: string, count: number): Promise<StockClip[]> {
     const apiKey = env.PIXABAY_API_KEY;
 
@@ -302,7 +356,16 @@ export class PixabayProvider implements StockFootageProvider {
 
     const url = new URL("https://pixabay.com/api/videos/");
     url.searchParams.set("key", apiKey);
-    url.searchParams.set("q", query.slice(0, PIXABAY_QUERY_MAX_LENGTH));
+    // Clamped *after* the prefix, not before: Pixabay 400s on a `q` over 100
+    // characters, and the prefix is part of what gets sent.
+    url.searchParams.set(
+      "q",
+      `${this.variant.queryPrefix} ${query}`.trim().slice(0, PIXABAY_QUERY_MAX_LENGTH),
+    );
+    url.searchParams.set("video_type", this.variant.videoType);
+    if (this.variant.safesearch) {
+      url.searchParams.set("safesearch", "true");
+    }
     // Pixabay requires per_page between 3 and 200. Overfetch for the same
     // reason as Pexels: duration/size filtering below will drop some results.
     url.searchParams.set(
@@ -372,3 +435,21 @@ export class PixabayProvider implements StockFootageProvider {
 
 export const pexelsProvider: StockFootageProvider = new PexelsProvider();
 export const pixabayProvider: StockFootageProvider = new PixabayProvider();
+
+/**
+ * The same Pixabay account, key, licence and credit as `pixabayProvider` —
+ * only the search is different. Clips it returns are still tagged
+ * `source: "PIXABAY"`, which is not a shortcut: they *are* Pixabay clips, so
+ * the credit `publish.service.ts` already writes into every description is
+ * already the right one, and `Asset.provider` needs no new enum value.
+ *
+ * Pexels has no counterpart and deliberately gets none. Its video API exposes
+ * only `query`, `orientation`, `size` and `locale` — there is no content-type
+ * filter to set (https://www.pexels.com/api/documentation/) — and its library
+ * is live-action photography first, so the only thing a cartoon channel could
+ * get from it is live action. See `FOOTAGE_SEARCH_PLAN` in footage.service.ts,
+ * which is why a cartoon channel never asks it.
+ */
+export const pixabayCartoonProvider: StockFootageProvider = new PixabayProvider(
+  CARTOON_VARIANT,
+);

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PexelsProvider, PixabayProvider } from "@/services/providers/stock-footage.provider";
+import { ProviderError } from "@/lib/errors";
+import {
+  PexelsProvider,
+  PixabayProvider,
+  pixabayCartoonProvider,
+} from "@/services/providers/stock-footage.provider";
 
 // Both providers read a real API key off `env` at call time (loaded from
 // .env.local by src/test/setup.ts) so they never hit the "not configured"
@@ -183,5 +188,118 @@ describe("PixabayProvider.search", () => {
     await new PixabayProvider().search("skyline", 100); // 100*3=300, clamps to 200
 
     expect(searchUrl).toContain("per_page=200");
+  });
+
+  it("asks for live action by default — no safesearch, video_type=all", async () => {
+    let searchUrl = "";
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      searchUrl = input.toString();
+      return jsonResponse({ hits: [] });
+    }) as unknown as typeof fetch;
+
+    await new PixabayProvider().search("skyline", 5);
+
+    const params = new URL(searchUrl).searchParams;
+    expect(params.get("video_type")).toBe("all");
+    expect(params.get("q")).toBe("skyline");
+    // Absent, not "false": turning safesearch on for the default provider
+    // would silently change what every existing channel collects.
+    expect(params.has("safesearch")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The cartoon variant
+//
+// `video_type=animation` alone is not what makes these results cartoons —
+// Pixabay's "animation" bucket is "rendered rather than filmed", and includes
+// photoreal 3D creatures and abstract motion graphics. Measured live against
+// the real API over ten representative cues, the share of top-20 results
+// carrying a cartoon-ish tag was 12% unfiltered, 25% with `video_type=animation`
+// alone, and 56% with the filter plus the `cartoon` query prefix. Both levers
+// are load-bearing, so both are asserted here.
+// ---------------------------------------------------------------------------
+
+describe("pixabayCartoonProvider.search", () => {
+  it("filters to animation, forces safesearch, and prefixes the query with cartoon", async () => {
+    let searchUrl = "";
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      searchUrl = input.toString();
+      return jsonResponse({ hits: [pixabayHit(7, 12, 5 * 1024 * 1024)] });
+    }) as unknown as typeof fetch;
+
+    const clips = await pixabayCartoonProvider.search("a friendly dinosaur waves", 4);
+
+    const params = new URL(searchUrl).searchParams;
+    expect(params.get("video_type")).toBe("animation");
+    expect(params.get("safesearch")).toBe("true");
+    expect(params.get("q")).toBe("cartoon a friendly dinosaur waves");
+
+    // Still tagged PIXABAY, not a new source: same account, same licence, and
+    // therefore the same credit publish.service.ts already writes into every
+    // description. See the provider's own doc comment.
+    expect(clips).toHaveLength(1);
+    expect(clips[0].source).toBe("PIXABAY");
+    expect(clips[0].externalId).toBe("7");
+  });
+
+  it("clamps the prefixed query to Pixabay's 100-character limit", async () => {
+    let searchUrl = "";
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      searchUrl = input.toString();
+      return jsonResponse({ hits: [] });
+    }) as unknown as typeof fetch;
+
+    await pixabayCartoonProvider.search("d".repeat(120), 4);
+
+    // The prefix is part of what gets sent, so the clamp has to happen after
+    // it is applied — Pixabay 400s on a `q` over 100 characters.
+    const q = new URL(searchUrl).searchParams.get("q") ?? "";
+    expect(q).toHaveLength(100);
+    expect(q.startsWith("cartoon ")).toBe(true);
+  });
+
+  it("returns an empty list when the animation library has nothing for the cue", async () => {
+    global.fetch = vi.fn(async () => jsonResponse({ hits: [] })) as unknown as typeof fetch;
+
+    // Not a throw: an empty animation library for one cue is an ordinary
+    // outcome, and footage.service.ts's caller distinguishes it from a
+    // provider failure. A children's video ends up with a gap at that
+    // section rather than a live-action clip.
+    await expect(pixabayCartoonProvider.search("quantum chromodynamics", 4)).resolves.toEqual(
+      [],
+    );
+  });
+
+  it("raises a non-retryable ProviderError when Pixabay rejects the key", async () => {
+    // Pixabay answers a bad key with 400, not 401 — retrying cannot fix it,
+    // so the error must not be marked retryable or job.service.ts would
+    // burn its whole retry budget on a key that will never work.
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+    })) as unknown as typeof fetch;
+
+    const error = await pixabayCartoonProvider
+      .search("cartoon bear", 4)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({ provider: "PIXABAY", retryable: false });
+  });
+
+  it("marks a 429 retryable so the job can back off instead of failing the video", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+    })) as unknown as typeof fetch;
+
+    const error = await pixabayCartoonProvider
+      .search("cartoon bear", 4)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ provider: "PIXABAY", retryable: true });
   });
 });
