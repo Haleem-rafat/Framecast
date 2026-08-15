@@ -237,3 +237,48 @@ describe("promptTemplateService.listForCategory", () => {
     }
   });
 });
+
+describe("promptTemplateService.remove", () => {
+  /**
+   * The prompt library's bulk Delete is a loop of `removePromptAction`, one
+   * call per checked row, so a forged id lands here on its own. `remove` reads
+   * through `get(userId, id)` before it writes, and that read is the whole
+   * ownership guard — there is no second check above it.
+   */
+  it("cannot delete a template another operator owns", async () => {
+    const otherUserId = await createTestUser("prompt-remove-other");
+
+    try {
+      const theirs = await promptTemplateService.addScriptStyle(
+        otherUserId,
+        KIDS_STYLE.id,
+      );
+
+      await expect(
+        promptTemplateService.remove(userId, theirs.id),
+      ).rejects.toThrow(NotFoundError);
+
+      // Still there, still theirs, still the default it was made.
+      const row = await promptTemplateService.get(otherUserId, theirs.id);
+      expect(row.deletedAt).toBeNull();
+      expect(row.isDefault).toBe(true);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+
+  it("clears isDefault so the category is not left pointing at a deleted row", async () => {
+    // What the bulk confirmation warns about: the category ends up with no
+    // default at all, rather than a default that no longer exists.
+    const added = await promptTemplateService.addScriptStyle(
+      userId,
+      KIDS_STYLE.id,
+    );
+
+    await promptTemplateService.remove(userId, added.id);
+
+    await expect(
+      promptTemplateService.getDefault(userId, "SCRIPT"),
+    ).rejects.toThrow(NotFoundError);
+  });
+});

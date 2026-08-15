@@ -3,8 +3,8 @@ import { Library, Plus } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PromptTemplateCard } from "@/features/prompts/components/prompt-template-card";
 import { PromptTemplateDialog } from "@/features/prompts/components/prompt-template-dialog";
+import { PromptTemplateTable } from "@/features/prompts/components/prompt-template-table";
 import { PROMPT_CATEGORY_LABELS } from "@/features/prompts/prompt-category-labels";
 import type { PromptTemplateWithVariables } from "@/features/prompts/types";
 import { promptCategories } from "@/schemas/prompt.schema";
@@ -56,11 +56,10 @@ export function PromptCategoryTabs({
                 description="Create one to control how this content is generated."
               />
             ) : (
-              <div className="grid gap-4 sm:grid-cols-2">
-                {inCategory.map((template) => (
-                  <PromptTemplateCard key={template.id} template={template} />
-                ))}
-              </div>
+              <PromptTemplateTable
+                templates={inCategory}
+                categoryLabel={PROMPT_CATEGORY_LABELS[category]}
+              />
             )}
           </TabsContent>
         );
