@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { Reveal } from "@/components/shared/reveal";
-import { CreateProjectDialog } from "@/features/projects/components/create-project-dialog";
+import { ProjectDialog } from "@/features/projects/components/project-dialog";
 import { ProjectTable } from "@/features/projects/components/project-table";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
@@ -30,7 +30,7 @@ export default async function ProjectsPage() {
         description="Group videos together and set a default publishing channel."
         actions={
           projects.length > 0 ? (
-            <CreateProjectDialog channels={channelOptions} />
+            <ProjectDialog channels={channelOptions} />
           ) : undefined
         }
       />

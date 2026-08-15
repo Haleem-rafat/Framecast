@@ -1,14 +1,16 @@
 "use client";
 
 import { useMemo } from "react";
-import { Library } from "lucide-react";
+import { Library, Pencil } from "lucide-react";
 
 import { DataTable, type DataTableColumn } from "@/components/shared/data-table";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ArchiveProjectButton } from "@/features/projects/components/archive-project-button";
-import { CreateProjectDialog } from "@/features/projects/components/create-project-dialog";
+import { BulkArchiveProjectsButton } from "@/features/projects/components/bulk-archive-projects-button";
+import { ProjectDialog } from "@/features/projects/components/project-dialog";
 import type { ProjectWithVideoCount } from "@/features/projects/types";
 
 export function ProjectTable({
@@ -18,6 +20,15 @@ export function ProjectTable({
   projects: ProjectWithVideoCount[];
   channels: { id: string; title: string }[];
 }) {
+  // `projectService.list` selects `channelId` but not the channel's title, and
+  // an id in a cell tells the operator nothing. The page already fetched the
+  // channel list for the dialog's picker, so the join happens here rather than
+  // costing the query an `include` every table in the app would then carry.
+  const channelTitles = useMemo(
+    () => new Map(channels.map((channel) => [channel.id, channel.title])),
+    [channels],
+  );
+
   const columns = useMemo<DataTableColumn<ProjectWithVideoCount>[]>(
     () => [
       {
@@ -41,6 +52,30 @@ export function ProjectTable({
         sortValue: (project) => project.name,
         filterValue: (project) => `${project.name} ${project.description ?? ""}`,
         alwaysVisible: true,
+      },
+      {
+        id: "channel",
+        header: "Channel",
+        /**
+         * On screen because it is the field this table exists to let people
+         * fix. A project with no default channel publishes nowhere, and until
+         * the Edit button beside this column there was no way to give it one —
+         * but the state was also invisible, so nobody could see which project
+         * was the problem.
+         */
+        cell: (project) =>
+          project.channelId ? (
+            (channelTitles.get(project.channelId) ?? "Disconnected channel")
+          ) : (
+            <span className="text-muted-foreground">None</span>
+          ),
+        sortValue: (project) =>
+          project.channelId
+            ? (channelTitles.get(project.channelId) ?? "")
+            : null,
+        filterValue: (project) =>
+          project.channelId ? (channelTitles.get(project.channelId) ?? "") : "",
+        cellClassName: "text-sm",
       },
       {
         id: "status",
@@ -76,21 +111,41 @@ export function ProjectTable({
       {
         id: "actions",
         header: "Actions",
-        // Archived projects keep the column but not the button — there is
-        // nothing left to archive, and an empty cell says so more quietly
-        // than a disabled control would.
-        cell: (project) =>
-          project.status === "ACTIVE" ? (
-            <ArchiveProjectButton
-              projectId={project.id}
-              projectName={project.name}
+        // Edit stays on archived projects: an archived project can still be
+        // renamed or pointed at a different channel, and it is the row the
+        // operator is most likely to be repairing. Archive does not — there is
+        // nothing left to archive, and an empty slot says so more quietly than
+        // a disabled control would.
+        cell: (project) => (
+          <div className="flex items-center justify-end gap-1">
+            <ProjectDialog
+              channels={channels}
+              project={{
+                id: project.id,
+                name: project.name,
+                description: project.description,
+                channelId: project.channelId,
+              }}
+              trigger={
+                <Button variant="ghost" size="sm">
+                  <Pencil />
+                  Edit
+                </Button>
+              }
             />
-          ) : null,
+            {project.status === "ACTIVE" && (
+              <ArchiveProjectButton
+                projectId={project.id}
+                projectName={project.name}
+              />
+            )}
+          </div>
+        ),
         align: "right",
         alwaysVisible: true,
       },
     ],
-    [],
+    [channels, channelTitles],
   );
 
   return (
@@ -101,12 +156,18 @@ export function ProjectTable({
       caption="Projects"
       searchPlaceholder="Search projects"
       pageSize={25}
+      selection={{
+        rowLabel: (project) => project.name,
+        actions: ({ rows, clear }) => (
+          <BulkArchiveProjectsButton projects={rows} onDone={clear} />
+        ),
+      }}
       empty={
         <EmptyState
           icon={Library}
           title="No projects yet"
           description="Projects group related videos together and can carry a default publishing channel."
-          action={<CreateProjectDialog channels={channels} />}
+          action={<ProjectDialog channels={channels} />}
         />
       }
     />
