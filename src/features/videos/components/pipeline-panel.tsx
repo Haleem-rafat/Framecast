@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -185,6 +185,64 @@ export function usePipelineState(videoId: string, initialState: PipelineState) {
         : POLL_INTERVAL_IDLE_MS;
     },
   });
+}
+
+/**
+ * What the rest of the page is showing, as one string.
+ *
+ * Only the things a server-rendered section is drawn from: which stages have
+ * landed, and whether the run has finished. Deliberately not `progress` or
+ * `elapsedSeconds` — those change on every single poll and nothing outside this
+ * panel is drawn from them, so including them would mean re-rendering the whole
+ * page twice a second to show a number this component already owns.
+ */
+function serverVisibleSignature(state: PipelineState): string {
+  return `${state.isTerminal}|${state.isFailed}|${state.stages
+    .map((stage) => `${stage.key}:${stage.status}`)
+    .join(",")}`;
+}
+
+/**
+ * Pull the server-rendered half of the page forward when a stage lands.
+ *
+ * The panel polls, so the stage list ticked over on its own — but the script
+ * card, the narration player, the footage grid and the status badge are server
+ * components, and those only ever re-rendered after an operator *pressed*
+ * something (`afterMutation` below). Watching a pipeline advance by itself, the
+ * stages moved and the page underneath them did not, so the work looked stuck
+ * until a manual refresh. That is the bug this closes.
+ *
+ * Keyed on `serverVisibleSignature` rather than the poll: a refresh re-renders
+ * the entire route on the server, so doing it every two seconds would be a
+ * self-inflicted load test. Once per actual transition is a handful of refreshes
+ * across a whole run — six stages plus the finish.
+ *
+ * The first observation seeds the ref without refreshing. The page was rendered
+ * from this exact state milliseconds ago; refreshing it again would be a
+ * guaranteed-wasted round trip on every mount.
+ *
+ * Called from `PipelinePanel` only, never from `PipelineSummary`. The two are
+ * rendered together by pipeline-run.tsx and share one React Query cache entry,
+ * so a second caller would mean two refreshes per transition and no extra
+ * freshness.
+ */
+function useRefreshOnStageChange(state: PipelineState): void {
+  const router = useRouter();
+  const previous = useRef<string | null>(null);
+
+  useEffect(() => {
+    const signature = serverVisibleSignature(state);
+
+    if (previous.current === null) {
+      previous.current = signature;
+      return;
+    }
+
+    if (previous.current === signature) return;
+
+    previous.current = signature;
+    router.refresh();
+  }, [state, router]);
 }
 
 /**
@@ -613,6 +671,7 @@ export function PipelinePanel({
   const { data, dataUpdatedAt } = usePipelineState(videoId, initialState);
 
   const state = data ?? initialState;
+  useRefreshOnStageChange(state);
   const runningIndex = state.stages.findIndex((stage) => stage.status === "running");
   const elapsedSeconds = useLiveElapsedSeconds(
     state.elapsedSeconds,
