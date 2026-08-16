@@ -3,9 +3,13 @@
 import { revalidatePath } from "next/cache";
 
 import { run, type ActionResult } from "@/actions/action-result";
-import { createProjectSchema } from "@/schemas/project.schema";
+import { createProjectSchema, mergeProjectsSchema } from "@/schemas/project.schema";
 import { requireSession } from "@/server/session";
-import { projectService } from "@/services/project.service";
+import {
+  type MergeImpact,
+  type MergeResult,
+  projectService,
+} from "@/services/project.service";
 
 export async function createProjectAction(
   input: unknown,
@@ -106,6 +110,48 @@ export async function deleteProjectAction(
 
     revalidatePath("/projects");
     revalidatePath("/videos");
+
+    return result;
+  });
+}
+
+/**
+ * What a merge would move and every reason it would be refused, fetched when
+ * the dialog opens and again whenever the operator changes which project
+ * survives. Same reasoning as `projectDeletionImpactAction`: the counts and
+ * the refusals have to be read late to be worth anything.
+ */
+export async function projectMergeImpactAction(
+  input: unknown,
+): Promise<ActionResult<MergeImpact>> {
+  return run(async () => {
+    const session = await requireSession();
+    const parsed = mergeProjectsSchema.parse(input);
+
+    return projectService.mergeImpact(session.user.id, parsed);
+  });
+}
+
+/**
+ * Folds the source projects into the target and soft-deletes them. Everything
+ * filed under a source — videos, schedules and series alike — moves in one
+ * transaction; see `projectService.merge` for why a cross-channel merge is
+ * refused outright rather than acknowledged.
+ */
+export async function mergeProjectsAction(
+  input: unknown,
+): Promise<ActionResult<MergeResult>> {
+  return run(async () => {
+    const session = await requireSession();
+    const parsed = mergeProjectsSchema.parse(input);
+    const result = await projectService.merge(session.user.id, parsed);
+
+    revalidatePath("/projects");
+    // Videos change which project they are filed under, and schedules and
+    // series change which project they file *into* — so every page that names
+    // a project is stale.
+    revalidatePath("/videos");
+    revalidatePath("/automation");
 
     return result;
   });
