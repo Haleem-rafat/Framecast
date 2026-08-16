@@ -33,11 +33,12 @@ const nextConfig: NextConfig = {
    *
    * `/automation/series` and `/automation/schedules` were two lists of the same
    * idea — a thing that makes videos on a repeating cadence — drawn two
-   * different ways, with every series listed on both. They are now one table at
+   * different ways, with every series listed on both. A shorts release cadence
+   * landed as a third such page the same week. They are now one table at
    * `/automation`. Nothing *under* those paths moved: the detail pages and the
    * create forms are still `/automation/series/:id`, `/automation/series/new`
-   * and their schedule counterparts, which is why each `source` matches the
-   * bare segment and nothing below it.
+   * and their schedule and release counterparts, which is why each `source`
+   * matches the bare segment and nothing below it.
    *
    * Here rather than as a `page.tsx` calling `redirect()`, so a stale bookmark
    * costs one HTTP hop instead of an authenticated render that exists only to
@@ -49,6 +50,7 @@ const nextConfig: NextConfig = {
     return [
       { source: "/automation/series", destination: "/automation", permanent: false },
       { source: "/automation/schedules", destination: "/automation", permanent: false },
+      { source: "/automation/releases", destination: "/automation", permanent: false },
     ];
   },
 

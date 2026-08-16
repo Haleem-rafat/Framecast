@@ -1,7 +1,8 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { CalendarClock, Clapperboard } from "lucide-react";
+import { CalendarClock, Clapperboard, Scissors } from "lucide-react";
 
+import { ReleaseCadenceControls } from "@/features/automation/components/release-cadence-controls";
 import { ScheduleControls } from "@/features/automation/components/schedule-controls";
 import { SeriesControls } from "@/features/automation/components/series-controls";
 import type { AutomationEntry, AutomationKind } from "@/services/automation-list.service";
@@ -85,6 +86,26 @@ export const AUTOMATION_KINDS: Record<AutomationKind, AutomationKindMeta> = {
       <ScheduleControls
         scheduleId={entry.id}
         scheduleName={entry.name}
+        status={entry.status}
+        compact
+      />
+    ),
+  },
+  RELEASE_CADENCE: {
+    label: "Shorts drip",
+    icon: Scissors,
+    // "clip", not "short": the row already says Shorts, and "3 shorts banked"
+    // beside a Shorts badge reads as a stutter.
+    backlogNoun: "clip",
+    producedNoun: "short",
+    newHref: "/automation/releases/new",
+    newLabel: "Shorts drip",
+    blurb:
+      "Publishes clips already cut from your finished videos, a few a day at times you set. It makes nothing new — it spends what the others banked.",
+    Controls: ({ entry }) => (
+      <ReleaseCadenceControls
+        cadenceId={entry.id}
+        channelTitle={entry.name}
         status={entry.status}
         compact
       />

@@ -128,7 +128,7 @@ export const navigation: NavGroup[] = [
         href: "/automation",
         icon: Repeat2,
         /**
-         * One entry where there were two, because there is now one page.
+         * One entry where there were three, because there is now one page.
          *
          * "Series" had a sidebar row of its own and its own keywords, which is
          * how the palette taught the operator that a series and a schedule were
@@ -136,6 +136,11 @@ export const navigation: NavGroup[] = [
          * schedule with a recipe attached — so both vocabularies now land on
          * the one table that lists both. Somebody who types "schedules", the
          * name of a page that no longer exists, gets the page it turned into.
+         *
+         * The shorts drip's vocabulary is here for the same reason and not
+         * because it is the same thing: it releases clips rather than making
+         * them. But it is a row in this table, and a search that sent the
+         * operator somewhere else would be teaching the split all over again.
          */
         keywords: [
           "series",
@@ -147,6 +152,11 @@ export const navigation: NavGroup[] = [
           "monthly",
           "topic queue",
           "paused",
+          "shorts",
+          "clips",
+          "drip",
+          "release",
+          "daily",
         ],
         built: true,
       },

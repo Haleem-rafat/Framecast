@@ -3,6 +3,7 @@ import "server-only";
 import type { ScheduleStatus } from "@/generated/prisma/enums";
 import { describeCadence, describeHealth } from "@/lib/automation-language";
 import { prisma } from "@/lib/prisma";
+import { describeSlots } from "@/lib/release-time";
 
 /**
  * Everything that makes videos on a repeating cadence, as one list.
@@ -39,22 +40,21 @@ import { prisma } from "@/lib/prisma";
  * and every write path, which is where their guards belong. This is a
  * read-only projection for one screen, and it owns no rules.
  *
- * ## The seam for a third kind
+ * ## The seam for a further kind
  *
- * `SOURCES` is a list, not a pair. A shorts release cadence is being built
- * alongside this, and it is the same idea again — a status, a paused reason, a
- * consecutive-failure counter, a next occurrence, a channel — so it becomes
- * rows here rather than a third screen. Adding it is three edits and no
- * redesign:
+ * `SOURCES` is a list, not a pair. The shorts release cadence arrived through
+ * it: the same idea again — a status, a paused reason, a consecutive-failure
+ * counter, a next occurrence, a channel — so it is rows here rather than a
+ * third screen. Adding another is three edits and no redesign:
  *
  *   1. add its name to `AutomationKind`,
  *   2. push a loader onto `SOURCES` that maps its rows to `AutomationEntry`,
  *   3. add its label, icon and controls to `AUTOMATION_KINDS` in
- *      src/features/automation/kinds.ts.
+ *      src/features/automation/kinds.tsx.
  *
  * Nothing in the table, the sort, the search, the empty state, the mobile cards
- * or the health column has to know that a third kind arrived. The one thing a
- * new kind must do is describe its own cadence as a *sentence* — see
+ * or the health column had to know the third kind arrived. The one thing a new
+ * kind must do is describe its own cadence as a *sentence* — see
  * `AutomationEntry.cadence` — because a release cadence has several times a day
  * and no weekday, and a shared recurrence shape would have had to grow a case
  * for it.
@@ -69,8 +69,13 @@ import { prisma } from "@/lib/prisma";
  * name, a channel, a script style and a shape pinned to it. The row says which
  * so that "why does this one have a Make one now button and that one not" has a
  * visible answer.
+ *
+ * `RELEASE_CADENCE` is the odd one and the row has to be honest about it: it
+ * makes nothing. It spends what the other two banked, publishing one already-cut
+ * short per slot. That is why its backlog is clips rather than subjects and why
+ * an empty bank is its normal resting state rather than a fault.
  */
-export type AutomationKind = "SERIES" | "TOPIC_QUEUE";
+export type AutomationKind = "SERIES" | "TOPIC_QUEUE" | "RELEASE_CADENCE";
 
 export interface AutomationEntry {
   /**
@@ -281,8 +286,99 @@ const loadTopicQueues: AutomationSource = async (userId) => {
   }));
 };
 
+/**
+ * Shorts release cadences — one per channel, spending the bank the other two
+ * kinds fill.
+ *
+ * `produced` counts runs that actually put a clip on YouTube, matching the other
+ * loaders' "what did this make" rather than "how often did it try": a slot that
+ * skipped on an empty bank made nothing, and counting it would flatter a cadence
+ * that has been idling for a week.
+ *
+ * `backlog` is the same query `ReleaseService` releases from, not an
+ * approximation of it. The number decides whether `nextRunAt` above it is a
+ * promise or a lie, so a second definition that drifted from the first would be
+ * worse than no number at all.
+ */
+const loadReleaseCadences: AutomationSource = async (userId) => {
+  const rows = await prisma.releaseCadence.findMany({
+    where: { userId },
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      status: true,
+      pausedReason: true,
+      consecutiveFailures: true,
+      slotMinutes: true,
+      timeZone: true,
+      nextReleaseAt: true,
+      channelId: true,
+      channel: { select: { title: true } },
+      _count: { select: { runs: { where: { youtubeVideoId: { not: null } } } } },
+    },
+  });
+
+  // One grouped count rather than a query per cadence: an operator with a
+  // cadence on every channel would otherwise pay a round trip per row for a
+  // number that is only a badge.
+  const banked = await prisma.short.groupBy({
+    by: ["videoId"],
+    where: {
+      status: "READY",
+      outputPath: { not: null },
+      publication: { is: null },
+      video: {
+        userId,
+        deletedAt: null,
+        project: { channelId: { in: rows.map((row) => row.channelId) }, deletedAt: null },
+      },
+    },
+    _count: { _all: true },
+  });
+
+  const videos = await prisma.video.findMany({
+    where: { id: { in: banked.map((group) => group.videoId) } },
+    select: { id: true, project: { select: { channelId: true } } },
+  });
+
+  const channelOfVideo = new Map(videos.map((video) => [video.id, video.project.channelId]));
+  const bankByChannel = new Map<string, number>();
+  for (const group of banked) {
+    const channelId = channelOfVideo.get(group.videoId);
+    if (!channelId) continue;
+    bankByChannel.set(channelId, (bankByChannel.get(channelId) ?? 0) + group._count._all);
+  }
+
+  return rows.map((row) => ({
+    rowId: `release:${row.id}`,
+    id: row.id,
+    kind: "RELEASE_CADENCE" as const,
+    // Named after the channel rather than given a name of its own. A cadence is
+    // `@unique` per channel, so "KIDO FUN ZONE" identifies it exactly, and one
+    // more name to invent is one more thing that can disagree with the channel
+    // it publishes to.
+    name: row.channel.title,
+    href: `/automation/releases/${row.id}`,
+    status: row.status,
+    pausedReason: row.pausedReason,
+    consecutiveFailures: row.consecutiveFailures,
+    cadence: describeSlots({ slotMinutes: row.slotMinutes, timeZone: row.timeZone }),
+    timeZone: row.timeZone,
+    nextRunAt: row.nextReleaseAt,
+    // A cadence cannot say what goes out next without loading the head of the
+    // bank per row. The count below is the honest thing it can afford.
+    nextUp: null,
+    backlog: bankByChannel.get(row.channelId) ?? 0,
+    produced: row._count.runs,
+    channel: { id: row.channelId, title: row.channel.title },
+    // Not project-scoped: a cadence spends every project's shorts for its
+    // channel, so naming one project would be picking a favourite.
+    project: null,
+  }));
+};
+
 /** Add a kind here. See the note at the top of this file. */
-const SOURCES: AutomationSource[] = [loadSeries, loadTopicQueues];
+const SOURCES: AutomationSource[] = [loadSeries, loadTopicQueues, loadReleaseCadences];
 
 /**
  * The order the operator sees on load, and the reason the table passes no
