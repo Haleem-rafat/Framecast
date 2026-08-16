@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { PipelineRun } from "@/features/videos/components/pipeline-run";
+import { RenarrateVoiceButton } from "@/features/videos/components/renarrate-voice-button";
 import { ScriptPanel } from "@/features/videos/components/script-panel";
 import { ShortsSection } from "@/features/videos/components/shorts-panel";
 import {
@@ -373,6 +374,25 @@ export default async function VideoDetailPage({
   // point of a folded header is that it is a promise about what is inside.
   const hasPreview = Boolean(renderOutputUrl || audioPath || youtubeVideoId);
 
+  /**
+   * True while a worker holds this video, which is what the re-narrate control
+   * refuses on.
+   *
+   * The lease rather than the status, and wider than `GENERATING`/`RENDERING`
+   * on purpose: `render.service.ts` commits `READY` the moment the encode
+   * succeeds while `runPipeline` is still running metadata and thumbnail
+   * behind it, holding the lease throughout (see `PipelineState.isFinalizing`
+   * for the same reasoning applied to the pipeline panel). A `READY` video
+   * with a live lease is still a video a worker is inside, and requeuing it
+   * would have that worker's own `release` overwrite the status.
+   *
+   * A snapshot, like everything else server-rendered here — the service checks
+   * the same thing again at the write, against a lease read in the same
+   * transaction as the update.
+   */
+  const leaseIsLive =
+    video.leaseExpiresAt !== null && video.leaseExpiresAt.getTime() > Date.now();
+
   const arrangement = sectionOrderFor(video.status);
   const defaultOpen = DEFAULT_OPEN_SECTIONS[arrangement];
   const isOpenByDefault = (key: VideoSectionKey) => defaultOpen.includes(key);
@@ -486,6 +506,24 @@ export default async function VideoDetailPage({
                     youtubeVideoId={youtubeVideoId}
                   />
                 </Suspense>
+
+                {/* Under the players, not in the header, because this is the
+                    one control on the page whose whole premise is that you
+                    have just listened to something. It is also not a header
+                    action for a plainer reason: the header's three buttons are
+                    the video's lifecycle — delete, approve, publish — and this
+                    is a re-run of one stage, which belongs beside the stage's
+                    output. Renders a sentence instead of a button in the
+                    states where it cannot work; see `RenarrateVoiceButton`. */}
+                <RenarrateVoiceButton
+                  videoId={video.id}
+                  status={video.status}
+                  currentVoiceId={video.voiceOver?.voiceId ?? null}
+                  currentVoiceName={video.voiceOver?.voiceName ?? null}
+                  leaseIsLive={leaseIsLive}
+                  characterCount={activeVersion?.content.length ?? 0}
+                  shortCount={video._count.shorts}
+                />
               </VideoSection>
             );
           }

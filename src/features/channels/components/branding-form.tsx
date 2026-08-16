@@ -1,27 +1,19 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useState, type ReactNode } from "react";
-import {
-  ExternalLink,
-  Loader2,
-  TriangleAlert,
-  Volume2,
-} from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 
 import {
   listVideoCategoriesAction,
-  listVoicesAction,
   updateBrandingAction,
 } from "@/actions/channel.action";
 import { FormField } from "@/components/shared/form-field";
-import { MediaPlayer } from "@/components/shared/media-player";
 import { Reveal } from "@/components/shared/reveal";
-import { Badge } from "@/components/ui/badge";
+import { VoicePicker } from "@/components/shared/voice-picker";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -32,7 +24,6 @@ import {
 } from "@/components/ui/card";
 import { FieldError, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
@@ -60,8 +51,7 @@ import {
   type BrandingFormOutput,
   type BrandingFormValues,
 } from "@/schemas/channel.schema";
-import type { ChannelBranding, VoiceListStatus } from "@/services/brand.service";
-import type { SpeechVoice } from "@/services/providers/types";
+import type { ChannelBranding } from "@/services/brand.service";
 import { HeadlinePreview } from "@/features/channels/components/headline-preview";
 
 /**
@@ -825,93 +815,18 @@ function WritingCard({
 }
 
 /**
- * One voice from the operator's own ElevenLabs account, as a row you can
- * listen to before choosing.
+ * Which voice reads this channel's scripts, from now on.
  *
- * The player is rendered only for the row currently being previewed, never for
- * all of them. `MediaPlayer` uses `preload="metadata"`, so twenty mounted
- * players would be twenty requests to ElevenLabs' sample storage on a screen
- * where the operator is usually here to change a colour. One at a time also
- * happens to be what listening actually looks like.
+ * The list, the previews, the three ways asking ElevenLabs can go and the
+ * "your saved voice is not in this list" row all live in `VoicePicker`, which
+ * the re-narrate dialog on the video page renders too — see its doc comment
+ * for why one control serves both questions. Everything left here is what is
+ * specific to *this* screen: the sentinel row for "no voice chosen", which the
+ * dialog has no equivalent of, and keeping `voiceName` in step with `voiceId`
+ * inside the form.
  *
- * The `<label>` wraps only the radio and the text. Putting the player inside it
- * would make pressing play select the voice — the exact opposite of "hear it
- * before choosing".
- */
-function VoiceChoice({
-  value,
-  name,
-  detail,
-  previewUrl,
-  isPreviewing,
-  onPreview,
-}: {
-  value: string;
-  name: string;
-  detail?: ReactNode;
-  previewUrl?: string | null;
-  isPreviewing: boolean;
-  onPreview: () => void;
-}) {
-  const rowId = useId();
-
-  return (
-    <div className="rounded-lg border p-3 has-[button[data-state=checked]]:border-primary/60 has-[button[data-state=checked]]:bg-muted/40">
-      <div className="flex items-start gap-3">
-        <RadioGroupItem value={value} id={rowId} className="mt-1 shrink-0" />
-        <label htmlFor={rowId} className="min-w-0 flex-1 cursor-pointer space-y-1">
-          <span className="block text-sm font-medium">{name}</span>
-          {detail}
-        </label>
-
-        {previewUrl && !isPreviewing && (
-          <Button type="button" variant="outline" size="sm" onClick={onPreview}>
-            <Volume2 />
-            Hear it
-          </Button>
-        )}
-      </div>
-
-      {previewUrl && isPreviewing && (
-        <MediaPlayer
-          src={previewUrl}
-          shape="audio"
-          autoPlay
-          label={`Preview of ${name}`}
-          className="mt-2"
-          errorMessage="ElevenLabs' sample for this voice could not be played. The voice itself is unaffected — this is only the preview."
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * Which voice reads this channel's scripts.
- *
- * The one control on this page whose options are not knowable in advance.
- * Every other picker here is a closed set the app owns — fonts installed in the
- * worker image, two footage styles, YouTube's assignable categories. Voices
- * belong to *an ElevenLabs account*, so the list is fetched with the operator's
- * own stored credential and there is no offline fallback of any kind: a
- * hardcoded list of plausible voice ids would offer voices this account may not
- * have, and a voice it does not have is not a wrong-looking dropdown, it is a
- * narration that fails after a video has already been queued.
- *
- * That makes the three failure states worth stating plainly rather than hiding
- * behind an empty list, which is why `listVoices` reports a status instead of
- * just returning `[]`:
- *
- * - **No credential.** Nothing was asked, because there was nothing to ask
- *   with. The card says so and links to the page that fixes it.
- * - **Unreachable.** A credential exists and ElevenLabs did not answer. The
- *   card says so and — crucially — keeps whatever the channel already has
- *   selected and saveable, so an outage cannot cost the operator their voice.
- * - **Empty.** The account genuinely has no voices. Not an error, and not
- *   presented as one.
- *
- * In all four states the "deployment default" row is present, because it is
- * always a valid answer and it is the one every channel is already on.
+ * The "deployment default" row is present in every state, because it is always
+ * a valid answer and it is the one every channel is already on.
  */
 function NarrationCard({
   control,
@@ -922,43 +837,10 @@ function NarrationCard({
   setValue: FormApi["setValue"];
   errors: FormApi["formState"]["errors"];
 }) {
-  const [voices, setVoices] = useState<SpeechVoice[]>([]);
-  /** `loading` is this component's own fourth state — the service only ever
-   *  answers with one of the three real ones. */
-  const [status, setStatus] = useState<VoiceListStatus | "loading">("loading");
-  const [previewing, setPreviewing] = useState<string | null>(null);
-
   // Watched rather than read once: it is written by `setValue` from this very
   // card, and it is what names a saved voice that the fetched list does not
   // contain.
   const savedName = useWatch({ control, name: "voiceName" });
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadVoices() {
-      const result = await listVoicesAction();
-
-      if (cancelled) return;
-
-      // The action cannot fail for a reachability reason — the service turns
-      // every one of those into a status — so a rejected result means the
-      // session check failed, which the operator will discover on Save.
-      if (!result.ok) {
-        setStatus("unavailable");
-        return;
-      }
-
-      setVoices(result.data.voices);
-      setStatus(result.data.status);
-    }
-
-    void loadVoices();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   return (
     <Card>
@@ -972,157 +854,60 @@ function NarrationCard({
       </CardHeader>
 
       <CardContent className="space-y-3">
-        {status === "loading" && (
-          <p className="text-muted-foreground flex items-center gap-2 text-xs">
-            <Loader2 className="size-3.5 animate-spin" />
-            Listing the voices on your ElevenLabs account…
-          </p>
-        )}
-
-        {status === "no-credential" && (
-          <p className="text-muted-foreground flex items-start gap-2 text-xs">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            <span>
-              No ElevenLabs key is stored, so there is no account to list voices
-              from. Add one on the{" "}
-              <Link
-                href="/providers"
-                className="underline underline-offset-3"
-              >
-                Providers page
-              </Link>{" "}
-              and this list fills in. Narration needs that key anyway.
-            </span>
-          </p>
-        )}
-
-        {status === "unavailable" && (
-          <p className="text-muted-foreground flex items-start gap-2 text-xs">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            ElevenLabs didn&apos;t answer, so the voices on your account
-            couldn&apos;t be listed. Whatever this channel already uses is
-            unchanged and still saves — nothing below is a guess at what your
-            account has.
-          </p>
-        )}
-
-        {status === "ok" && voices.length === 0 && (
-          <p className="text-muted-foreground text-xs">
-            Your ElevenLabs account returned no voices, so the deployment
-            default is the only option. Adding a voice in ElevenLabs and
-            reloading this page will list it.
-          </p>
-        )}
+        {/* Changing this changes what the channel narrates with *next*, which
+          * is not the same thing as changing a video you have already made —
+          * and an operator who came here after listening to one is exactly the
+          * person about to assume otherwise. */}
+        <p className="text-muted-foreground text-xs">
+          This applies to narration from here on. Videos already narrated keep
+          the voice they were made in; a finished one can be re-narrated from
+          its own page, which re-runs the pipeline from narration onward.
+        </p>
 
         <Controller
           control={control}
           name="voiceId"
-          render={({ field }) => {
-            /**
-             * A saved voice the list does not contain — either because the
-             * list could not be fetched, or because the voice was removed from
-             * the account after it was chosen. Shown as its own row so the
-             * selection is never invisible: a radio group with a value that
-             * matches no item renders as nothing selected, which reads as "this
-             * channel has no voice" when in fact it has one and is about to
-             * narrate with it.
-             */
-            const unlisted =
-              field.value && !voices.some((voice) => voice.voiceId === field.value)
-                ? field.value
-                : null;
+          render={({ field }) => (
+            <VoicePicker
+              value={field.value ?? DEFAULT_VOICE}
+              onChange={(next, name) => {
+                if (next === DEFAULT_VOICE) {
+                  field.onChange(null);
+                  // Cleared together. `updateBranding` enforces this again at
+                  // the write, but leaving a stale name in the form would show
+                  // the old voice's name against the default until the next
+                  // reload.
+                  setValue("voiceName", null, { shouldDirty: true });
+                  return;
+                }
 
-            function choose(next: string) {
-              if (next === DEFAULT_VOICE) {
-                field.onChange(null);
-                // Cleared together. `updateBranding` enforces this again at the
-                // write, but leaving a stale name in the form would show the
-                // old voice's name against the default until the next reload.
-                setValue("voiceName", null, { shouldDirty: true });
-                return;
-              }
-
-              field.onChange(next);
-              setValue(
-                "voiceName",
-                voices.find((voice) => voice.voiceId === next)?.name ?? null,
-                { shouldDirty: true },
-              );
-            }
-
-            return (
-              <RadioGroup
-                value={field.value ?? DEFAULT_VOICE}
-                onValueChange={choose}
-                aria-label="Narration voice"
-                aria-invalid={Boolean(errors.voiceId)}
-              >
-                <VoiceChoice
-                  value={DEFAULT_VOICE}
-                  name="The deployment's default voice"
-                  detail={
-                    <span className="text-muted-foreground block text-xs">
-                      Whatever ELEVENLABS_VOICE_ID is set to on this
-                      installation. What every channel narrated with before this
-                      setting existed, and what a channel goes back to when you
-                      pick it again.
-                    </span>
-                  }
-                  isPreviewing={false}
-                  onPreview={() => {}}
-                />
-
-                {unlisted && (
-                  <VoiceChoice
-                    value={unlisted}
-                    name={savedName ?? "Saved voice"}
-                    detail={
-                      <span className="text-muted-foreground block text-xs">
-                        <span className="font-mono">{unlisted}</span> — saved on
-                        this channel but not in the list above. It is still what
-                        narration uses.
-                      </span>
-                    }
-                    isPreviewing={false}
-                    onPreview={() => {}}
-                  />
-                )}
-
-                {voices.map((voice) => (
-                  <VoiceChoice
-                    key={voice.voiceId}
-                    value={voice.voiceId}
-                    name={voice.name}
-                    detail={
-                      <>
-                        {voice.labels.length > 0 && (
-                          <span className="flex flex-wrap gap-1">
-                            {voice.labels.map((label) => (
-                              <Badge
-                                key={label.name}
-                                variant="secondary"
-                                className="font-normal"
-                              >
-                                {label.name}: {label.value}
-                              </Badge>
-                            ))}
-                          </span>
-                        )}
-                        {voice.description && (
-                          <span className="text-muted-foreground block text-xs">
-                            {voice.description}
-                          </span>
-                        )}
-                      </>
-                    }
-                    previewUrl={voice.previewUrl}
-                    isPreviewing={previewing === voice.voiceId}
-                    onPreview={() => setPreviewing(voice.voiceId)}
-                  />
-                ))}
-              </RadioGroup>
-            );
-          }}
+                field.onChange(next);
+                setValue("voiceName", name, { shouldDirty: true });
+              }}
+              defaultChoice={{
+                value: DEFAULT_VOICE,
+                name: "The deployment's default voice",
+                detail: (
+                  <span className="text-muted-foreground block text-xs">
+                    Whatever ELEVENLABS_VOICE_ID is set to on this installation.
+                    What every channel narrated with before this setting
+                    existed, and what a channel goes back to when you pick it
+                    again.
+                  </span>
+                ),
+              }}
+              unlistedName={savedName ?? "Saved voice"}
+              unlistedDetail={(voiceId) => (
+                <span className="text-muted-foreground block text-xs">
+                  <span className="font-mono">{voiceId}</span> — saved on this
+                  channel but not in the list above. It is still what narration
+                  uses.
+                </span>
+              )}
+              ariaLabel="Narration voice"
+              invalid={Boolean(errors.voiceId)}
+            />
+          )}
         />
 
         {errors.voiceId?.message && (
