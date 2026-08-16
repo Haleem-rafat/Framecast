@@ -391,6 +391,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       },
       { key: "tone", label: "Tone", defaultValue: "measured and specific" },
     ],
+    starterSubjects: [
+      "How Kodak invented the digital camera and then buried it",
+      "The recall that turned Tylenol's packaging into an industry standard",
+      "Why Blockbuster turned down the chance to buy Netflix",
+      "The single spreadsheet error behind an austerity policy",
+      "How one bank trader lost Barings a hundred and thirty years of history",
+    ],
   },
 
   {
@@ -437,6 +444,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "curious general viewers",
       },
       { key: "tone", label: "Tone", defaultValue: "brisk and confident" },
+    ],
+    starterSubjects: [
+      "The everyday objects that were invented for something completely different",
+      "Bridges that were built wrong and had to be closed",
+      "The most expensive mistakes ever made in software",
+      "Foods that were considered worthless before somebody marketed them",
+      "The longest-running experiments still going today",
     ],
   },
 
@@ -489,6 +503,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "curious general viewers",
       },
       { key: "tone", label: "Tone", defaultValue: "fair-minded and precise" },
+    ],
+    starterSubjects: [
+      "What people believe about how sleep works",
+      "Common beliefs about electric cars and what the evidence shows",
+      "The things everyone repeats about the Great Wall of China",
+      "What people get wrong about how vaccines were developed",
+      "Widely held beliefs about learning styles in schools",
     ],
   },
 
@@ -550,6 +571,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "working software developers",
       },
       { key: "tone", label: "Tone", defaultValue: "precise and plain-spoken" },
+    ],
+    starterSubjects: [
+      "What happens between typing a web address and the page appearing",
+      "How a content delivery network decides which copy you get",
+      "The path a card payment takes before the terminal says approved",
+      "How a database keeps a write safe when the power goes out",
+      "What a load balancer actually does with an incoming request",
     ],
   },
 
@@ -620,6 +648,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       },
       { key: "tone", label: "Tone", defaultValue: "calm and forensic" },
     ],
+    starterSubjects: [
+      "The day a certificate expiry took a payment network offline",
+      "The configuration change that removed a company from the internet",
+      "How a leap second broke servers around the world at once",
+      "The outage that started with a routine capacity test",
+      "When a retry storm turned a small fault into a total failure",
+    ],
   },
 
   {
@@ -682,6 +717,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "working software developers",
       },
       { key: "tone", label: "Tone", defaultValue: "curious and unhurried" },
+    ],
+    starterSubjects: [
+      "Why version control exists at all",
+      "Where the semicolon in programming languages came from",
+      "Why containers replaced virtual machines for most teams",
+      "The problem that JSON was invented to solve",
+      "Why almost everything ended up speaking HTTP",
     ],
   },
 
@@ -746,6 +788,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "working software developers",
       },
       { key: "tone", label: "Tone", defaultValue: "even-handed and decisive" },
+    ],
+    starterSubjects: [
+      "Monolith or microservices for a team of five",
+      "SQL or a document database for a new product",
+      "Server rendering or a single page application in twenty twenty six",
+      "Renting a managed database or running your own",
+      "Typed or untyped languages on a long-lived codebase",
     ],
   },
 
@@ -817,6 +866,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
         defaultValue: "personal, plain and unhurried",
       },
     ],
+    starterSubjects: [
+      "Code review is mostly a social problem, not a technical one",
+      "Most estimates fail for reasons nobody writes down",
+      "The best documentation is written by whoever was confused last",
+      "On-call rotations tell you more about a company than its interviews",
+      "Rewrites usually solve the wrong problem",
+    ],
   },
 
   {
@@ -878,6 +934,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       },
       { key: "tone", label: "Tone", defaultValue: "direct and surprising" },
     ],
+    starterSubjects: [
+      "The reason lifts have mirrors next to them",
+      "Why aeroplane windows are round",
+      "The one number that decides how tall a building can be",
+      "Why honey never spoils",
+      "What the hole in a pen lid is actually for",
+    ],
   },
 ];
 
@@ -906,3 +969,32 @@ export function scriptStylesUnder(maxSeconds: number): readonly ScriptStyle[] {
  * display cannot change what a fresh account is seeded with.
  */
 export const SEEDED_SCRIPT_STYLE_ID = "default-script";
+
+/**
+ * The starter subjects to offer alongside an operator's own script prompt.
+ *
+ * Matched by name, because the add path names the copy after the catalogue
+ * entry it came from (`addScriptStyle` writes `PromptTemplate.name = style.name`),
+ * and a name is the only link that survives — a added style is an ordinary row
+ * with no reference back to the entry, deliberately.
+ *
+ * A renamed or hand-written prompt matches nothing, which is the common case
+ * for anyone who has edited their library. The fallback is the house style's
+ * own list rather than no starters at all: `default-script` is what every
+ * account is seeded with, so its subjects are the ones most likely to suit a
+ * prompt derived from it. A starter is never *silently* attributed to a style
+ * it does not belong to — the picker labels these as shipped with the app, not
+ * as written for this prompt.
+ */
+export function starterSubjectsForStyleName(name: string): readonly string[] {
+  const matched = SCRIPT_STYLES.find((style) => style.name === name);
+
+  if (matched) {
+    return matched.starterSubjects;
+  }
+
+  return (
+    SCRIPT_STYLES.find((style) => style.id === SEEDED_SCRIPT_STYLE_ID)
+      ?.starterSubjects ?? []
+  );
+}
