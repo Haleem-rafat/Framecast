@@ -94,7 +94,7 @@ function promptText(max: number) {
  * returned, and a voice deleted upstream after being saved is a synthesis
  * failure no regex could have caught.
  */
-const VOICE_ID = /^[A-Za-z0-9]{1,64}$/;
+export const VOICE_ID = /^[A-Za-z0-9]{1,64}$/;
 
 /**
  * The chosen voice, or null for "narrate with the deployment default".
@@ -131,7 +131,7 @@ const MUSIC_QUERY_MAX = 160;
 /** A voice's name as ElevenLabs gave it — "Roger", "Charlotte". Generous
  *  because a cloned voice can be named anything, bounded because it is stored
  *  and printed in a table cell. */
-const VOICE_NAME_MAX = 120;
+export const VOICE_NAME_MAX = 120;
 /** See `characterBrief` in `updateBrandingSchema` for why this is an order of
  *  magnitude larger than the fields above it. */
 const CHARACTER_BRIEF_MAX = 2000;

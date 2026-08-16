@@ -7,6 +7,7 @@ import {
   approveScriptSchema,
   createVideoSchema,
   deleteVideosSchema,
+  renarrateVideoSchema,
 } from "@/schemas/video.schema";
 import { requireSession } from "@/server/session";
 import { jobService } from "@/services/job.service";
@@ -50,6 +51,40 @@ export async function approveScriptAction(
     revalidatePath(`/videos/${videoId}`);
 
     return null;
+  });
+}
+
+/**
+ * Queues a re-narration of a finished video in a different voice.
+ *
+ * `input` is parsed rather than taken at its word, exactly as
+ * `approveScriptAction` parses its format and for the same reason: the value
+ * it carries is interpolated into ElevenLabs' synthesis URL and decides what a
+ * script's worth of characters is spent on. See `renarrateVideoSchema` for the
+ * character class that makes that interpolation safe.
+ *
+ * Every refusal — published, held by a worker, never narrated — is a
+ * `ConflictError` from `requestRenarration` with its own sentence, and `run()`
+ * carries those through to the operator verbatim rather than flattening them
+ * into one message.
+ */
+export async function renarrateVideoAction(
+  videoId: string,
+  input: unknown,
+): Promise<ActionResult<{ shortsRemoved: number }>> {
+  return run(async () => {
+    const session = await requireSession();
+    const parsed = renarrateVideoSchema.parse(input);
+    const result = await videoService.requestRenarration(
+      session.user.id,
+      videoId,
+      parsed,
+    );
+
+    revalidatePath("/videos");
+    revalidatePath(`/videos/${videoId}`);
+
+    return result;
   });
 }
 

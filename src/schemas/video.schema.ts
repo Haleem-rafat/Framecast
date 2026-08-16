@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { VOICE_ID, VOICE_NAME_MAX } from "@/schemas/channel.schema";
+
 export const createVideoSchema = z.object({
   projectId: z.string().uuid(),
   title: z.string().min(1, "Title is required").max(120),
@@ -23,6 +25,44 @@ export const approveScriptSchema = z.object({
 });
 
 export type ApproveScriptInput = z.infer<typeof approveScriptSchema>;
+
+/**
+ * What the "change the voice" dialog sends.
+ *
+ * `VOICE_ID` is imported from the branding schema rather than restated,
+ * because the bound it applies is load-bearing in exactly the same way in both
+ * places and for the same reason: this string is interpolated straight into
+ * ElevenLabs' synthesis URL, so a slash or a `?` in it would be a different
+ * request to a different endpoint. Two copies of that rule is one copy that
+ * can be relaxed by someone who does not know why it is there. Unlike
+ * branding's own field it is not nullable — there is no "no voice" answer to
+ * "re-narrate in which voice", and an operator who wants the channel's voice
+ * back picks it from the same list.
+ *
+ * Which ids are *real* is deliberately not validated, again as branding does
+ * not: that is a fact about the operator's ElevenLabs account, the picker only
+ * ever offers ids that account returned, and a voice deleted upstream after
+ * being chosen is a synthesis failure no regex could have caught.
+ *
+ * `voiceName` is display only and nullable — a picker that could not reach
+ * ElevenLabs has an id and no name. It is normalised against the id at the
+ * write (see `VideoService.requestRenarration`) rather than trusted here,
+ * because a schema can bound the string but cannot know it is meaningless
+ * without the other one.
+ */
+export const renarrateVideoSchema = z.object({
+  voiceId: z
+    .string()
+    .trim()
+    .regex(VOICE_ID, "That is not an ElevenLabs voice id"),
+  voiceName: z
+    .union([z.string(), z.null()])
+    .transform((value) => value?.trim() ?? "")
+    .pipe(z.string().max(VOICE_NAME_MAX))
+    .transform((value) => (value.length === 0 ? null : value)),
+});
+
+export type RenarrateVideoInput = z.infer<typeof renarrateVideoSchema>;
 
 /** The list page's multi-select "Delete selected" — capped well above any
  * realistic single page of videos, just so a malformed client payload can't

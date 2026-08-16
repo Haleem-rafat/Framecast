@@ -3,7 +3,8 @@ import "server-only";
 import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import type { CreateVideoInput } from "@/schemas/video.schema";
+import { deleteShortFile } from "@/lib/shorts-storage";
+import type { CreateVideoInput, RenarrateVideoInput } from "@/schemas/video.schema";
 
 /** Shown whenever a delete is refused because the render worker holds the
  * video's lease right now — both the single- and bulk-delete paths report the
@@ -135,7 +136,24 @@ export class VideoService {
           take: 1,
           select: { outputUrl: true },
         },
-        voiceOver: { select: { audioUrl: true, durationSeconds: true } },
+        // `voiceId`/`voiceName` join the two the preview already needed, for
+        // the control that offers to change them: the picker on the video page
+        // preselects the voice this narration was actually made in, which is a
+        // fact about the recorded narration rather than about the channel —
+        // the channel's voice may well have been changed since.
+        voiceOver: {
+          select: {
+            audioUrl: true,
+            durationSeconds: true,
+            voiceId: true,
+            voiceName: true,
+          },
+        },
+        // How many shorts a re-narration would discard, stated in its dialog
+        // before the click. A count rather than the rows: the shorts panel
+        // below loads the real list inside its own Suspense boundary, and this
+        // is one aggregate on a query the page already makes.
+        _count: { select: { shorts: true } },
         // `Publication` is `@unique` on `videoId` (Gate 2's claim row, see
         // publish.service.ts) — at most one, so a direct `include` here is
         // enough to show the operator the real result once PUBLISHED.
@@ -270,6 +288,242 @@ export class VideoService {
         },
       });
     });
+  }
+
+  /**
+   * Throws this video's narration away and queues it to be synthesised again
+   * in a different voice.
+   *
+   * ## Why this is a re-run and not a setting
+   *
+   * Narration is generated once and everything downstream is derived from it.
+   * ElevenLabs returns a character-level alignment alongside the audio; that
+   * alignment is what places every caption (`buildSrt`), what converts each
+   * script cue's character offset into a second (`cueWindows`), and therefore
+   * what decides how long each section's clip holds the screen
+   * (`sectionDurations` in render.service.ts). A different voice speaks at a
+   * different rate, so a new narration means a new alignment, new caption
+   * timings, new clip slots and a new render. Writing a voice id onto a row
+   * and leaving it there would produce a video whose audio is one voice and
+   * whose captions are timed to another — which looks entirely healthy in a
+   * status column.
+   *
+   * So this method does not narrate anything. It records the choice
+   * (`renarrateVoiceId`) and puts the video back in the queue; the worker
+   * runs the same `runPipeline` it always runs, and the stages rebuild
+   * themselves in order. What each one does with a changed narration is
+   * documented on `runPipeline` — in short: narration and its alignment are
+   * regenerated, the footage this video already collected is *re-timed* by the
+   * render rather than re-collected (clips are chosen by script cue text,
+   * which has not changed), and the render is redone because the video is no
+   * longer `READY` and cannot skip.
+   *
+   * ## What it refuses, and why each one is its own sentence
+   *
+   * - **Published.** The file on YouTube cannot be replaced by re-rendering
+   *   locally — there is no re-upload path (see publish.service.ts) — and
+   *   publishing already reclaimed the render and the clips this would need.
+   * - **Held by a worker.** A live lease means a process is mid-write to this
+   *   video's rows right now. Requeuing it would be fighting the worker for a
+   *   row it is holding, so the operator is asked to cancel first, exactly as
+   *   `remove` asks.
+   * - **No narration yet.** Nothing to replace. This is not a failure state,
+   *   it is a video that simply has not run, and the answer is to run it.
+   *
+   * ## Its shorts
+   *
+   * Deleted, files included, in the same transaction. A `Short` stores its
+   * window in *seconds of this video's timeline* and its captions are sliced
+   * out of the alignment at render time (`sliceAlignment`), so both of its
+   * two defining properties are measured against the narration that is about
+   * to be replaced. Left alone, they would keep a READY status and a playable
+   * file whose voice is not the video's any more — the same silent-wrongness
+   * this whole method exists to avoid, one level down. Marking them stale
+   * instead was considered and rejected: `ShortsService.generate` already
+   * hard-deletes and replaces the set for exactly this reason (see the `Short`
+   * model's own comment on why it has no `deletedAt`), and a second, weaker
+   * notion of "stale" would be a state every reader would have to learn.
+   * The dialog states the count before the click, so it is never a surprise.
+   *
+   * A short with a `ShortPublication` cannot be reached here: shorts are only
+   * ever uploaded in the same click as their parent video, which leaves that
+   * video `PUBLISHED`, and a published video is refused above.
+   *
+   * ## Twice
+   *
+   * The read below only produces a precise error message. The guard is the
+   * conditional update — `status` repeated from the read, plus the same lease
+   * predicate `JobService.requeue` uses for a stranded video — so of two
+   * clicks arriving together on a `READY` video only one can match the row,
+   * and the other gets a clean conflict rather than a second queued run. The
+   * claim discipline continues past this point without a gap: `claimNext`
+   * lets exactly one worker take the queued video, and
+   * `voiceOverService.generate` clears the request inside the transaction
+   * that fulfils it, so it cannot be honoured twice even across a retry.
+   */
+  async requestRenarration(
+    userId: string,
+    id: string,
+    input: RenarrateVideoInput,
+  ): Promise<{ shortsRemoved: number }> {
+    const video = await prisma.video.findFirst({
+      where: { id, userId, deletedAt: null },
+      select: {
+        id: true,
+        status: true,
+        leaseExpiresAt: true,
+        voiceOver: { select: { voiceId: true } },
+      },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    const now = new Date();
+
+    if (video.status === "PUBLISHED") {
+      throw new ConflictError(
+        "This video is already on YouTube, and nothing here can replace the file " +
+          "that is up there — publishing is one-shot, and it reclaimed this " +
+          "video's render and footage to free the disk. Re-narrating it would " +
+          "produce a second, different video: make one and upload it as its own " +
+          "video if that is what you want.",
+      );
+    }
+
+    // Lease-based rather than status-based, and wider than `GENERATING`/
+    // `RENDERING` on purpose: `render.service.ts` commits `READY` the moment
+    // the encode succeeds while `runPipeline` is still running metadata and
+    // thumbnail behind it, holding the lease throughout (see
+    // `PipelineState.isFinalizing`). A `READY` video with a live lease is
+    // therefore still a video a worker is inside, and requeuing it would have
+    // that worker's own `release` overwrite the status this write just set.
+    if (video.leaseExpiresAt !== null && video.leaseExpiresAt > now) {
+      throw new ConflictError(
+        "The render worker is holding this video right now, and re-narrating it " +
+          "would pull it out from under a run that is already in progress. " +
+          "Cancel it from the pipeline panel, wait for it to stop, then change " +
+          "the voice.",
+      );
+    }
+
+    if (!video.voiceOver?.voiceId) {
+      throw new ConflictError(
+        "This video has no narration yet, so there is nothing to replace. Run " +
+          "the pipeline — it narrates in this channel's voice, which you can " +
+          "change on the channel's branding screen first if you want a " +
+          "different one from the start.",
+      );
+    }
+
+    // `DRAFT` has no narration and is already refused above. Everything else
+    // that survives to here — `QUEUED`, `FAILED`, and an unleased `READY` —
+    // is a video nothing is touching, whose narration exists, and which the
+    // worker can pick up again.
+    if (
+      video.status !== "QUEUED" &&
+      video.status !== "READY" &&
+      video.status !== "FAILED" &&
+      video.status !== "GENERATING" &&
+      video.status !== "RENDERING"
+    ) {
+      throw new ConflictError(
+        `Only a finished or stopped video can be re-narrated. This one is ${video.status.toLowerCase()}.`,
+      );
+    }
+
+    // The name is not independently settable: it describes the id, and a
+    // request carrying somebody else's name would have the narration library
+    // print the wrong one against the new audio. Normalised here, at the
+    // write, exactly as `BrandService.updateBranding` normalises the same
+    // pair — the schema can bound both strings but cannot know one is
+    // meaningless without the other.
+    const voiceId = input.voiceId;
+    const voiceName = input.voiceName ?? null;
+
+    const shorts = await prisma.short.findMany({
+      where: { videoId: id },
+      select: { outputPath: true },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.video.updateMany({
+        where: {
+          id,
+          userId,
+          deletedAt: null,
+          status: video.status,
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+        },
+        data: {
+          status: "QUEUED",
+          renarrateVoiceId: voiceId,
+          renarrateVoiceName: voiceName,
+          leaseExpiresAt: null,
+          // Requeuing is the operator asking for this video to run, which is
+          // by definition a withdrawal of any earlier cancel — the same
+          // reasoning, and the same write, as `JobService.requeue`.
+          cancelRequestedAt: null,
+          // Reset, like `JobService.retry` and not like `start`: this is a
+          // deliberate operator action on a video that may have exhausted its
+          // three automatic attempts, and refusing to run it because of
+          // failures that happened before the voice changed would leave a
+          // Change-voice button that queues a video nothing will ever claim.
+          attempts: 0,
+          // Deliberately NOT cleared: `generatedTitle`, `generatedDescription`,
+          // `tags` and the thumbnail. All four are derived from the script,
+          // not from the narration, and `runPipeline` re-runs both optional
+          // stages unconditionally anyway — so clearing them would only widen
+          // the window where a video that is already publishable has no title.
+        },
+      });
+
+      if (count === 0) {
+        throw new ConflictError("The video's status changed unexpectedly.");
+      }
+
+      // Hard delete, per the `Short` model's own comment: a soft-deleted row
+      // would keep occupying its `(videoId, index)` slot and block the next
+      // generation while being filtered out of every read.
+      await tx.short.deleteMany({ where: { videoId: id } });
+
+      await tx.videoStatusEvent.create({
+        data: {
+          videoId: id,
+          from: video.status,
+          to: "QUEUED",
+          message: `Re-narrating in ${voiceName ?? voiceId}`,
+        },
+      });
+
+      await tx.activityLog.create({
+        data: {
+          userId,
+          action: "video.renarrate",
+          entityType: "Video",
+          entityId: id,
+          message:
+            `Queued a re-narration in ${voiceName ?? voiceId}` +
+            (shorts.length > 0
+              ? `, discarding ${shorts.length} short${shorts.length === 1 ? "" : "s"} cut from the old narration`
+              : ""),
+        },
+      });
+    });
+
+    // After the transaction commits, not inside it: a rolled-back transaction
+    // must not leave the operator's shorts playable-in-name-only with their
+    // files already deleted. Best-effort — an orphaned file costs disk, a
+    // throw here would cost a re-narration that has already been queued. Same
+    // arrangement, for the same reasons, as `ShortsService.generate`.
+    for (const short of shorts) {
+      if (short.outputPath) {
+        await deleteShortFile(short.outputPath).catch(() => {});
+      }
+    }
+
+    return { shortsRemoved: shorts.length };
   }
 
   /**
