@@ -178,6 +178,9 @@ model Channel {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   statistics        ChannelStatistic[]
+  /// At most one, and it is the analytics collector's bookkeeping for this
+  /// channel — see ChannelCollection.
+  collection        ChannelCollection?
   publications      Publication[]
   shortPublications ShortPublication[]
   projects          Project[]
@@ -205,6 +208,87 @@ model ChannelStatistic {
 
   @@index([channelId, capturedAt])
   @@map("channel_statistic")
+}
+
+/// Where the analytics collector has got to on one channel, and why it stopped.
+///
+/// `ChannelStatistic` and `VideoAnalytic` are the *output*; this row is the
+/// bookkeeping that produces them. It exists for three reasons, and every
+/// column below belongs to one of them:
+///
+///   1. **A claim, so two workers cannot collect the same channel at once.**
+///      `nextCollectionAt` is the lock, advanced inside the conditional update
+///      that wins the row — the same discipline as `Schedule.nextRunAt` and
+///      `ReleaseCadence.nextReleaseAt`, for the same reason (see
+///      `ChannelAnalyticsService.claimDue`). `claimExpiresAt` is a lease rather
+///      than a lock because a collection is a dozen HTTPS calls to Google and a
+///      worker can die mid-flight; nothing else would ever clear it.
+///
+///   2. **A bounded backfill.** A channel connected today may have a year of
+///      published videos behind it, and asking the Analytics API for all of it
+///      in one burst is exactly the shape of request that spends a quota the
+///      publishing path shares. `backfilledThrough` is how far back the history
+///      has been walked, moving one bounded chunk per run — see
+///      `BACKFILL_CHUNK_DAYS`.
+///
+///   3. **A failing channel that says so.** A dead OAuth token on one channel
+///      must not stall the others, so a failure is recorded here and the tick
+///      moves on. `lastError` is the sentence the operator reads on /analytics;
+///      `consecutiveFailures` is what turns one bad night into a backoff rather
+///      than a tight retry loop against a token that will not come back.
+model ChannelCollection {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// The lock, and the schedule. Defaults to `now()` so a channel connected
+  /// before this table existed is due immediately rather than never.
+  nextCollectionAt DateTime @default(now())
+
+  /// Held for one collection. See the lease reasoning above.
+  claimExpiresAt DateTime?
+
+  /// When a collection last *succeeded*. This is what /analytics renders as
+  /// "captured N hours ago", and it is deliberately distinct from
+  /// `lastAttemptAt` below: a dashboard whose numbers are three days old must
+  /// say three days, not "checked a minute ago".
+  lastCollectedAt DateTime?
+  /// When a collection was last *tried*, successful or not. Moved by every
+  /// claim, so "the collector is running but getting nowhere" is visibly
+  /// different from "the collector has not run".
+  lastAttemptAt   DateTime?
+
+  /// How far back the per-video history has been walked, as a date. Null means
+  /// the backfill has not started. When this reaches the earliest publication's
+  /// publish date (or `BACKFILL_FLOOR_DAYS`), `backfillComplete` goes true and
+  /// the cadence drops to daily.
+  backfilledThrough DateTime? @db.Date
+  backfillComplete  Boolean   @default(false)
+
+  /// Null until a monetary query has been attempted; false once the Analytics
+  /// API has refused monetary metrics for this channel.
+  ///
+  /// A flag here rather than a nullable `VideoAnalytic.estimatedRevenue`
+  /// because the fact is per *channel*, not per video-day: a channel is either
+  /// monetised and in the Partner Programme or it is not, and the API refuses
+  /// the whole report either way. `estimatedRevenue` is `@default(0)` and not
+  /// nullable, so without this the page could not tell "earned nothing" from
+  /// "we were never allowed to ask" — and showing $0.00 for the second is a
+  /// claim about the operator's income that this app has no basis to make.
+  revenueAvailable Boolean?
+
+  /// The last failure, in a sentence safe to show the operator verbatim.
+  /// Cleared by the next success, so a channel that recovered stops shouting.
+  lastError           String?
+  /// Reset to zero by any success. Drives the backoff in `recordFailure`.
+  consecutiveFailures Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channelId String  @unique @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([nextCollectionAt])
+  @@map("channel_collection")
 }
 
 /// A channel's identity: what its videos look like, sound like and are about.
