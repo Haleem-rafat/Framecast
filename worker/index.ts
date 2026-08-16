@@ -35,6 +35,21 @@ const POLL_INTERVAL_MS = 5_000;
  */
 const SCHEDULE_TICK_INTERVAL_MS = 30_000;
 
+/**
+ * How often to ask whether a shorts release slot is due.
+ *
+ * The same thirty seconds, for a nearly identical reason: a cadence expresses
+ * its slots to the minute, so a poll finer than that buys nothing, and one
+ * coarser would let a clip drift visibly past the time of day it was scheduled
+ * for. Denser than a schedule's occurrences — three a day per channel rather
+ * than one a week — but the *query* is the same single indexed lookup that
+ * almost always returns nothing, so the cost of asking is the same.
+ *
+ * A separate timer rather than sharing the schedule's, so that a schedule tick
+ * that finds work does not also delay the release check behind it.
+ */
+const RELEASE_TICK_INTERVAL_MS = 30_000;
+
 /** Display names for `PipelineStageName`, same list as scripts/render.ts —
  * kept here rather than imported because it's purely a presentation concern,
  * duplicated intentionally rather than shared for it. */
@@ -60,6 +75,7 @@ async function main(): Promise<void> {
   const { jobService, HEARTBEAT_SECONDS } = await import("@/services/job.service");
   const { runPipeline, PipelineCancelledError } = await import("@/services/pipeline-runner");
   const { scheduleService } = await import("@/services/schedule.service");
+  const { releaseService } = await import("@/services/release.service");
   const { shortsService } = await import("@/services/shorts.service");
 
   // Railway sends SIGTERM on every deploy. `shuttingDown` stops the loop from
@@ -258,6 +274,11 @@ async function main(): Promise<void> {
    */
   let nextScheduleTickAt = 0;
 
+  /** When the shorts release due-check may next run. Zero for the same reason
+   *  as the schedule's: a worker that has just come back up is exactly when a
+   *  slot is most likely to be overdue. */
+  let nextReleaseTickAt = 0;
+
   while (!shuttingDown) {
     try {
       // Deliberately before the video claim rather than after it, and this is
@@ -286,6 +307,48 @@ async function main(): Promise<void> {
             `schedule "${tick.scheduleName}" due ${tick.scheduledFor.toISOString()} → ` +
               `${tick.outcome}${tick.videoId ? ` (video ${tick.videoId})` : ""}` +
               `${tick.reason ? ` — ${tick.reason}` : ""}`,
+          );
+        }
+      }
+
+      // Beside the schedule tick and ahead of the video claim, for the same
+      // reason: behind it, a busy worker would `continue` on a claimed video
+      // every iteration and 08:00 would arrive whenever the render backlog
+      // happened to clear.
+      //
+      // What is different, and worth being honest about, is the cost when this
+      // one *does* find work. A schedule tick that fires is one Anthropic call;
+      // a release that fires reads tens of megabytes off disk and PUTs them to
+      // YouTube, which is seconds to tens of seconds with the loop held. That
+      // is deliberate, and the alternative was worse: running the upload
+      // without awaiting it would put a multi-megabyte buffer alongside
+      // whatever FFmpeg is holding, on a box with 4GB and two vCPUs, at exactly
+      // the moment renders are most likely to be running. Nine uploads a day
+      // across three channels is about three minutes of held loop, against
+      // renders that take ten minutes each — so the video that waits, waits an
+      // unnoticeable amount.
+      //
+      // A slot that comes due *during* a render is the one case that shows: the
+      // iteration is inside `processVideo`, so the clip goes out when the render
+      // finishes rather than on the minute. History records the slot it was for
+      // (`scheduledFor`) separately from when it happened (`createdAt`), so a
+      // late release reads as late rather than as on time.
+      //
+      // `releaseService.tick()` claims at most one slot, which is also this
+      // app's answer to three channels all releasing at 08:00 — see its own
+      // doc comment on why the stagger is here rather than in the times the
+      // operator picked.
+      if (Date.now() >= nextReleaseTickAt) {
+        nextReleaseTickAt = Date.now() + RELEASE_TICK_INTERVAL_MS;
+
+        const release = await releaseService.tick();
+
+        if (release) {
+          log(
+            `release "${release.channelTitle}" slot ${release.scheduledFor.toISOString()} → ` +
+              `${release.outcome}` +
+              `${release.youtubeVideoId ? ` (youtube ${release.youtubeVideoId})` : ""}` +
+              `${release.reason ? ` — ${release.reason}` : ""}`,
           );
         }
       }
