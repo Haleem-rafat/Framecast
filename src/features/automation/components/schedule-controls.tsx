@@ -50,12 +50,20 @@ export function ScheduleControls({
   /** Compact variant for the list, where the schedule's name is already on
    *  screen beside the buttons. */
   compact = false,
+  /**
+   * False for a cadence a series owns. `ScheduleService.remove` refuses those —
+   * deleting one would leave a show with a recipe and no queue — so the button
+   * is not offered rather than offered and refused. Pause and resume stay,
+   * because those mean exactly the same thing whoever presses them.
+   */
+  deletable = true,
 }: {
   scheduleId: string;
   scheduleName: string;
   status: "ACTIVE" | "PAUSED";
   runInFlight?: boolean;
   compact?: boolean;
+  deletable?: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -129,7 +137,7 @@ export function ScheduleControls({
         {status === "ACTIVE" ? "Pause" : "Resume"}
       </Button>
 
-      {!compact && (
+      {!compact && deletable && (
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button type="button" variant="ghost" size="sm" disabled={isPending}>

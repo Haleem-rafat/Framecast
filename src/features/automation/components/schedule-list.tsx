@@ -39,6 +39,21 @@ export function ScheduleList({ schedules }: { schedules: ScheduleSummary[] }) {
                 <span className="text-muted-foreground text-xs">
                   {schedule.projectName}
                 </span>
+                {/* A series-owned cadence is edited, and deleted, on its
+                    series — together with the script style and format it runs
+                    with. It is still listed here, because "what is going to
+                    run" is this page's question and hiding half the answer
+                    would be worse than sending the operator one click away. */}
+                {schedule.seriesId && (
+                  <Link
+                    href={`/automation/series/${schedule.seriesId}`}
+                    className="text-muted-foreground text-xs underline-offset-4 hover:underline"
+                  >
+                    <Badge variant="outline">
+                      Series: {schedule.seriesName}
+                    </Badge>
+                  </Link>
+                )}
               </div>
 
               <p className="text-muted-foreground flex items-center gap-1.5 text-sm">

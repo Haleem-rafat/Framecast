@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, Clapperboard } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
@@ -66,16 +66,26 @@ export default async function AutomationPage({ searchParams }: AutomationPagePro
         title="One-click video"
         description="Answer a few questions and Framecast writes the script, approves it for you, and runs the pipeline through to a finished video. Publishing stays yours."
         actions={
-          /* The same flow, on a timer. Surfaced here rather than in the sidebar
-             because a schedule is not a separate feature — it is this page's
-             own button, pressed for you every Monday — and finding it beside
-             the manual version is what makes that relationship obvious. */
-          <Button asChild variant="outline">
-            <Link href="/automation/schedules">
-              <CalendarClock />
-              Schedules
-            </Link>
-          </Button>
+          /* The same flow, twice removed. A schedule is this page's own button
+             pressed for you every Monday; a series is that plus the answers, so
+             the questions below are never asked again. Both are surfaced here
+             rather than only in the sidebar because neither is a separate
+             feature — finding them beside the manual version is what makes the
+             relationship obvious. */
+          <div className="flex flex-wrap items-center gap-2">
+            <Button asChild>
+              <Link href="/automation/series">
+                <Clapperboard />
+                Series
+              </Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/automation/schedules">
+                <CalendarClock />
+                Schedules
+              </Link>
+            </Button>
+          </div>
         }
       />
 

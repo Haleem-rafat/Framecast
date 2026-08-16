@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   BarChart3,
+  Clapperboard,
   FileText,
   Image,
   KeyRound,
@@ -97,7 +98,10 @@ export const navigation: NavGroup[] = [
         title: "Projects",
         href: "/projects",
         icon: Library,
-        keywords: ["series", "archive"],
+        // "series" deliberately not a keyword here any more: it is now a real
+        // page of its own, and the palette must not send somebody looking for
+        // their shows to the project list.
+        keywords: ["folder", "archive"],
         built: true,
       },
       {
@@ -124,6 +128,13 @@ export const navigation: NavGroup[] = [
         href: "/automation",
         icon: Sparkles,
         keywords: ["one click", "pipeline", "generate"],
+        built: true,
+      },
+      {
+        title: "Series",
+        href: "/automation/series",
+        icon: Clapperboard,
+        keywords: ["show", "recurring", "schedule", "cadence", "format", "recipe"],
         built: true,
       },
       {

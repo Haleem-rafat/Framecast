@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AlertTriangle, ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Clapperboard } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -64,6 +64,7 @@ export default async function SchedulePage({ params }: SchedulePageProps) {
               scheduleName={schedule.name}
               status={schedule.status}
               runInFlight={schedule.runInFlight}
+              deletable={schedule.seriesId === null}
             />
           }
         />
@@ -96,11 +97,37 @@ export default async function SchedulePage({ params }: SchedulePageProps) {
         </Alert>
       )}
 
+      {/* A series-owned cadence is edited on its series, where the script style
+          and the format it runs with are edited too. `ScheduleService.update`
+          refuses it outright — the answers stored here are reconciled against
+          the *series'* script style, and this form has no idea which that is —
+          so offering the form and then failing the save would be the worst of
+          both. Everything else on this page is read-only or safe: the queue and
+          pause/resume mean the same thing whoever presses them. */}
+      {schedule.seriesId && (
+        <Alert>
+          <Clapperboard />
+          <AlertTitle>Part of the “{schedule.seriesName}” series</AlertTitle>
+          <AlertDescription>
+            <span>
+              This cadence belongs to a series, so it is edited there — together
+              with the script style, the format and the channel every episode
+              inherits.
+            </span>
+            <Button asChild variant="outline" size="sm" className="mt-1">
+              <Link href={`/automation/series/${schedule.seriesId}`}>
+                Open the series
+              </Link>
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <ScheduleTopicQueue scheduleId={schedule.id} topics={schedule.topics} />
 
       <ScheduleRunHistory runs={schedule.runs} />
 
-      {setup.prompt && setup.projects.length > 0 && (
+      {!schedule.seriesId && setup.prompt && setup.projects.length > 0 && (
         <ScheduleForm
           projects={setup.projects}
           prompt={setup.prompt}
