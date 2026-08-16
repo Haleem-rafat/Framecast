@@ -2,9 +2,9 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import {
 } from "@/components/shared/responsive-dialog";
 import { FormField } from "@/components/shared/form-field";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -27,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createProjectAction,
@@ -46,6 +48,20 @@ export interface ProjectDialogProject {
   name: string;
   description: string | null;
   channelId: string | null;
+  /**
+   * How many live series file their episodes here.
+   *
+   * The reason this dialog needs it: a series keeps its own copy of the channel,
+   * and every series screen shows that copy, while an upload uses the project's.
+   * Changing the channel here used to move the second and leave the first
+   * saying something else — a show captioned "kids channel" everywhere, one
+   * click from uploading to a finance channel, with nothing on screen to
+   * suggest it. `projectService.update` now refuses that edit outright unless
+   * the request acknowledges it, and this number is what the acknowledgement is
+   * made of: the operator is told how many shows move before they can confirm
+   * that they do.
+   */
+  seriesCount: number;
 }
 
 interface ProjectDialogProps {
@@ -63,6 +79,11 @@ function toDefaultValues(project?: ProjectDialogProject): CreateProjectInput {
     // `undefined`, not `null`: the schema's `channelId` is optional, and the
     // service reads `?? null`, so an absent value is what clears the channel.
     channelId: project?.channelId ?? undefined,
+    // Never carried over from a previous open. Consent to move somebody's shows
+    // onto a different channel is consent to *this* edit and no other, and a
+    // dialog that remembered the tick would be a dialog where the second edit
+    // is quieter than the first.
+    moveAttachedSeries: false,
   };
 }
 
@@ -81,16 +102,38 @@ export function ProjectDialog({ channels, project, trigger }: ProjectDialogProps
   const [open, setOpen] = useState(false);
   const isEdit = Boolean(project);
 
+  const moveSeriesId = useId();
+
   const {
     register,
     control,
     handleSubmit,
     reset,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<CreateProjectInput>({
     resolver: zodResolver(createProjectSchema),
     defaultValues: toDefaultValues(project),
   });
+
+  const selectedChannelId = watch("channelId") ?? null;
+  const moveAttachedSeries = watch("moveAttachedSeries") ?? false;
+
+  /**
+   * Whether this save would move shows onto a different channel.
+   *
+   * Computed from the picker's live value rather than checked on submit,
+   * because the point is to say so *before* the button is pressed — the whole
+   * defect being closed here is one where nothing was said until an upload had
+   * already landed on the wrong channel.
+   */
+  const seriesCount = project?.seriesCount ?? 0;
+  const movesSeries =
+    isEdit && seriesCount > 0 && selectedChannelId !== (project?.channelId ?? null);
+  const clearsChannel = movesSeries && selectedChannelId === null;
+  const destinationTitle =
+    channels.find((channel) => channel.id === selectedChannelId)?.title ?? null;
+  const shows = `${seriesCount} series`;
 
   async function onSubmit(values: CreateProjectInput) {
     const result = isEdit
@@ -200,10 +243,74 @@ export function ProjectDialog({ channels, project, trigger }: ProjectDialogProps
                 )}
               />
             )}
+            {/* Only when the edit would actually do it. A project with no
+              * series, or one whose channel is not being touched, gets nothing
+              * — this is a warning about a specific consequence, and a standing
+              * notice about a consequence that is not happening is how people
+              * learn to click past warnings. */}
+            {movesSeries && (
+              <div className="border-destructive/30 bg-destructive/10 space-y-2 rounded-lg border p-3">
+                <p className="flex items-start gap-2 text-sm">
+                  <TriangleAlert className="text-destructive mt-0.5 size-4 shrink-0" />
+                  <span>
+                    {clearsChannel ? (
+                      <>
+                        {shows} file{seriesCount === 1 ? "s" : ""} episodes here,
+                        and a series has to have a channel — it takes its niche,
+                        voice, art style and made-for-kids declaration from one.
+                        Leaving this project without a channel is refused; point
+                        the series elsewhere first.
+                      </>
+                    ) : (
+                      <>
+                        {shows} file{seriesCount === 1 ? "s" : ""} episodes here.
+                        Saving this moves {seriesCount === 1 ? "it" : "them"} to{" "}
+                        <strong>{destinationTitle ?? "the chosen channel"}</strong>{" "}
+                        as well, and every unpublished episode already filed here
+                        goes with {seriesCount === 1 ? "it" : "them"}. Publishing
+                        to YouTube can&apos;t be undone.
+                      </>
+                    )}
+                  </span>
+                </p>
+
+                {!clearsChannel && (
+                  <Controller
+                    control={control}
+                    name="moveAttachedSeries"
+                    render={({ field }) => (
+                      <div className="flex items-start justify-between gap-3">
+                        <Label
+                          htmlFor={moveSeriesId}
+                          className="font-normal text-sm"
+                        >
+                          Yes, move {seriesCount === 1 ? "that series" : "those series"}{" "}
+                          too
+                        </Label>
+                        <Switch
+                          id={moveSeriesId}
+                          checked={field.value ?? false}
+                          onCheckedChange={field.onChange}
+                          className="mt-0.5"
+                        />
+                      </div>
+                    )}
+                  />
+                )}
+              </div>
+            )}
           </ResponsiveDialogBody>
 
           <ResponsiveDialogFooter>
-            <Button type="submit" disabled={isSubmitting}>
+            {/* Blocked until the move is acknowledged rather than allowed and
+              * refused by the server. The server refuses it too — that is the
+              * guard that actually holds, and it holds for every caller — but
+              * an operator should not have to submit an irreversible-sounding
+              * edit to find out it needs a tick. */}
+            <Button
+              type="submit"
+              disabled={isSubmitting || (movesSeries && !moveAttachedSeries)}
+            >
               {isSubmitting && <Loader2 className="animate-spin" />}
               {isEdit ? "Save project" : "Create project"}
             </Button>

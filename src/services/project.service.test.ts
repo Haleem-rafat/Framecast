@@ -472,3 +472,181 @@ describe("projectService.deletionImpact", () => {
     }
   });
 });
+
+/**
+ * The hole this closes, and why it was worth closing here rather than at the
+ * publish end alone.
+ *
+ * A channel is recorded in two places. `Project.channelId` is what
+ * `PublishService` uploads to and what the renderer resolves the brand through.
+ * `Series.channelId` is a copy of it, and it is the copy every series screen
+ * reads. `SeriesService.assertRecipe` makes them agree at the moment a series is
+ * written — and then this method could change one of them afterwards, silently,
+ * from a dialog whose only stated purpose is "set a default publishing channel".
+ *
+ * A real row on staging was in exactly that state: a children's bedtime-story
+ * series whose project still pointed at a personal finance channel, four
+ * episodes deep, with every screen saying kids. `videos.insert` cannot be
+ * undone.
+ */
+describe("projectService.update — a project's channel and the series filed under it", () => {
+  /**
+   * A series row, written straight to Prisma.
+   *
+   * `SeriesService.create` would need a schedule, a script style with its
+   * variables reconciled, a provider credential and a ready account — none of
+   * which this guard reads. What it reads is `Project.series`, so that is what
+   * the fixture builds.
+   */
+  async function attachSeries(projectId: string, channelId: string, name: string) {
+    const template = await prisma.promptTemplate.create({
+      data: {
+        userId,
+        name: `style-${RUN}-${randomUUID().slice(0, 8)}`,
+        category: "SCRIPT",
+        content: "Write about {{topic}}.",
+      },
+      select: { id: true },
+    });
+
+    return prisma.series.create({
+      data: {
+        userId,
+        name,
+        channelId,
+        projectId,
+        promptTemplateId: template.id,
+      },
+      select: { id: true },
+    });
+  }
+
+  it("refuses to move the channel out from under an attached series", async () => {
+    const kids = await createChannel(userId, "Pip's Little Wonders");
+    const money = await createChannel(userId, "Money Mechanics");
+    const project = await projectService.create(userId, {
+      name: `bedtime-${RUN}`,
+      channelId: kids.id,
+    });
+    const series = await attachSeries(project.id, kids.id, "Pip's Little Wonders");
+
+    await expect(
+      projectService.update(userId, project.id, {
+        name: project.name,
+        channelId: money.id,
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    // The refusal names the show and both channels, because the operator has to
+    // be able to tell from the message alone what they are about to do.
+    await expect(
+      projectService.update(userId, project.id, {
+        name: project.name,
+        channelId: money.id,
+      }),
+    ).rejects.toThrow(/Pip's Little Wonders[\s\S]*Money Mechanics/);
+
+    // Neither half moved. A refusal that had written the project and not the
+    // series would have created the very divergence it exists to prevent.
+    expect(
+      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).channelId,
+    ).toBe(kids.id);
+    expect(
+      (await prisma.series.findUniqueOrThrow({ where: { id: series.id } })).channelId,
+    ).toBe(kids.id);
+  });
+
+  it("moves the project and its series together once the move is acknowledged", async () => {
+    const kids = await createChannel(userId, "Pip's Little Wonders");
+    const money = await createChannel(userId, "Money Mechanics");
+    const project = await projectService.create(userId, {
+      name: `bedtime-ack-${RUN}`,
+      channelId: kids.id,
+    });
+    const one = await attachSeries(project.id, kids.id, "Pip's Little Wonders");
+    const two = await attachSeries(project.id, kids.id, "Pip's Bigger Wonders");
+
+    await projectService.update(userId, project.id, {
+      name: project.name,
+      channelId: money.id,
+      moveAttachedSeries: true,
+    });
+
+    expect(
+      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).channelId,
+    ).toBe(money.id);
+    // Both, not just the one that happened to be first: the carry is an
+    // `updateMany` over the project's series, not a fix-up of one row.
+    for (const series of [one, two]) {
+      expect(
+        (await prisma.series.findUniqueOrThrow({ where: { id: series.id } })).channelId,
+      ).toBe(money.id);
+    }
+  });
+
+  it("refuses to leave an attached series with no channel at all", async () => {
+    const kids = await createChannel(userId, "Pip's Little Wonders");
+    const project = await projectService.create(userId, {
+      name: `bedtime-none-${RUN}`,
+      channelId: kids.id,
+    });
+    await attachSeries(project.id, kids.id, "Pip's Little Wonders");
+
+    // Even with the acknowledgement: a series' channel is NOT NULL and carries
+    // its whole brand, so there is no honest value to carry it to.
+    await expect(
+      projectService.update(userId, project.id, {
+        name: project.name,
+        moveAttachedSeries: true,
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(
+      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).channelId,
+    ).toBe(kids.id);
+  });
+
+  it("still renames a project with series attached, as long as the channel stays", async () => {
+    const kids = await createChannel(userId, "Pip's Little Wonders");
+    const project = await projectService.create(userId, {
+      name: `bedtime-rename-${RUN}`,
+      channelId: kids.id,
+    });
+    await attachSeries(project.id, kids.id, "Pip's Little Wonders");
+
+    await projectService.update(userId, project.id, {
+      name: `bedtime-renamed-${RUN}`,
+      channelId: kids.id,
+    });
+
+    expect(
+      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).name,
+    ).toBe(`bedtime-renamed-${RUN}`);
+  });
+
+  it("refuses a channel the operator does not own", async () => {
+    const strangerId = await createTestUser("project-stranger");
+
+    try {
+      const theirs = await createChannel(strangerId, "Somebody Else's Channel");
+      const project = await projectService.create(userId, { name: `foreign-${RUN}` });
+
+      await expect(
+        projectService.update(userId, project.id, {
+          name: project.name,
+          channelId: theirs.id,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+
+      await expect(
+        projectService.create(userId, { name: `foreign-create-${RUN}`, channelId: theirs.id }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+
+      expect(
+        (await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).channelId,
+      ).toBeNull();
+    } finally {
+      await deleteTestUser(strangerId);
+    }
+  });
+});

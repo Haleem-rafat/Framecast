@@ -4,6 +4,30 @@ import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { CreateProjectInput } from "@/schemas/project.schema";
 
+/**
+ * How many attached series a refusal will name before it starts counting the
+ * rest. Long enough that the usual case ("Pip's Little Wonders") reads as a
+ * name rather than a number, short enough that a project with a dozen shows
+ * does not produce a paragraph inside a toast.
+ */
+const NAMED_SERIES_LIMIT = 3;
+
+/** "a", "a and b", "a, b and 4 others" — the list half of the refusals below. */
+function nameSeries(series: { name: string }[]): string {
+  const named = series.slice(0, NAMED_SERIES_LIMIT).map((row) => `"${row.name}"`);
+  const rest = series.length - named.length;
+
+  if (rest > 0) {
+    return `${named.join(", ")} and ${rest} other${rest === 1 ? "" : "s"}`;
+  }
+
+  if (named.length <= 1) {
+    return named.join("");
+  }
+
+  return `${named.slice(0, -1).join(", ")} and ${named.at(-1)}`;
+}
+
 export class ProjectService {
   async list(userId: string) {
     return prisma.project.findMany({
@@ -13,11 +37,25 @@ export class ProjectService {
       // a soft-deleted video (see `VideoService.remove`) would keep
       // inflating this project's count forever, even though it no longer
       // shows up anywhere the operator can see it.
-      include: { _count: { select: { videos: { where: { deletedAt: null } } } } },
+      //
+      // The series count joins it because the edit dialog has to be able to say
+      // what moving this project's channel would do *before* the operator does
+      // it — see `update` below, which refuses the move unless the request
+      // acknowledges exactly this number.
+      include: {
+        _count: {
+          select: {
+            videos: { where: { deletedAt: null } },
+            series: { where: { deletedAt: null } },
+          },
+        },
+      },
     });
   }
 
   async create(userId: string, input: CreateProjectInput) {
+    await this.assertOwnedChannel(userId, input.channelId ?? null);
+
     return prisma.project.create({
       data: {
         userId,
@@ -28,18 +66,165 @@ export class ProjectService {
     });
   }
 
+  /**
+   * Renames a project, and — the part that needs guarding — moves which channel
+   * its videos publish to.
+   *
+   * `Project.channelId` is the authoritative answer to "where does this
+   * publish": `PublishService` reads it (`video -> project -> channel`), so does
+   * `brandService.resolve` for the look, voice and COPPA declaration, and so
+   * does `ReleaseService` when it drips this video's shorts out later. A
+   * `Series` stores a *copy* of it, and every series screen shows that copy.
+   *
+   * Which is why this method can no longer change the channel out from under an
+   * attached series. It used to: one edit here silently redirected every episode
+   * of every show filed under the project, while the series page went on
+   * displaying the channel it used to publish to. That is not a cosmetic drift —
+   * `videos.insert` cannot be undone, so the first anyone learns of it is a
+   * children's bedtime story sitting on a personal finance channel.
+   *
+   * The two copies are therefore kept equal by construction from here on:
+   *
+   *   - No attached series, or no channel change: nothing to reconcile, and the
+   *     write is exactly what it always was.
+   *   - Attached series and a channel change: refused unless the caller sends
+   *     `moveAttachedSeries`, which the edit dialog only offers once it has told
+   *     the operator how many shows move and where to. With it, the project and
+   *     every one of its series move together, in one transaction, so there is
+   *     no instant at which the two disagree.
+   *   - Attached series and a move to "no channel": refused outright. A series'
+   *     channel is NOT NULL and carries its whole brand; there is no honest
+   *     value to carry it to.
+   */
   async update(userId: string, id: string, input: CreateProjectInput) {
-    const { count } = await prisma.project.updateMany({
+    const nextChannelId = input.channelId ?? null;
+
+    const project = await prisma.project.findFirst({
       where: { id, userId, deletedAt: null },
-      data: {
-        name: input.name,
-        description: input.description ?? null,
-        channelId: input.channelId ?? null,
+      select: {
+        id: true,
+        name: true,
+        channelId: true,
+        channel: { select: { title: true } },
+        series: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: "asc" },
+          select: { id: true, name: true },
+        },
       },
     });
 
-    if (count === 0) {
+    if (!project) {
       throw new NotFoundError("Project");
+    }
+
+    await this.assertOwnedChannel(userId, nextChannelId);
+
+    const movesChannel = project.channelId !== nextChannelId;
+    const attached = project.series;
+
+    if (!movesChannel || attached.length === 0) {
+      const { count } = await prisma.project.updateMany({
+        where: { id, userId, deletedAt: null },
+        data: {
+          name: input.name,
+          description: input.description ?? null,
+          channelId: nextChannelId,
+        },
+      });
+
+      if (count === 0) {
+        throw new NotFoundError("Project");
+      }
+
+      return;
+    }
+
+    const from = project.channel?.title ?? "no channel";
+    // "series" is its own plural, so the list needs no branch; the verbs do.
+    const shows = `series ${nameSeries(attached)}`;
+    const file = attached.length === 1 ? "files its" : "file their";
+
+    if (nextChannelId === null) {
+      throw new ConflictError(
+        `"${project.name}" is where the ${shows} ${file} episodes, and a series has to ` +
+          `have a channel — it takes its niche, voice, music, art style and ` +
+          `made-for-kids declaration from one. Point the ${shows} at a different ` +
+          `project first, or leave this project on ${from}.`,
+      );
+    }
+
+    // Read for the message, not for the check. Naming the destination is the
+    // difference between a refusal the operator can act on and one they have to
+    // go and look up; ownership itself was already settled above.
+    const destination = await prisma.channel.findFirst({
+      where: { id: nextChannelId, userId, deletedAt: null },
+      select: { title: true },
+    });
+    const to = destination?.title ?? "another channel";
+
+    if (!input.moveAttachedSeries) {
+      throw new ConflictError(
+        `Moving "${project.name}" from ${from} to ${to} would move the ${shows} onto ${to} too — ` +
+          `every future episode, and every episode already filed here that has not been ` +
+          `published yet, would upload to ${to} instead. Publishing to YouTube cannot be ` +
+          `undone. Confirm the move if that is what you want, or point the ${shows} at a ` +
+          `different project first.`,
+      );
+    }
+
+    // One transaction, because the whole point is that there is never a moment
+    // at which `Project.channelId` and `Series.channelId` disagree — a reader
+    // landing between two separate writes is exactly the state this method
+    // exists to make unreachable.
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.project.updateMany({
+        where: { id, userId, deletedAt: null },
+        data: {
+          name: input.name,
+          description: input.description ?? null,
+          channelId: nextChannelId,
+        },
+      });
+
+      if (count === 0) {
+        throw new NotFoundError("Project");
+      }
+
+      await tx.series.updateMany({
+        where: { projectId: id, userId, deletedAt: null },
+        data: { channelId: nextChannelId },
+      });
+    });
+  }
+
+  /**
+   * A project may only point at a channel the operator actually owns.
+   *
+   * Never enforced before, because nothing downstream trusted the value on its
+   * own — `channelService.resolveAccessToken` scopes by `userId`, so a foreign
+   * id could not have produced an upload. It is enforced now because the
+   * publish dialog offers a channel picker whose refusals are phrased in terms
+   * of "the channel this video is filed under", and a project holding an id
+   * that resolves to nothing turns every one of those sentences into a
+   * half-truth. A null channel — "publishes nowhere in particular" — stays
+   * perfectly legal.
+   */
+  private async assertOwnedChannel(
+    userId: string,
+    channelId: string | null,
+  ): Promise<void> {
+    if (channelId === null) {
+      return;
+    }
+
+    const channel = await prisma.channel.findFirst({
+      where: { id: channelId, userId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!channel) {
+      throw new NotFoundError("Channel");
     }
   }
 

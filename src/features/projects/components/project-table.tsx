@@ -137,6 +137,10 @@ export function ProjectTable({
                 name: project.name,
                 description: project.description,
                 channelId: project.channelId,
+                // What makes the channel picker in that dialog say out loud
+                // that changing it moves shows as well. Zero — the common case
+                // — draws nothing at all.
+                seriesCount: project._count.series,
               }}
               trigger={
                 <Button variant="ghost" size="sm">
