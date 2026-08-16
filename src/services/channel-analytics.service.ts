@@ -48,15 +48,20 @@ import { hoursUntilQuotaReset } from "@/services/publish.service";
  * channel**, and they are the same units publishing spends. This collector is
  * built to be invisible in that budget:
  *
- *   * Steady state costs **1 Data API unit per channel per day** — a single
- *     `channels.list`. Ten channels is 10 units, 0.1% of the pool.
+ *   * **1 Data API unit per channel per day. Not per run — per day.** The only
+ *     Data API call here is `channels.list`, and `captureChannelSnapshot`
+ *     skips it outright once a snapshot exists for the current UTC day. So a
+ *     channel backfilling every fifteen minutes costs exactly the same single
+ *     unit as one sitting idle on the daily cadence. Ten channels is 10 units
+ *     against 10,000 — 0.1% — on the busiest possible day.
  *   * Every per-video figure comes from the Analytics API, which has its own
  *     separate allowance that publishing does not touch. Two `reports.query`
  *     calls per 50 videos per date range: a 200-video channel costs 8 calls a
- *     day in steady state.
- *   * The backfill runs faster (see `BACKFILL_INTERVAL_MINUTES`) but each run
- *     is the same bounded size, so even a full day of backfilling a channel
- *     costs under 100 Data API units.
+ *     day in steady state, and while backfilling, 8 per run.
+ *
+ * The consequence worth stating plainly: no cadence choice in this file can
+ * starve publishing, because the shared pool is spent once a day per channel
+ * regardless of how often the collector runs.
  *
  * ## Not competing with a render
  *
