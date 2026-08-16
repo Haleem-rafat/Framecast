@@ -4,11 +4,12 @@ import { ArrowLeft } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { AutomationFlow } from "@/features/automation/components/automation-flow";
 import { AutomationRunView } from "@/features/automation/components/automation-run-view";
+import { GenerateModes } from "@/features/automation/components/generate-modes";
 import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
 import { requireUser } from "@/server/session";
 import { automationService } from "@/services/automation.service";
+import { easyModeService } from "@/services/easy-mode.service";
 import { pipelineService } from "@/services/pipeline.service";
 
 export const metadata: Metadata = { title: "One-click video" };
@@ -76,7 +77,12 @@ export default async function GeneratePage({ searchParams }: GeneratePageProps) 
     }
   }
 
-  const setup = await automationService.getSetup(user.id);
+  // One call, not two. `EasyModeService.getSetup` composes
+  // `AutomationService.getSetup` internally, so the blockers, the projects and
+  // the prompt behind both modes are read once and cannot disagree — the
+  // failure a second independent call would eventually produce is a page whose
+  // easy tab says the account is ready and whose written tab says it is not.
+  const setup = await easyModeService.getSetup(user.id);
 
   return (
     <>
@@ -90,7 +96,7 @@ export default async function GeneratePage({ searchParams }: GeneratePageProps) 
 
         <PageHeader
           title="One-click video"
-          description="Answer a few questions and Framecast writes the script, approves it for you, and runs the pipeline through to a finished video. Publishing stays yours."
+          description="Pick a channel, pick a subject, and Framecast writes the script, approves it for you, and runs the pipeline through to a finished video. Publishing stays yours."
         />
       </div>
 
@@ -101,7 +107,11 @@ export default async function GeneratePage({ searchParams }: GeneratePageProps) 
       {setup.blockers.length > 0 || !setup.prompt ? (
         <ReadinessNotice blockers={setup.blockers} />
       ) : (
-        <AutomationFlow projects={setup.projects} prompt={setup.prompt} />
+        <GenerateModes
+          channels={setup.channels}
+          projects={setup.projects}
+          prompt={setup.prompt}
+        />
       )}
     </>
   );
