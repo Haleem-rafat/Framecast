@@ -50,6 +50,20 @@ const SCHEDULE_TICK_INTERVAL_MS = 30_000;
  */
 const RELEASE_TICK_INTERVAL_MS = 30_000;
 
+/**
+ * How often to ask whether a channel is due for an analytics collection.
+ *
+ * Coarser than the schedule and release ticks, and deliberately so. Those two
+ * express their work to the minute; this one has a cadence of a day per channel
+ * (a quarter-hour while backfilling), and the figures it collects are two days
+ * old before YouTube will report them at all. Asking twice a minute would be a
+ * query whose answer cannot have changed.
+ *
+ * Note where the tick is actually *called* — the idle branch at the bottom of
+ * the loop, not up here beside the other two. See the comment at the call site.
+ */
+const ANALYTICS_TICK_INTERVAL_MS = 120_000;
+
 /** Display names for `PipelineStageName`, same list as scripts/render.ts —
  * kept here rather than imported because it's purely a presentation concern,
  * duplicated intentionally rather than shared for it. */
@@ -77,6 +91,9 @@ async function main(): Promise<void> {
   const { scheduleService } = await import("@/services/schedule.service");
   const { releaseService } = await import("@/services/release.service");
   const { shortsService } = await import("@/services/shorts.service");
+  const { channelAnalyticsService } = await import(
+    "@/services/channel-analytics.service"
+  );
 
   // Railway sends SIGTERM on every deploy. `shuttingDown` stops the loop from
   // claiming new work; whatever video is already mid-`processVideo` is left
@@ -279,6 +296,36 @@ async function main(): Promise<void> {
    *  slot is most likely to be overdue. */
   let nextReleaseTickAt = 0;
 
+  /** When the analytics collector may next look. Zero so a freshly deployed
+   *  worker collects on its first idle moment rather than two minutes later —
+   *  which matters exactly once, on the deploy that first creates any
+   *  `ChannelCollection` rows at all. */
+  let nextAnalyticsTickAt = 0;
+
+  /**
+   * Runs one analytics collection if one is due, and logs what it produced.
+   *
+   * Called from two places with different urgency, which is why it is a
+   * function rather than an inline block — see both call sites below.
+   */
+  async function tickAnalytics(): Promise<void> {
+    nextAnalyticsTickAt = Date.now() + ANALYTICS_TICK_INTERVAL_MS;
+
+    const collection = await channelAnalyticsService.tick();
+
+    if (!collection) {
+      return;
+    }
+
+    log(
+      `analytics "${collection.channelTitle}" → ${collection.outcome}` +
+        ` (${collection.videoDays} video-day${collection.videoDays === 1 ? "" : "s"}` +
+        `${collection.snapshotTaken ? ", channel snapshot" : ""}` +
+        `${collection.backfilledTo ? `, backfilled to ${collection.backfilledTo}` : ""})` +
+        `${collection.reason ? ` — ${collection.reason}` : ""}`,
+    );
+  }
+
   while (!shuttingDown) {
     try {
       // Deliberately before the video claim rather than after it, and this is
@@ -353,6 +400,29 @@ async function main(): Promise<void> {
         }
       }
 
+      // The escape hatch, and the *only* place analytics collection is allowed
+      // to delay a render.
+      //
+      // Collection normally runs in the idle branch at the bottom of this loop
+      // (see there for why). The hole in that arrangement is a worker that is
+      // never idle: a long enough render backlog would mean the dashboard is
+      // never refreshed at all, and the page would keep saying "captured four
+      // days ago" with nothing explaining it.
+      //
+      // So a channel that has been due for more than six hours outranks the
+      // video claim — but only just. `hasOverdueChannel` is a `count` on the
+      // same index the due-check scans and almost always returns false, and
+      // when it does fire it collects exactly one channel: a `channels.list`
+      // and a handful of `reports.query` calls, seconds of held loop against a
+      // render that takes ten minutes. The interval gate above it means this
+      // cannot be asked more than once every two minutes either.
+      if (
+        Date.now() >= nextAnalyticsTickAt &&
+        (await channelAnalyticsService.hasOverdueChannel())
+      ) {
+        await tickAnalytics();
+      }
+
       const claimed = await jobService.claimNext(WORKER_ID);
 
       if (claimed) {
@@ -371,6 +441,26 @@ async function main(): Promise<void> {
       if (claimedShort) {
         await processShort(claimedShort.shortId, claimedShort.videoId);
         continue;
+      }
+
+      // Nothing to render and nothing to encode — the one moment in this loop
+      // where spending seconds on Google's API costs nobody anything.
+      //
+      // Deliberately *not* up beside the schedule and release ticks. Those two
+      // sit ahead of the video claim because they are what *creates* queued
+      // work: behind it, a busy worker would never fire them and Monday's video
+      // would appear whenever the backlog happened to clear. Analytics
+      // collection is the opposite — it produces nothing anybody is waiting on,
+      // and YouTube will not report a day's figures for about two days anyway,
+      // so a collection deferred behind a ten-minute render is a collection
+      // nobody can tell was deferred.
+      //
+      // What that buys is the constraint this worker actually lives under: 2
+      // vCPUs and 640 MB shared with FFmpeg. A dozen sequential HTTPS round
+      // trips never overlap an encode, because by construction there is no
+      // encode running when this line is reached.
+      if (Date.now() >= nextAnalyticsTickAt) {
+        await tickAnalytics();
       }
 
       await sleep(POLL_INTERVAL_MS);

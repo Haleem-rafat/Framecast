@@ -43,7 +43,10 @@ const QUOTA_RESET_ZONE = "America/Los_Angeles";
  * one — "in about 0 hours" reads as "right now", which is exactly what a
  * quota-exceeded message must not imply.
  *
- * Exported for the test that pins the arithmetic; nothing else calls it.
+ * Exported for the test that pins the arithmetic, and for
+ * `ChannelAnalyticsService.recordFailure`, which has to tell the operator the
+ * same thing about the same reset when the analytics collector runs into the
+ * shared Data API quota. Nothing else calls it.
  */
 export function hoursUntilQuotaReset(now: Date = new Date()): number {
   const parts = new Intl.DateTimeFormat("en-US", {
