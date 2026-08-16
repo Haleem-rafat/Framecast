@@ -4,6 +4,28 @@ import type { VoiceStyle } from "@/lib/video-style";
 
 export interface ScriptGenerationInput {
   prompt: string;
+  /**
+   * A system-level instruction sent alongside `prompt`, never merged into it.
+   *
+   * Exists so a caller can state something about *this channel* that the
+   * operator's stored prompt template knows nothing about — today, who the
+   * channel's recurring character is (see `src/lib/recurring-character.ts`).
+   * That could not go in the prompt string itself: `renderTemplate` treats a
+   * template's declared `PromptVariable` rows as authoritative, so an injected
+   * `{{character}}` token would either be left in the output verbatim or, worse,
+   * be substituted into a template that never asked for it. Keeping it a
+   * separate field also keeps `ScriptVersion.prompt` meaning exactly what its
+   * comment says it means — the rendered template, reproducible from the
+   * operator's own library.
+   *
+   * Absent for every caller that does not set it, and absent means the request
+   * is byte-for-byte the one this method has always made: the AI SDK omits an
+   * undefined `system` entirely. That matters — `generateScript` also serves a
+   * pronunciation-respelling prompt (voiceover.service.ts), a bare API-key
+   * check (provider-credential.service.ts) and topic suggestion
+   * (easy-mode.service.ts), none of which are writing a channel's narration.
+   */
+  system?: string;
   /** Overrides env.AI_SCRIPT_MODEL. */
   model?: string;
   apiKey?: string;

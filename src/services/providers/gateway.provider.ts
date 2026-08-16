@@ -136,11 +136,20 @@ export class GatewayProvider implements TextGenerationProvider {
       let inputTokens: number;
       let outputTokens: number;
 
+      // `system` is spread rather than passed as `system: input.system` so a
+      // caller that sets nothing produces a call object with no `system` key at
+      // all, not one holding `undefined`. Behaviourally the SDK treats the two
+      // the same; the difference is that gateway.provider.test.ts can assert
+      // the *absence* of the field, which is what pins "a live-action channel's
+      // request is byte-for-byte what it was" to something a test can see.
+      const system = input.system ? { system: input.system } : {};
+
       if (input.withSections) {
         const result = await generateObject({
           model: languageModel,
           schema: scriptSchema,
           prompt: input.prompt,
+          ...system,
         });
 
         sections = result.object.sections;
@@ -167,6 +176,7 @@ export class GatewayProvider implements TextGenerationProvider {
         const result = await generateText({
           model: languageModel,
           prompt: input.prompt,
+          ...system,
         });
 
         content = result.text;

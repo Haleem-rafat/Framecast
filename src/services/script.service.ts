@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
+import { recurringCharacterInstruction } from "@/lib/recurring-character";
 import { anchorCues, extractAnchor, type ScriptCue } from "@/lib/script-cues";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
@@ -53,7 +54,31 @@ export class ScriptService {
   ) {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
-      select: { id: true, status: true, title: true, topic: true },
+      select: {
+        id: true,
+        status: true,
+        title: true,
+        topic: true,
+        // Who this channel's recurring character is, if it has one.
+        //
+        // Read through the video's own operator-scoped row rather than via
+        // `brandService.resolve(channelId)`, for the two reasons
+        // footage.service.ts gives for reading the same columns the same way:
+        // it costs no second query, and it cannot resolve a channel this
+        // operator does not own. A video whose project has no channel, or a
+        // channel with no brand row, arrives here as null and
+        // `recurringCharacterInstruction` returns null for it — the same
+        // outcome as a live-action channel, which is to say no change at all.
+        project: {
+          select: {
+            channel: {
+              select: {
+                brand: { select: { footageStyle: true, characterBrief: true } },
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!video) {
@@ -77,6 +102,30 @@ export class ScriptService {
       template.variables,
     );
 
+    // Sent beside the rendered prompt, never inside it.
+    //
+    // The prompt string is not available for this. `renderTemplate` treats the
+    // template's declared `PromptVariable` rows as authoritative — an
+    // undeclared `{{placeholder}}` is deliberately left unsubstituted so a typo
+    // stays visible — so injecting a `{{character}}` token would print the
+    // token verbatim in every template that does not declare it, and would
+    // rewrite the meaning of the one that does. Appending prose to
+    // `template.content` instead would silently edit the operator's own
+    // template on every generation and then store that edited text in
+    // `ScriptVersion.prompt`, whose whole job is to record what the template
+    // actually said.
+    //
+    // A system instruction has neither problem: the operator's template goes to
+    // the model unchanged and is stored unchanged, and the channel's standing
+    // fact about its own protagonist sits above it where a standing fact
+    // belongs. `ScriptVersion.prompt` therefore still records the rendered
+    // template exactly; the instruction is not stored beside it because it is
+    // derived, deterministically and from data that is itself stored — this
+    // channel's `characterBrief` and `footageStyle`, both visible on the
+    // branding screen — rather than authored per generation.
+    const system =
+      recurringCharacterInstruction(video.project.channel?.brand) ?? undefined;
+
     const apiKey =
       (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ??
       undefined;
@@ -89,6 +138,7 @@ export class ScriptService {
     try {
       const generated = await this.provider.generateScript({
         prompt,
+        system,
         apiKey,
         withSections: true,
       });

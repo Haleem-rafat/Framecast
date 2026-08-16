@@ -77,6 +77,65 @@ describe("GatewayProvider.generateScript — structured output is opt-in", () =>
   });
 });
 
+describe("GatewayProvider.generateScript — the system instruction is opt-in", () => {
+  // `system` carries what the operator's stored prompt template cannot know:
+  // who this channel's recurring character is. It has to reach the model
+  // *beside* the prompt rather than inside it — see ScriptGenerationInput — and
+  // it has to be genuinely absent for every caller that does not set one, or a
+  // live-action channel's request is no longer the request it always made.
+
+  it("passes a caller's system instruction through to the structured call", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: { sections: [{ text: "Pip could not sleep.", cue: "a bear cub in bed" }] },
+      usage: { inputTokens: 5, outputTokens: 5 },
+    });
+
+    const provider = new GatewayProvider();
+    await provider.generateScript({
+      prompt: "Write a script about a lantern.",
+      system: "The recurring character is a bear cub.",
+      apiKey: "test-key",
+      withSections: true,
+    });
+
+    const call = generateObjectMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(call.system).toBe("The recurring character is a bear cub.");
+    // And it stays out of the prompt: the operator's rendered template is what
+    // `ScriptVersion.prompt` records, and merging the two would corrupt it.
+    expect(call.prompt).toBe("Write a script about a lantern.");
+  });
+
+  it("sends no system field at all when the caller set none", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: { sections: [{ text: "Hi.", cue: "a wave" }] },
+      usage: { inputTokens: 5, outputTokens: 5 },
+    });
+    generateTextMock.mockResolvedValue({
+      text: "ok",
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+
+    const provider = new GatewayProvider();
+
+    await provider.generateScript({
+      prompt: "Write a script about inflation.",
+      apiKey: "test-key",
+      withSections: true,
+    });
+    await provider.generateScript({
+      prompt: "Reply with the single word: ok",
+      apiKey: "test-key",
+    });
+
+    // Absent, not undefined — the key never appears, so a channel with no
+    // recurring character and the two free-form callers (pronunciation
+    // respelling, the API-key check) make byte-for-byte the request they made
+    // before this field existed.
+    expect(generateObjectMock.mock.calls[0][0]).not.toHaveProperty("system");
+    expect(generateTextMock.mock.calls[0][0]).not.toHaveProperty("system");
+  });
+});
+
 describe("GatewayProvider.generateScript — citations stay out of the narration", () => {
   it("returns the model's sources without letting them reach content", async () => {
     generateObjectMock.mockResolvedValue({

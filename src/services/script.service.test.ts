@@ -6,7 +6,10 @@ import { ConflictError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { projectService } from "@/services/project.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
-import type { TextGenerationProvider } from "@/services/providers/types";
+import type {
+  ScriptGenerationInput,
+  TextGenerationProvider,
+} from "@/services/providers/types";
 import { ScriptService } from "@/services/script.service";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
@@ -691,5 +694,234 @@ describe("scriptService.saveEdit — re-anchoring cues (Task 3)", () => {
     // them the way it can invalidate a cue's anchor — dropping them here would
     // silently publish the next render uncited.
     expect(version.sources).toEqual(["https://example.com/h6-release"]);
+  });
+});
+
+/**
+ * The defect: a kids channel branded ILLUSTRATED, whose recurring character is
+ * a bear cub called Pip, was given the topic "the little lantern who was afraid
+ * of the dark". The script came back "Meet Pip, a brass lantern with…" — the
+ * writer had never been told a recurring character existed, so it took the name
+ * and hung it on the topic's protagonist. The illustrator, which *is*
+ * conditioned on the character sheet, drew a bear cub holding a lantern, and
+ * for 142 seconds the narration called a bear a lantern.
+ *
+ * These tests assert the mechanism rather than the model's prose: that the
+ * writer is now *told* who the character is, in wording that pins the species
+ * and says what to do with a topic that names someone else — and, just as
+ * importantly, that a channel with no recurring character sends exactly the
+ * request it always did.
+ */
+describe("scriptService.generate — the channel's recurring character", () => {
+  /** Captures what `generate` actually sends the model. */
+  function capturingProvider() {
+    const calls: ScriptGenerationInput[] = [];
+
+    return {
+      calls,
+      provider: {
+        generateScript: vi.fn(async (input: ScriptGenerationInput) => {
+          calls.push(input);
+          return {
+            content: "Hook. Body. Sources on screen.",
+            model: FAKE_MODEL,
+            provider: "ANTHROPIC" as const,
+            inputTokens: 100,
+            outputTokens: 400,
+            costUsd: 0.0063,
+            latencyMs: 1200,
+          };
+        }),
+      },
+    };
+  }
+
+  const PIP =
+    "Pip, a small round bear cub with soft honey-brown fur, a cream muzzle and " +
+    "a red knitted scarf.";
+
+  /**
+   * A draft video on a channel branded however this test needs it.
+   *
+   * Its own channel and project rather than the module-level ones, so a
+   * channel's branding in one test cannot change what another test sends. Both
+   * hang off the private test user, so `deleteTestUser` cascades them away.
+   */
+  async function makeBrandedVideo(options: {
+    footageStyle: "LIVE_ACTION" | "CARTOON" | "ILLUSTRATED";
+    characterBrief?: string | null;
+    topic: string;
+  }): Promise<string> {
+    const channel = await prisma.channel.create({
+      data: {
+        userId,
+        youtubeChannelId: `UC-script-${randomUUID()}`,
+        title: "Test branded channel",
+        accessToken: "fake-access-token",
+        refreshToken: "fake-refresh-token",
+        tokenExpiresAt: new Date(Date.now() + 3600_000),
+      },
+    });
+
+    await prisma.channelBrand.create({
+      data: {
+        channelId: channel.id,
+        footageStyle: options.footageStyle,
+        characterBrief: options.characterBrief ?? null,
+        artStyle: "storybook-watercolour",
+      },
+    });
+
+    const project = await projectService.create(userId, {
+      name: `${PROJECT_NAME}-${randomUUID().slice(0, 8)}`,
+    });
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { channelId: channel.id },
+    });
+
+    const video = await videoService.create(userId, {
+      projectId: project.id,
+      title: options.topic,
+      topic: options.topic,
+    });
+
+    return video.id;
+  }
+
+  it("tells the writer who the character is when the channel draws its own pictures", async () => {
+    const { calls, provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+    const brandedVideoId = await makeBrandedVideo({
+      footageStyle: "ILLUSTRATED",
+      characterBrief: PIP,
+      topic: "a bear cub who cannot sleep",
+    });
+
+    await branded.generate(userId, brandedVideoId, {});
+
+    expect(calls).toHaveLength(1);
+    // The operator's own words, verbatim — the same text the illustrator is
+    // conditioned on, not a paraphrase that could drift from it.
+    expect(calls[0].system).toContain(PIP);
+  });
+
+  it("changes nothing at all for a live-action channel", async () => {
+    // The byte-for-byte guarantee. A channel with no recurring character must
+    // send the request it sent before this feature existed: the rendered
+    // template and nothing else, with no `system` key for the SDK to act on.
+    const { calls, provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+    const brandedVideoId = await makeBrandedVideo({
+      footageStyle: "LIVE_ACTION",
+      characterBrief: PIP,
+      topic: "inflation",
+    });
+
+    await branded.generate(userId, brandedVideoId, {});
+
+    expect(calls[0].system).toBeUndefined();
+    expect(calls[0].prompt).toBe("Write a script about inflation.");
+  });
+
+  it("changes nothing for a cartoon channel either", async () => {
+    // CARTOON is stock footage from Pixabay's animation filter — it reads no
+    // character sheet and shows a different creature every section, so pinning
+    // the narration to one character would widen the mismatch, not close it.
+    const { calls, provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+    const brandedVideoId = await makeBrandedVideo({
+      footageStyle: "CARTOON",
+      characterBrief: PIP,
+      topic: "inflation",
+    });
+
+    await branded.generate(userId, brandedVideoId, {});
+
+    expect(calls[0].system).toBeUndefined();
+    expect(calls[0].prompt).toBe("Write a script about inflation.");
+  });
+
+  it("says nothing about a character an illustrated channel has not described", async () => {
+    const { calls, provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+    const brandedVideoId = await makeBrandedVideo({
+      footageStyle: "ILLUSTRATED",
+      characterBrief: null,
+      topic: "a bear cub who cannot sleep",
+    });
+
+    await branded.generate(userId, brandedVideoId, {});
+
+    expect(calls[0].system).toBeUndefined();
+  });
+
+  it("changes nothing for a video whose project has no channel", async () => {
+    // The module-level fixture: a project nobody has pointed at a channel. It
+    // must behave exactly as an unbranded channel does rather than throwing on
+    // the newly-selected relation.
+    const { calls, provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+
+    await branded.generate(userId, videoId, {});
+
+    expect(calls[0].system).toBeUndefined();
+    expect(calls[0].prompt).toBe("Write a script about inflation.");
+  });
+
+  it("does not let a topic's own protagonist rename or re-species the character", async () => {
+    // The exact render that exposed this. The topic names a lantern; the
+    // channel's character is a bear cub.
+    const { calls, provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+    const brandedVideoId = await makeBrandedVideo({
+      footageStyle: "ILLUSTRATED",
+      characterBrief: PIP,
+      topic: "The little lantern who was afraid of the dark",
+    });
+
+    await branded.generate(userId, brandedVideoId, {});
+
+    const system = calls[0].system ?? "";
+
+    // The species is stated, and stated as fixed — naming "Pip" alone is what
+    // the model already had from the topic, and is what it got wrong.
+    expect(system).toContain("bear cub");
+    expect(system).toContain("exactly what that description says they are");
+    expect(system).toContain("Their name belongs to them alone");
+
+    // And the topic's protagonist is given somewhere to go: an object Pip
+    // meets, not Pip under a new name.
+    expect(system).toContain("If the topic names or implies some other main character");
+    expect(system).toContain("never the recurring character renamed");
+    expect(system).toContain("does not become a lantern");
+
+    // The topic still reaches the writer intact — the character instruction
+    // constrains who the story is about, it does not replace the subject.
+    expect(calls[0].prompt).toBe(
+      "Write a script about The little lantern who was afraid of the dark.",
+    );
+  });
+
+  it("leaves the operator's template — and the prompt recorded against the version — untouched", async () => {
+    // `renderTemplate` treats declared variables as authoritative, so a
+    // `{{character}}` token injected into the template would print verbatim in
+    // every template that never declared it. Sending the character as a
+    // system instruction instead means `ScriptVersion.prompt` still records
+    // exactly what the operator's template said, which is the only thing that
+    // column is for.
+    const { provider } = capturingProvider();
+    const branded = new ScriptService(provider);
+    const brandedVideoId = await makeBrandedVideo({
+      footageStyle: "ILLUSTRATED",
+      characterBrief: PIP,
+      topic: "a bear cub who cannot sleep",
+    });
+
+    const version = await branded.generate(userId, brandedVideoId, {});
+
+    expect(version.prompt).toBe("Write a script about a bear cub who cannot sleep.");
+    expect(version.prompt).not.toContain("Pip");
+    expect(version.prompt).not.toContain("{{");
   });
 });
