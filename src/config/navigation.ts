@@ -280,3 +280,21 @@ export function findNavItemByPath(pathname: string): NavItem | undefined {
     .sort((a, b) => b.href.length - a.href.length)
     .at(0);
 }
+
+/**
+ * Whether a navigation row should read as the current page.
+ *
+ * Longest-prefix, not "is a prefix". Every surface used to answer this with a
+ * bare `startsWith`, which lights *every* ancestor: standing on
+ * `/automation/generate` highlighted both One-click video and Automation, so
+ * two rows claimed to be where you were and neither was wrong on its own terms.
+ *
+ * Deferring to `findNavItemByPath` means one row is lit at a time and it is the
+ * most specific one — and that the sidebar, the phone dock and the drawer can
+ * no longer drift apart, which they had, each carrying its own copy of the rule.
+ * A path under no entry at all lights nothing rather than lighting the shortest
+ * href that happens to prefix it.
+ */
+export function isNavItemActive(pathname: string, href: string): boolean {
+  return findNavItemByPath(pathname)?.href === href;
+}

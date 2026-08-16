@@ -19,7 +19,7 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { visibleNavigation } from "@/config/navigation";
+import { isNavItemActive, visibleNavigation } from "@/config/navigation";
 import { UserMenu } from "@/components/layout/user-menu";
 import type { SessionUser } from "@/lib/auth";
 
@@ -27,10 +27,6 @@ interface AppSidebarProps {
   user: Pick<SessionUser, "name" | "email" | "image">;
   /** Decides whether the operator-only entries are listed. See `visibleNavigation`. */
   isOperator: boolean;
-}
-
-function isActive(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 export function AppSidebar({ user, isOperator }: AppSidebarProps) {
@@ -93,7 +89,7 @@ export function AppSidebar({ user, isOperator }: AppSidebarProps) {
                     <SidebarMenuItem key={item.href} data-tour={item.href}>
                       <SidebarMenuButton
                         asChild
-                        isActive={isActive(pathname, item.href)}
+                        isActive={isNavItemActive(pathname, item.href)}
                         tooltip={item.title}
                       >
                         <Link href={item.href}>

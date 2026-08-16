@@ -12,7 +12,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { visibleNavigation } from "@/config/navigation";
+import { isNavItemActive, visibleNavigation } from "@/config/navigation";
 import { cn } from "@/lib/utils";
 
 /**
@@ -81,9 +81,7 @@ export function MobileNavDrawer({
                 </p>
                 <ul aria-labelledby={labelId}>
                   {group.items.map((item) => {
-                    const active =
-                      pathname === item.href ||
-                      pathname.startsWith(`${item.href}/`);
+                    const active = isNavItemActive(pathname, item.href);
 
                     return (
                       <li key={item.href}>

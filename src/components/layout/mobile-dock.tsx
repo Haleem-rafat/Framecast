@@ -72,8 +72,24 @@ const FloatingDock = dynamic(
  */
 const DOCK_HREFS = ["/dashboard", "/videos", "/automation", "/logs"] as const;
 
-function isActive(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
+/**
+ * Which dock tab reads as the current page — longest prefix among *these four*,
+ * not among every navigation entry.
+ *
+ * Deliberately not `isNavItemActive`. That one resolves against the whole map,
+ * so standing on `/automation/generate` would light the One-click video entry —
+ * which has no tab here — and the dock would show nothing lit at all. The dock
+ * is a reduced set, so its rule has to be relative to what it actually shows:
+ * the generator and the run view keep the Automation tab lit, because that is
+ * the tab you would press to get back to them.
+ *
+ * Still longest-prefix rather than a bare `startsWith`, so if a nested dock
+ * destination is ever added it wins over its ancestor instead of both lighting.
+ */
+function activeDockHref(pathname: string): string | undefined {
+  return DOCK_HREFS.filter(
+    (href) => pathname === href || pathname.startsWith(`${href}/`),
+  ).sort((a, b) => b.length - a.length)[0];
 }
 
 /**
@@ -89,6 +105,8 @@ export function MobileDock({ isOperator }: { isOperator: boolean }) {
   // Resolved from `navigation` rather than restated here, so a title or icon
   // change in that file reaches the dock too. An href that stops being
   // `built` drops out on its own instead of shipping a tab that 404s.
+  const activeHref = activeDockHref(pathname);
+
   const destinations: FloatingDockItem[] = DOCK_HREFS.flatMap((href) => {
     const item = navItems.find((one) => one.href === href);
     if (!item?.built) return [];
@@ -98,7 +116,7 @@ export function MobileDock({ isOperator }: { isOperator: boolean }) {
         title: item.title,
         icon: <item.icon />,
         href: item.href,
-        active: isActive(pathname, item.href),
+        active: activeHref === item.href,
       },
     ];
   });
