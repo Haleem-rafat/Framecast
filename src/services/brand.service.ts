@@ -438,7 +438,19 @@ export class BrandService {
       headlineFont: brand?.headlineFont ?? FALLBACK.headlineFont,
       tone: brand?.tone ?? FALLBACK.tone,
       niche: brand?.niche ?? FALLBACK.niche,
-      musicQuery: brand?.musicQuery ?? FALLBACK.musicQuery,
+      // `??` is not enough for this one, and it is the only field here where
+      // the difference is visible to anyone. `updateBranding` writes a cleared
+      // box as null (see `promptText` in channel.schema.ts), but rows written
+      // before that transform existed hold `""` — two on this deployment right
+      // now — and `""` is not null, so it sailed past the fallback and became
+      // the *search term*. Jamendo answers an empty `search=` by ignoring it
+      // and returning arbitrary instrumental tracks, so those channels were
+      // not getting "calm ambient instrumental" and were not getting nothing
+      // either: they were getting whatever the catalogue happened to hand
+      // back. Every other fallback here is a colour or a prompt fragment,
+      // where a blank degrades to something dull; this one degrades to
+      // something *wrong*, which is why it is trimmed and the others are not.
+      musicQuery: brand?.musicQuery?.trim() || FALLBACK.musicQuery,
       // `?.` and `??` for three NOT NULL columns is not belt-and-braces:
       // `brand` is null for a channel with no row at all, and `findBrand` also
       // returns null when the lookup itself failed. Both land here, and both

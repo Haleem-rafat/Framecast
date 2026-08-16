@@ -604,11 +604,33 @@ export class RenderService {
       // either way. brandService.resolve's fallback ("calm ambient
       // instrumental") stands in for every channel that has not chosen one,
       // branded or not — nothing here special-cases an unbranded channel.
+      //
+      // A bed that could not be collected is reported rather than skipped.
+      // Silence was how this defect survived: `collect` is documented never
+      // to throw, so every reason a video had no music — an unconfigured
+      // JAMENDO_CLIENT_ID, an empty search, a download that 404d — reached
+      // here as the same `undefined`, and the only difference on the way out
+      // was one word in the "assembling …" line that reads as normal progress
+      // whichever way it goes. Ten videos rendered without music and nothing
+      // anywhere said so. The reason now goes to the worker's progress stream
+      // *and* to `RenderLog` at WARN — the progress stream is a console an
+      // operator has to be watching at the time, and `RenderLog` is what
+      // `PipelineService.getLogStream` puts on the video page afterwards.
       let musicPath: string | undefined;
-      const musicStoragePath = await this.music.collect(videoId, brand.musicQuery);
-      if (musicStoragePath) {
+      const music = await this.music.collect(videoId, brand.musicQuery);
+      if (music.storagePath) {
         musicPath = path.join(tempDir, "music.mp3");
-        await writeFile(musicPath, await getObject(musicStoragePath));
+        await writeFile(musicPath, await getObject(music.storagePath));
+      } else {
+        const message = `No background music: ${music.reason}. Rendering without a bed.`;
+        onProgress(message);
+
+        // Best-effort, and deliberately not awaited into the render's own
+        // failure path: a log row that could not be written must not fail a
+        // video over the thing it was trying to say was only cosmetic.
+        await prisma.renderLog
+          .create({ data: { renderJobId: job.id, level: "WARN", message } })
+          .catch(() => {});
       }
 
       // Everything from here to the finished MP4 is `composer.ts`: the two

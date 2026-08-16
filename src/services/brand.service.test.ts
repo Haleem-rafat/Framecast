@@ -95,6 +95,19 @@ describe("brandService.resolve", () => {
     expect(brand.primaryColour).toBe("#FFCC00");
   });
 
+  it("treats a blank musicQuery as unset rather than searching for nothing", async () => {
+    // `""` is not null, so it slipped past `??` and became the search term
+    // itself — and Jamendo answers an empty `search=` by ignoring it and
+    // handing back arbitrary tracks, so those channels got neither the
+    // documented fallback nor silence but whatever the catalogue offered.
+    // Rows written before `promptText` coerced a cleared box to null still
+    // hold exactly this.
+    await prisma.channelBrand.create({ data: { channelId, musicQuery: "   " } });
+
+    const brand = await brandService.resolve(channelId);
+    expect(brand.musicQuery).toBe("calm ambient instrumental");
+  });
+
   it("discards the whole videoStyle when a leaf has the wrong type", async () => {
     // render.service.ts computes durationSeconds * 2; a string there produces
     // NaN, not a validation error, so this must never reach FFmpeg.

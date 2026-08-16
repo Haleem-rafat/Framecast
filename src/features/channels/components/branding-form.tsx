@@ -948,6 +948,18 @@ function MusicCard({
           changes every episode does not sound like a channel.
         </p>
 
+        {/* Jamendo requires *every* word to match, so each one narrows the
+          * catalogue rather than describing it better — "lullaby" is a search,
+          * "gentle calm lullaby soft piano for children" is a filter almost
+          * nothing survives. Said here because the field looks like a prompt,
+          * and the instinct with a prompt is to add detail. */}
+        <p className="text-muted-foreground text-xs">
+          Keep it to <strong>one or two words</strong>. Jamendo matches every
+          word you type, so a longer phrase searches for fewer tracks, not
+          better ones — &ldquo;lullaby&rdquo;, &ldquo;ambient&rdquo; or
+          &ldquo;soft piano&rdquo; rather than a sentence.
+        </p>
+
         <FieldGroup>
           <FormField
             name="musicQuery"

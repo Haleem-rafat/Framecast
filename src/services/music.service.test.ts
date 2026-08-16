@@ -96,7 +96,7 @@ afterEach(async () => {
 });
 
 describe("MusicService.collect", () => {
-  it("returns null rather than throwing when the provider fails", async () => {
+  it("returns no path rather than throwing when the provider fails", async () => {
     const service = new MusicService({
       search: async () => {
         throw new ProviderError("JAMENDO", "down", true);
@@ -105,19 +105,31 @@ describe("MusicService.collect", () => {
 
     // Music is an enhancement to a video that is already publishable. A
     // Jamendo outage must not turn a renderable video into a failed one.
-    expect(await service.collect(videoId, "calm ambient")).toBeNull();
+    const outcome = await service.collect(videoId, "calm ambient");
+    expect(outcome.storagePath).toBeNull();
+    expect(outcome.reason).toContain("down");
   });
 
-  it("returns null when the search finds nothing usable", async () => {
+  it("returns no path when the search finds nothing usable", async () => {
     const service = new MusicService({ search: async () => [] });
-    expect(await service.collect(videoId, "calm ambient")).toBeNull();
+    const outcome = await service.collect(videoId, "calm ambient");
+
+    expect(outcome.storagePath).toBeNull();
+    // The query itself belongs in the sentence: "no track matched" is only
+    // actionable to someone who can see what was asked for.
+    expect(outcome.reason).toContain("calm ambient");
   });
 
-  it("returns null when the download fails, leaving no asset behind", async () => {
+  it("returns no path when the download fails, leaving no asset behind", async () => {
     stubTrackDownload({ ok: false, status: 404 });
     const service = new MusicService({ search: async () => [track] });
 
-    expect(await service.collect(videoId, "calm ambient")).toBeNull();
+    const outcome = await service.collect(videoId, "calm ambient");
+    expect(outcome.storagePath).toBeNull();
+    // A bed that could not be downloaded and a search that found nothing are
+    // different problems with different answers, so they must not report the
+    // same sentence.
+    expect(outcome.reason).toContain("404");
     expect(
       await prisma.asset.count({
         where: { storagePath: { startsWith: `videos/${videoId}/` } },
@@ -147,12 +159,14 @@ describe("MusicService.collect", () => {
   // between a video with no music and a quarter of an hour of work thrown
   // away over a background track.
   describe("never throws, whatever fails", () => {
-    it("returns null when storage is down while saving the bed", async () => {
+    it("returns no path when storage is down while saving the bed", async () => {
       storage.putObject = "throw";
       stubTrackDownload(downloadedAudio);
       const service = new MusicService({ search: async () => [track] });
 
-      expect(await service.collect(videoId, "calm ambient")).toBeNull();
+      const outcome = await service.collect(videoId, "calm ambient");
+      expect(outcome.storagePath).toBeNull();
+      expect(outcome.reason).toContain("storage is unavailable");
       // And no Asset claiming a bed that was never stored — the next render
       // would reuse that path and hand FFmpeg a file that does not exist.
       expect(
@@ -162,7 +176,7 @@ describe("MusicService.collect", () => {
       ).toBe(0);
     });
 
-    it("returns null when the Asset insert fails after the upload", async () => {
+    it("returns no path when the Asset insert fails after the upload", async () => {
       storage.putObject = "noop";
       stubTrackDownload(downloadedAudio);
       vi.spyOn(prisma.asset, "create").mockRejectedValue(
@@ -170,10 +184,12 @@ describe("MusicService.collect", () => {
       );
       const service = new MusicService({ search: async () => [track] });
 
-      expect(await service.collect(videoId, "calm ambient")).toBeNull();
+      const outcome = await service.collect(videoId, "calm ambient");
+      expect(outcome.storagePath).toBeNull();
+      expect(outcome.reason).toContain("connection terminated unexpectedly");
     });
 
-    it("returns null when even the reuse lookup fails", async () => {
+    it("returns no path when even the reuse lookup fails", async () => {
       // The query that runs before anything else. It is as much a network
       // call as the rest, and it used to sit outside every guard in here.
       vi.spyOn(prisma.asset, "findFirst").mockRejectedValue(
@@ -181,7 +197,9 @@ describe("MusicService.collect", () => {
       );
       const service = new MusicService({ search: async () => [track] });
 
-      expect(await service.collect(videoId, "calm ambient")).toBeNull();
+      const outcome = await service.collect(videoId, "calm ambient");
+      expect(outcome.storagePath).toBeNull();
+      expect(outcome.reason).toContain("connection terminated unexpectedly");
     });
   });
 
@@ -195,7 +213,77 @@ describe("MusicService.collect", () => {
 
     // A re-render must not silently swap the music under a video the operator
     // has already watched and approved.
-    expect(second).toBe(first);
+    expect(first.storagePath).not.toBeNull();
+    expect(second.storagePath).toBe(first.storagePath);
     expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Jamendo answers an identical request with an empty result set on roughly
+   * every other call — HTTP 200, `"status":"success"`, `"results_count":0`.
+   * Measured from the worker on 2026-08-16 at twenty-second spacing:
+   * 0,5,0,5,0,5,5,0,5,5 for "lullaby". One attempt is therefore a coin toss,
+   * and because a bed is reused once stored, a channel that loses the toss on
+   * its first video keeps losing it on every video after.
+   */
+  describe("an empty result set is not an answer", () => {
+    it("asks again when the search comes back empty, and uses what it gets", async () => {
+      stubTrackDownload(downloadedAudio);
+      const search = vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([track]);
+      const service = new MusicService({ search });
+
+      const outcome = await service.collect(videoId, "lullaby");
+
+      expect(outcome.storagePath).not.toBeNull();
+      expect(outcome.reason).toBeNull();
+      expect(search).toHaveBeenCalledTimes(3);
+    });
+
+    it("gives up after a bounded number of attempts and says how many", async () => {
+      const search = vi.fn().mockResolvedValue([]);
+      const service = new MusicService({ search });
+
+      const outcome = await service.collect(videoId, "lullaby");
+
+      // Bounded: a catalogue that genuinely has nothing must not keep a
+      // finished render waiting while it is asked over and over.
+      expect(search).toHaveBeenCalledTimes(3);
+      expect(outcome.storagePath).toBeNull();
+      expect(outcome.reason).toContain("3 attempts");
+    });
+
+    it("does not retry a request Jamendo will refuse the same way twice", async () => {
+      // An unconfigured client id is the failure that actually shipped, and
+      // it is not transient. Retrying it delays the render and the message
+      // that explains it by the full retry budget and changes nothing.
+      const search = vi.fn().mockRejectedValue(
+        new ProviderError("JAMENDO", "JAMENDO_CLIENT_ID is not configured.", false),
+      );
+      const service = new MusicService({ search });
+
+      const outcome = await service.collect(videoId, "lullaby");
+
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(outcome.storagePath).toBeNull();
+      expect(outcome.reason).toContain("JAMENDO_CLIENT_ID");
+    });
+
+    it("retries a transient provider error", async () => {
+      stubTrackDownload(downloadedAudio);
+      const search = vi
+        .fn()
+        .mockRejectedValueOnce(new ProviderError("JAMENDO", "502", true))
+        .mockResolvedValue([track]);
+      const service = new MusicService({ search });
+
+      const outcome = await service.collect(videoId, "lullaby");
+
+      expect(outcome.storagePath).not.toBeNull();
+      expect(search).toHaveBeenCalledTimes(2);
+    });
   });
 });

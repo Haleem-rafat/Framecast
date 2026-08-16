@@ -788,8 +788,14 @@ describe("renderService.render — channel brand", () => {
 
     await new RenderService(spawner, music).render(userId, videoId);
 
-    expect(search).toHaveBeenCalledTimes(1);
-    expect(search.mock.calls[0][0]).toBe("calm ambient documentary");
+    // Asked more than once because this fake answers empty every time, and an
+    // empty answer from Jamendo is retried rather than believed (see
+    // SEARCH_ATTEMPTS in music.service.ts). What this test is about is the
+    // *query*, so every attempt has to carry the channel's own.
+    expect(search).toHaveBeenCalledTimes(3);
+    for (const call of search.mock.calls) {
+      expect(call[0]).toBe("calm ambient documentary");
+    }
   });
 
   it("falls back to defaults for a video whose project has no channel", async () => {
@@ -1260,5 +1266,135 @@ describe("renderService.render — illustrated videos", () => {
       expect(segment.args).not.toContain("-framerate");
       expect(segment.args.some((arg) => arg.endsWith(".png"))).toBe(false);
     }
+  });
+});
+
+/**
+ * The bed has to reach FFmpeg, on every branch.
+ *
+ * This file already asserted that the channel's *query* reaches
+ * `MusicService.search` — and it passed, unbroken, through ten consecutive
+ * renders that shipped with no music at all. That assertion stops one step too
+ * early: it mocks the search to return `[]`, so the only path it can describe
+ * is the one where there is no bed. Nothing anywhere checked that a bed which
+ * *was* collected turns into an FFmpeg input, which is the step a refactor can
+ * silently drop and which is the difference an operator can hear.
+ *
+ * These run the real `musicService` against a bed already in storage — the
+ * reuse branch of `collectTrack`, no Jamendo account and no network — so what
+ * is exercised is the whole path from the Asset row to the argv.
+ */
+describe("renderService.render — background music", () => {
+  /** A bed already collected for this video, which `MusicService.collect`
+   *  reuses rather than re-fetching. */
+  async function giveVideoABed(videoId: string): Promise<void> {
+    const bedPath = storagePath(videoId, "music", "bed.mp3");
+    await putObject(bedPath, Buffer.from(`fake-bed-${RUN}`), "audio/mpeg");
+    await prisma.asset.create({
+      data: { kind: "MUSIC", storagePath: bedPath, mimeType: "audio/mpeg", provider: "JAMENDO" },
+    });
+  }
+
+  /** The assemble pass — the only run that reads the concat list, hence
+   *  `-safe`. The segment passes carry `-stream_loop` too, so filtering on
+   *  that alone would match the wrong call. */
+  function assembleCall(calls: SpawnCall[]): SpawnCall {
+    const assemble = calls.filter((call) => call.args.includes("-safe"));
+    expect(assemble).toHaveLength(1);
+    return assemble[0];
+  }
+
+  /** What the bed contributes to the assemble argv: its own looped input, the
+   *  gain stage, the ducking that keeps it under the words, and a third mix
+   *  input. Asserted together because any one of them alone can be present
+   *  while the audience still hears nothing. */
+  function expectBedIsMixedIn(call: SpawnCall): void {
+    // `-stream_loop -1 -i <path>`: three tokens on from the flag.
+    const musicInput = call.args[call.args.indexOf("-stream_loop") + 3];
+    expect(musicInput).toMatch(/music\.mp3$/);
+
+    const graph = call.args[call.args.indexOf("-filter_complex") + 1];
+    expect(graph).toContain("[bed]");
+    expect(graph).toContain("sidechaincompress");
+    // Narration, bed, effects. Two would mean the bed never joined the mix.
+    expect(graph).toContain("amix=inputs=3");
+  }
+
+  it("mixes the bed into a landscape render", async () => {
+    const videoId = await makeRenderableVideo();
+    await giveVideoABed(videoId);
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    expectBedIsMixedIn(assembleCall(calls));
+  });
+
+  it("mixes the bed into a vertical render", async () => {
+    // Vertical differs from landscape in the frame and the caption geometry
+    // and in nothing else — the audio mix is meant to be identical, which is
+    // exactly the kind of "obviously unchanged" that goes unchecked.
+    const videoId = await makeRenderableVideo({ format: "VERTICAL" });
+    await giveVideoABed(videoId);
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    expectBedIsMixedIn(assembleCall(calls));
+  });
+
+  it("mixes the bed into an illustrated render", async () => {
+    const cues = Array.from({ length: 12 }, (_cue, index) => ({
+      anchor: `Section number ${index} opens`,
+      cue: `scene ${index}`,
+    }));
+    const { videoId } = await makeRenderableVideoWithCues(cues, { illustrated: {} });
+    await giveVideoABed(videoId);
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    expectBedIsMixedIn(assembleCall(calls));
+  });
+
+  it("mixes the bed into a vertical illustrated render", async () => {
+    const cues = Array.from({ length: 12 }, (_cue, index) => ({
+      anchor: `Section number ${index} opens`,
+      cue: `scene ${index}`,
+    }));
+    const { videoId } = await makeRenderableVideoWithCues(cues, { illustrated: {} });
+    await prisma.video.update({ where: { id: videoId }, data: { format: "VERTICAL" } });
+    await giveVideoABed(videoId);
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    expectBedIsMixedIn(assembleCall(calls));
+  });
+
+  it("renders without a bed, and says why, when none could be collected", async () => {
+    // Both halves matter and they pull in opposite directions: the render must
+    // still finish (music is an enhancement), and it must stop finishing
+    // *quietly* (ten videos shipped with no music and nothing said so).
+    const videoId = await makeRenderableVideo();
+    await assignChannelWithBrand(videoId, { musicQuery: "nothing matches this" });
+
+    const music = new MusicService({ search: async () => [] } as MusicProvider);
+    const { spawner, calls } = createSucceedingSpawner();
+
+    const result = await new RenderService(spawner, music).render(userId, videoId);
+
+    expect(result.outputUrl).toBeTruthy();
+    expect(assembleCall(calls).args).not.toContain("-stream_loop");
+
+    // On the video page, not only in the worker's stdout — see
+    // PipelineService.getLogStream.
+    const warning = await prisma.renderLog.findFirst({
+      where: { renderJob: { videoId }, level: "WARN" },
+      select: { message: true },
+    });
+
+    expect(warning?.message).toContain("No background music");
+    expect(warning?.message).toContain("nothing matches this");
   });
 });
