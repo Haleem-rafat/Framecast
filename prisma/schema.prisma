@@ -89,6 +89,7 @@ model User {
   activityLogs        ActivityLog[]
   settings            UserSetting?
   schedules           Schedule[]
+  series              Series[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
   @@index([approval, createdAt])
@@ -180,6 +181,7 @@ model Channel {
   shortPublications ShortPublication[]
   projects          Project[]
   brand             ChannelBrand?
+  series            Series[]
 
   @@unique([userId, youtubeChannelId])
   @@index([userId, deletedAt])
@@ -449,6 +451,7 @@ model Project {
 
   videos    Video[]
   schedules Schedule[]
+  series    Series[]
 
   @@index([userId, status, deletedAt])
   @@map("project")
@@ -524,6 +527,16 @@ model Video {
   projectId String  @db.Uuid
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  /// Which show produced this, when one did. Null for every video made by hand,
+  /// by the guided flow, or by a schedule that belongs to no series — which is
+  /// every video that existed before this column, so it needs no backfill.
+  ///
+  /// `SetNull`, matching `ScheduleRun.videoId`'s reasoning in the other
+  /// direction: a video outlives the show that commissioned it, and deleting
+  /// the series must not take the operator's finished videos with it.
+  seriesId String? @db.Uuid
+  series   Series? @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+
   script       Script?
   voiceOver    VoiceOver?
   thumbnail    Thumbnail?
@@ -538,6 +551,10 @@ model Video {
   @@index([projectId, deletedAt])
   @@index([createdAt])
   @@index([status, leaseExpiresAt])
+  /// "What has this show made", for the series page. Partial in spirit — almost
+  /// every row has a null `seriesId` and Postgres does not index those in a
+  /// b-tree lookup for a non-null value — so it stays small.
+  @@index([seriesId, createdAt])
   @@map("video")
 }
 
@@ -1085,6 +1102,7 @@ model PromptTemplate {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   variables PromptVariable[]
+  series    Series[]
 
   @@unique([userId, name])
   @@index([userId, category, deletedAt])
@@ -1171,6 +1189,125 @@ model ProviderUsage {
   @@index([provider, createdAt])
   @@index([credentialId, createdAt])
   @@map("provider_usage")
+}
+
+// ---------------------------------------------------------------------------
+// Series — a recurring show
+// ---------------------------------------------------------------------------
+
+/// A named, reusable production recipe: one recurring show.
+///
+/// Everything a show needs already existed before this table did, spread over
+/// five screens — the channel's brand, the script style chosen per video in the
+/// script panel, the format chosen per video in the approve dialog, and a
+/// `Schedule`'s cadence and topic queue. Nothing tied them together or gave
+/// them a name, so setting up a second show meant remembering five places and
+/// two shows on one channel was not expressible at all.
+///
+/// ## Almost entirely references
+///
+/// This table owns exactly two values of its own — `name` and `format` — and
+/// four foreign keys. That is deliberate: every other setting a series needs is
+/// already stored somewhere that resolves it correctly, and a copy here would
+/// be a second value the renderer does not read. In particular there is no
+/// `artStyle`, `voiceId`, `musicQuery`, `niche`, `tone` or `footageStyle`
+/// column, even though those are the settings an operator most often wants to
+/// vary. See `channelId` below for why.
+///
+/// ## What it does not own
+///
+/// The cadence and the topic queue live on `Schedule`, which already implements
+/// the atomic claim, the no-double-fire lock, the no-burst-after-downtime
+/// advance, the DST-correct recurrence and the pause-after-three-failures rule.
+/// A series points at one and adds nothing to it — see `Schedule.seriesId`.
+model Series {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// What the operator calls this show. The whole point of the table: a series
+  /// is a *named* thing, and the name is what makes "which of my two shows is
+  /// this?" answerable in a list.
+  name String
+
+  /// Landscape or vertical, chosen once here instead of on every approve
+  /// dialog. Applied by `AutomationService.start`, which passes it to
+  /// `VideoService.approveScript` — the one place that has ever written
+  /// `Video.format`, unchanged.
+  ///
+  /// This is the setting that most needs to be per-series rather than per
+  /// channel: a channel can perfectly well run a weekly long-form explainer and
+  /// a daily vertical, and before this column that meant remembering to pick
+  /// the shape by hand on every single video.
+  format VideoFormat @default(LANDSCAPE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The channel this show is *of*, and therefore the brand every one of its
+  /// videos inherits: niche, tone, voice, music, footage style, art style,
+  /// character sheet, language, category and the made-for-kids declaration.
+  ///
+  /// A series deliberately cannot override any of that. Two reasons, and the
+  /// second is the decisive one:
+  ///
+  ///   1. `ChannelBrand`'s own columns argue it. "A channel that alternates
+  ///      between cartoon and live-action footage does not have an identity";
+  ///      `madeForKids` is a COPPA declaration made once per channel because
+  ///      YouTube itself asks it per channel. Those comments were written about
+  ///      videos, and they are just as true of shows.
+  ///   2. Nothing would read an override. Every consumer resolves the brand
+  ///      through `brandService.resolve(channelId)` reached from
+  ///      `video -> project -> channel`, inside the render, footage, publish
+  ///      and shorts services. A `Series.artStyle` column would be a value the
+  ///      screen displays and the renderer ignores — strictly worse than not
+  ///      having it, because the operator would believe it won.
+  ///
+  /// So two series on one channel share its look and voice, and differ in
+  /// script style, format, cadence and topic queue. An operator who genuinely
+  /// needs a different look wants a different channel, which is what YouTube
+  /// treats as a different identity too and what this app has always supported.
+  ///
+  /// Stored rather than derived through `projectId` so "every series on this
+  /// channel" is one indexed read, and validated on every write to agree with
+  /// the project's own channel — see `SeriesService.assertRecipe`.
+  channelId String  @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  /// Where this show's videos are filed. `Video.projectId` and
+  /// `Schedule.projectId` are both required and neither is this feature's to
+  /// change, so a series names a project as well as a channel; the two are kept
+  /// consistent by validation rather than by hope.
+  projectId String  @db.Uuid
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// Which script style writes every episode.
+  ///
+  /// A `PromptTemplate`, because that is what a script style already is: the
+  /// catalogue in src/lib/script-styles.ts is copied into the operator's own
+  /// library by `addScriptStyle`, and `scriptService.generate` has always taken
+  /// a `templateId`. Before this column the only caller that passed one was the
+  /// per-video picker in the script panel, so a show's style had to be
+  /// re-chosen on every video.
+  ///
+  /// `Restrict` rather than `Cascade` or `SetNull`: templates are soft-deleted,
+  /// so this action never actually fires, and `PromptTemplateService.remove`
+  /// refuses a template a series is using rather than leaving the series
+  /// pointing at a row that no longer resolves.
+  promptTemplateId String         @db.Uuid
+  promptTemplate   PromptTemplate @relation(fields: [promptTemplateId], references: [id], onDelete: Restrict)
+
+  schedule Schedule?
+  videos   Video[]
+
+  @@index([userId, deletedAt])
+  /// "Every series on this channel", which is the query behind both the channel
+  /// page's series list and the two-shows-on-one-channel case this table exists
+  /// for.
+  @@index([userId, channelId, deletedAt])
+  @@map("series")
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,6 +1427,24 @@ model Schedule {
   /// saying they are done with this line of work.
   projectId String  @db.Uuid
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// The series whose cadence this is, or null for a standalone schedule.
+  ///
+  /// This direction rather than a `scheduleId` on `Series` because it is the
+  /// one that leaves every existing row alone: a schedule created before series
+  /// existed simply has null here and runs exactly as it always did, and the
+  /// due-check does not read this column at all — `claimDue` still selects
+  /// active schedules whose `nextRunAt` has arrived, and the claim, the
+  /// advance, the lease and the failure counter are untouched. All the series
+  /// adds is *how* the run is configured, read in `runTopic` and handed to
+  /// `automationService.start`.
+  ///
+  /// Unique because a show has one cadence. Deleting a series takes its
+  /// schedule with it (`Cascade`), which is right: the cadence has no meaning
+  /// without the recipe it belongs to, and `ScheduleService.remove` refuses to
+  /// delete a series-owned schedule on its own for the same reason.
+  seriesId String? @unique @db.Uuid
+  series   Series? @relation(fields: [seriesId], references: [id], onDelete: Cascade)
 
   topics ScheduleTopic[]
   runs   ScheduleRun[]
