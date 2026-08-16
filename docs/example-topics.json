@@ -1,0 +1,94 @@
+{
+  "Dev Pixel — Monday": [
+    "Why your CSS grid collapses the moment the content gets long",
+    "What actually happens between typing a URL and seeing the first pixel",
+    "Debounce and throttle: they are not the same, and one of them is wrong for your case",
+    "Why React re-renders more than you think, and how to see it happening",
+    "Accessible forms: the five attributes that do most of the work",
+    "What the browser does to your images before you ever see them",
+    "Why your web font flashes, and the four ways to stop it",
+    "Container queries: the layout problem media queries never solved"
+  ],
+  "Dev Pixel — Wednesday": [
+    "What a database index actually is, drawn as a phone book",
+    "Why your API gets slower under load when the code has not changed",
+    "Connection pools: the setting that quietly caps your whole application",
+    "Idempotency keys, and why every payment API insists on them",
+    "N+1 queries: how one innocent loop becomes four hundred round trips",
+    "What happens when two requests write the same row at the same moment",
+    "Why you can never trust a timestamp that came from the client",
+    "Background jobs: leases, retries, and the failure nobody plans for"
+  ],
+  "Dev Pixel — Friday": [
+    "Reading a stack trace properly, from the bottom up",
+    "git bisect: finding the commit that broke it in six steps",
+    "What CI is actually for, beyond running your tests",
+    "Why your Docker image is 2GB, and how to make it 200MB",
+    "Code review: what to say when the code works but reads badly",
+    "Semantic versioning, and what a major bump really promises",
+    "The logs you wish you had written before the incident",
+    "How to estimate work you have never done before"
+  ],
+
+  "KIDO FUN ZONE — Monday": [
+    "The little lantern who was afraid of the dark",
+    "A sleepy bear who could not find his blanket",
+    "The star that wanted to sit closer to the moon",
+    "A tiny boat that sailed across a bathtub sea",
+    "The owl who was learning how to say goodnight",
+    "A cloud that carried rain to a thirsty garden",
+    "The pillow that collected happy dreams",
+    "A firefly lighting the path home"
+  ],
+  "KIDO FUN ZONE — Wednesday": [
+    "Why the moon follows you when you walk",
+    "Where puddles go when the sun comes out",
+    "How bees tell each other where the flowers are",
+    "Why leaves change colour before they fall",
+    "What a snail carries on its back",
+    "How a seed knows which way is up",
+    "Why you can hear the sea inside a shell",
+    "Where the birds go when it rains"
+  ],
+  "KIDO FUN ZONE — Friday": [
+    "What to do when a feeling gets too big inside you",
+    "Sharing on a day when you really do not want to",
+    "Saying sorry, and meaning it",
+    "When your friend is sad and you do not know why",
+    "Being brave and being scared at the very same time",
+    "Waiting your turn when waiting feels hard",
+    "Asking for help is not the same as failing",
+    "Noticing when somebody has been left out"
+  ],
+
+  "Money Mechanics — Monday": [
+    "Compound interest, shown as a picture instead of a formula",
+    "Why the same salary feels completely different in two cities",
+    "What an emergency fund is actually for, and how people size one",
+    "Debit and credit cards: what really differs past the plastic",
+    "How credit scores are built, and what moves them",
+    "Inflation explained with one shopping basket",
+    "Fixed and variable rates: what changes when rates move",
+    "Why paying yourself first works when budgeting does not"
+  ],
+  "Money Mechanics — Wednesday": [
+    "Revenue is not profit, and the gap is where businesses die",
+    "Why a profitable business can still run out of money",
+    "Pricing: cost-plus, value-based, and how each one fails",
+    "What a break-even point tells you before you launch",
+    "Fixed costs and variable costs, explained with a coffee shop",
+    "Why your first hire costs more than their salary",
+    "Invoices, payment terms, and the polite way to chase a late one",
+    "When a side project becomes a business on paper"
+  ],
+  "Money Mechanics — Friday": [
+    "The money advice that only works if you are already rich",
+    "Why 'just cut your coffee' misses the actual arithmetic",
+    "Survivorship bias: the businesses you never hear about",
+    "What every get-rich-quick pitch has in common",
+    "The sunk cost trap, with an example you will recognise",
+    "Why comparing yourself to an average misleads you",
+    "Lifestyle inflation: the raise you never felt",
+    "How to read a financial claim critically in sixty seconds"
+  ]
+}
