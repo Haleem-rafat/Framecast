@@ -92,6 +92,29 @@ export interface ScriptStyle {
   targetSeconds: number;
   content: string;
   variables: ScriptStyleVariable[];
+  /**
+   * A handful of subjects this style is genuinely good at, written here so the
+   * easy-mode picker is never empty.
+   *
+   * These are the zero-cost floor under the subject list: an operator with no
+   * topic queue and no branded channel still has something to tap, on a page
+   * that made no model call to render itself. They are deliberately the weakest
+   * of the three sources easy mode offers — generic by construction, because
+   * they were written without knowing whose channel they would appear on — and
+   * the picker labels them as shipped-with-the-app for exactly that reason.
+   *
+   * Each one is phrased the way the operator would have phrased it: a subject,
+   * not an instruction and not a title. `AutomationService.deriveTitle` takes
+   * the first sentence of whatever is chosen as the video's working title, and
+   * `{{topic}}` is substituted verbatim into the prompt, so a subject written
+   * as "Make a video about X" would produce a script about being asked to make
+   * a video.
+   *
+   * They must fit the style they sit on. A countdown subject handed to the
+   * post-mortem prompt produces a post-mortem of a list, so a starter is only
+   * ever offered alongside the style it was written for.
+   */
+  starterSubjects: readonly string[];
 }
 
 /** See the module comment. Every entry spreads this in. */
@@ -231,6 +254,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       },
       { key: "tone", label: "Tone", defaultValue: "clear, direct and energetic" },
     ],
+    starterSubjects: [
+      "How index funds quietly took over the stock market",
+      "Why shipping containers changed the world more than the internet did",
+      "What actually happens to a plastic bottle after you put it in the bin",
+      "The reason almost every keyboard still starts with QWERTY",
+      "How a single undersea cable can take a whole country offline",
+    ],
   },
 
   {
@@ -300,6 +330,13 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       TOPIC,
       { key: "duration", label: "Duration (minutes)", defaultValue: "4" },
       { key: "age_range", label: "Age range", defaultValue: "three to seven" },
+    ],
+    starterSubjects: [
+      "Counting the animals that live in a garden pond",
+      "The colours you can find on a walk to the park",
+      "What a baker does from morning until the bread is ready",
+      "Naming the parts of a tree, one at a time",
+      "How a caterpillar becomes a butterfly",
     ],
   },
 

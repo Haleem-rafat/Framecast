@@ -37,7 +37,15 @@ export function NewAutomationMenu() {
           <ChevronDown />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-w-xs">
+      {/* Wide enough for the sentences it carries. At `max-w-xs` each blurb
+          wrapped to three or four cramped lines and the three entries read as
+          one grey block — the explanation that justifies the menu existing was
+          the part that got squeezed. The viewport clamp keeps it inside a
+          360px phone, where an unclamped 26rem would overflow the screen. */}
+      <DropdownMenuContent
+        align="end"
+        className="w-[min(26rem,calc(100vw-2rem))] p-1.5"
+      >
         {AUTOMATION_KIND_ORDER.map((kind) => {
           const meta = AUTOMATION_KINDS[kind];
           const Icon = meta.icon;
@@ -49,12 +57,16 @@ export function NewAutomationMenu() {
                   `<svg>` for itself, and fighting either from the child of an
                   `asChild` slot means two class strings concatenated with no
                   `tailwind-merge` between them — whichever utility Tailwind
-                  happened to emit last would win. */}
-              <Link href={meta.newHref} className="gap-3 py-1.5">
-                <Icon />
-                <span className="space-y-0.5">
+                  happened to emit last would win.
+
+                  `self-start` on the icon rather than `items-start` on the row
+                  for exactly that reason: it changes one child's alignment
+                  without contradicting the parent's own `items-center`. */}
+              <Link href={meta.newHref} className="gap-3 px-2.5 py-2.5">
+                <Icon className="text-muted-foreground mt-0.5 self-start" />
+                <span className="space-y-1">
                   <span className="block font-medium">{meta.newLabel}</span>
-                  <span className="text-muted-foreground block text-xs text-wrap">
+                  <span className="text-muted-foreground block text-xs leading-relaxed text-pretty">
                     {meta.blurb}
                   </span>
                 </span>
