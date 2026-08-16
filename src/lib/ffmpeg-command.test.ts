@@ -45,6 +45,16 @@ describe("planRender", () => {
     expect(plan.playOrder).toHaveLength(9);
   });
 
+  it("marks image paths as stills and video paths as not", () => {
+    const plan = planRender(
+      ["/tmp/beat-000.png", "/tmp/b.mp4", "/tmp/beat-001.JPEG"],
+      "/tmp",
+      evenDurations(3, 20),
+    );
+
+    expect(plan.segments.map((segment) => segment.still)).toEqual([true, false, true]);
+  });
+
   it("keeps the sequence's order, repeats pointing at the same segment", () => {
     const plan = planRender(
       ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/a.mp4"],
@@ -286,6 +296,50 @@ describe("buildSegmentArgs", () => {
     expect(args.indexOf("-stream_loop")).toBeLessThan(args.indexOf("-i"));
     expect(args.indexOf("-t")).toBeLessThan(args.indexOf("-i"));
     expect(valueOf(args, "-t")).toBe("12");
+  });
+
+  it("fills a still's slot with -loop 1, which is the only thing that works", () => {
+    // A PNG has no stream to rewind, so `-stream_loop -1` reads its one frame,
+    // hits EOF and produces a one-frame segment whatever `-t` says. `-loop 1`
+    // is the image2 demuxer's equivalent, and both it and the framerate have to
+    // precede `-i` to apply to the input at all.
+    const args = buildSegmentArgs({ ...base, clipPath: "/tmp/beat-000.png", still: true });
+
+    expect(args).not.toContain("-stream_loop");
+    expect(args.indexOf("-loop")).toBeLessThan(args.indexOf("-i"));
+    expect(valueOf(args, "-loop")).toBe("1");
+    expect(args.indexOf("-framerate")).toBeLessThan(args.indexOf("-i"));
+    expect(valueOf(args, "-framerate")).toBe("30");
+    expect(valueOf(args, "-t")).toBe("12");
+  });
+
+  it("leaves a stock clip's argv byte-for-byte what it always was", () => {
+    // The whole safety property of the illustrated path: LIVE_ACTION renders
+    // must not change. `still` absent and `still: false` have to produce the
+    // identical array, or `planRender` setting it explicitly would be a
+    // behaviour change for every existing video.
+    expect(buildSegmentArgs({ ...base, still: false })).toEqual(buildSegmentArgs(base));
+    expect(buildSegmentArgs(base)).not.toContain("-loop");
+    expect(buildSegmentArgs(base)).not.toContain("-framerate");
+  });
+
+  it("still pans a still — the motion comes from the renderer, not the model", () => {
+    // The reason this approach works at all: the measured channels in this
+    // genre are stills with slow camera motion, and the pan already exists.
+    const filter =
+      valueOf(
+        buildSegmentArgs({
+          ...base,
+          clipPath: "/tmp/beat-000.png",
+          still: true,
+          clipSeconds: 20,
+          motion: { enabled: true, scale: 1.15 },
+        }),
+        "-vf",
+      ) ?? "";
+
+    expect(filter).toContain("crop=w=1920:h=1080");
+    expect(filter).toContain("t/20");
   });
 
   it("normalises to the frame size and rate the demuxer requires", () => {

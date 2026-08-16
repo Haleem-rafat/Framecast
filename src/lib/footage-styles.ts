@@ -53,9 +53,23 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
     value: "CARTOON",
     label: "Cartoon",
     description:
-      "Animation from Pixabay's cartoon library, with safe search on. A smaller pool than live action: a section with no cartoon match is left without footage rather than filled with live action.",
+      "Animation from Pixabay's cartoon library, with safe search on. A smaller pool than live action: a section with no cartoon match is left without footage rather than filled with live action. Not recommended for children's stories — Pixabay's animation filter means “rendered rather than filmed”, so it returns photoreal loops and motion graphics as often as anything drawn.",
+  },
+  {
+    value: "ILLUSTRATED",
+    label: "Illustrated story",
+    description:
+      "Generated storybook illustrations, about one every twenty seconds, every one of them drawn from this channel's character sheet so the same character appears throughout. Costs roughly $0.05 a picture — about $0.60 for a four-minute video — and needs a character described and a sheet generated below before any video can collect footage.",
   },
 ];
+
+/** Which styles generate pictures rather than searching for them, and
+ *  therefore which ones need a character sheet before a video can be made.
+ *  A function over the enum rather than a second list, so a style added to
+ *  `FootageStyle` has to be classified here to compile. */
+export function isGeneratedFootage(style: FootageStyle): boolean {
+  return style === "ILLUSTRATED";
+}
 
 /** Short label for a channel card, where there is room for two words. */
 export function footageStyleLabel(style: FootageStyle): string {

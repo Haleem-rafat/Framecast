@@ -5,7 +5,7 @@ import { ApproveScriptButton } from "@/features/videos/components/approve-script
 import { DeleteVideoButton } from "@/features/videos/components/delete-video-button";
 import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
-import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
+import type { FootageStyle, VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import type { PublishVisibilityOption } from "@/schemas/publish.schema";
 import { VIDEO_FORMATS, WORDS_PER_MINUTE } from "@/lib/video-format";
 
@@ -19,6 +19,7 @@ export function VideoHeader({
   characterCount,
   channelName,
   channelMadeForKids,
+  channelFootageStyle,
   youtubeVideoId,
   defaultVisibility,
   readyShortCount,
@@ -44,6 +45,11 @@ export function VideoHeader({
    * a fact about the upload it is about to make. Already defaulted by the
    * page for a channel with no brand row. */
   channelMadeForKids: boolean;
+  /** That channel's footage style, which the approve dialog states the cost
+   * of: illustrated footage is generated at real money per picture, while the
+   * other two are stock downloads. Already defaulted by the page for a channel
+   * with no brand row. */
+  channelFootageStyle: FootageStyle;
   /** Set once Gate 2 has actually published this video. */
   youtubeVideoId: string | null;
   /** `UserSetting.defaultVisibility`, which the publish dialog's picker starts
@@ -99,6 +105,7 @@ export function VideoHeader({
           canApprove={canApprove}
           wordCount={wordCount}
           characterCount={characterCount}
+          footageStyle={channelFootageStyle}
         />
         <PublishVideoButton
           videoId={videoId}

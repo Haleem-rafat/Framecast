@@ -392,6 +392,10 @@ export default async function VideoDetailPage({
           video.project.channel?.brand?.madeForKids ??
           PUBLISHING_DEFAULTS.madeForKids
         }
+        channelFootageStyle={
+          video.project.channel?.brand?.footageStyle ??
+          PUBLISHING_DEFAULTS.footageStyle
+        }
         youtubeVideoId={youtubeVideoId}
         defaultVisibility={defaultVisibility}
         readyShortCount={readyShortCount}

@@ -111,6 +111,15 @@ export interface ChannelBranding extends PublishingDefaults {
   /** The storage path of the chosen logo, or null. Written by
    *  `LogoService.choose`, never by `updateBranding`. */
   logoPath: string | null;
+  /** Who the recurring character is, in the operator's own words. Null means
+   *  never written — which for an ILLUSTRATED channel is a state that has to
+   *  be fixed before any video can collect footage, so the screen says so
+   *  rather than showing an empty box. */
+  characterBrief: string | null;
+  /** The storage path of the generated character sheet, or null. Written by
+   *  `CharacterService.generateSheet`, never by `updateBranding` — the same
+   *  arrangement as `logoPath`, for the same reason. */
+  characterSheetPath: string | null;
   primaryColour: string;
   secondaryColour: string;
   headlineFont: string;
@@ -286,6 +295,8 @@ type StoredBranding = {
   categoryId: string;
   madeForKids: boolean;
   footageStyle: PublishingDefaults["footageStyle"];
+  characterBrief: string | null;
+  characterSheetPath: string | null;
   voiceId: string | null;
   voiceName: string | null;
   updatedAt: Date;
@@ -305,6 +316,8 @@ const BRANDING_SELECT = {
   categoryId: true,
   madeForKids: true,
   footageStyle: true,
+  characterBrief: true,
+  characterSheetPath: true,
   voiceId: true,
   voiceName: true,
   updatedAt: true,
@@ -332,6 +345,11 @@ function toBranding(brand: StoredBranding): ChannelBranding {
     categoryId: brand?.categoryId ?? PUBLISHING_DEFAULTS.categoryId,
     madeForKids: brand?.madeForKids ?? PUBLISHING_DEFAULTS.madeForKids,
     footageStyle: brand?.footageStyle ?? PUBLISHING_DEFAULTS.footageStyle,
+    characterBrief: brand?.characterBrief ?? null,
+    // Read-only on this shape, like `logoPath`: written by
+    // `CharacterService.generateSheet`, never by `updateBranding`, because it
+    // names an object in storage rather than something an operator types.
+    characterSheetPath: brand?.characterSheetPath ?? null,
     voiceId: brand?.voiceId ?? null,
     // Never a name without an id. The column pair is written together and
     // cleared together, but a row edited by hand could hold one without the

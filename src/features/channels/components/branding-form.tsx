@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
 import {
@@ -101,6 +102,7 @@ function toDefaultValues(branding: ChannelBranding): BrandingFormValues {
     categoryId: branding.categoryId,
     madeForKids: branding.madeForKids,
     footageStyle: branding.footageStyle,
+    characterBrief: branding.characterBrief ?? "",
     // Null rather than "" — unlike tone and niche, "no voice chosen" is a real
     // selectable option in the picker rather than an empty box, and the schema
     // round-trips null through unchanged.
@@ -188,6 +190,10 @@ export function BrandingForm({
     resolver: zodResolver(brandingFormSchema),
     defaultValues: toDefaultValues(branding),
   });
+
+  /** Watched rather than read from `branding`, so choosing "Illustrated story"
+   *  reveals the character field immediately instead of only after a save. */
+  const footageStyle = useWatch({ control, name: "footageStyle" });
 
   /**
    * Two YouTube round trips, so they happen once when the screen mounts rather
@@ -467,6 +473,35 @@ export function BrandingForm({
                   </FormField>
                 )}
               />
+
+              {/* Only for the style that reads it. This is the longest field on
+                * the screen and it is meaningless to a live-action or cartoon
+                * channel — showing it to every channel would put a paragraph
+                * box under a setting most of them will never use, and hiding
+                * it is safe here because the value is preserved on save either
+                * way (the field stays registered, holding whatever was
+                * loaded). */}
+              {footageStyle === "ILLUSTRATED" && (
+                <FormField
+                  name="characterBrief"
+                  label="The recurring character"
+                  description="Who appears in every scene, and exactly what they look like. This is the one thing the script cannot tell the illustrator: a story says “the little bear set off down the path”, not that the bear is brown with a cream muzzle and a red knitted scarf. Be specific and be long — colour, build, ears, eyes, clothing, expression. Vague descriptions produce a different character in every picture."
+                  error={errors.characterBrief?.message}
+                >
+                  {(controlProps) => (
+                    <Textarea
+                      rows={6}
+                      placeholder={
+                        "Pip, a small round brown bear cub with a cream-coloured muzzle, big dark friendly eyes, " +
+                        "small rounded ears and a red knitted scarf. Always cheerful, never frightening."
+                      }
+                      className="w-full"
+                      {...register("characterBrief")}
+                      {...controlProps}
+                    />
+                  )}
+                </FormField>
+              )}
             </FieldGroup>
           </CardContent>
         </Card>

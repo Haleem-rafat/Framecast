@@ -86,7 +86,7 @@ export class VideoService {
               select: {
                 id: true,
                 title: true,
-                brand: { select: { madeForKids: true } },
+                brand: { select: { madeForKids: true, footageStyle: true } },
               },
             },
           },

@@ -13,7 +13,17 @@ export type StorageKind =
   | "music"
   | "output"
   | "thumbnails"
-  | "logos";
+  | "logos"
+  // Per-video story illustrations. A separate prefix from `clips` rather than
+  // PNGs filed among the MP4s, because `render.service.ts` decides which path a
+  // video takes by asking what is on disk — and "is this video illustrated" has
+  // to be a prefix query, not a guess at an extension inside a shared folder
+  // that also holds thumbnails.
+  | "beats"
+  // Per-channel character sheets, filed under the channel id like `logos` and
+  // for the same reason: generated once, reused by every video that channel
+  // ever renders.
+  | "characters";
 
 /**
  * Every object lives under an owner's prefix so deleting everything that

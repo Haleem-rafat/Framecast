@@ -27,9 +27,12 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { approveScriptAction } from "@/actions/video.action";
-import type { VideoFormat } from "@/generated/prisma/enums";
+import type { FootageStyle, VideoFormat } from "@/generated/prisma/enums";
+import { isGeneratedFootage } from "@/lib/footage-styles";
 import { scriptStylesUnder } from "@/lib/script-styles";
+import { beatCountFor } from "@/lib/story-beats";
 import {
+  estimateSpokenSeconds,
   formatFit,
   formatRuntime,
   VERTICAL_MAX_SECONDS,
@@ -73,16 +76,54 @@ function costLines(
   format: VideoFormat,
   wordCount: number,
   characterCount: number,
+  footageStyle: FootageStyle,
 ): string[] {
   const { estimatedSeconds } = formatFit(format, wordCount);
+  const dimensions = format === "VERTICAL" ? "1080\u00d71920" : "1920\u00d71080";
 
   return [
     `About ${formatRuntime(estimatedSeconds)} of finished video, from the ${wordCount.toLocaleString()} words in this script.`,
     `${characterCount.toLocaleString()} characters of your ElevenLabs allowance, spent the moment the worker picks this up.`,
-    format === "VERTICAL"
-      ? "One stock clip per section, each framed for a 9:16 frame, and two encoding passes over every frame at 1080×1920."
-      : "One stock clip per section, and two encoding passes over every frame at 1920×1080.",
+    // The footage line is the one that can be real money rather than quota and
+    // machine time, so it is stated in currency when it is. Estimated from the
+    // script's length exactly as the runtime above is, and by the same function
+    // the collector will use — see `beatCountFor`, which is what actually
+    // decides how many pictures get drawn.
+    isGeneratedFootage(footageStyle)
+      ? `${illustrationCount(wordCount)} generated illustrations at about ${ILLUSTRATION_USD.toFixed(
+          2,
+        )} each \u2014 roughly $${(illustrationCount(wordCount) * ILLUSTRATION_USD).toFixed(
+          2,
+        )} of real money, drawn from this channel's character sheet and held about twenty seconds each.`
+      : format === "VERTICAL"
+        ? "One stock clip per section, each framed for a 9:16 frame."
+        : "One stock clip per section.",
+    `Two encoding passes over every frame at ${dimensions}.`,
   ];
+}
+
+/**
+ * What one illustration costs, in dollars.
+ *
+ * Measured rather than quoted: `openai/gpt-image-2` reports about 1,150 input
+ * and 1,372 output tokens for one 1024x1536 picture conditioned on a character
+ * sheet, and the gateway lists $5/M and $30/M for it, which is $0.047. Rounded
+ * up, because an estimate an operator reads before spending should not come out
+ * under.
+ *
+ * A constant here and a rate table in `cost.ts`, deliberately: this module is a
+ * client component and that one is not the shape a sentence needs. The invoice
+ * an operator sees *after* the run is the real per-token figure, summed by
+ * `FootageService`; this is the number that has to exist before the first token.
+ */
+const ILLUSTRATION_USD = 0.05;
+
+/** How many pictures a script this long will be drawn, by the same arithmetic
+ *  the collector uses. The section count is not known until the script is
+ *  parsed into cues, and `beatCountFor` only needs it as a ceiling — a real
+ *  script always has more sections than beats, so the runtime estimate decides. */
+function illustrationCount(wordCount: number): number {
+  return beatCountFor(estimateSpokenSeconds(wordCount), Number.MAX_SAFE_INTEGER);
 }
 
 export function ApproveScriptButton({
@@ -90,6 +131,7 @@ export function ApproveScriptButton({
   canApprove,
   wordCount,
   characterCount,
+  footageStyle,
 }: {
   videoId: string;
   /** True only when status is DRAFT and the active version has non-empty content. */
@@ -101,6 +143,9 @@ export function ApproveScriptButton({
    *  character, so this is the one number in the dialog that is a real invoice
    *  rather than an estimate. */
   characterCount: number;
+  /** The channel this video will be collected for. Only the cost lines read
+   *  it, and only to say whether the pictures are searched for or paid for. */
+  footageStyle: FootageStyle;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -242,7 +287,7 @@ export function ApproveScriptButton({
           <div className="space-y-1.5">
             <p className="text-sm font-medium">What this run spends</p>
             <ul className="text-muted-foreground space-y-1 text-xs">
-              {costLines(format, wordCount, characterCount).map((line) => (
+              {costLines(format, wordCount, characterCount, footageStyle).map((line) => (
                 <li key={line}>{line}</li>
               ))}
             </ul>

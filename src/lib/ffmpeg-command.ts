@@ -141,6 +141,34 @@ export interface SegmentInput {
    *  video that existed before formats did is unchanged. RenderService spreads
    *  the video's own format in at the call site, beside `motion`. */
   format?: VideoFormat;
+  /** True when `clipPath` is a single picture rather than a video.
+   *
+   *  One argument's difference, and it is not optional: `-stream_loop -1`
+   *  asks the demuxer to rewind a stream, and a PNG has no stream to rewind —
+   *  FFmpeg reads its one frame, hits EOF and produces a segment a single
+   *  frame long, whatever `-t` says. `-loop 1` is the image2 demuxer's own
+   *  equivalent and is what makes a still fill a twenty-second slot.
+   *
+   *  Set by `planRender` from the path's extension rather than passed down
+   *  from the caller, so nothing between here and RenderService has to carry
+   *  the fact around and get it wrong. Absent/false emits exactly the argv
+   *  every stock-footage render has always produced. */
+  still?: boolean;
+}
+
+/** Extensions FFmpeg reads through the image2 demuxer, and therefore the paths
+ *  that need `-loop 1`.
+ *
+ *  A closed list rather than "not .mp4": a path this does not recognise is
+ *  treated as video, which is what every clip in every render before
+ *  illustrated footage existed actually is. Getting it wrong in that direction
+ *  costs nothing; getting it wrong the other way would silently turn a stock
+ *  clip into a one-frame segment. */
+const STILL_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
+
+export function isStillImagePath(clipPath: string): boolean {
+  const lower = clipPath.toLowerCase();
+  return STILL_IMAGE_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
 /**
@@ -219,7 +247,16 @@ export function buildSegmentArgs(input: SegmentInput): string[] {
     // buffers inside a 1GB container, which is what SIGKILLed a render on a
     // 3840x2160 clip at frame 19, before it produced a single output byte.
     "-threads", DECODER_THREADS,
-    "-stream_loop", "-1",
+    // A still and a clip fill their slot by different mechanisms — see
+    // `SegmentInput.still`. `-framerate` accompanies `-loop 1` because the
+    // image2 demuxer otherwise emits at its own 25fps default and the `fps=30`
+    // filter downstream would be interpolating 500 identical frames up to 600
+    // for no reason; asking the demuxer for 30 in the first place is the same
+    // picture for less work. Spread from an array so a video clip's argv is
+    // byte-for-byte the two tokens it has always been.
+    ...(input.still
+      ? ["-loop", "1", "-framerate", String(FPS)]
+      : ["-stream_loop", "-1"]),
     "-t", String(clipSeconds),
     "-i", input.clipPath,
     // A stock clip's own audio is never used — the narration is the only
@@ -606,6 +643,11 @@ export function planRender(
         outputPath,
         clipSeconds: sourceSeconds,
         index: segments.length,
+        // Derived here rather than passed in, so the one place that knows a
+        // clip path is also the one place that decides how FFmpeg opens it.
+        // False for every stock clip, which is what keeps their argv
+        // unchanged — see `SegmentInput.still`.
+        still: isStillImagePath(clipPath),
       });
     }
   });

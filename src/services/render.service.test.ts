@@ -9,7 +9,9 @@ import { deleteRenderFile, getRenderFile, renderPath } from "@/lib/render-storag
 import type { Alignment } from "@/lib/captions";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { anchorCues } from "@/lib/script-cues";
 import { putObject, storagePath } from "@/lib/storage";
+import { planStoryBeats } from "@/lib/story-beats";
 import { DEFAULT_STYLE } from "@/lib/video-style";
 import type { Prisma } from "@/generated/prisma/client";
 import { MusicService } from "@/services/music.service";
@@ -313,6 +315,10 @@ async function makeRenderableVideoWithCues(
      *  the narration, exactly as an operator's stray leading newline is: the
      *  alignment indexes what ElevenLabs was sent, which is `content.trim()`. */
     leadingWhitespace?: string;
+    /** Store generated beat illustrations instead of per-section clips, as an
+     *  ILLUSTRATED channel's collection run leaves behind. `skipBeats` omits
+     *  one, which is what a refused generation looks like on disk. */
+    illustrated?: { skipBeats?: number[] };
   } = {},
 ): Promise<CuedVideo> {
   const project = await projectService.create(userId, {
@@ -384,6 +390,33 @@ async function makeRenderableVideoWithCues(
   await prisma.asset.create({
     data: { kind: "SUBTITLE", storagePath: alignmentPath, provider: "ELEVENLABS" },
   });
+
+  if (options.illustrated) {
+    // The same grouping `FootageService` would have reached, from the same two
+    // inputs — which is the invariant the illustrated render path rests on.
+    const beats = planStoryBeats(
+      anchorCues(cues, content).anchored,
+      durationSeconds,
+    );
+    const skip = new Set(options.illustrated.skipBeats ?? []);
+
+    for (let index = 0; index < beats.length; index += 1) {
+      if (skip.has(index)) continue;
+      const beatPath = storagePath(video.id, "beats", `beat-${String(index).padStart(3, "0")}.png`);
+      await putObject(beatPath, Buffer.from(`fake-beat-${index}-${RUN}`), "image/png");
+      await prisma.asset.create({
+        data: {
+          kind: "IMAGE",
+          storagePath: beatPath,
+          provider: "OPENAI",
+          externalId: "openai/gpt-image-2",
+        },
+      });
+    }
+
+    renderedVideoIds.push(video.id);
+    return { videoId: video.id, content, durationSeconds };
+  }
 
   const indices = cues
     .map((_cue, index) => index)
@@ -1107,5 +1140,125 @@ describe("renderService.render — concurrency", () => {
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("READY");
+  });
+});
+
+describe("renderService.render — illustrated videos", () => {
+  /** Twelve sections is a real script's shape; `planStoryBeats` turns them
+   *  into far fewer pictures, and the arithmetic is what these tests check
+   *  reaches FFmpeg intact. */
+  const CUES = Array.from({ length: 12 }, (_cue, index) => ({
+    anchor: `Section number ${index} opens`,
+    cue: `scene ${index}`,
+  }));
+
+  it("plays one still per beat, each held for as long as its sections are spoken", async () => {
+    const { videoId, content, durationSeconds } = await makeRenderableVideoWithCues(CUES, {
+      illustrated: {},
+    });
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    const expected = planStoryBeats(anchorCues(CUES, content).anchored, durationSeconds);
+    const slots = segmentSeconds(calls);
+
+    // One segment pass per beat, and far fewer of them than there are
+    // sections — twelve sections became six pictures.
+    expect(slots).toHaveLength(expected.length);
+    expect(slots.length).toBeLessThan(CUES.length);
+
+    // And they still cover the narration exactly. Every segment but the last
+    // is generated a crossfade longer than its slot because it donates that
+    // tail to the stub after it (see planRender), so the donations come back
+    // off before the sum means anything.
+    const overlap = DEFAULT_STYLE.transitions.durationSeconds;
+    const total = slots.reduce((sum, seconds) => sum + seconds, 0) - overlap * (slots.length - 1);
+    expect(total).toBeCloseTo(durationSeconds, 5);
+  });
+
+  it("opens each picture with -loop 1, never -stream_loop", async () => {
+    // A PNG has no stream to rewind: `-stream_loop -1` would give every beat a
+    // one-frame segment whatever `-t` said.
+    const { videoId } = await makeRenderableVideoWithCues(CUES, { illustrated: {} });
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    const segments = calls.filter((call) => call.args.includes("-vf"));
+    expect(segments.length).toBeGreaterThan(0);
+    for (const segment of segments) {
+      expect(segment.args).toContain("-loop");
+      expect(segment.args).not.toContain("-stream_loop");
+      expect(segment.args.some((arg) => arg.endsWith(".png"))).toBe(true);
+    }
+  });
+
+  it("pans across every still, because the motion comes from the renderer", async () => {
+    const { videoId } = await makeRenderableVideoWithCues(CUES, { illustrated: {} });
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    for (const segment of calls.filter((call) => call.args.includes("-vf"))) {
+      const filter = segment.args[segment.args.indexOf("-vf") + 1];
+      // The animated second crop is the pan — see PAN_EXPRESSIONS.
+      expect(filter).toContain("crop=w=1920:h=1080");
+      expect(filter).toContain("t/");
+    }
+  });
+
+  it("refuses rather than rendering a video with a beat that has no picture", async () => {
+    // The gap has to be named. FFmpeg would happily play what it was given,
+    // every later beat sliding forward into the hole, and the result is a
+    // finished video whose picture runs ahead of its words from the middle on.
+    const { videoId } = await makeRenderableVideoWithCues(CUES, {
+      illustrated: { skipBeats: [1] },
+    });
+
+    await expect(
+      new RenderService(createSucceedingSpawner().spawner).render(userId, videoId),
+    ).rejects.toThrow(/No picture for beat\(s\) 2 of/);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    // Refused before the status gate, so the video is still renderable once
+    // the missing beat is drawn.
+    expect(video.status).toBe("GENERATING");
+  });
+
+  it("composes a vertical illustrated video into the vertical frame", async () => {
+    const { videoId } = await makeRenderableVideoWithCues(CUES, { illustrated: {} });
+    await prisma.video.update({ where: { id: videoId }, data: { format: "VERTICAL" } });
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    for (const segment of calls.filter((call) => call.args.includes("-vf"))) {
+      const filter = segment.args[segment.args.indexOf("-vf") + 1];
+      expect(filter).toContain("crop=w=1080:h=1920");
+    }
+  });
+
+  it("leaves a stock-footage video on the arguments it always had", async () => {
+    // The safety property, stated as the two things that could have changed:
+    // the illustrated path must not make a LIVE_ACTION video's clips open as
+    // stills, and it must not regroup its sections into beats. Every other
+    // test in this file is the rest of that assertion — they all run the same
+    // path and all still pass.
+    const { videoId } = await makeRenderableVideoWithCues(CUES);
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    const segments = calls.filter((call) => call.args.includes("-vf"));
+    // One clip per section, not one per beat.
+    expect(segments).toHaveLength(CUES.length);
+
+    for (const segment of segments) {
+      expect(segment.args).toContain("-stream_loop");
+      expect(segment.args).not.toContain("-loop");
+      expect(segment.args).not.toContain("-framerate");
+      expect(segment.args.some((arg) => arg.endsWith(".png"))).toBe(false);
+    }
   });
 });

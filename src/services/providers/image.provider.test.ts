@@ -59,6 +59,88 @@ describe("GatewayImageProvider", () => {
     expect(result.model).not.toBe("openai/gpt-image-1-mini");
   });
 
+  it("passes reference images through, which is the character-consistency mechanism", async () => {
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+    });
+    const sheet = Buffer.from([9, 8, 7]);
+
+    await new GatewayImageProvider(generate).generate({
+      prompt: "the bear on a forest path",
+      aspectRatio: "9:16",
+      size: "1024x1536",
+      referenceImages: [sheet],
+    });
+
+    const call = generate.mock.calls[0][0];
+    expect(call.prompt.text).toBe("the bear on a forest path");
+    expect(call.prompt.images).toHaveLength(1);
+    expect(Buffer.from(call.prompt.images[0])).toEqual(sheet);
+    // Pixels win over the ratio — the SDK warns if both arrive.
+    expect(call.size).toBe("1024x1536");
+    expect(call.aspectRatio).toBeUndefined();
+  });
+
+  it("sends a bare string prompt when there is nothing to condition on", async () => {
+    // Logos and thumbnails must keep making exactly the call they always have.
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+    });
+
+    await new GatewayImageProvider(generate).generate({
+      prompt: "a logo",
+      aspectRatio: "1:1",
+    });
+
+    expect(generate.mock.calls[0][0].prompt).toBe("a logo");
+    expect(generate.mock.calls[0][0].size).toBeUndefined();
+  });
+
+  it("prices the image from the tokens the provider reported", async () => {
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+      responses: [{ modelId: "openai/gpt-image-2", timestamp: new Date() }],
+      usage: { inputTokens: 1150, outputTokens: 1372, totalTokens: 2522 },
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a scene",
+      aspectRatio: "9:16",
+      model: "openai/gpt-image-2",
+    });
+
+    // $5/M in, $30/M out — the gateway's own listed rate for this model.
+    expect(result.costUsd).toBeCloseTo((1150 * 5 + 1372 * 30) / 1_000_000, 8);
+  });
+
+  it("prices an unlisted model or a usage-less response at zero, not at a guess", async () => {
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a logo",
+      aspectRatio: "1:1",
+    });
+
+    expect(result.costUsd).toBe(0);
+  });
+
+  it("asks for the model the caller named rather than the configured default", async () => {
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+      responses: [{ modelId: "openai/gpt-image-2", timestamp: new Date() }],
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a scene",
+      aspectRatio: "9:16",
+      model: "openai/gpt-image-2",
+    });
+
+    expect(result.model).toBe("openai/gpt-image-2");
+  });
+
   it("marks a 429 or 5xx failure as retryable and everything else as not", async () => {
     const rateLimited = Object.assign(new Error("Too many requests"), {
       statusCode: 429,

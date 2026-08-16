@@ -102,6 +102,35 @@ const serverEnvSchema = z.object({
   /** Image model for thumbnails and logos, through the same gateway as
    *  AI_SCRIPT_MODEL. */
   AI_IMAGE_MODEL: z.string().min(1).default("openai/gpt-image-1"),
+  /**
+   * Image model for a channel's character sheet and its story illustrations —
+   * a separate setting from AI_IMAGE_MODEL because they are separate jobs.
+   * A thumbnail is one throwaway picture; an illustration has to hold the same
+   * character across a dozen beats, which is a capability, not a preference.
+   *
+   * `openai/gpt-image-2` and not a Google model, and that is a licence
+   * decision rather than a quality one. Google's Gemini API Additional Terms
+   * say, verbatim, that you "will not use the Services as part of a website,
+   * application, or other service … that is directed towards or is likely to
+   * be accessed by individuals under the age of 18". A children's channel is
+   * that on its face, and the clause governs Google's image models as well as
+   * Veo — including Nano Banana Pro, which has the best character-reference
+   * support on the gateway. Routing through Vercel does not change it; Vercel
+   * is a reseller, not a novation.
+   *
+   * OpenAI imposes no equivalent audience restriction. Its minimum-age clause
+   * ("You must be at least 13 years old…") governs who uses the service, its
+   * Services Agreement §3.3(c) bars letting minors *use* the API without a
+   * guardian, and its Usage Policies' "Keep minors safe" section is a harm
+   * provision (CSAM, grooming, exposing minors to age-inappropriate content) —
+   * none of which a bedtime story trips. Ownership is explicit in both
+   * documents: "Customer … (b) owns all Output."
+   *
+   * Also not Seedream or FLUX: both show independently reported whole-image
+   * colour drift between edits, which is precisely the artifact that stops a
+   * dozen stills intercutting as one film.
+   */
+  AI_ILLUSTRATION_MODEL: z.string().min(1).default("openai/gpt-image-2"),
 
   /** Stock footage search. Platform-level, not per-operator — AiProviderType has no member for either. */
   PEXELS_API_KEY: z.string().min(1).optional(),

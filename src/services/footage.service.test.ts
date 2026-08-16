@@ -4,10 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { putObject, storagePath } from "@/lib/storage";
 import type { ClipDownloader, FootageProviders } from "@/services/footage.service";
 import { FootageService } from "@/services/footage.service";
 import { projectService } from "@/services/project.service";
-import type { StockClip, StockFootageProvider } from "@/services/providers/types";
+import type {
+  ImageGenerationInput,
+  ImageProvider,
+  StockClip,
+  StockFootageProvider,
+} from "@/services/providers/types";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -916,5 +922,380 @@ describe("footageService.collect for a cartoon channel", () => {
     expect(pexels.search).toHaveBeenCalled();
     expect(pixabay.search).toHaveBeenCalled();
     expect(cartoon.search).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Illustrated channels: the pictures are generated, not searched for.
+// ---------------------------------------------------------------------------
+
+describe("footageService.collect for an illustrated channel", () => {
+  let illustratedVideoIds: string[];
+
+  beforeEach(() => {
+    illustratedVideoIds = [];
+  });
+
+  afterEach(async () => {
+    // Asset carries no FK back to Video, so the user cascade cannot reach
+    // these rows — same reason the two blocks above clean up by prefix.
+    for (const id of illustratedVideoIds) {
+      await prisma.asset.deleteMany({ where: { storagePath: { startsWith: `videos/${id}/` } } });
+    }
+  });
+
+  const SHEET_BYTES = Buffer.from("fake-character-sheet-png");
+
+  /** An image provider that never touches the network, records what it was
+   *  asked for, and can be told to refuse specific calls. */
+  function fakeImages(options: { failOn?: number[] } = {}): ImageProvider & {
+    calls: ImageGenerationInput[];
+  } {
+    const calls: ImageGenerationInput[] = [];
+    const failOn = new Set(options.failOn ?? []);
+
+    return {
+      calls,
+      generate: vi.fn(async (input: ImageGenerationInput) => {
+        const index = calls.length;
+        calls.push(input);
+
+        if (failOn.has(index)) {
+          // The shape a real refusal arrives in — see `GatewayImageProvider`.
+          throw new ProviderError("GATEWAY", "Your request was rejected.", false);
+        }
+
+        return {
+          data: Buffer.from(`fake-illustration-${index}`),
+          model: "openai/gpt-image-2",
+          costUsd: 0.047,
+        };
+      }),
+    };
+  }
+
+  /**
+   * A video on a channel branded ILLUSTRATED, with `cueCount` sections and a
+   * narration of `durationSeconds`.
+   *
+   * Its own channel and project rather than the module-level ones, so an
+   * illustrated channel in one test cannot change what another test collects.
+   */
+  async function makeIllustratedVideo(options: {
+    cueCount: number;
+    durationSeconds: number;
+    characterBrief?: string | null;
+    withSheet?: boolean;
+    format?: "LANDSCAPE" | "VERTICAL";
+    ownerId?: string;
+  }): Promise<{ videoId: string; channelId: string; sheetPath: string | null }> {
+    const owner = options.ownerId ?? userId;
+
+    const channel = await prisma.channel.create({
+      data: {
+        userId: owner,
+        youtubeChannelId: `UC-illus-${randomUUID()}`,
+        title: "Test illustrated channel",
+        accessToken: "fake-access-token",
+        refreshToken: "fake-refresh-token",
+        tokenExpiresAt: new Date(Date.now() + 3600_000),
+      },
+    });
+
+    let sheetPath: string | null = null;
+    if (options.withSheet !== false) {
+      sheetPath = storagePath(channel.id, "characters", `sheet-${randomUUID().slice(0, 8)}.png`);
+      await putObject(sheetPath, SHEET_BYTES, "image/png");
+    }
+
+    await prisma.channelBrand.create({
+      data: {
+        channelId: channel.id,
+        footageStyle: "ILLUSTRATED",
+        characterBrief:
+          options.characterBrief === undefined
+            ? "Pip, a small round brown bear cub in a red knitted scarf."
+            : options.characterBrief,
+        characterSheetPath: sheetPath,
+        tone: "warm and gentle",
+      },
+    });
+
+    const project = await projectService.create(owner, {
+      name: `test-illustrated-${randomUUID().slice(0, 8)}`,
+    });
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { channelId: channel.id },
+    });
+
+    const video = await videoService.create(owner, {
+      projectId: project.id,
+      title: "Pip and the moonlit meadow",
+      topic: "a bear cub who cannot sleep",
+    });
+    illustratedVideoIds.push(video.id);
+
+    if (options.format) {
+      await prisma.video.update({
+        where: { id: video.id },
+        data: { format: options.format },
+      });
+    }
+
+    // Same section shape as the blocks above: each cue's anchor opens its own
+    // sentence, so `anchorCues` finds every one in order.
+    const cues = Array.from({ length: options.cueCount }, (_, index) => ({
+      anchor: `Section number ${index} opens here`,
+      cue: `scene ${index}`,
+    }));
+    const content = cues
+      .map((c) => `${c.anchor} — the rest of this section's narration follows here.`)
+      .join(" ");
+    const script = await prisma.script.create({ data: { videoId: video.id } });
+    const version = await prisma.scriptVersion.create({
+      data: { scriptId: script.id, version: 1, content, cues },
+    });
+    await prisma.script.update({
+      where: { id: script.id },
+      data: { activeVersionId: version.id },
+    });
+
+    await prisma.voiceOver.create({
+      data: {
+        videoId: video.id,
+        provider: "ELEVENLABS",
+        voiceId: "test-voice",
+        durationSeconds: options.durationSeconds,
+      },
+    });
+
+    return { videoId: video.id, channelId: channel.id, sheetPath };
+  }
+
+  function beatAssets(videoId: string) {
+    return prisma.asset.findMany({
+      where: { kind: "IMAGE", storagePath: { startsWith: `videos/${videoId}/beats/` } },
+      orderBy: { storagePath: "asc" },
+    });
+  }
+
+  it("draws one picture per story beat, not one per section", async () => {
+    // The whole reason the feature exists in this shape. Twenty-seven sections
+    // across four minutes is what a real script produces; twenty-seven
+    // illustrations is not what this genre does, and `planStoryBeats` says
+    // twelve. Also asserts nothing is searched for — an illustrated channel
+    // has no stock provider in its plan at all.
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-1")]);
+    const pixabay = fakeProvider([makeClip("PIXABAY", "pix-1")]);
+    const cartoon = fakeProvider([makeClip("PIXABAY", "pix-cartoon-1")]);
+    const images = fakeImages();
+
+    const { videoId } = await makeIllustratedVideo({ cueCount: 27, durationSeconds: 240 });
+
+    const result = await new FootageService(
+      { PEXELS: pexels, PIXABAY: pixabay, PIXABAY_CARTOON: cartoon },
+      makeDownloader(),
+      images,
+    ).collect(userId, videoId);
+
+    expect(images.calls).toHaveLength(12);
+    expect(result.clipCount).toBe(12);
+    expect(result.missingBeats).toEqual([]);
+
+    const assets = await beatAssets(videoId);
+    expect(assets.map((a) => a.storagePath)).toEqual(
+      Array.from({ length: 12 }, (_, i) => `videos/${videoId}/beats/beat-${String(i).padStart(3, "0")}.png`),
+    );
+    expect(assets.every((a) => a.provider === "OPENAI")).toBe(true);
+
+    expect(pexels.search).not.toHaveBeenCalled();
+    expect(pixabay.search).not.toHaveBeenCalled();
+    expect(cartoon.search).not.toHaveBeenCalled();
+  });
+
+  it("puts the character sheet into every scene, which is the point of having one", async () => {
+    // Without this every picture invents a different protagonist, which is the
+    // exact failure the whole feature exists to avoid — and it is invisible in
+    // any test that only counts images.
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    await new FootageService({}, makeDownloader(), images).collect(userId, videoId);
+
+    expect(images.calls.length).toBeGreaterThan(1);
+    for (const call of images.calls) {
+      expect(call.referenceImages).toHaveLength(1);
+      expect(Buffer.from(call.referenceImages![0])).toEqual(SHEET_BYTES);
+      // And the brief travels as text alongside it, because the reference
+      // carries appearance but not the character's name or manner.
+      expect(call.prompt).toContain("Pip, a small round brown bear cub");
+      expect(call.prompt).toContain("reference sheet");
+    }
+  });
+
+  it("gives each beat its own sections' cues, so consecutive pictures differ", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    await new FootageService({}, makeDownloader(), images).collect(userId, videoId);
+
+    const scenes = images.calls.map((call) => call.prompt);
+    expect(new Set(scenes).size).toBe(scenes.length);
+    // Every section's cue reaches some beat — no section's words go undrawn.
+    for (let index = 0; index < 12; index += 1) {
+      expect(scenes.some((prompt) => prompt.includes(`scene ${index}`))).toBe(true);
+    }
+  });
+
+  it("says which beat has no picture rather than silently leaving a gap", async () => {
+    // A refusal is not the same event as a stock search coming back empty:
+    // nothing can be substituted for it, the render will refuse, and the
+    // operator needs to know which beat before deciding what to do.
+    const images = fakeImages({ failOn: [1, 3] });
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    const lines: string[] = [];
+    const result = await new FootageService({}, makeDownloader(), images).collect(
+      userId,
+      videoId,
+      (line) => lines.push(line),
+    );
+
+    expect(result.missingBeats).toEqual([2, 4]);
+    // The other beats were still drawn and still stored — one refusal must not
+    // throw away the pictures already paid for.
+    expect((await beatAssets(videoId)).map((a) => a.storagePath)).toEqual([
+      `videos/${videoId}/beats/beat-000.png`,
+      `videos/${videoId}/beats/beat-002.png`,
+      `videos/${videoId}/beats/beat-004.png`,
+      `videos/${videoId}/beats/beat-005.png`,
+    ]);
+
+    expect(lines.some((line) => line.includes("NO PICTURE") && line.includes("beat 2/6"))).toBe(
+      true,
+    );
+    expect(lines.some((line) => line.includes("no picture: 2, 4"))).toBe(true);
+  });
+
+  it("redraws only the beats that have none when collected again", async () => {
+    // What makes a partial failure cost the price of the beats that failed
+    // rather than the whole video again — and it only works because
+    // `planStoryBeats` is deterministic.
+    const first = fakeImages({ failOn: [1] });
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    await new FootageService({}, makeDownloader(), first).collect(userId, videoId);
+    expect(first.calls).toHaveLength(6);
+
+    const second = fakeImages();
+    const result = await new FootageService({}, makeDownloader(), second).collect(
+      userId,
+      videoId,
+    );
+
+    expect(second.calls).toHaveLength(1);
+    expect(result.missingBeats).toEqual([]);
+    expect(result.clipCount).toBe(6);
+    expect(await beatAssets(videoId)).toHaveLength(6);
+  });
+
+  it("reports what it actually spent, from the provider's own token counts", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    const result = await new FootageService({}, makeDownloader(), images).collect(
+      userId,
+      videoId,
+    );
+
+    expect(result.costUsd).toBeCloseTo(6 * 0.047, 6);
+  });
+
+  it("asks for a portrait picture for a vertical video and a landscape one otherwise", async () => {
+    const portrait = fakeImages();
+    const { videoId: verticalId } = await makeIllustratedVideo({
+      cueCount: 6,
+      durationSeconds: 60,
+      format: "VERTICAL",
+    });
+    await new FootageService({}, makeDownloader(), portrait).collect(userId, verticalId);
+    expect(portrait.calls.every((call) => call.size === "1024x1536")).toBe(true);
+
+    const landscape = fakeImages();
+    const { videoId: landscapeId } = await makeIllustratedVideo({
+      cueCount: 6,
+      durationSeconds: 60,
+    });
+    await new FootageService({}, makeDownloader(), landscape).collect(userId, landscapeId);
+    expect(landscape.calls.every((call) => call.size === "1536x1024")).toBe(true);
+  });
+
+  it("refuses before spending anything when the channel has no character sheet", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({
+      cueCount: 12,
+      durationSeconds: 120,
+      withSheet: false,
+    });
+
+    await expect(
+      new FootageService({}, makeDownloader(), images).collect(userId, videoId),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(images.calls).toHaveLength(0);
+    expect(await beatAssets(videoId)).toHaveLength(0);
+  });
+
+  it("refuses before spending anything when nobody has described the character", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({
+      cueCount: 12,
+      durationSeconds: 120,
+      characterBrief: null,
+    });
+
+    await expect(
+      new FootageService({}, makeDownloader(), images).collect(userId, videoId),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(images.calls).toHaveLength(0);
+  });
+
+  it("never draws for another operator's video", async () => {
+    // Every query in this service is scoped to the signed-in operator, and the
+    // scoping has to hold on the path that spends money as much as on the ones
+    // that do not. A foreign video is not found at all — no brand is read, no
+    // character sheet is fetched, nothing is generated.
+    const otherUserId = await createTestUser("test-illustrated-other");
+    const images = fakeImages();
+
+    try {
+      const { videoId } = await makeIllustratedVideo({
+        cueCount: 12,
+        durationSeconds: 120,
+        ownerId: otherUserId,
+      });
+
+      await expect(
+        new FootageService({}, makeDownloader(), images).collect(userId, videoId),
+      ).rejects.toBeInstanceOf(NotFoundError);
+
+      expect(images.calls).toHaveLength(0);
+      expect(await beatAssets(videoId)).toHaveLength(0);
+    } finally {
+      await deleteTestUser(otherUserId);
+    }
+  });
+
+  it("refuses a script with no cues rather than drawing one picture for the whole video", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({ cueCount: 0, durationSeconds: 120 });
+
+    await expect(
+      new FootageService({}, makeDownloader(), images).collect(userId, videoId),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(images.calls).toHaveLength(0);
   });
 });

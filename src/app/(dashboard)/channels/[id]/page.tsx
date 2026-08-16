@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BrandingForm } from "@/features/channels/components/branding-form";
+import { CharacterStudio } from "@/features/channels/components/character-studio";
 import { LogoStudio } from "@/features/channels/components/logo-studio";
 import { isAppError } from "@/lib/errors";
 import { brandService } from "@/services/brand.service";
@@ -105,6 +106,17 @@ export default async function ChannelBrandingPage({
         channelId={channel.id}
         channelTitle={channel.title}
         logoPath={branding.logoPath}
+      />
+
+      {/* Above the form and below the logo, in the order the two immediate-write
+        * cards already sit: both write on their own click rather than on the
+        * form's Save, and grouping them keeps that distinction visible. */}
+      <CharacterStudio
+        channelId={channel.id}
+        channelTitle={channel.title}
+        footageStyle={branding.footageStyle}
+        characterBrief={branding.characterBrief}
+        characterSheetPath={branding.characterSheetPath}
       />
 
       <BrandingForm

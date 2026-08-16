@@ -198,11 +198,56 @@ export interface MusicProvider {
 export interface GeneratedImage {
   data: Buffer;
   model: string;
+  /**
+   * What this one image actually cost, from the token counts the provider
+   * reported — not an estimate from a per-image price list.
+   *
+   * Zero when the model has no entry in `cost.ts`'s rate table or the provider
+   * reported no usage, which is the same "suspiciously free rather than
+   * plausibly wrong" convention `estimateCostUsd` already follows. Callers
+   * that state a spend to an operator (see `FootageService.collect`) sum this;
+   * callers that do not (logos, thumbnails) ignore it, which is why it is not
+   * optional — a number nobody has to check for undefined.
+   */
+  costUsd: number;
+}
+
+export interface ImageGenerationInput {
+  prompt: string;
+  /** Ignored when `size` is given — the two are alternative ways to say the
+   *  same thing and the AI SDK rejects both at once. */
+  aspectRatio: "16:9" | "1:1" | "9:16";
+  /**
+   * Exact pixels, when the caller needs them rather than a ratio.
+   *
+   * An illustration is composed into a 1080x1920 or 1920x1080 frame and then
+   * panned across, so what it needs is a picture at least as tall and wide as
+   * the frame in the right shape — `1024x1536` and `1536x1024` are the nearest
+   * sizes gpt-image-2 offers, and asking for them by name is more honest than
+   * asking for "9:16" and hoping. Logos and thumbnails pass nothing and are
+   * unaffected.
+   */
+  size?: `${number}x${number}`;
+  /**
+   * Reference images the model conditions on, in addition to the prompt.
+   *
+   * This is the character-consistency mechanism, and it is a real one: the AI
+   * SDK's `generateImage` accepts image inputs, so the channel's character
+   * sheet is *passed to* every scene generation rather than described to it.
+   * A textual description alone is what Max Woolf's write-up found
+   * insufficient — he escalated to seventeen reference images before fidelity
+   * held.
+   *
+   * Empty or absent is a plain text-to-image call, byte-for-byte what logos
+   * and thumbnails have always made.
+   */
+  referenceImages?: readonly Buffer[];
+  /** Overrides `env.AI_IMAGE_MODEL`. Illustrations and thumbnails are
+   *  different jobs with different right answers, and pinning one model for
+   *  both would mean changing thumbnails to change illustrations. */
+  model?: string;
 }
 
 export interface ImageProvider {
-  generate(input: {
-    prompt: string;
-    aspectRatio: "16:9" | "1:1";
-  }): Promise<GeneratedImage>;
+  generate(input: ImageGenerationInput): Promise<GeneratedImage>;
 }

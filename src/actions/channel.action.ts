@@ -16,6 +16,7 @@ import {
   type VoiceList,
 } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
+import { characterService, type CharacterSheet } from "@/services/character.service";
 import { logoService } from "@/services/logo.service";
 import { requireSession } from "@/server/session";
 
@@ -169,5 +170,28 @@ export async function listVoicesAction(): Promise<ActionResult<VoiceList>> {
   return run(async () => {
     const session = await requireSession();
     return brandService.listVoices(session.user.id);
+  });
+}
+
+/**
+ * Draws this channel's character sheet and makes it the channel's.
+ *
+ * Unlike `generateLogoOptionAction` this one *does* revalidate, and the
+ * difference is what each of them produces. A logo option is a candidate held
+ * in client state until the operator picks one, so refreshing would throw it
+ * away. A character sheet is the channel's protagonist the moment it exists —
+ * `CharacterService.generateSheet` has already written `characterSheetPath` —
+ * so the server component holding the old one is stale and has to be told.
+ */
+export async function generateCharacterSheetAction(
+  channelId: string,
+): Promise<ActionResult<CharacterSheet>> {
+  return run(async () => {
+    const session = await requireSession();
+    const sheet = await characterService.generateSheet(session.user.id, channelId);
+
+    revalidatePath(`/channels/${channelId}`);
+
+    return sheet;
   });
 }

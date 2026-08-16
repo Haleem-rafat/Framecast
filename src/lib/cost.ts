@@ -7,6 +7,18 @@ const RATES: Record<string, { input: number; output: number }> = {
   "anthropic/claude-sonnet-5": { input: 3, output: 15 },
   "anthropic/claude-opus-5": { input: 15, output: 75 },
   "anthropic/claude-haiku-4-5": { input: 1, output: 5 },
+  // Image models, priced per token exactly like the text ones above — which is
+  // why they belong in this table rather than in a second per-image one. Read
+  // from `GET https://ai-gateway.vercel.sh/v1/models` on 16 Aug 2026, where
+  // `openai/gpt-image-2` lists `input: 0.000005` and `output: 0.00003` per
+  // token. Vercel's pricing page states the gateway "charges no markup and no
+  // platform fee", so these are OpenAI's own list prices.
+  //
+  // Measured against them, one 1024x1536 illustration conditioned on a
+  // character sheet reports ~1,150 input and ~1,372 output tokens, which is
+  // $0.047. A twelve-beat four-minute story is therefore about $0.57 plus a
+  // one-off $0.05 for the sheet.
+  "openai/gpt-image-2": { input: 5, output: 30 },
 };
 
 const PER_MILLION = 1_000_000;

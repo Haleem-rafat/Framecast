@@ -1,0 +1,54 @@
+-- A third footage style, and the two columns that make it produce the same
+-- character twice.
+--
+-- CARTOON was Pixabay's `video_type=animation` filter, and the filter means
+-- "rendered rather than filmed" — not "drawn for children". A 64-second kids
+-- video generated on staging with it came back with abstract 3D hexagon motion
+-- graphics at 20s and a live-action lavender field at 48s. No query tuning
+-- fixes that, because the defect is structural: stock cannot give you the same
+-- character in scene 1 and scene 40, and a recurring character is the entire
+-- basis of the genre.
+--
+-- ILLUSTRATED generates the pictures instead — one still per story beat, held
+-- 15-25 seconds under the renderer's existing pan. That is measurably what the
+-- high-performing channels in this genre already do (Koala Moon, Sleeptime
+-- Music & Stories, Twinkle Tales Time are still illustrations with slow camera
+-- motion, at a frame-distance floor five times lower than genuinely animated
+-- channels), and it is what a 32-page picture book has converged on for a
+-- century: 12-14 spreads read aloud in 3-6 minutes.
+--
+-- Adding a value to the enum rather than replacing one. Every existing brand
+-- row keeps the value it has, LIVE_ACTION stays the column default, and no
+-- channel's footage changes until an operator picks the new option. Postgres
+-- permits ALTER TYPE ... ADD VALUE inside a transaction (PG 12+) as long as the
+-- new value is not *used* in the same transaction; nothing below uses it.
+ALTER TYPE "FootageStyle" ADD VALUE 'ILLUSTRATED';
+
+-- Who the recurring character is, in the operator's own words.
+--
+-- This is the one input the pipeline cannot infer. A script says "the little
+-- bear set off down the path"; it does not say the bear is brown with a cream
+-- muzzle and a red knitted scarf, and without that written down once, every
+-- generation invents a different bear. Free text rather than structured fields
+-- because a character description is prose — the image model reads it, nothing
+-- queries it.
+--
+-- Nullable, and null is a refusal to generate rather than a default: there is
+-- no sensible stand-in character, and inventing one would put an arbitrary
+-- protagonist into somebody's channel. `CharacterService.generateSheet` says so
+-- rather than guessing.
+ALTER TABLE "channel_brand" ADD COLUMN "characterBrief" TEXT;
+
+-- The generated reference image every scene illustration is conditioned on.
+--
+-- Generated once per channel and reused for every video that channel ever
+-- renders, which is why it lives here beside `logoPath` rather than on a video.
+-- It is a real image passed as an input to each scene generation (the AI SDK's
+-- `generateImage` accepts reference images), not a description of one — that is
+-- the whole mechanism by which scene 1 and scene 40 hold the same character.
+--
+-- Nullable for the same reason `logoPath` is: a channel that has not generated
+-- one yet is an ordinary state, and ILLUSTRATED collection refuses with a
+-- message naming this rather than silently producing a different protagonist
+-- per beat.
+ALTER TABLE "channel_brand" ADD COLUMN "characterSheetPath" TEXT;

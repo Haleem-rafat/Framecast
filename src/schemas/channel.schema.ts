@@ -131,6 +131,9 @@ const MUSIC_QUERY_MAX = 160;
  *  because a cloned voice can be named anything, bounded because it is stored
  *  and printed in a table cell. */
 const VOICE_NAME_MAX = 120;
+/** See `characterBrief` in `updateBrandingSchema` for why this is an order of
+ *  magnitude larger than the fields above it. */
+const CHARACTER_BRIEF_MAX = 2000;
 
 /**
  * Everything about a channel the branding screen edits, in one object,
@@ -222,6 +225,19 @@ export const updateBrandingSchema = z.object({
    * Prisma enum by `FOOTAGE_STYLES`, which is typed against it.
    */
   footageStyle: z.enum(FOOTAGE_STYLES.map((option) => option.value)),
+  /**
+   * Who the recurring character is, for an illustrated channel.
+   *
+   * Bounded far more generously than `tone` and `niche` above, and the reason
+   * is the opposite of theirs. Those two are interpolated *beside* the real
+   * instructions in a prompt, so a paragraph in them displaces what matters.
+   * This one IS the instruction: the whole finding behind illustrated footage
+   * is that a one-line description does not hold a character across a dozen
+   * generations — Max Woolf's write-up used a ~2,600-token character sheet and
+   * still saw details shift — so an operator who wants to name the exact shade
+   * of a scarf and the shape of an ear should be able to.
+   */
+  characterBrief: promptText(CHARACTER_BRIEF_MAX),
 });
 
 export type UpdateBrandingInput = z.infer<typeof updateBrandingSchema>;
@@ -272,3 +288,20 @@ export const chooseLogoSchema = z.object({
 });
 
 export type ChooseLogoInput = z.infer<typeof chooseLogoSchema>;
+
+/**
+ * Reading a generated character sheet back out of storage to show it.
+ *
+ * The same bare-filename rule `logoFilenameSchema` states, for the same
+ * reason and against the same threat: the route rebuilds the path with
+ * `storagePath(channelId, "characters", filename)` rather than accepting one,
+ * so a request cannot climb out of the channel's own prefix. Separate from the
+ * logo schema rather than shared, so the error message names the thing that
+ * was actually asked for.
+ */
+export const characterSheetFilenameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9._-]+$/, "Not a character sheet filename");

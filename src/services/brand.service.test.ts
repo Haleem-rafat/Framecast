@@ -201,6 +201,7 @@ function brandingInput(
     tone: "dry and factual",
     niche: "business history",
     musicQuery: "calm ambient documentary",
+    characterBrief: null,
     language: "en-GB",
     categoryId: "28",
     madeForKids: false,

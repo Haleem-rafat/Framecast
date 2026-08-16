@@ -1,16 +1,22 @@
 import "server-only";
 
-import type { FootageStyle } from "@/generated/prisma/enums";
+import { env } from "@/config/env";
+import type { FootageStyle, VideoFormat } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { beatImagePath, beatPrefix } from "@/lib/beat-storage";
 import { anchorCues, type AnchoredCue, type ScriptCue } from "@/lib/script-cues";
+import { planStoryBeats, type StoryBeat } from "@/lib/story-beats";
 import { getObject, putObject, storagePath } from "@/lib/storage";
+import { ILLUSTRATION_STYLE } from "@/services/character.service";
+import { gatewayImageProvider } from "@/services/providers/image.provider";
 import {
   pexelsProvider,
   pixabayCartoonProvider,
   pixabayProvider,
 } from "@/services/providers/stock-footage.provider";
 import type {
+  ImageProvider,
   StockClip,
   StockFootageProvider,
   StockFootageSource,
@@ -23,6 +29,22 @@ export interface CollectFootageResult {
   /** Bytes downloaded and stored by *this* call — zero on an idempotent
    * re-run that found nothing new to fetch. */
   bytesDownloaded: number;
+  /**
+   * Beats (1-based, as an operator counts them) that finished this call with
+   * no picture, because the model failed or refused.
+   *
+   * Empty on every stock-footage path and on a clean illustrated run. Present
+   * rather than merely logged because a refusal is not the same event as a
+   * stock search coming back empty: nothing downstream can substitute for it,
+   * `render.service.ts` will refuse the video rather than play the pictures
+   * out of step with the words, and the operator needs to know *which* beat
+   * before they decide whether to re-run or reword. Silently skipping is the
+   * one outcome that produces a finished-looking video with a hole in it.
+   */
+  missingBeats: number[];
+  /** What this call spent on generation, from the provider's own token counts.
+   * Zero for every stock path — Pexels, Pixabay and Jamendo are free. */
+  costUsd: number;
 }
 
 /**
@@ -164,11 +186,23 @@ const PROVIDER_LABEL: Record<FootageProviderKey, string> = {
 };
 
 /**
- * Which providers a channel's footage is searched for, and in what order.
+ * Where a channel's pictures come from, and in what order.
  *
  * This is the whole of the per-channel footage feature: everything below
  * iterates a plan rather than naming Pexels and Pixabay, so choosing a style
  * on a channel changes which searches happen and nothing else.
+ *
+ * ILLUSTRATED is the third entry and it is a different *kind* of plan rather
+ * than a shorter list of providers, which is why this is a tagged union now.
+ * It exists because CARTOON does not work for children's content and cannot be
+ * made to. Pixabay's `video_type=animation` filter means "rendered rather than
+ * filmed", not "drawn for children": a 64-second kids video generated with it
+ * came back with abstract 3D hexagon motion graphics at twenty seconds and a
+ * live-action lavender field at forty-eight. Query tuning cannot fix that,
+ * because the real defect is structural — **stock cannot give you the same
+ * character in scene 1 and scene 40**, and a recurring character is the entire
+ * basis of the genre. The only way to get one is to generate the pictures, so
+ * that is what this plan does.
  *
  * CARTOON lists exactly one provider, and the omission is the point. A
  * children's channel that could not find a cartoon must end up with *no
@@ -180,13 +214,84 @@ const PROVIDER_LABEL: Record<FootageProviderKey, string> = {
  * here: its video API exposes no content-type filter at all, so there is no
  * way to ask it for animation, and its library is live-action first.
  */
-export const FOOTAGE_SEARCH_PLAN: Record<
-  FootageStyle,
-  readonly FootageProviderKey[]
-> = {
-  LIVE_ACTION: ["PEXELS", "PIXABAY"],
-  CARTOON: ["PIXABAY_CARTOON"],
+export type FootagePlan =
+  /** Search these providers, in this order. */
+  | { readonly kind: "STOCK"; readonly providers: readonly FootageProviderKey[] }
+  /** Search nobody. Generate one illustration per story beat, every one of
+   *  them conditioned on the channel's character sheet. */
+  | { readonly kind: "ILLUSTRATED" };
+
+export const FOOTAGE_SEARCH_PLAN: Record<FootageStyle, FootagePlan> = {
+  LIVE_ACTION: { kind: "STOCK", providers: ["PEXELS", "PIXABAY"] },
+  CARTOON: { kind: "STOCK", providers: ["PIXABAY_CARTOON"] },
+  ILLUSTRATED: { kind: "ILLUSTRATED" },
 };
+
+/**
+ * Pixels asked of the model for each format.
+ *
+ * `gpt-image-2` offers 1024x1024, 1024x1536 and 1536x1024 — nothing matches a
+ * 1080x1920 or 1920x1080 frame exactly, and nothing needs to. The renderer
+ * scales with `force_original_aspect_ratio=increase` and then pans across the
+ * margin, so what matters is the *shape*: 1024x1536 is 2:3 against the frame's
+ * 9:16, close enough that the centre crop keeps almost the whole picture, and
+ * the upscale to 1242x2208 (frame x the 1.15 motion scale) is 1.21x — well
+ * inside what a watercolour illustration survives without visible softening.
+ */
+const ILLUSTRATION_SIZE: Record<VideoFormat, `${number}x${number}`> = {
+  LANDSCAPE: "1536x1024",
+  VERTICAL: "1024x1536",
+};
+
+/** How much of a beat's narration goes into its prompt. Enough to describe a
+ *  scene, short enough that the character sheet and the art direction are not
+ *  drowned out by a paragraph of plot. */
+const BEAT_CUE_MAX_LENGTH = 400;
+
+/**
+ * What one beat's picture should show.
+ *
+ * Built from the beat's own cues — the same b-roll cues a stock search would
+ * have used, which are already one-line descriptions of what to show while
+ * those words are read. Joined rather than reduced to the first, because a
+ * beat covers two or three sections and the picture has to hold the screen
+ * across all of them.
+ *
+ * The last paragraph is doing real work. Handed a reference sheet, the model's
+ * most natural reading of "draw this character" is to draw another reference
+ * sheet — three poses on a plain background — which is exactly what a video
+ * must not cut to. Saying so explicitly is the difference between a scene and
+ * a turnaround.
+ */
+export function beatIllustrationPrompt(input: {
+  cues: readonly string[];
+  brief: string;
+  tone: string | null;
+  hasSheet: boolean;
+}): string {
+  const scene = input.cues.join(". ").slice(0, BEAT_CUE_MAX_LENGTH);
+
+  return [
+    input.hasSheet
+      ? "Using the attached character reference sheet, draw ONE new scene illustration " +
+        "featuring exactly the same character, identical in every detail — same colours, " +
+        "same markings, same clothing, same face."
+      : "Draw one scene illustration for a children's picture book.",
+    "",
+    `The character: ${input.brief}`,
+    "",
+    `The scene: ${scene}`,
+    "",
+    ILLUSTRATION_STYLE,
+    input.tone ? `Tone: ${input.tone}.` : "",
+    "",
+    "A single full-bleed scene filling the whole frame, as one page of a picture book.",
+    "Do NOT draw a reference sheet, a turnaround, multiple poses, panels, borders or a",
+    "plain background. No text, no words, no letters, no captions, no watermark.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
 
 /** Separate from `StockFootageProvider.search` so tests can inject a
  * network-free downloader without needing a fetchable clip URL, matching
@@ -278,12 +383,18 @@ function extensionFromUrl(url: string): string {
 }
 
 /**
- * Pulls stock video clips from the providers this video's channel has asked
- * for — Pexels and Pixabay alternating for a live-action channel, Pixabay's
- * animation library alone for a cartoon one (see `FOOTAGE_SEARCH_PLAN`) —
- * alternating between them so one provider's stock look never dominates a
- * video, and stores each clip in our own bucket: Pixabay's terms forbid
- * permanent hotlinking, and an expiring CDN URL would fail mid-render.
+ * Gets this video its pictures, by whichever means its channel has asked for
+ * (see `FOOTAGE_SEARCH_PLAN`).
+ *
+ * Two of the three are stock: Pexels and Pixabay alternating for a live-action
+ * channel, Pixabay's animation library alone for a cartoon one — alternating so
+ * one provider's stock look never dominates a video, and each clip stored in
+ * our own bucket, because Pixabay's terms forbid permanent hotlinking and an
+ * expiring CDN URL would fail mid-render.
+ *
+ * The third searches nobody. An ILLUSTRATED channel's pictures are generated,
+ * one per story beat, every one of them conditioned on the channel's character
+ * sheet — see `collectIllustrated`.
  */
 export class FootageService {
   private readonly providers: FootageProviders;
@@ -301,6 +412,14 @@ export class FootageService {
      */
     providers: Partial<FootageProviders> = {},
     private readonly downloadClip: ClipDownloader = fetchClip,
+    /**
+     * Generates a channel's story illustrations. Injected for exactly the
+     * reason the stock providers above are, and with more at stake: a real
+     * call here is real money, and `logo.service.ts`'s tests already
+     * established the pattern of handing in a fake `ImageProvider` rather
+     * than mocking the module.
+     */
+    private readonly images: ImageProvider = gatewayImageProvider,
   ) {
     this.providers = {
       PEXELS: pexelsProvider,
@@ -321,6 +440,12 @@ export class FootageService {
         id: true,
         topic: true,
         title: true,
+        // Which shape the illustrations are generated in. Irrelevant to the
+        // stock paths — a downloaded clip is whatever shape it is and the
+        // renderer crops it — but a generated picture is asked for at a size,
+        // and asking for a landscape one for a vertical video would throw away
+        // most of it to the centre crop.
+        format: true,
         voiceOver: { select: { durationSeconds: true } },
         // What the pictures should look like, and therefore which providers
         // get searched at all. Read through the video's own operator-scoped
@@ -330,8 +455,26 @@ export class FootageService {
         // with no brand row all arrive here as null and fall back to
         // LIVE_ACTION — the same value the column defaults to, so an
         // unbranded channel collects exactly what it always has.
+        //
+        // The two character columns come along for the ride on the same query
+        // for the same reason: they are only meaningful for ILLUSTRATED, and
+        // reading them here rather than through `brandService.resolve` keeps
+        // the whole decision inside one operator-scoped row.
         project: {
-          select: { channel: { select: { brand: { select: { footageStyle: true } } } } },
+          select: {
+            channel: {
+              select: {
+                brand: {
+                  select: {
+                    footageStyle: true,
+                    characterBrief: true,
+                    characterSheetPath: true,
+                    tone: true,
+                  },
+                },
+              },
+            },
+          },
         },
         // Only the active version matters: an edit that changes the section
         // boundaries makes the previous version's cues meaningless, and
@@ -353,6 +496,45 @@ export class FootageService {
       throw new ConflictError(
         "Footage can only be collected once narration exists — clip count depends on its duration.",
       );
+    }
+
+    const style: FootageStyle =
+      video.project?.channel?.brand?.footageStyle ?? "LIVE_ACTION";
+    const plan = FOOTAGE_SEARCH_PLAN[style];
+
+    // A script with sections gets its footage cut to the words; a script
+    // without them (one written before cues existed) does not. Anchoring
+    // re-derives each cue's position from the *current* content on every call
+    // rather than trusting stored offsets, so an edit made since the cues were
+    // written can't silently point a picture at the wrong sentence.
+    //
+    // Hoisted above the two branches because the illustrated path needs it
+    // before it does anything at all: beats are groups of anchored cues, and
+    // there is no beat to draw without them.
+    const activeVersion = video.script?.activeVersion ?? null;
+    const rawCues = activeVersion?.cues;
+    const scriptCues = Array.isArray(rawCues) ? (rawCues as unknown as ScriptCue[]) : [];
+    // Trimmed for the same reason script.service.ts and voiceover.service.ts
+    // trim: the offsets these anchors produce are only meaningful against
+    // the string ElevenLabs is actually sent, which is `content.trim()`.
+    // Collection and render must agree on where a section starts, so this
+    // has to match render.service.ts's anchoring exactly — a picture fetched
+    // for one set of offsets and played against another is a picture that
+    // does not match its words.
+    const anchored =
+      activeVersion && scriptCues.length > 0
+        ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
+        : [];
+
+    if (plan.kind === "ILLUSTRATED") {
+      return this.collectIllustrated({
+        videoId,
+        anchored,
+        durationSeconds: video.voiceOver.durationSeconds,
+        format: video.format,
+        brand: video.project?.channel?.brand ?? null,
+        onProgress,
+      });
     }
 
     // Assets carry no direct videoId column — every object (and therefore
@@ -383,50 +565,26 @@ export class FootageService {
 
     const query = (video.topic ?? video.title).trim().slice(0, QUERY_MAX_LENGTH);
 
-    const style: FootageStyle =
-      video.project?.channel?.brand?.footageStyle ?? "LIVE_ACTION";
-    const plan = FOOTAGE_SEARCH_PLAN[style];
-
     // Said once per run, before any search, because it is the one thing about
     // this stage an operator cannot infer from the clip names that follow: a
     // cartoon channel that comes back with three clips needs to be readable
     // as "Pixabay's animation library only had three" rather than "something
     // is broken".
     onProgress(
-      `footage style ${style} — searching ${plan.map((key) => PROVIDER_LABEL[key]).join(", ")}`,
+      `footage style ${style} — searching ` +
+        plan.providers.map((key) => PROVIDER_LABEL[key]).join(", "),
     );
 
-    // A script with sections (Tasks 1-3) gets one clip per section instead
-    // of a shared topic pool, so the picture can later be cut to match the
-    // words it plays under (Task 5/6). Anchoring re-derives each cue's
-    // position from the *current* content on every call rather than trusting
-    // stored offsets, so an edit made since the cues were written can't
-    // silently point a clip at the wrong sentence. A video with no script,
-    // no cues (predates this feature), or whose anchors no longer resolve
-    // falls straight through to the original topic-level behaviour below —
-    // that is what makes the nullable `cues` column safe to ship without a
-    // backfill.
-    const activeVersion = video.script?.activeVersion ?? null;
-    const rawCues = activeVersion?.cues;
-    const scriptCues = Array.isArray(rawCues) ? (rawCues as unknown as ScriptCue[]) : [];
-    // Trimmed for the same reason script.service.ts and voiceover.service.ts
-    // trim: the offsets these anchors produce are only meaningful against
-    // the string ElevenLabs is actually sent, which is `content.trim()`.
-    // Collection and render must agree on where a section starts, so this
-    // has to match render.service.ts's anchoring exactly — a clip fetched
-    // for one set of offsets and played against another is a picture that
-    // does not match its words.
-    const anchored =
-      activeVersion && scriptCues.length > 0
-        ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
-        : [];
-
+    // A video with no script, no cues (predates this feature), or whose
+    // anchors no longer resolve falls straight through to the original
+    // topic-level behaviour below — that is what makes the nullable `cues`
+    // column safe to ship without a backfill.
     if (anchored.length > 0) {
       return this.collectPerCue({
         videoId,
         anchored,
         query,
-        plan,
+        plan: plan.providers,
         existing,
         usedExternalIds,
         bySource,
@@ -440,7 +598,7 @@ export class FootageService {
     // Idempotent: a prior run already reached the target, so re-running
     // collects nothing new rather than re-downloading anything.
     if (total >= clipCount) {
-      return { clipCount: total, bySource, bytesDownloaded: 0 };
+      return { clipCount: total, bySource, bytesDownloaded: 0, missingBeats: [], costUsd: 0 };
     }
 
     const need = clipCount - total;
@@ -458,7 +616,7 @@ export class FootageService {
     // every source fails does this rethrow — there's nothing left to collect
     // from.
     const results = await Promise.allSettled(
-      plan.map((key) =>
+      plan.providers.map((key) =>
         reportSearch(
           `${PROVIDER_LABEL[key]} "${query}"`,
           this.providers[key].search(query, clipCount),
@@ -522,7 +680,204 @@ export class FootageService {
       );
     }
 
-    return { clipCount: total, bySource, bytesDownloaded };
+    return { clipCount: total, bySource, bytesDownloaded, missingBeats: [], costUsd: 0 };
+  }
+
+  /**
+   * One generated illustration per STORY BEAT — not per section.
+   *
+   * That distinction is the feature. A four-minute script has about
+   * twenty-seven sections, and one picture per section would be twenty-seven
+   * generations at real money each, cut every nine seconds. It would also be
+   * the wrong film: the measured high-performing channels in this genre hold a
+   * still for 13-70 seconds with slow camera motion, and a 32-page picture book
+   * — the same story at the same read-aloud length — has twelve to fourteen
+   * spreads. `planStoryBeats` groups the sections into that many; see its own
+   * doc comment for the arithmetic and the evidence.
+   *
+   * Every picture is conditioned on the channel's character sheet, passed as a
+   * real input image rather than described. Without that this path produces
+   * pretty pictures with a different protagonist each time, which is precisely
+   * the failure the whole feature exists to avoid — so a channel with no sheet
+   * is refused here rather than served a worse version of the thing it asked
+   * for.
+   *
+   * Idempotent per beat, at the same granularity `collectPerCue` is per
+   * section: a re-run generates only the beats whose image is not already on
+   * disk. That is what makes a partial failure recoverable for the price of the
+   * beats that actually failed, and it is why `planStoryBeats` has to be
+   * deterministic.
+   *
+   * A beat whose generation fails or is refused is *reported*, never skipped
+   * silently. Nothing can stand in for it — there is no neighbouring picture to
+   * borrow, because borrowing would put the wrong scene under the words — so
+   * the beat is named in the progress output and returned in `missingBeats`,
+   * and `render.service.ts` refuses the video until it exists. The alternative
+   * is a finished-looking render with a hole in it, which is the failure mode
+   * nobody notices until it is published.
+   */
+  private async collectIllustrated(args: {
+    videoId: string;
+    anchored: AnchoredCue[];
+    durationSeconds: number;
+    format: VideoFormat;
+    brand: {
+      characterBrief: string | null;
+      characterSheetPath: string | null;
+      tone: string | null;
+    } | null;
+    onProgress: FootageProgress;
+  }): Promise<CollectFootageResult> {
+    const { videoId, anchored, durationSeconds, format, brand, onProgress } = args;
+
+    const brief = brand?.characterBrief?.trim();
+
+    // Refused before anything is spent, and the two refusals are separate
+    // because the actions are separate: one is "write down who the character
+    // is", the other is "press the button that draws them".
+    if (!brief) {
+      throw new ConflictError(
+        "This channel is set to illustrated footage but has no character described. " +
+          "Describe the recurring character on the channel's branding screen — that " +
+          "description is the only thing that keeps the same character in every scene.",
+      );
+    }
+
+    if (!brand?.characterSheetPath) {
+      throw new ConflictError(
+        "This channel is set to illustrated footage but has no character sheet. " +
+          "Generate one on the channel's branding screen first — every scene is drawn " +
+          "from it, and without it each picture would show a different character.",
+      );
+    }
+
+    // A script with no cues has no beats to group, and unlike the stock paths
+    // there is no topic-level pool to fall back to: "a picture of the whole
+    // video" is not a thing that exists. Named as a script problem because
+    // that is what it is.
+    if (anchored.length === 0) {
+      throw new ConflictError(
+        "Illustrated footage needs a script with section cues to draw from, and this " +
+          "video's script has none. Regenerate the script, then collect again.",
+      );
+    }
+
+    const beats: StoryBeat[] = planStoryBeats(anchored, durationSeconds);
+
+    // Read once and reused for every beat in this run rather than fetched per
+    // generation: it is the same object each time, and a dozen storage round
+    // trips for one buffer is a dozen chances for a transient read to cost a
+    // beat its character.
+    const sheet = await getObject(brand.characterSheetPath);
+
+    const existing = await prisma.asset.findMany({
+      where: {
+        kind: "IMAGE",
+        deletedAt: null,
+        storagePath: { startsWith: beatPrefix(videoId) },
+      },
+      select: { storagePath: true },
+    });
+    const existingPaths = new Set(existing.map((asset) => asset.storagePath));
+
+    onProgress(
+      `footage style ILLUSTRATED — ${beats.length} story beat(s) from ${anchored.length} ` +
+        `section(s), ${Math.round(durationSeconds / beats.length)}s of picture each, ` +
+        `drawn with ${env.AI_ILLUSTRATION_MODEL} from this channel's character sheet`,
+    );
+
+    const missingBeats: number[] = [];
+    let bytesDownloaded = 0;
+    let costUsd = 0;
+    let generated = 0;
+
+    for (const [index, beat] of beats.entries()) {
+      const path = beatImagePath(videoId, index);
+      const label = `beat ${index + 1}/${beats.length}`;
+
+      if (existingPaths.has(path)) {
+        continue;
+      }
+
+      const stepStartedAt = Date.now();
+
+      let image;
+      try {
+        image = await this.images.generate({
+          prompt: beatIllustrationPrompt({
+            cues: beat.cues,
+            brief,
+            tone: brand.tone,
+            hasSheet: true,
+          }),
+          // Only read when `size` is absent, which it never is here — stated
+          // anyway because the field is required and because it says what the
+          // size below means.
+          aspectRatio: format === "VERTICAL" ? "9:16" : "16:9",
+          size: ILLUSTRATION_SIZE[format],
+          referenceImages: [sheet],
+          model: env.AI_ILLUSTRATION_MODEL,
+        });
+      } catch (error) {
+        // Caught per beat rather than allowed to abort the run, so one refusal
+        // does not throw away the eleven pictures already paid for. Named
+        // loudly, and counted — see `missingBeats`.
+        missingBeats.push(index + 1);
+        onProgress(
+          `[${label}] NO PICTURE — the model failed or refused: ` +
+            (error instanceof Error ? error.message : String(error)) +
+            `. This beat covers section(s) ${beat.sectionIndices
+              .map((section) => section + 1)
+              .join(", ")}; the render will refuse until it exists.`,
+        );
+        continue;
+      }
+
+      await putObject(path, image.data, "image/png");
+
+      await prisma.asset.create({
+        data: {
+          kind: "IMAGE",
+          storagePath: path,
+          mimeType: "image/png",
+          sizeBytes: BigInt(image.data.byteLength),
+          // The account the spend lands on, which is what `Asset.provider`
+          // records everywhere else. `GATEWAY` is not an `AiProviderType`
+          // member and the gateway bills OpenAI's list price with no markup,
+          // so OPENAI is the honest answer for `openai/gpt-image-2`.
+          provider: "OPENAI",
+          // The model that actually drew it, so a beat that came out wrong can
+          // be traced to the generation that produced it — the same reason
+          // `ThumbnailVersion.model` exists.
+          externalId: image.model,
+        },
+      });
+
+      generated += 1;
+      bytesDownloaded += image.data.byteLength;
+      costUsd += image.costUsd;
+
+      onProgress(
+        `[${label}] ${beat.sectionIndices.length} section(s), ` +
+          `${formatBytes(image.data.byteLength)}, $${image.costUsd.toFixed(3)} … ` +
+          `drawn (${formatElapsed(Date.now() - stepStartedAt)})`,
+      );
+    }
+
+    if (missingBeats.length > 0) {
+      onProgress(
+        `${missingBeats.length} of ${beats.length} beat(s) have no picture: ` +
+          `${missingBeats.join(", ")}. Collect again to retry only those.`,
+      );
+    }
+
+    return {
+      clipCount: existingPaths.size + generated,
+      bySource: { OPENAI: existingPaths.size + generated },
+      bytesDownloaded,
+      missingBeats,
+      costUsd,
+    };
   }
 
   /**
@@ -777,7 +1132,7 @@ export class FootageService {
       );
     }
 
-    return { clipCount: total, bySource, bytesDownloaded };
+    return { clipCount: total, bySource, bytesDownloaded, missingBeats: [], costUsd: 0 };
   }
 }
 

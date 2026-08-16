@@ -299,6 +299,31 @@ model ChannelBrand {
   /// migration needs no backfill and no existing channel changes behaviour.
   footageStyle FootageStyle @default(LIVE_ACTION)
 
+  /// Who the recurring character is, in the operator's own words. Only read by
+  /// `footageStyle = ILLUSTRATED`.
+  ///
+  /// This is the one input the pipeline cannot infer. A script says "the little
+  /// bear set off down the path"; it does not say the bear is brown with a
+  /// cream muzzle and a red knitted scarf, and without that written down once,
+  /// every generation invents a different bear. Free text because a character
+  /// description is prose — the image model reads it, nothing queries it.
+  ///
+  /// Nullable, and null is a refusal rather than a default: there is no
+  /// sensible stand-in character, and inventing one would put an arbitrary
+  /// protagonist into somebody's channel.
+  characterBrief String?
+
+  /// The generated reference image every scene illustration is conditioned on.
+  ///
+  /// Beside `logoPath` and for the same reason: generated once per channel and
+  /// reused by every video that channel ever renders. It is a real image passed
+  /// as an input to each scene generation, not a description of one — that is
+  /// the mechanism by which beat 1 and beat 12 hold the same character, and
+  /// without it the illustrated path produces pretty pictures with a different
+  /// protagonist each time, which is the failure the whole feature exists to
+  /// avoid.
+  characterSheetPath String?
+
   /// Which ElevenLabs voice reads this channel's narration.
   ///
   /// Per channel for the plainest possible reason: the operator runs a finance
@@ -347,13 +372,14 @@ model ChannelBrand {
   @@map("channel_brand")
 }
 
-/// Which stock-footage providers a channel's clips are searched for.
+/// Where a channel's pictures come from.
 ///
-/// Two values rather than a provider name, because the operator is choosing
-/// what the video looks like, not who hosts it — and the mapping from one to
-/// the other is not one-to-one. CARTOON is served by Pixabay's animation
-/// filter alone; Pexels has no content-type filter to set and its video
-/// library is live-action first, so a cartoon channel never asks it.
+/// Values rather than provider names, because the operator is choosing what the
+/// video looks like, not who supplies it — and the mapping from one to the
+/// other is not one-to-one. CARTOON is served by Pixabay's animation filter
+/// alone; Pexels has no content-type filter to set and its video library is
+/// live-action first, so a cartoon channel never asks it. ILLUSTRATED asks
+/// nobody: it generates.
 enum FootageStyle {
   /// Pexels and Pixabay, unfiltered. What every channel did before this
   /// existed.
@@ -361,6 +387,16 @@ enum FootageStyle {
   /// Pixabay with `video_type=animation`, `safesearch=true` and a `cartoon`
   /// query prefix. Never Pexels — see `pixabayCartoonProvider`.
   CARTOON
+  /// Generated still illustrations, one per story beat, held 15-25 seconds
+  /// under the renderer's existing pan, every one of them conditioned on this
+  /// channel's `characterSheetPath`. No stock provider is searched at all.
+  ///
+  /// Exists because CARTOON does not work for children's content and cannot be
+  /// made to. Pixabay's `video_type=animation` means "rendered rather than
+  /// filmed", so it is full of photoreal loops and corporate motion graphics —
+  /// and no amount of query tuning fixes the structural problem, which is that
+  /// stock cannot give you the same character in scene 1 and scene 40.
+  ILLUSTRATED
 }
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { beatImagePath, beatPrefix } from "@/lib/beat-storage";
 import { writeRenderFile } from "@/lib/render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
@@ -23,6 +24,7 @@ import {
   SHORT_MAX_WORDS_PER_LINE,
   verticalCaptionStyle,
 } from "@/lib/shorts-plan";
+import { beatSeconds, planStoryBeats } from "@/lib/story-beats";
 import { getObject, storagePath } from "@/lib/storage";
 import { brandService } from "@/services/brand.service";
 import { compose } from "@/services/composer";
@@ -288,9 +290,37 @@ export class RenderService {
       select: { storagePath: true },
     });
 
-    if (allClipAssets.length === 0) {
+    // An illustrated video's pictures, if it has any.
+    //
+    // Recognised by what is on disk rather than by reading the channel's
+    // `footageStyle`, and deliberately. The style can be changed on the channel
+    // at any time, including after this video's footage was collected — and
+    // what must be rendered is the footage this video actually has, not the
+    // footage the channel would collect today. A video with beat images has
+    // them because a collection run generated them for this exact script; a
+    // LIVE_ACTION or CARTOON video has none, so this query comes back empty and
+    // every line below behaves exactly as it did before illustrated footage
+    // existed. Its own `beats/` prefix is what makes the question answerable at
+    // all: `kind: "IMAGE"` under `videos/{id}/` would also match thumbnails.
+    const beatAssets = await prisma.asset.findMany({
+      where: {
+        kind: "IMAGE",
+        deletedAt: null,
+        storagePath: { startsWith: beatPrefix(videoId) },
+      },
+      orderBy: { storagePath: "asc" },
+      select: { storagePath: true },
+    });
+
+    if (allClipAssets.length === 0 && beatAssets.length === 0) {
       throw new ConflictError("Stock footage must be collected before rendering.");
     }
+
+    // One picture per story beat instead of one clip per section, and every
+    // picture a still. Decided by what collection actually produced — see the
+    // query above for why that is not the same question as what the channel is
+    // set to today.
+    const illustrated = beatAssets.length > 0;
 
     // A cue whose anchor no longer occurs in the current script is dropped
     // rather than guessed at (see anchorCues), so this is the set of sections
@@ -310,6 +340,38 @@ export class RenderService {
       activeVersion && scriptCues.length > 0
         ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
         : [];
+
+    // The beats this script groups into, re-derived here rather than stored,
+    // exactly as the cues themselves are. `planStoryBeats` is pure and
+    // deterministic over the anchored cues and the narration's length, both of
+    // which FootageService also had — so the grouping this render plays is the
+    // grouping that collection drew, without a plan row that could drift from
+    // the script. Empty for a video with no cues, which is every video that is
+    // not illustrated.
+    const beats = illustrated ? planStoryBeats(anchored, durationSeconds) : [];
+    const beatPaths = beats.map((_beat, index) => beatImagePath(videoId, index));
+    const drawnPaths = new Set(beatAssets.map((asset) => asset.storagePath));
+
+    // Same guard as the section one below, for the same reason and with a
+    // different remedy. A missing beat cannot be filled by copying a
+    // neighbour — the neighbour's picture is a different scene, and putting it
+    // under these words is exactly the "hard to follow" defect this genre is
+    // judged on — so the only way out is to generate it, which collecting again
+    // does for that beat alone (`collectIllustrated` is idempotent per beat).
+    if (illustrated) {
+      const missing = beatPaths
+        .map((beatPath, index) => ({ beatPath, index }))
+        .filter((entry) => !drawnPaths.has(entry.beatPath))
+        .map((entry) => entry.index + 1);
+
+      if (missing.length > 0) {
+        throw new ConflictError(
+          `No picture for beat(s) ${missing.join(", ")} of ${beatPaths.length}. ` +
+            "Collect footage again — it redraws only the beats that have none. " +
+            "Rendering as-is would play every later beat against the wrong narration.",
+        );
+      }
+    }
 
     const sectionPaths = anchored.map((_cue, index) => sectionClipPath(videoId, index));
     const collectedPaths = new Set(allClipAssets.map((asset) => asset.storagePath));
@@ -354,6 +416,8 @@ export class RenderService {
       );
     }
 
+    // Illustrated: one still per beat, in the order the beats are spoken.
+    //
     // Cued: one clip per section, in the order the sections are spoken —
     // there is nothing to choose, the script already decided.
     //
@@ -361,9 +425,18 @@ export class RenderService {
     // how many clips it *downloads*, but a video collected before that cap
     // existed still has every clip it ever gathered — 38 of them in the case
     // that OOM-killed the worker. See MAX_RENDER_CLIPS.
-    const clipAssets = cued
-      ? sectionPaths.map((sectionPath) => ({ storagePath: sectionPath }))
-      : allClipAssets.slice(0, MAX_RENDER_CLIPS);
+    //
+    // MAX_RENDER_CLIPS does not apply to an illustrated video for the same
+    // reason it does not apply to a cued one: the concat demuxer plays these
+    // one at a time, so a thirteenth beat costs one decoder for its own slot
+    // and nothing concurrent — and dropping beats would leave the narration's
+    // last minutes with no picture. `planStoryBeats` bounds the count already,
+    // in money rather than memory (see MAX_BEATS).
+    const clipAssets = illustrated
+      ? beatPaths.map((beatPath) => ({ storagePath: beatPath }))
+      : cued
+        ? sectionPaths.map((sectionPath) => ({ storagePath: sectionPath }))
+        : allClipAssets.slice(0, MAX_RENDER_CLIPS);
 
     // The real guard against a second concurrent render: two callers can both
     // read GENERATING above, but only one's `status: "GENERATING"` clause can
@@ -469,15 +542,26 @@ export class RenderService {
       // overshoots again, and the assemble pass's `-t` trims the tail. Nothing
       // here is anchored to the words, so a clip lost off the end costs a
       // backdrop rather than sync — see MIN_CLIP_SECONDS.
-      const clipSeconds = cued
-        ? sectionDurations(
-            cueWindows(anchored, alignment).map((window) => window.startSeconds),
-            durationSeconds,
-            minClipSeconds,
-          )
-        : downloadedClipPaths.map(() =>
-            Math.max(minClipSeconds, durationSeconds / downloadedClipPaths.length),
-          );
+      //
+      // Illustrated: each beat holds the screen for as long as all the sections
+      // it covers are spoken — the same per-section arithmetic, summed over the
+      // beat's members. Nothing new is invented, which is what guarantees the
+      // beats still cover [0, durationSeconds] exactly: `sectionDurations`
+      // already does, and summing contiguous runs of a partition is a partition.
+      const perSection = () =>
+        sectionDurations(
+          cueWindows(anchored, alignment).map((window) => window.startSeconds),
+          durationSeconds,
+          minClipSeconds,
+        );
+
+      const clipSeconds = illustrated
+        ? beatSeconds(beats, perSection())
+        : cued
+          ? perSection()
+          : downloadedClipPaths.map(() =>
+              Math.max(minClipSeconds, durationSeconds / downloadedClipPaths.length),
+            );
 
       // The one arrangement `sectionDurations` cannot repair: more sections
       // than the narration can give the floor to, so it falls back to equal
@@ -489,11 +573,18 @@ export class RenderService {
       // seconds to spend on them, which is what the operator can actually do
       // something about, so it is named here — before fifty clips are
       // downloaded and encoded against a plan that cannot be built.
+      //
+      // Illustrated is included, and it is nearly unreachable there: beats are
+      // grouped to hold 15-25 seconds, so a beat under half a second means a
+      // narration of a few seconds carved into beats by `planStoryBeats`'s
+      // degenerate branch. Nearly unreachable is not unreachable, and the
+      // failure it prevents is identical.
       const overlap = style.transitions.enabled ? style.transitions.durationSeconds : 0;
-      if (cued && overlap > 0 && clipSeconds.some((seconds) => seconds <= overlap)) {
+      if ((cued || illustrated) && overlap > 0 && clipSeconds.some((seconds) => seconds <= overlap)) {
         const shortest = Math.min(...clipSeconds);
+        const unit = illustrated ? "beats" : "sections";
         throw new ConflictError(
-          `This script has ${clipSeconds.length} sections across ${durationSeconds}s of ` +
+          `This script has ${clipSeconds.length} ${unit} across ${durationSeconds}s of ` +
             `narration — about ${shortest.toFixed(1)}s of picture each, too short to hold ` +
             "the screen or carry a transition. Edit the script so it has fewer, longer " +
             `sections (at least ${minClipSeconds}s of narration each), then collect ` +
