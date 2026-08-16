@@ -1,0 +1,32 @@
+-- A standing request to re-narrate one video in a different voice.
+--
+-- Narration is generated once and everything downstream is derived from it:
+-- ElevenLabs' character-level alignment places every caption and every footage
+-- cue, and the render is built on those timings. So "change the voice" cannot
+-- be a property write — it is a re-run of the pipeline from narration onward,
+-- and the run happens in the render worker, in another process, minutes after
+-- the operator clicks. These two columns are the message between the two.
+--
+-- Why a column rather than an argument: `runPipeline` skips narration whenever
+-- a `VoiceOver` row already exists, and that skip is what protects a 10,000
+-- character/month allowance from every retry. A non-null `renarrateVoiceId` is
+-- the one thing that suspends the skip, and it names the voice to use instead
+-- of the channel's. `voiceover.service.ts` clears both columns inside the same
+-- transaction that writes the new `VoiceOver`, so a failure further down the
+-- pipeline (footage, render) retries without re-billing ElevenLabs, and a
+-- request can never be honoured twice.
+--
+-- Both NULLable, no default, no backfill. NULL means "no request", which is
+-- what every existing row means and what every ordinary run means: the voice
+-- comes from `channel_brand` via `BrandService.resolve`, exactly as it did
+-- before this migration. There is deliberately no DEFAULT — a default would
+-- have to name a specific voice id, and this app must never assert that a
+-- given voice exists on the operator's ElevenLabs account.
+--
+-- `renarrateVoiceName` is display only. It fills `voice_over.voiceName`, which
+-- the narration library lists, because ElevenLabs' with-timestamps endpoint
+-- returns no human name for the voice it just used. It is meaningless without
+-- the id and is written and cleared with it.
+ALTER TABLE "video"
+  ADD COLUMN "renarrateVoiceId" TEXT,
+  ADD COLUMN "renarrateVoiceName" TEXT;

@@ -517,6 +517,34 @@ model Video {
   /// Cooperative cancellation. The worker owns the FFmpeg child process, so
   /// only it can stop one; it checks this on every heartbeat.
   cancelRequestedAt    DateTime?
+  /// A standing instruction to throw this video's narration away and
+  /// synthesise it again in a different voice — the whole of the
+  /// "change the sound" feature's durable state.
+  ///
+  /// It has to be durable, and it has to live here, because re-narrating is
+  /// not a property change: `runPipeline` skips narration whenever a
+  /// `VoiceOver` row already exists (that skip is what protects a 10,000
+  /// character/month ElevenLabs allowance from a re-run), and the thing that
+  /// actually does the work is a worker in another process that reads this
+  /// row minutes later. A non-null value here is what tells that worker "the
+  /// skip does not apply this time, and this is the voice to use".
+  ///
+  /// Cleared inside the same transaction that writes the new `VoiceOver`
+  /// (see voiceover.service.ts), so a retry after a failure *downstream* of
+  /// narration — footage, render — never spends the allowance a second time,
+  /// and a request can never be honoured twice.
+  ///
+  /// NULL for every row that already exists and for every ordinary run, which
+  /// is the entire compatibility story: a video with no request narrates
+  /// exactly as it always has, from its channel's voice.
+  renarrateVoiceId     String?
+  /// The name that voice had in the operator's ElevenLabs account at the
+  /// moment they picked it, carried alongside `renarrateVoiceId` for the same
+  /// reason `ChannelBrand.voiceName` sits beside `ChannelBrand.voiceId`: the
+  /// synthesis endpoint returns no human name, so this is the only way
+  /// `VoiceOver.voiceName` can end up with anything but a 20-character id.
+  /// Display only, meaningless without the id, and cleared with it.
+  renarrateVoiceName   String?
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
   deletedAt            DateTime?

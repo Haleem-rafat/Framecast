@@ -113,6 +113,13 @@ export class VoiceOverService {
         // The pronunciation dictionary is per channel, so terms learned on one
         // video carry to the next on the same channel.
         project: { select: { channelId: true } },
+        // The operator's standing "re-narrate this in that voice" request, if
+        // there is one. Read here rather than passed in as an option because
+        // this is the method that has to *clear* it, and it can only clear it
+        // atomically with the write that fulfils it — see the transaction at
+        // the bottom of this method.
+        renarrateVoiceId: true,
+        renarrateVoiceName: true,
       },
     });
 
@@ -154,12 +161,24 @@ export class VoiceOverService {
       throw new ConflictError("This video has no approved script to narrate.");
     }
 
+    /**
+     * The voice the operator asked to re-narrate in, or null for an ordinary
+     * run.
+     *
+     * A request is as good as `force`, and deliberately so: it is written by
+     * `VideoService.requestRenarration`, which only ever writes it after
+     * showing the operator what the re-synthesis costs. Making it a second
+     * flag the caller has to remember to pair with `force` would be one more
+     * way to arrive here with a new voice and refuse to use it.
+     */
+    const renarrateVoiceId = video.renarrateVoiceId;
+
     // The operator is on ElevenLabs' free tier (10,000 characters/month) and
     // one script is around 7,000. This check — and everything above it —
     // must run, and refuse, before the provider is ever called: a re-run
     // that called ElevenLabs and only discarded the result afterwards would
     // still spend the quota it was trying to protect.
-    if (video.voiceOver && !opts.force) {
+    if (video.voiceOver && !opts.force && !renarrateVoiceId) {
       throw new ConflictError(
         "Narration already exists for this video. Pass force to re-synthesise it " +
           "(this calls ElevenLabs again and spends quota).",
@@ -217,8 +236,19 @@ export class VoiceOverService {
      * Safe to put in front of a synthesis because `resolve` is documented as
      * never throwing: an unreachable database or a malformed brand row cannot
      * become the reason a video has no narration.
+     *
+     * A standing re-narration request overrides the channel for this one
+     * synthesis, and only for this one: the columns are cleared in the
+     * transaction below, so the next video on the channel — and this video's
+     * next narration, if it ever has one — is back on the channel's voice.
+     * That is the honest reading of the request. The operator asked to hear
+     * *this* video in another voice, not to re-brand the channel; the
+     * branding screen is where the channel's own voice is changed, and doing
+     * both from one click would silently restyle every future video.
      */
-    const { voiceId, voiceName } = await brandService.resolve(channelId);
+    const { voiceId, voiceName } = renarrateVoiceId
+      ? { voiceId: renarrateVoiceId, voiceName: video.renarrateVoiceName }
+      : await brandService.resolve(channelId);
 
     /**
      * A name for the narration library to print instead of a 20-character id.
@@ -328,13 +358,37 @@ export class VoiceOverService {
           },
         });
 
+        // The request is fulfilled the moment the new narration is committed,
+        // and it is cleared here rather than by the caller so that the two
+        // cannot come apart. Everything after this stage can fail and be
+        // retried — footage, the render — and a retry that still saw the
+        // request would call ElevenLabs again for a script's worth of
+        // characters that have already been paid for once. Guarded on the
+        // exact id that was honoured, so an operator who asked for a second,
+        // different voice while this synthesis was in flight does not have
+        // their newer request silently thrown away by this write.
+        if (renarrateVoiceId) {
+          await tx.video.updateMany({
+            where: { id: videoId, userId, renarrateVoiceId },
+            data: { renarrateVoiceId: null, renarrateVoiceName: null },
+          });
+        }
+
         await tx.activityLog.create({
           data: {
             userId,
             action: "voiceover.generate",
             entityType: "Video",
             entityId: videoId,
-            message: `Generated narration (${durationSeconds}s, ${synthesized.characterCount} characters)`,
+            message:
+              `Generated narration (${durationSeconds}s, ${synthesized.characterCount} characters)` +
+              // Named only on a re-narration. On an ordinary run the voice is
+              // the channel's and saying so on every line would be noise; on
+              // this one it is the entire reason the run happened, and the
+              // activity log is what the video's own log stream shows.
+              (renarrateVoiceId
+                ? ` re-narrated in ${resolvedVoiceName ?? renarrateVoiceId}`
+                : ""),
           },
         });
 

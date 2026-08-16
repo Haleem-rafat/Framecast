@@ -61,6 +61,37 @@ export interface RunPipelineInput {
 
 const noopProgress: PipelineProgress = () => {};
 
+/**
+ * Whether the narration stage has to actually call ElevenLabs, or may report
+ * the existing narration and move on.
+ *
+ * Exported and pure because it is the single line standing between a video
+ * with new audio and a video with new audio and old caption timings. Get it
+ * wrong in the "skip" direction and a re-narration request produces a run
+ * that renders the *old* narration against the old alignment and calls itself
+ * finished — a defect that looks perfectly healthy in a status column, which
+ * is exactly the kind that survives to production. Get it wrong the other way
+ * and every ordinary retry re-bills a script's worth of ElevenLabs
+ * characters. Neither is a thing to leave to an inline boolean nobody can
+ * test.
+ *
+ * Three inputs, in order of authority:
+ *
+ *   - No narration at all: synthesise, always. Nothing to skip.
+ *   - `force`: the CLI's `--force-narration`, an explicit operator choice.
+ *   - A standing re-narration request (`Video.renarrateVoiceId`): the
+ *     operator chose a different voice on the video page and was shown what
+ *     re-synthesising costs before they confirmed. `voiceover.service.ts`
+ *     reads the same column to decide which voice to use and clears it in the
+ *     transaction that fulfils it, so this is true exactly once per request.
+ */
+export function narrationNeedsSynthesis(
+  video: { voiceOver: unknown | null; renarrateVoiceId: string | null },
+  force: boolean,
+): boolean {
+  return !video.voiceOver || force || video.renarrateVoiceId !== null;
+}
+
 export class PipelineCancelledError extends Error {
   constructor(stage: PipelineStageName) {
     super(`Pipeline cancelled before the "${stage}" stage started.`);
@@ -137,10 +168,23 @@ async function runOptionalStage(
  * Runs the render pipeline for one video: storage bucket, narration,
  * footage, render, metadata, thumbnail — in that order, skipping any of the
  * first four stages already complete rather than redoing it. Narration in
- * particular is only ever re-synthesised when `force` is explicitly true;
- * the operator has 10,000 ElevenLabs characters a month and a real script is
- * roughly 7,000, so a silent re-synthesis is a direct cost regression, not
- * just wasted work.
+ * particular is only ever re-synthesised on an explicit operator choice —
+ * `force` (the CLI's `--force-narration`) or a standing re-narration request
+ * on the video row; see `narrationNeedsSynthesis`. The operator has 10,000
+ * ElevenLabs characters a month and a real script is roughly 7,000, so a
+ * silent re-synthesis is a direct cost regression, not just wasted work.
+ *
+ * When narration *is* re-synthesised, every later stage follows it without
+ * needing to be told. The alignment is rewritten at its own fixed path by the
+ * same call; `footageService.collect` is idempotent per section, so the clips
+ * this video already has are kept and only genuinely missing ones are fetched
+ * (an illustrated video whose new narration length regrouped its beats draws
+ * the beats that have no picture, and nothing else); and the render reads the
+ * *new* alignment to place both the captions and every clip's slot, so the
+ * existing footage is re-timed rather than re-collected. That is the whole
+ * reason re-narrating is a re-run of this function rather than a special
+ * path: the stages already know how to rebuild themselves from a narration
+ * that changed.
  *
  * `metadata` and `thumbnail` are different in kind from the four stages
  * before them, not just in ordering. They run unconditionally rather than
@@ -167,6 +211,12 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
       status: true,
       script: { select: { activeVersion: { select: { content: true } } } },
       voiceOver: { select: { durationSeconds: true } },
+      // The operator's standing "re-narrate this in that voice" request. Read
+      // here only to decide whether the narration stage may skip — which
+      // voice it uses, and clearing the request afterwards, both belong to
+      // `voiceOverService.generate`, which reads the same column itself.
+      renarrateVoiceId: true,
+      renarrateVoiceName: true,
     },
   });
 
@@ -182,21 +232,34 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
 
   checkCancelled("narration");
   await runStage("narration", onProgress, async (report) => {
-    if (video.voiceOver && !force) {
+    if (!narrationNeedsSynthesis(video, force)) {
       return (
-        `already exists (${video.voiceOver.durationSeconds}s) — skipped. ` +
+        `already exists (${video.voiceOver?.durationSeconds}s) — skipped. ` +
         "Pass --force-narration to re-synthesise (this spends ElevenLabs quota again)."
       );
     }
 
-    if (video.voiceOver && force) {
+    if (video.voiceOver) {
       const characters = video.script?.activeVersion?.content?.length ?? 0;
+      const voice = video.renarrateVoiceName ?? video.renarrateVoiceId;
+
+      // Named before the spend, not after it, and named differently for the
+      // two ways of getting here — the log line is the only place an
+      // operator reading a run afterwards can see *why* a narration that
+      // already existed was paid for again.
       report(
-        `--force-narration: about to spend ~${characters} characters of the ` +
-          "operator's ElevenLabs monthly quota re-synthesising this narration.",
+        video.renarrateVoiceId
+          ? `re-narrating in ${voice}: about to spend ~${characters} characters of ` +
+              "the operator's ElevenLabs monthly quota. The alignment, the captions " +
+              "and the render are all rebuilt from the new audio."
+          : `--force-narration: about to spend ~${characters} characters of the ` +
+              "operator's ElevenLabs monthly quota re-synthesising this narration.",
       );
     }
 
+    // `force` alone, not widened to include the request: `generate` reads the
+    // same column and treats it as its own licence to re-synthesise, so
+    // passing it twice would be two sources for one decision.
     const result = await voiceOverService.generate(userId, videoId, { force }, report);
     return `synthesised ${result.durationSeconds}s of narration (${result.characterCount} characters)`;
   });
