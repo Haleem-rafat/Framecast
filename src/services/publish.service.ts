@@ -1309,6 +1309,216 @@ export class PublishService {
   }
 
   /**
+   * Uploads exactly one banked short, on its own, now.
+   *
+   * This is the drip's entry point — `ReleaseService` calls it once per slot —
+   * and it is a sibling of `publishShorts` rather than a refactor of it,
+   * because the two obey *different rules about the one-shot claim* and that is
+   * the only interesting thing either of them does.
+   *
+   * Three differences, each deliberate:
+   *
+   *   1. **The file is checked before the claim is taken.** In the batch path
+   *      the claim comes first, so a clip whose file has been hand-deleted
+   *      spends its single attempt on discovering that. Here the claim is what
+   *      keeps a short in the queue, and burning it for a bookkeeping problem
+   *      would delete the clip from the drip permanently, silently, in a worker.
+   *      `ReleaseService` checks the file too, one step earlier; this check is
+   *      the one that is load-bearing, because this method is callable on its
+   *      own and must be safe on its own.
+   *   2. **A spent quota releases the claim.** `YouTubeQuotaError` means
+   *      `videos.insert` *refused* — the resumable session was never opened, or
+   *      the PUT came back 403 without an id, so nothing exists on YouTube and
+   *      there is nothing a retry could duplicate. The batch path keeps the
+   *      FAILED row because a human is reading its result and can see what
+   *      happened; the drip has no human in the loop, and a cadence that lost a
+   *      clip on every quota failure would quietly eat its own bank. Every
+   *      *other* failure keeps the FAILED row, exactly as everywhere else here,
+   *      because a network error mid-PUT genuinely may have left a video on the
+   *      channel.
+   *   3. **It throws.** `publishShorts` cannot, because a video was already
+   *      published and no clip may retroactively fail it. Nothing has committed
+   *      here, so the caller — which has a history row open and a failure
+   *      counter to move — gets the error and decides what it means.
+   *
+   * Everything else is shared: `buildShortMetadata`, `uploadToYouTube`, the
+   * `@unique` claim on `ShortPublication.shortId` taken before a byte is sent,
+   * and the brand-resolved language, category and audience declaration.
+   */
+  async publishShort(
+    userId: string,
+    shortId: string,
+    opts: { visibility: PublishVisibility },
+  ): Promise<{ youtubeVideoId: string; title: string }> {
+    const short = await prisma.short.findFirst({
+      where: { id: shortId, video: { userId, deletedAt: null } },
+      select: {
+        id: true,
+        index: true,
+        title: true,
+        description: true,
+        status: true,
+        outputPath: true,
+        publication: { select: { id: true } },
+        video: {
+          select: {
+            id: true,
+            title: true,
+            generatedTitle: true,
+            tags: true,
+            project: { select: { channelId: true } },
+            script: {
+              select: { activeVersion: { select: { content: true, sources: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    if (!short) {
+      throw new NotFoundError("Short");
+    }
+
+    if (short.status !== "READY" || !short.outputPath) {
+      throw new ConflictError(
+        `Only a rendered short can be published. This one is ${short.status.toLowerCase()}.`,
+      );
+    }
+
+    // The same one-shot rule `publishableShortsWhere` encodes, stated here
+    // because this method addresses a short by id rather than filtering a set.
+    // Any row at all blocks a second attempt, FAILED included.
+    if (short.publication) {
+      throw new ConflictError(
+        "This short has already been published, or an upload of it has already been attempted.",
+      );
+    }
+
+    const channelId = short.video.project?.channelId;
+
+    if (!channelId) {
+      throw new ConflictError(
+        "This short's project has no channel, so there is nowhere to publish it.",
+      );
+    }
+
+    // Read before the claim, and this is the ordering that matters — see this
+    // method's own doc comment. `getShortFile` returns null for a file that is
+    // not there rather than throwing (see shorts-storage.ts), which is exactly
+    // the state publishing a video creates: the render is reclaimed at publish
+    // time, and an operator tidying `RENDER_ROOT` by hand can produce it too.
+    const file = await getShortFile(short.outputPath);
+
+    if (file === null || file === "unsatisfiable") {
+      throw new ConflictError(
+        "This short's file is no longer on disk, so there was nothing to upload.",
+      );
+    }
+
+    // Same credit block the video's own publish would have built, from the same
+    // two places: the script's stored citations and whatever music the render
+    // used. Owed on a clip for the reason `buildShortMetadata` gives — the
+    // footage in it is the footage the video was rendered from.
+    const musicAsset = await prisma.asset.findFirst({
+      where: {
+        kind: "MUSIC",
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${short.video.id}/` },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { prompt: true },
+    });
+
+    const { title, description } = this.buildShortMetadata(
+      short,
+      clampTitle(short.video.generatedTitle ?? short.video.title),
+      buildDescription(
+        short.video.script?.activeVersion?.content,
+        readStoredSources(short.video.script?.activeVersion?.sources),
+        musicAsset?.prompt,
+      ),
+    );
+
+    const brand = await brandService.resolve(channelId);
+    const accessToken = await channelService.resolveAccessToken(userId, channelId);
+
+    let publicationId: string;
+    try {
+      const created = await prisma.shortPublication.create({
+        data: {
+          shortId: short.id,
+          channelId,
+          title,
+          description,
+          visibility: opts.visibility,
+          status: "UPLOADING",
+        },
+        select: { id: true },
+      });
+      publicationId = created.id;
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        // Two ticks reached the same clip. Postgres settled it; this is the
+        // loser, and it has sent nothing.
+        throw new ConflictError(
+          "This short has already been published, or is being published right now.",
+        );
+      }
+      throw error;
+    }
+
+    try {
+      const youtubeVideoId = await this.uploadToYouTube(
+        accessToken,
+        {
+          label: `short ${short.index + 1}`,
+          title,
+          description,
+          tags: short.video.tags,
+          visibility: opts.visibility,
+          language: brand.language,
+          categoryId: brand.categoryId,
+          // A clip of a children's video is children's content, and this is a
+          // COPPA declaration. Resolved from the channel exactly as the video's
+          // own publish resolves it — never derived, guessed or defaulted here.
+          madeForKids: brand.madeForKids,
+        },
+        Buffer.from(await new Response(file.stream).arrayBuffer()),
+      );
+
+      await prisma.shortPublication.update({
+        where: { id: publicationId },
+        data: { status: "PUBLISHED", youtubeVideoId, publishedAt: new Date() },
+      });
+
+      return { youtubeVideoId, title };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (error instanceof YouTubeQuotaError) {
+        // Nothing was created on YouTube, so nothing is at risk of being
+        // duplicated: the claim goes back and this clip stays at the head of
+        // the queue for the next slot. See this method's doc comment for why
+        // this is the one failure that gets its attempt back.
+        await prisma.shortPublication.delete({ where: { id: publicationId } }).catch(() => {
+          // Best-effort. A claim that could not be released leaves the clip out
+          // of the queue, which is the same outcome the batch path has always
+          // had — bad, but not worse than it, and the thrown quota error below
+          // is still what the operator is shown.
+        });
+      } else {
+        await prisma.shortPublication
+          .update({ where: { id: publicationId }, data: { status: "FAILED", error: message } })
+          .catch(() => {
+            // Bookkeeping. The thrown error below is what the caller records.
+          });
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * What one short is uploaded as.
    *
    * The title is the model's own (it was asked for a standalone Shorts title
