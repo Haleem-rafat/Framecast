@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ART_STYLES, findArtStyle } from "@/lib/art-styles";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
 import {
@@ -103,6 +104,10 @@ function toDefaultValues(branding: ChannelBranding): BrandingFormValues {
     madeForKids: branding.madeForKids,
     footageStyle: branding.footageStyle,
     characterBrief: branding.characterBrief ?? "",
+    // `""` rather than null, so the picker's "no style chosen" option is a
+    // real selectable value — a `Select` value has to be a string. The schema
+    // coerces it back to null on the way out.
+    artStyle: branding.artStyle ?? "",
     // Null rather than "" — unlike tone and niche, "no voice chosen" is a real
     // selectable option in the picker rather than an empty box, and the schema
     // round-trips null through unchanged.
@@ -481,6 +486,45 @@ export function BrandingForm({
                 * it is safe here because the value is preserved on save either
                 * way (the field stays registered, holding whatever was
                 * loaded). */}
+              {footageStyle === "ILLUSTRATED" && (
+                <Controller
+                  control={control}
+                  name="artStyle"
+                  render={({ field }) => (
+                    <FormField
+                      name="artStyle"
+                      label="Art style"
+                      description={
+                        findArtStyle(field.value)?.description ??
+                        "Every illustration on this channel is drawn in one named look, including the character sheet. There is no default — a default would give every channel the same look, which is the opposite of the point — so this has to be chosen before any illustrated video can collect footage."
+                      }
+                      error={errors.artStyle?.message}
+                    >
+                      {(controlProps) => (
+                        <Select
+                          // `""` stands for "nobody has chosen" — a Select
+                          // value has to be a string, and the schema coerces
+                          // it back to null.
+                          value={field.value ?? ""}
+                          onValueChange={field.onChange}
+                        >
+                          <SelectTrigger {...controlProps} className="w-full sm:w-64">
+                            <SelectValue placeholder="Pick an art style" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ART_STYLES.map((option) => (
+                              <SelectItem key={option.id} value={option.id}>
+                                {option.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </FormField>
+                  )}
+                />
+              )}
+
               {footageStyle === "ILLUSTRATED" && (
                 <FormField
                   name="characterBrief"

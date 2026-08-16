@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ART_STYLES } from "@/lib/art-styles";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
 
@@ -238,6 +239,21 @@ export const updateBrandingSchema = z.object({
    * of a scarf and the shape of an ear should be able to.
    */
   characterBrief: promptText(CHARACTER_BRIEF_MAX),
+  /**
+   * Which named look this channel's illustrations are drawn in.
+   *
+   * An enum over the shipped catalogue, so a request can never post arbitrary
+   * prompt text and have it composed into a generation — the column stores a
+   * slug and the server resolves it against `ART_STYLES`.
+   *
+   * Nullable, and null round-trips: "nobody has chosen" is a real state the
+   * screen shows as such, and it is what makes the illustrated path refuse
+   * rather than silently draw every channel the same way. `""` is coerced to
+   * null so the picker's empty option and an untouched field mean one thing.
+   */
+  artStyle: z
+    .union([z.enum(ART_STYLES.map((style) => style.id)), z.literal(""), z.null()])
+    .transform((value) => (value === "" || value === undefined ? null : value)),
 });
 
 export type UpdateBrandingInput = z.infer<typeof updateBrandingSchema>;

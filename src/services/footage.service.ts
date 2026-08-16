@@ -4,11 +4,11 @@ import { env } from "@/config/env";
 import type { FootageStyle, VideoFormat } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { composeArtStyle, findArtStyle, type ArtStyle } from "@/lib/art-styles";
 import { beatImagePath, beatPrefix } from "@/lib/beat-storage";
 import { anchorCues, type AnchoredCue, type ScriptCue } from "@/lib/script-cues";
 import { planStoryBeats, type StoryBeat } from "@/lib/story-beats";
 import { getObject, putObject, storagePath } from "@/lib/storage";
-import { ILLUSTRATION_STYLE } from "@/services/character.service";
 import { gatewayImageProvider } from "@/services/providers/image.provider";
 import {
   pexelsProvider,
@@ -266,6 +266,7 @@ const BEAT_CUE_MAX_LENGTH = 400;
 export function beatIllustrationPrompt(input: {
   cues: readonly string[];
   brief: string;
+  style: ArtStyle;
   tone: string | null;
   hasSheet: boolean;
 }): string {
@@ -282,7 +283,7 @@ export function beatIllustrationPrompt(input: {
     "",
     `The scene: ${scene}`,
     "",
-    ILLUSTRATION_STYLE,
+    composeArtStyle(input.style),
     input.tone ? `Tone: ${input.tone}.` : "",
     "",
     "A single full-bleed scene filling the whole frame, as one page of a picture book.",
@@ -469,6 +470,7 @@ export class FootageService {
                     footageStyle: true,
                     characterBrief: true,
                     characterSheetPath: true,
+                    artStyle: true,
                     tone: true,
                   },
                 },
@@ -724,6 +726,7 @@ export class FootageService {
     brand: {
       characterBrief: string | null;
       characterSheetPath: string | null;
+      artStyle: string | null;
       tone: string | null;
     } | null;
     onProgress: FootageProgress;
@@ -740,6 +743,21 @@ export class FootageService {
         "This channel is set to illustrated footage but has no character described. " +
           "Describe the recurring character on the channel's branding screen — that " +
           "description is the only thing that keeps the same character in every scene.",
+      );
+    }
+
+    // Refused separately from the brief and from the sheet, because the three
+    // are separate actions the operator takes in order. Never defaulted: a
+    // fallback look would give every channel that skipped this the same one.
+    const style = findArtStyle(brand?.artStyle);
+
+    if (!style) {
+      throw new ConflictError(
+        brand?.artStyle
+          ? "This channel's art style is no longer one this app offers. Pick another on " +
+            "the channel's branding screen, then generate a new character sheet in it."
+          : "This channel is set to illustrated footage but has no art style. Pick one on " +
+            "the channel's branding screen — it is what every picture is drawn in.",
       );
     }
 
@@ -781,9 +799,10 @@ export class FootageService {
     const existingPaths = new Set(existing.map((asset) => asset.storagePath));
 
     onProgress(
-      `footage style ILLUSTRATED — ${beats.length} story beat(s) from ${anchored.length} ` +
-        `section(s), ${Math.round(durationSeconds / beats.length)}s of picture each, ` +
-        `drawn with ${env.AI_ILLUSTRATION_MODEL} from this channel's character sheet`,
+      `footage style ILLUSTRATED (${style.name}) — ${beats.length} story beat(s) from ` +
+        `${anchored.length} section(s), ${Math.round(durationSeconds / beats.length)}s of ` +
+        `picture each, drawn with ${env.AI_ILLUSTRATION_MODEL} from this channel's ` +
+        "character sheet",
     );
 
     const missingBeats: number[] = [];
@@ -807,6 +826,7 @@ export class FootageService {
           prompt: beatIllustrationPrompt({
             cues: beat.cues,
             brief,
+            style,
             tone: brand.tone,
             hasSheet: true,
           }),

@@ -202,6 +202,7 @@ function brandingInput(
     niche: "business history",
     musicQuery: "calm ambient documentary",
     characterBrief: null,
+    artStyle: null,
     language: "en-GB",
     categoryId: "28",
     madeForKids: false,

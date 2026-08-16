@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { findArtStyle } from "@/lib/art-styles";
 import { putObject, storagePath } from "@/lib/storage";
 import type { ClipDownloader, FootageProviders } from "@/services/footage.service";
 import { FootageService } from "@/services/footage.service";
@@ -985,6 +986,7 @@ describe("footageService.collect for an illustrated channel", () => {
     cueCount: number;
     durationSeconds: number;
     characterBrief?: string | null;
+    artStyle?: string | null;
     withSheet?: boolean;
     format?: "LANDSCAPE" | "VERTICAL";
     ownerId?: string;
@@ -1017,6 +1019,7 @@ describe("footageService.collect for an illustrated channel", () => {
             ? "Pip, a small round brown bear cub in a red knitted scarf."
             : options.characterBrief,
         characterSheetPath: sheetPath,
+        artStyle: options.artStyle === undefined ? "storybook-watercolour" : options.artStyle,
         tone: "warm and gentle",
       },
     });
@@ -1131,6 +1134,10 @@ describe("footageService.collect for an illustrated channel", () => {
       // carries appearance but not the character's name or manner.
       expect(call.prompt).toContain("Pip, a small round brown bear cub");
       expect(call.prompt).toContain("reference sheet");
+      // And so does the channel's art style, verbatim — the sheet was drawn
+      // in it and a scene asked for in a different one is a fight the model
+      // resolves differently every time.
+      expect(call.prompt).toContain(findArtStyle("storybook-watercolour")!.prompt);
     }
   });
 
@@ -1229,6 +1236,38 @@ describe("footageService.collect for an illustrated channel", () => {
     });
     await new FootageService({}, makeDownloader(), landscape).collect(userId, landscapeId);
     expect(landscape.calls.every((call) => call.size === "1536x1024")).toBe(true);
+  });
+
+  it("draws every beat in the channel's chosen style, not a default one", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({
+      cueCount: 12,
+      durationSeconds: 120,
+      artStyle: "gouache-night",
+    });
+
+    await new FootageService({}, makeDownloader(), images).collect(userId, videoId);
+
+    expect(images.calls.length).toBeGreaterThan(0);
+    for (const call of images.calls) {
+      expect(call.prompt).toContain(findArtStyle("gouache-night")!.prompt);
+      expect(call.prompt).not.toContain(findArtStyle("flat-vector")!.prompt);
+    }
+  });
+
+  it("refuses before spending anything when no art style is chosen", async () => {
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({
+      cueCount: 12,
+      durationSeconds: 120,
+      artStyle: null,
+    });
+
+    await expect(
+      new FootageService({}, makeDownloader(), images).collect(userId, videoId),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(images.calls).toHaveLength(0);
   });
 
   it("refuses before spending anything when the channel has no character sheet", async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { findArtStyle } from "@/lib/art-styles";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { objectSizeBytes, removeObjects } from "@/lib/storage";
@@ -53,11 +54,18 @@ afterEach(async () => {
   await deleteTestUser(userId);
 });
 
-async function saveBrief(brief: string | null, extra: { niche?: string; tone?: string } = {}) {
+async function saveBrief(
+  brief: string | null,
+  extra: { niche?: string; tone?: string; artStyle?: string | null } = {},
+) {
+  // An art style unless a test says otherwise: every other test in this file
+  // is about the brief, and one missing prerequisite failing them all would
+  // hide what they are actually checking.
+  const fields = { characterBrief: brief, artStyle: "storybook-watercolour", ...extra };
   await prisma.channelBrand.upsert({
     where: { channelId },
-    create: { channelId, characterBrief: brief, ...extra },
-    update: { characterBrief: brief, ...extra },
+    create: { channelId, ...fields },
+    update: fields,
   });
 }
 
@@ -87,6 +95,9 @@ describe("CharacterService.generateSheet", () => {
 
     const prompt = images.generate.mock.calls[0][0].prompt as string;
     expect(prompt).toContain(BRIEF);
+    // The chosen style's own fragment, verbatim — the sheet and every scene
+    // have to ask for the same look in the same words.
+    expect(prompt).toContain(findArtStyle("storybook-watercolour")!.prompt);
     expect(prompt).toContain("bedtime stories");
     expect(prompt).toContain("warm and gentle");
     // Three views, because a single frontal reference is what practitioner
@@ -133,6 +144,44 @@ describe("CharacterService.generateSheet", () => {
     // protagonist, and inventing one would put an arbitrary character into
     // this channel and then hold it there for every video.
     await saveBrief("   ");
+    const images = fakeImageProvider();
+
+    await expect(
+      new CharacterService(images).generateSheet(userId, channelId),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(images.generate).not.toHaveBeenCalled();
+  });
+
+  it("draws in the channel's chosen style, not a default one", async () => {
+    await saveBrief(BRIEF, { artStyle: "cut-paper" });
+    const images = fakeImageProvider();
+
+    const sheet = await new CharacterService(images).generateSheet(userId, channelId);
+    storedPaths.push(sheet.path);
+
+    const prompt = images.generate.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain(findArtStyle("cut-paper")!.prompt);
+    expect(prompt).not.toContain(findArtStyle("storybook-watercolour")!.prompt);
+  });
+
+  it("refuses without spending anything when no art style is chosen", async () => {
+    // Refused rather than defaulted. A fallback look would give every channel
+    // that skipped this the same one, which is the opposite of the feature.
+    await saveBrief(BRIEF, { artStyle: null });
+    const images = fakeImageProvider();
+
+    await expect(
+      new CharacterService(images).generateSheet(userId, channelId),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(images.generate).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the stored style is one this app no longer offers", async () => {
+    // The column is plain text so a retired slug is possible; resolving to
+    // null and asking the operator to pick again beats a failed deploy.
+    await saveBrief(BRIEF, { artStyle: "chalk-pastel-retired" });
     const images = fakeImageProvider();
 
     await expect(

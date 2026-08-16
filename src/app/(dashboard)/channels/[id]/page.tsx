@@ -117,6 +117,7 @@ export default async function ChannelBrandingPage({
         footageStyle={branding.footageStyle}
         characterBrief={branding.characterBrief}
         characterSheetPath={branding.characterSheetPath}
+        artStyle={branding.artStyle}
       />
 
       <BrandingForm

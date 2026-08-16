@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { env } from "@/config/env";
+import { findArtStyle, type ArtStyleId } from "@/lib/art-styles";
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStyle } from "@/lib/video-style";
@@ -120,6 +121,10 @@ export interface ChannelBranding extends PublishingDefaults {
    *  `CharacterService.generateSheet`, never by `updateBranding` — the same
    *  arrangement as `logoPath`, for the same reason. */
   characterSheetPath: string | null;
+  /** A slug into `ART_STYLES`, or null for "nobody has chosen". Null is not a
+   *  gap to fill with a default: a default would give every channel the same
+   *  look, which is the opposite of what the setting is for. */
+  artStyle: ArtStyleId | null;
   primaryColour: string;
   secondaryColour: string;
   headlineFont: string;
@@ -297,6 +302,7 @@ type StoredBranding = {
   footageStyle: PublishingDefaults["footageStyle"];
   characterBrief: string | null;
   characterSheetPath: string | null;
+  artStyle: string | null;
   voiceId: string | null;
   voiceName: string | null;
   updatedAt: Date;
@@ -318,6 +324,7 @@ const BRANDING_SELECT = {
   footageStyle: true,
   characterBrief: true,
   characterSheetPath: true,
+  artStyle: true,
   voiceId: true,
   voiceName: true,
   updatedAt: true,
@@ -350,6 +357,13 @@ function toBranding(brand: StoredBranding): ChannelBranding {
     // `CharacterService.generateSheet`, never by `updateBranding`, because it
     // names an object in storage rather than something an operator types.
     characterSheetPath: brand?.characterSheetPath ?? null,
+    // Null means "nobody has chosen", which is a real state the screen has to
+    // show as such — there is no fallback look, deliberately. Narrowed through
+    // the catalogue rather than cast: the column is plain text (see its own
+    // comment in schema.prisma), so a slug retired from `ART_STYLES` since it
+    // was chosen resolves to null and the screen asks the operator to pick
+    // again, which is what should happen.
+    artStyle: findArtStyle(brand?.artStyle)?.id ?? null,
     voiceId: brand?.voiceId ?? null,
     // Never a name without an id. The column pair is written together and
     // cleared together, but a row edited by hand could hold one without the

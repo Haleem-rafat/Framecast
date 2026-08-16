@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { composeArtStyle, findArtStyle, type ArtStyle } from "@/lib/art-styles";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { putObject, storagePath } from "@/lib/storage";
@@ -75,7 +76,10 @@ export class CharacterService {
   async generateSheet(userId: string, channelId: string): Promise<CharacterSheet> {
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
-      select: { title: true, brand: { select: { characterBrief: true } } },
+      select: {
+        title: true,
+        brand: { select: { characterBrief: true, artStyle: true } },
+      },
     });
 
     if (!channel) {
@@ -97,9 +101,32 @@ export class CharacterService {
       );
     }
 
+    // Refused separately from the brief, because they are separate actions:
+    // one is "write down who the character is", the other is "say what the
+    // pictures should look like". Refused rather than defaulted for the reason
+    // the column has no default — a fallback look would silently give every
+    // channel that skipped this the same one, and then hold it there for every
+    // video, which is the opposite of what a per-channel art style is for.
+    const style = findArtStyle(channel.brand?.artStyle);
+
+    if (!style) {
+      throw new ConflictError(
+        channel.brand?.artStyle
+          ? "This channel's art style is no longer one this app offers. Pick another on " +
+            "the branding screen."
+          : "Pick an art style on this channel's branding screen first — the sheet and " +
+            "every scene drawn from it have to be in the same one.",
+      );
+    }
+
     const brand = await brandService.resolve(channelId);
 
-    const prompt = characterSheetPrompt({ brief, tone: brand.tone, niche: brand.niche });
+    const prompt = characterSheetPrompt({
+      brief,
+      style,
+      tone: brand.tone,
+      niche: brand.niche,
+    });
 
     const image = await this.images.generate({
       prompt,
@@ -137,10 +164,13 @@ export class CharacterService {
  * The sheet's prompt, exported so the illustration prompts in
  * `footage.service.ts` can be read beside it — the two have to describe the
  * same art direction in the same words or the scenes will not intercut with
- * each other, let alone with the sheet.
+ * each other, let alone with the sheet. `composeArtStyle` is what guarantees
+ * they do; this function and `beatIllustrationPrompt` both call it and neither
+ * writes any art direction of its own.
  */
 export function characterSheetPrompt(input: {
   brief: string;
+  style: ArtStyle;
   tone: string | null;
   niche: string | null;
 }): string {
@@ -157,7 +187,7 @@ export function characterSheetPrompt(input: {
     "full body in three-quarter view, and a head-and-shoulders close-up. Identical",
     "in every detail between the three — same colours, same markings, same clothing.",
     "",
-    ILLUSTRATION_STYLE,
+    composeArtStyle(input.style),
     input.niche ? `The channel is about ${input.niche}.` : "",
     input.tone ? `Tone: ${input.tone}.` : "",
     "",
@@ -167,20 +197,5 @@ export function characterSheetPrompt(input: {
     .filter((line) => line !== "")
     .join("\n");
 }
-
-/**
- * The art direction, in one block shared by the sheet and every scene.
- *
- * Repeated verbatim rather than paraphrased at each site: whole-image colour
- * drift between generations is the documented artifact that stops a dozen
- * stills reading as one film (it is why Seedream and FLUX were ruled out), and
- * the cheapest defence against it is that every prompt asks for the same
- * palette in the same words.
- */
-export const ILLUSTRATION_STYLE = [
-  "Soft watercolour storybook illustration with gentle rounded shapes and thick",
-  "soft outlines. Warm, muted, low-contrast palette. Hand-painted paper texture.",
-  "Nothing frightening, nothing sharp, nothing photoreal.",
-].join(" ");
 
 export const characterService = new CharacterService();

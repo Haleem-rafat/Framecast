@@ -24,6 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { findArtStyle } from "@/lib/art-styles";
 import { characterSheetUrl } from "@/lib/character-sheet";
 import type { FootageStyle } from "@/generated/prisma/enums";
 import { isGeneratedFootage } from "@/lib/footage-styles";
@@ -59,6 +60,7 @@ export function CharacterStudio({
   footageStyle,
   characterBrief,
   characterSheetPath,
+  artStyle,
 }: {
   channelId: string;
   channelTitle: string;
@@ -67,6 +69,8 @@ export function CharacterStudio({
   footageStyle: FootageStyle;
   characterBrief: string | null;
   characterSheetPath: string | null;
+  /** As saved. The sheet is the sample of this look — see the card copy. */
+  artStyle: string | null;
 }) {
   const router = useRouter();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -74,6 +78,8 @@ export function CharacterStudio({
 
   const used = isGeneratedFootage(footageStyle);
   const hasBrief = Boolean(characterBrief?.trim());
+  const style = findArtStyle(artStyle);
+  const ready = hasBrief && style !== null;
 
   async function onGenerate() {
     setGenerating(true);
@@ -102,7 +108,9 @@ export function CharacterStudio({
         <CardDescription>
           The one picture every illustration is drawn from, so the same
           character appears in the first scene and the fortieth. Generated once
-          and reused by every video this channel makes.
+          and reused by every video this channel makes — and drawn in the
+          channel&apos;s art style, so it doubles as the sample of what that
+          look actually produces.
         </CardDescription>
       </CardHeader>
 
@@ -133,9 +141,11 @@ export function CharacterStudio({
             <p className="text-muted-foreground text-sm">
               {!hasBrief
                 ? "Describe the recurring character below and save, then generate. Nothing can be drawn without that description — it is the only thing that stops each picture inventing a different character."
-                : characterSheetPath
-                  ? "Every illustration is drawn from this sheet. Generating another replaces it for future videos; videos already collected keep the pictures they have."
-                  : "The character is described but not drawn yet. Generate the sheet before collecting footage for an illustrated video."}
+                : !style
+                  ? "Pick an art style below and save, then generate. The sheet is drawn in that style and so is every scene after it, so there is nothing to draw until one is chosen."
+                  : characterSheetPath
+                    ? `Every illustration is drawn from this sheet, in ${style.name}. Generating another replaces it for future videos; videos already collected keep the pictures they have.`
+                    : `The character is described and the style is ${style.name}, but nothing is drawn yet. Generate the sheet before collecting footage for an illustrated video.`}
             </p>
 
             {used && !characterSheetPath && (
@@ -157,7 +167,7 @@ export function CharacterStudio({
               open={confirmOpen}
               onOpenChange={setConfirmOpen}
               hasSheet={Boolean(characterSheetPath)}
-              disabled={!hasBrief}
+              disabled={!ready}
               busy={generating}
               onConfirm={onGenerate}
             />
@@ -227,10 +237,17 @@ function GenerateButton({
           <div className="text-muted-foreground space-y-2 text-sm">
             <p>{COST_STATEMENT}</p>
             <p>
-              The prompt is the character description saved below, plus this
-              channel&apos;s niche and tone. Save any edits to the description
+              The prompt is the character description and the art style saved
+              below, plus this channel&apos;s niche and tone. Save any edits
               first — this draws from what is stored, not from what is on
               screen.
+            </p>
+            <p>
+              This is also the only sample of the art style you get, and it is
+              deliberately the only one: six samples on every page load would be
+              six generations an operator never asked for. One picture of your
+              own character in your own style says more than six of somebody
+              else&apos;s anyway.
             </p>
             {hasSheet && (
               <p>

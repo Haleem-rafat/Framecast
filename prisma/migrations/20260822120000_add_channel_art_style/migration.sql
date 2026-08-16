@@ -1,0 +1,25 @@
+-- The named look every one of a channel's illustrations is drawn in.
+--
+-- A slug into the catalogue in src/lib/art-styles.ts, not a copy of the prompt
+-- and not free text. Three consequences follow from that and all three are the
+-- reason: improving a fragment improves every future video on every channel
+-- that named it; a request can never post arbitrary prompt text and have it
+-- drawn, because the server resolves the slug against a fixed set; and the
+-- catalogue ships with the app rather than depending on a seed.
+--
+-- Deliberately not a Postgres enum, unlike `FootageStyle` next to it. That
+-- column is read straight into a dispatch table and an unrecognised value would
+-- take the footage stage down, so the database is the right place to refuse it.
+-- This one is read into a prompt: adding, renaming or retiring a look is an
+-- ordinary code change that should not need a migration, and a channel naming a
+-- style that no longer exists resolves to null and is refused with a message
+-- telling the operator to pick again — which is a better outcome than a failed
+-- deploy. `updateBrandingSchema` still refuses anything outside the catalogue
+-- at the boundary, so nothing arbitrary is written in the first place.
+--
+-- NULLABLE WITH NO DEFAULT, and that is the feature rather than an omission.
+-- A default would silently give every channel the same look, which is the exact
+-- opposite of what a per-channel art style is for; the operator choosing is the
+-- whole point. Illustrated collection refuses until one is chosen, and the two
+-- styles that do not read this column are unaffected.
+ALTER TABLE "channel_brand" ADD COLUMN "artStyle" TEXT;

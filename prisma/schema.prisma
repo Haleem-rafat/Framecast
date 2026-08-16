@@ -324,6 +324,28 @@ model ChannelBrand {
   /// avoid.
   characterSheetPath String?
 
+  /// The named look every one of this channel's illustrations is drawn in — a
+  /// slug into the catalogue in `src/lib/art-styles.ts`. Only read by
+  /// `footageStyle = ILLUSTRATED`.
+  ///
+  /// A slug rather than the prompt itself, so improving a fragment improves
+  /// every future video on every channel that named it, and so no request can
+  /// post arbitrary prompt text and have it drawn.
+  ///
+  /// Plain `String?` rather than a Prisma enum, unlike `footageStyle` above.
+  /// That column indexes a dispatch table and an unrecognised value would take
+  /// the footage stage down, so the database is the right place to refuse it.
+  /// This one is composed into a prompt: adding or retiring a look should be a
+  /// code change, not a migration, and a channel naming a style that no longer
+  /// exists resolves to null and is refused with a message asking the operator
+  /// to pick again. `updateBrandingSchema` refuses anything outside the
+  /// catalogue at the boundary, so nothing arbitrary is ever written.
+  ///
+  /// Nullable with no default, and that is the feature. A default would give
+  /// every channel the same look, which is the opposite of what a per-channel
+  /// art style is for.
+  artStyle String?
+
   /// Which ElevenLabs voice reads this channel's narration.
   ///
   /// Per channel for the plainest possible reason: the operator runs a finance
