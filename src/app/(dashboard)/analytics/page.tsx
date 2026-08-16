@@ -13,11 +13,13 @@ import {
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { BarList } from "@/features/analytics/components/bar-list";
+import { ChannelPerformance } from "@/features/analytics/components/channel-performance";
 import { DailyCostChart } from "@/features/analytics/components/daily-cost-chart";
 import { OperationReliability } from "@/features/analytics/components/operation-reliability";
 import { PROVIDER_LABELS } from "@/features/providers/provider-labels";
 import type { PublishStatus, VideoStatus } from "@/generated/prisma/enums";
 import { analyticsService } from "@/services/analytics.service";
+import { channelAnalyticsService } from "@/services/channel-analytics.service";
 import { requireUser } from "@/server/session";
 import { formatCurrency, formatElapsed, formatPercent } from "@/utils/format";
 
@@ -48,7 +50,15 @@ function seconds(value: number | null): string {
 
 export default async function AnalyticsPage() {
   const user = await requireUser();
-  const overview = await analyticsService.getOverview(user.id);
+  // Two services, both scoped to this operator. `channelAnalyticsService`
+  // reads what the worker's collector pulled from YouTube; `analyticsService`
+  // reads what this deployment did locally. They are kept apart because their
+  // failure modes are: the local figures are always exact and always current,
+  // and the YouTube ones are captured, lagged and can be missing entirely.
+  const [overview, channelAnalytics] = await Promise.all([
+    analyticsService.getOverview(user.id),
+    channelAnalyticsService.getOverview(user.id),
+  ]);
   const { render, publish, usage, windowDays } = overview;
 
   const renderAttempts = render.succeeded + render.failed + render.cancelled;
@@ -65,8 +75,48 @@ export default async function AnalyticsPage() {
     <>
       <PageHeader
         title="Analytics"
-        description={`Production throughput, render reliability and provider cost over the last ${windowDays} days.`}
+        description={`YouTube performance for every connected channel, plus production throughput, render reliability and provider cost over the last ${windowDays} days.`}
       />
+
+      {/* First on the page, and above the local production figures, because it
+        * is the question the operator actually opens this page to answer.
+        * Everything below it describes what this app did; this describes what
+        * happened after the videos left it. */}
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold tracking-tight">
+          Channel performance
+        </h2>
+        <p className="text-muted-foreground text-sm text-balance">
+          Pulled from YouTube by the worker, one channel at a time. Channel
+          totals come from the Data API and are current as of their capture
+          time; per-video figures come from the YouTube Analytics API, which
+          does not report a day until roughly two days after it — so every card
+          says when it was captured and what date its figures run through.
+        </p>
+      </div>
+
+      <Reveal>
+        <ChannelPerformance
+          channels={channelAnalytics.channels}
+          windowDays={channelAnalytics.windowDays}
+        />
+      </Reveal>
+
+      {channelAnalytics.channels.length > 0 && (
+        <p className="text-muted-foreground text-xs text-balance">
+          Impressions and click-through rate are deliberately absent. YouTube
+          Studio shows them, but the Analytics API refuses both for a channel
+          query — asking for them fails the whole request — so this app has
+          never measured them and will not draw a 0% that looks like one.
+          Subscriber and view changes are measured from the first collection
+          forward, because YouTube reports only a channel&apos;s totals as of
+          now and keeps no history of them.
+          {!channelAnalytics.revenueKnown &&
+            " Estimated revenue is hidden until YouTube answers a monetary query for at least one channel; a channel outside the Partner Programme is refused, and showing $0.00 for it would be wrong rather than empty."}
+        </p>
+      )}
+
+      <Separator />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard

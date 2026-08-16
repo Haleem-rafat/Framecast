@@ -67,12 +67,26 @@ export const navigation: NavGroup[] = [
         title: "Analytics",
         href: "/analytics",
         icon: BarChart3,
-        // These described the YouTube Analytics integration this page was
-        // once planned around. That integration does not exist, so searching
-        // "watch time" landed on a page that has never shown one. The page
-        // reports what the database actually holds — cost, render timings,
-        // throughput — and the keywords now say so.
+        // The YouTube keywords are back, and this time the page has them.
+        //
+        // They were removed once because they described an integration that
+        // had been planned and never built — searching "watch time" landed on
+        // a page that had never shown one, which is worse than not matching at
+        // all. `ChannelAnalyticsService` now collects subscribers, views and
+        // watch time per channel and /analytics renders them, so each word
+        // below leads somewhere real. The rule that got them removed still
+        // holds: nothing goes in this list that the page does not display.
+        //
+        // "impressions" and "click-through rate" are pointedly still absent —
+        // the Analytics API refuses both for a channel query, so the page says
+        // so rather than showing them.
         keywords: [
+          "youtube",
+          "channel",
+          "subscribers",
+          "views",
+          "watch time",
+          "revenue",
           "cost",
           "spend",
           "render time",
