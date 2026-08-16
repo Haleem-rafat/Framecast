@@ -5,6 +5,7 @@ import type {
   ScheduleFrequency,
   ScheduleRunOutcome,
   ScheduleStatus,
+  VideoFormat,
 } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -132,6 +133,30 @@ export interface ScheduleRunRecord {
   createdAt: Date;
 }
 
+/**
+ * Extra context from a caller that *owns* the schedule rather than merely
+ * addressing it.
+ *
+ * Only `SeriesService` ever passes one. Everything else — the schedules page,
+ * its server actions, the worker — passes nothing and gets exactly the
+ * behaviour that existed before series did.
+ *
+ * It carries two facts this service cannot work out for itself:
+ *
+ *   * `seriesId` proves the caller is the show that owns this cadence, which is
+ *     what lets `update` and `remove` refuse everybody else. A series-owned
+ *     schedule edited from the standalone schedules page would be edited
+ *     without the series' script style in hand, and its variables would be
+ *     reconciled against the wrong prompt.
+ *   * `templateId` is that script style, so the stored answers are checked
+ *     against the questions the show's own prompt asks rather than against the
+ *     operator's unrelated category default.
+ */
+export interface ScheduleOwner {
+  seriesId?: string;
+  templateId?: string;
+}
+
 export interface ScheduleSummary {
   id: string;
   name: string;
@@ -159,6 +184,12 @@ export interface ScheduleSummary {
   /** The topic the next run will take, so the operator can see what is coming
    *  without opening the schedule. */
   nextTopic: string | null;
+  /** The show whose cadence this is, or null for a standalone schedule. The
+   *  list uses it to label the row and send the operator to the series page,
+   *  where the pause, the queue and the recipe all live together — rather than
+   *  offering an edit form this service would refuse. */
+  seriesId: string | null;
+  seriesName: string | null;
 }
 
 export interface ScheduleDetail extends ScheduleSummary {
@@ -194,6 +225,14 @@ interface ScheduleClaim {
   /** Occurrences stepped over on the way here, oldest first. */
   skipped: Date[];
   skippedTotal: number;
+  /**
+   * The show's recipe, read in the same query that won the claim so the run
+   * cannot be configured from a row that changed underneath it. Null for a
+   * standalone schedule, which is every schedule that existed before series
+   * did — and a null here means `runTopic` calls `automationService.start`
+   * with no options at all, which is the call it has always made.
+   */
+  series: { id: string; promptTemplateId: string; format: VideoFormat } | null;
 }
 
 /** The recurrence columns, in the shape src/lib/schedule-time.ts works in. */
@@ -285,6 +324,16 @@ export class ScheduleService {
       AutomationService,
       "start" | "getSetup"
     > = automationService,
+    /**
+     * A second parameter rather than a third method on the one above, so that
+     * every test written before series existed still type-checks against a
+     * two-method fake. It is reached only when a caller supplies a
+     * `ScheduleOwner.templateId`, which nothing but `SeriesService` does.
+     */
+    private readonly styles: Pick<
+      AutomationService,
+      "describeScriptStyle"
+    > = automationService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -297,6 +346,7 @@ export class ScheduleService {
       orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "asc" }],
       include: {
         project: { select: { name: true } },
+        series: { select: { id: true, name: true } },
         // The whole queue is never loaded for a list: only the head, which is
         // the one topic worth showing, plus a count.
         topics: {
@@ -317,6 +367,7 @@ export class ScheduleService {
       where: { id, userId, deletedAt: null },
       include: {
         project: { select: { name: true } },
+        series: { select: { id: true, name: true } },
         topics: {
           where: { consumedAt: null },
           orderBy: { position: "asc" },
@@ -375,6 +426,7 @@ export class ScheduleService {
     timeZone: string;
     projectId: string;
     project: { name: string };
+    series: { id: string; name: string } | null;
     nextRunAt: Date | null;
     lastRunAt: Date | null;
     consecutiveFailures: number;
@@ -400,6 +452,8 @@ export class ScheduleService {
       consecutiveFailures: row.consecutiveFailures,
       queuedTopicCount: row._count.topics,
       nextTopic: row.topics[0]?.topic ?? null,
+      seriesId: row.series?.id ?? null,
+      seriesName: row.series?.name ?? null,
     };
   }
 
@@ -407,9 +461,13 @@ export class ScheduleService {
   // Operator actions
   // -------------------------------------------------------------------------
 
-  async create(userId: string, input: CreateScheduleInput): Promise<{ id: string }> {
+  async create(
+    userId: string,
+    input: CreateScheduleInput,
+    owner: ScheduleOwner = {},
+  ): Promise<{ id: string }> {
     await this.assertUsableProject(userId, input.projectId);
-    await this.assertVariablesAnswerThePrompt(userId, input.variables);
+    await this.assertVariablesAnswerThePrompt(userId, input.variables, owner.templateId);
 
     const recurrence = recurrenceOf(input);
 
@@ -432,6 +490,7 @@ export class ScheduleService {
         timeZone: input.timeZone,
         variables: input.variables,
         nextRunAt,
+        seriesId: owner.seriesId ?? null,
         topics: {
           create: input.topics.map((topic, index) => ({ position: index, topic })),
         },
@@ -442,10 +501,16 @@ export class ScheduleService {
     return schedule;
   }
 
-  async update(userId: string, id: string, input: UpdateScheduleInput): Promise<void> {
+  async update(
+    userId: string,
+    id: string,
+    input: UpdateScheduleInput,
+    owner: ScheduleOwner = {},
+  ): Promise<void> {
     const existing = await this.requireOwned(userId, id);
+    this.assertOwnership(existing, owner, "edited");
     await this.assertUsableProject(userId, input.projectId);
-    await this.assertVariablesAnswerThePrompt(userId, input.variables);
+    await this.assertVariablesAnswerThePrompt(userId, input.variables, owner.templateId);
 
     const recurrence = recurrenceOf(input);
 
@@ -536,8 +601,9 @@ export class ScheduleService {
   /** Soft delete, matching every other user-owned entity. The run history goes
    *  with it only when the row is eventually hard-deleted; until then the
    *  schedule simply stops being due and stops being listed. */
-  async remove(userId: string, id: string): Promise<void> {
-    await this.requireOwned(userId, id);
+  async remove(userId: string, id: string, owner: ScheduleOwner = {}): Promise<void> {
+    const existing = await this.requireOwned(userId, id);
+    this.assertOwnership(existing, owner, "deleted");
 
     await prisma.schedule.updateMany({
       where: { id, userId, deletedAt: null },
@@ -678,6 +744,12 @@ export class ScheduleService {
         timeZone: true,
         variables: true,
         nextRunAt: true,
+        // Read here, with the candidate, rather than looked up after the claim
+        // is won: the recipe a run uses has to be the one this row pointed at
+        // when it came due, and a second query could see a series edited in
+        // between. Costs nothing — it is a join on a unique key that is null
+        // for every schedule that belongs to no series.
+        series: { select: { id: true, promptTemplateId: true, format: true } },
       },
     });
 
@@ -732,6 +804,7 @@ export class ScheduleService {
           variables: readVariables(candidate.variables),
           skipped: advanced.skipped,
           skippedTotal: advanced.skippedTotal,
+          series: candidate.series,
         };
       }
     }
@@ -816,6 +889,12 @@ export class ScheduleService {
    * a scheduled run ends at a finished video waiting for the operator's own
    * publish click, which is the property that makes unattended spending
    * acceptable at all.
+   *
+   * A schedule that belongs to a series hands `start` that show's recipe as
+   * well — its script style, its shape, and its own id for the produced row —
+   * so the video comes out configured the way the series was configured once,
+   * with nobody re-answering anything. A schedule that belongs to no series
+   * passes no options and makes the identical call it always made.
    */
   private async runTopic(
     claim: ScheduleClaim,
@@ -823,11 +902,21 @@ export class ScheduleService {
     topic: { id: string; topic: string },
   ): Promise<ScheduleTickResult> {
     try {
-      const result = await this.automation.start(claim.userId, {
-        projectId: claim.projectId,
-        topic: topic.topic,
-        variables: claim.variables,
-      });
+      const result = await this.automation.start(
+        claim.userId,
+        {
+          projectId: claim.projectId,
+          topic: topic.topic,
+          variables: claim.variables,
+        },
+        claim.series
+          ? {
+              templateId: claim.series.promptTemplateId,
+              format: claim.series.format,
+              seriesId: claim.series.id,
+            }
+          : {},
+      );
 
       return await this.finishRun(claim, runId, {
         outcome: "SUCCEEDED",
@@ -992,8 +1081,15 @@ export class ScheduleService {
    * subject that already has one, at full price. The topic is copied onto the
    * history row instead, so a failed run names exactly what it was about and
    * the operator can re-queue it in one click if they want to.
+   *
+   * Public because "make one now" on a series takes a topic the same way a
+   * scheduled run does, and it has to be the *same* take: two ticks, or a tick
+   * and an impatient operator, must not both be handed the head of the queue.
+   * Reused rather than reimplemented for exactly that reason. It takes a
+   * schedule id and no `userId` — the caller has already proven ownership, the
+   * same arrangement `executeClaim` relies on.
    */
-  private async takeNextTopic(
+  async takeNextTopic(
     scheduleId: string,
   ): Promise<{ id: string; topic: string } | null> {
     const head = await prisma.scheduleTopic.findFirst({
@@ -1115,6 +1211,8 @@ export class ScheduleService {
       select: {
         id: true,
         status: true,
+        seriesId: true,
+        series: { select: { name: true } },
         frequency: true,
         dayOfWeek: true,
         dayOfMonth: true,
@@ -1129,6 +1227,40 @@ export class ScheduleService {
     }
 
     return schedule;
+  }
+
+  /**
+   * A series-owned cadence is edited and deleted through its series, never on
+   * its own.
+   *
+   * Not tidiness. A show's stored answers are reconciled against the show's own
+   * script style, and the standalone schedule form has no idea which that is —
+   * so an edit from there would check them against the operator's category
+   * default, blank whatever failed, and quietly produce a differently-written
+   * video next Monday. Deleting is worse: it would leave a series with a name,
+   * a recipe, and no cadence or queue at all, which is not a state anything
+   * here can display honestly.
+   *
+   * Pausing and resuming are deliberately *not* guarded. Those touch only
+   * `status` and `nextRunAt`, mean exactly the same thing whoever presses them,
+   * and pause in particular is the button an operator reaches for when they
+   * want spending to stop — putting a refusal in front of it would be the worst
+   * possible place for one.
+   */
+  private assertOwnership(
+    schedule: { seriesId: string | null; series: { name: string } | null },
+    owner: ScheduleOwner,
+    verb: "edited" | "deleted",
+  ): void {
+    if (schedule.seriesId === null || schedule.seriesId === owner.seriesId) {
+      return;
+    }
+
+    throw new ConflictError(
+      `This cadence belongs to the "${schedule.series?.name ?? "series"}" series, ` +
+        `so it is ${verb} there — on the series page, together with the script ` +
+        "style, the format and the topic queue it runs with.",
+    );
   }
 
   private async assertUsableProject(userId: string, projectId: string): Promise<void> {
@@ -1159,10 +1291,16 @@ export class ScheduleService {
   private async assertVariablesAnswerThePrompt(
     userId: string,
     variables: Record<string, string>,
+    templateId?: string,
   ): Promise<void> {
-    const setup = await this.automation.getSetup(userId);
+    // A series names its own script style, so its answers are checked against
+    // that template's questions rather than the operator's category default.
+    // Everything else takes the default branch below, unchanged.
+    const prompt = templateId
+      ? await this.styles.describeScriptStyle(userId, templateId)
+      : (await this.automation.getSetup(userId)).prompt;
 
-    if (!setup.prompt) {
+    if (!prompt) {
       // Reported as a blocker by `getSetup` itself, and the create form is
       // gated on the same call, so this is the hand-crafted-payload path.
       throw new ConflictError(
@@ -1170,9 +1308,7 @@ export class ScheduleService {
       );
     }
 
-    const declared = setup.prompt.duration
-      ? [...setup.prompt.fields, setup.prompt.duration]
-      : setup.prompt.fields;
+    const declared = prompt.duration ? [...prompt.fields, prompt.duration] : prompt.fields;
 
     const missing = declared
       .filter(

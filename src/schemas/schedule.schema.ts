@@ -22,7 +22,7 @@ const MAX_VARIABLES = 40;
  * operator sat down and wrote, not a content calendar for the decade, and a cap
  * keeps a pasted spreadsheet from turning into a hundred-thousand-row insert.
  */
-const MAX_TOPICS = 104;
+export const MAX_TOPICS = 104;
 
 /**
  * Topic bounds copied verbatim from `startAutomationSchema`, not loosened. Each
@@ -52,9 +52,16 @@ const timeZoneSchema = z
   .max(64)
   .refine(isValidTimeZone, "That is not a timezone this system recognises.");
 
-const baseScheduleSchema = z.object({
-  name: z.string().trim().min(1, "Give the schedule a name").max(80),
-  projectId: z.string().uuid(),
+/**
+ * The cadence fields, as a reusable shape rather than a finished schema.
+ *
+ * A `Series` names a cadence too, and it must be the *same* cadence: the
+ * columns are the same columns, `ScheduleService` reads them with the same
+ * `recurrenceOf`, and the worker resolves them with the same `advancePast`. A
+ * second copy of these bounds in series.schema.ts is exactly how a series would
+ * one day accept an hour of 24 that a schedule refuses.
+ */
+export const recurrenceShape = {
   frequency: z.enum(["WEEKLY", "MONTHLY"]),
   /** 0 = Sunday … 6 = Saturday, matching `Date.prototype.getUTCDay` and
    *  `WEEKDAY_NAMES`. Required for WEEKLY, ignored otherwise. */
@@ -65,19 +72,27 @@ const baseScheduleSchema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
   timeZone: timeZoneSchema,
-  /**
-   * Answers for the operator's own prompt variables, keyed by
-   * `PromptVariable.key`. Never validated against a fixed list here, for the
-   * same reason `startAutomationSchema` does not: which variables exist is a
-   * property of a template the operator can edit at any time. `ScheduleService`
-   * reconciles this against the real declarations.
-   */
-  variables: z
-    .record(variableKeySchema, z.string().max(500))
-    .refine((value) => Object.keys(value).length <= MAX_VARIABLES, {
-      message: `A prompt cannot declare more than ${MAX_VARIABLES} variables.`,
-    })
-    .default({}),
+} as const;
+
+/**
+ * Answers for the operator's own prompt variables, keyed by
+ * `PromptVariable.key`. Never validated against a fixed list here, for the
+ * same reason `startAutomationSchema` does not: which variables exist is a
+ * property of a template the operator can edit at any time. `ScheduleService`
+ * reconciles this against the real declarations.
+ */
+export const scheduleVariablesSchema = z
+  .record(variableKeySchema, z.string().max(500))
+  .refine((value) => Object.keys(value).length <= MAX_VARIABLES, {
+    message: `A prompt cannot declare more than ${MAX_VARIABLES} variables.`,
+  })
+  .default({});
+
+const baseScheduleSchema = z.object({
+  name: z.string().trim().min(1, "Give the schedule a name").max(80),
+  projectId: z.string().uuid(),
+  ...recurrenceShape,
+  variables: scheduleVariablesSchema,
 });
 
 /**
@@ -89,8 +104,12 @@ const baseScheduleSchema = z.object({
  * invented answer to "which day does my video appear" is the single worst thing
  * this feature could get wrong quietly.
  */
-function requireMatchingDay(
-  value: z.infer<typeof baseScheduleSchema>,
+export function requireMatchingDay(
+  value: {
+    frequency: "WEEKLY" | "MONTHLY";
+    dayOfWeek: number | null;
+    dayOfMonth: number | null;
+  },
   ctx: z.RefinementCtx,
 ): void {
   if (value.frequency === "WEEKLY" && value.dayOfWeek === null) {

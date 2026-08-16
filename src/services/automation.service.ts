@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { VideoFormat } from "@/generated/prisma/enums";
 import { ConflictError, ValidationError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { extractVariables } from "@/lib/prompt-template";
@@ -148,6 +149,14 @@ export interface AutomationPromptSummary {
   duration: AutomationField | null;
 }
 
+/** One entry in the series form's script-style picker: the same description
+ *  `describeScriptStyle` gives, plus whether this is the operator's category
+ *  default — which the picker marks so "the one that would have been used
+ *  anyway" is visible. */
+export interface AutomationScriptStyle extends AutomationPromptSummary {
+  isDefault: boolean;
+}
+
 export interface AutomationSetup {
   /** Empty when the account is ready. Anything here means the flow refuses to
    * take a topic — see `REQUIRED_STEP_IDS`. */
@@ -156,6 +165,37 @@ export interface AutomationSetup {
   /** Null exactly when `blockers` contains `check-prompt-template`: there is
    * no default SCRIPT template to describe. */
   prompt: AutomationPromptSummary | null;
+}
+
+/**
+ * The parts of a run a caller may decide for the operator, rather than asking.
+ *
+ * Every field is optional and every default reproduces exactly what this flow
+ * did before the options existed, which is what keeps the Generate button and
+ * every schedule that belongs to no series behaving identically to before.
+ *
+ * A separate parameter rather than three more fields on `StartAutomationInput`
+ * on purpose: that type is parsed from a server action's payload, so anything
+ * added to it becomes settable by a hand-crafted POST. These three are decided
+ * by a `Series` row the server already owns — never by the browser — so they
+ * travel outside the parsed input where no request can reach them.
+ */
+export interface AutomationOptions {
+  /**
+   * Which script style writes it. Absent means the operator's category default,
+   * exactly as before — `scriptService.generate` has always taken an optional
+   * `templateId` and this is the second caller ever to pass one.
+   */
+  templateId?: string;
+  /**
+   * Landscape or vertical, applied at the same moment and by the same call the
+   * approve dialog uses (`videoService.approveScript`). Absent means LANDSCAPE,
+   * which is that method's own default and what every video produced by this
+   * flow has ever been.
+   */
+  format?: VideoFormat;
+  /** The show this video belongs to, recorded on the row. Absent means none. */
+  seriesId?: string;
 }
 
 export interface AutomationResult {
@@ -272,6 +312,29 @@ export class AutomationService {
   }
 
   /**
+   * The questions one named script style asks, rather than the ones the
+   * operator's default asks.
+   *
+   * The series surface needs this in two places and both are about agreeing
+   * with what will actually happen at run time: the series form builds its
+   * "how each episode is written" fields from it, and `SeriesService` reconciles
+   * a series' stored answers against it before saving, so a required variable
+   * left blank is refused at the form rather than discovered by a worker on a
+   * Monday morning.
+   *
+   * Throws `NotFoundError` for a template that is unknown, soft-deleted or
+   * belongs to somebody else — scoped by `promptTemplateService.get`, which
+   * takes the `userId` — and `ValidationError` for one that is not a SCRIPT
+   * prompt.
+   */
+  async describeScriptStyle(
+    userId: string,
+    templateId: string,
+  ): Promise<AutomationPromptSummary> {
+    return this.describePrompt(userId, templateId);
+  }
+
+  /**
    * Rebuilds a run's disclosure panel from the database, for an operator who
    * came back to `/automation?video=…` after closing the tab.
    *
@@ -349,10 +412,21 @@ export class AutomationService {
    * method), which surfaces in the video's own merged log stream and on the
    * Activity page, and the flow's result carries the script back so the UI can
    * show what was approved.
+   *
+   * ## `options` is what a series applies
+   *
+   * A `Series` answers the script style, the shape and the ownership of the
+   * video once, so that a run started from one asks the operator nothing. All
+   * three arrive here as `options` and are applied to the *existing* steps —
+   * `templateId` to the generate call that always accepted one, `format` to the
+   * approve call that always accepted one, `seriesId` to the row being created.
+   * Nothing new happens because a series is involved, and with no options this
+   * method is byte-for-byte the flow it was before series existed.
    */
   async start(
     userId: string,
     input: StartAutomationInput,
+    options: AutomationOptions = {},
   ): Promise<AutomationResult> {
     // Re-checked server-side even though the page already gates the form on
     // it. A server action is a public endpoint: a hand-crafted POST reaches
@@ -368,14 +442,22 @@ export class AutomationService {
       );
     }
 
-    const prompt = await this.describePrompt(userId);
+    // The series' own script style when there is one, the operator's category
+    // default when there is not. Resolved *before* the video row is created so
+    // a series pointing at a template that has since been removed is refused
+    // with `NotFoundError` rather than leaving a draft behind.
+    const prompt = await this.describePrompt(userId, options.templateId);
     const variables = resolveVariables(prompt, input.variables);
 
-    const video = await videoService.create(userId, {
-      projectId: input.projectId,
-      title: deriveTitle(input.topic),
-      topic: input.topic,
-    });
+    const video = await videoService.create(
+      userId,
+      {
+        projectId: input.projectId,
+        title: deriveTitle(input.topic),
+        topic: input.topic,
+      },
+      { seriesId: options.seriesId },
+    );
 
     await this.guardDuplicateSubmission(userId, video.id, input);
 
@@ -383,7 +465,10 @@ export class AutomationService {
     let version: Awaited<ReturnType<ScriptService["generate"]>>;
 
     try {
-      version = await this.scripts.generate(userId, video.id, { variables });
+      version = await this.scripts.generate(userId, video.id, {
+        templateId: options.templateId,
+        variables,
+      });
     } catch (error) {
       // The generation failed, so this video has a topic and nothing else.
       // Leaving it behind would mean every failed attempt — a lapsed API key
@@ -419,7 +504,7 @@ export class AutomationService {
     // state the manual flow's Approve button exists for — the operator loses
     // nothing but the automation, and deleting the video would destroy work
     // they have already paid for.
-    await videoService.approveScript(userId, video.id);
+    await videoService.approveScript(userId, video.id, options.format);
 
     await this.recordAutoApproval(userId, video.id, version.version);
 
@@ -613,29 +698,110 @@ export class AutomationService {
    * actually contains. A declared-but-unused variable is inert — nothing in
    * the rendered prompt changes whatever the operator types — so asking for
    * one would be collecting an answer the model never sees.
+   *
+   * `templateId` names a specific script style instead of the category default.
+   * Only a `Series` passes one: which questions a show asks are the questions
+   * *its* style declares, and reconciling a series' stored answers against the
+   * operator's unrelated default template would ask for the wrong things and
+   * then discard the right ones.
    */
-  private async describePrompt(userId: string): Promise<AutomationPromptSummary> {
-    const template = await promptTemplateService.getDefault(userId, "SCRIPT");
-    const used = new Set(extractVariables(template.content));
+  private async describePrompt(
+    userId: string,
+    templateId?: string,
+  ): Promise<AutomationPromptSummary> {
+    const template = templateId
+      ? await promptTemplateService.get(userId, templateId)
+      : await promptTemplateService.getDefault(userId, "SCRIPT");
 
-    const asked = template.variables
-      .filter((variable) => used.has(variable.key) && variable.key !== TOPIC_VARIABLE_KEY)
-      .map(
-        (variable): AutomationField => ({
-          key: variable.key,
-          label: variable.label,
-          defaultValue: variable.defaultValue,
-          required: variable.required,
-        }),
+    // `get` is category-agnostic — it is the same method the prompt library
+    // edits every category through — so a SCENE or TAGS template reaching here
+    // would render a prompt that is not a script and bill for the result. The
+    // series form only ever offers SCRIPT templates, and this is the check that
+    // makes that true of the server as well as the browser.
+    if (template.category !== "SCRIPT") {
+      throw new ValidationError(
+        `"${template.name}" is a ${template.category.toLowerCase()} prompt, not a script prompt, so it cannot write a video.`,
       );
+    }
 
-    return {
-      id: template.id,
-      name: template.name,
-      fields: asked.filter((field) => field.key !== DURATION_VARIABLE_KEY),
-      duration: asked.find((field) => field.key === DURATION_VARIABLE_KEY) ?? null,
-    };
+    return toPromptSummary(template);
   }
+
+  /**
+   * Every script style the operator could point a series at, already described.
+   *
+   * One query rather than a `describeScriptStyle` per template: the series form
+   * has to know which questions *each* style asks before the operator has
+   * picked one, so it can swap the answer fields the instant they do — without
+   * a round trip, and without the fields disagreeing with what the server will
+   * reconcile against on save.
+   *
+   * SCRIPT only, and the operator's own only. Both because a series that named
+   * a THUMBNAIL template would fail at generation, and because the picker is a
+   * list of ids a form will post back.
+   */
+  async listScriptStyles(userId: string): Promise<AutomationScriptStyle[]> {
+    const templates = await prisma.promptTemplate.findMany({
+      where: { userId, category: "SCRIPT", deletedAt: null },
+      orderBy: [{ isDefault: "desc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        content: true,
+        isDefault: true,
+        variables: {
+          select: {
+            key: true,
+            label: true,
+            defaultValue: true,
+            required: true,
+          },
+        },
+      },
+    });
+
+    return templates.map((template) => ({
+      ...toPromptSummary(template),
+      isDefault: template.isDefault,
+    }));
+  }
+}
+
+/**
+ * The one mapping from a stored template to the questions it asks, shared by
+ * `describePrompt` and `listScriptStyles` so a style described in the series
+ * picker cannot ask for different things than the same style asks for on save.
+ */
+function toPromptSummary(template: {
+  id: string;
+  name: string;
+  content: string;
+  variables: {
+    key: string;
+    label: string;
+    defaultValue: string | null;
+    required: boolean;
+  }[];
+}): AutomationPromptSummary {
+  const used = new Set(extractVariables(template.content));
+
+  const asked = template.variables
+    .filter((variable) => used.has(variable.key) && variable.key !== TOPIC_VARIABLE_KEY)
+    .map(
+      (variable): AutomationField => ({
+        key: variable.key,
+        label: variable.label,
+        defaultValue: variable.defaultValue,
+        required: variable.required,
+      }),
+    );
+
+  return {
+    id: template.id,
+    name: template.name,
+    fields: asked.filter((field) => field.key !== DURATION_VARIABLE_KEY),
+    duration: asked.find((field) => field.key === DURATION_VARIABLE_KEY) ?? null,
+  };
 }
 
 /**

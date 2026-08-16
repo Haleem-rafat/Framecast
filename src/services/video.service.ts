@@ -152,7 +152,22 @@ export class VideoService {
     return video;
   }
 
-  async create(userId: string, input: CreateVideoInput) {
+  /**
+   * `options.seriesId` records which show commissioned this video, and is
+   * deliberately not part of `CreateVideoInput`.
+   *
+   * That type is parsed from a server action's payload, so a field on it is a
+   * field a hand-crafted POST can set — and this one names a `Series` row whose
+   * ownership the caller has already proven. It arrives as a second argument
+   * instead, which no request can reach. Absent means what it has always meant:
+   * a video that belongs to no series, which is every video the create dialog
+   * and the guided flow make.
+   */
+  async create(
+    userId: string,
+    input: CreateVideoInput,
+    options: { seriesId?: string } = {},
+  ) {
     const project = await prisma.project.findFirst({
       where: { id: input.projectId, userId, deletedAt: null },
       select: { id: true },
@@ -169,6 +184,7 @@ export class VideoService {
           projectId: project.id,
           title: input.title,
           topic: input.topic,
+          seriesId: options.seriesId ?? null,
         },
       });
 

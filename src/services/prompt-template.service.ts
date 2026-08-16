@@ -281,8 +281,35 @@ export class PromptTemplateService {
       .map((style) => style.id);
   }
 
+  /**
+   * Soft-deletes a template, unless a series is written in it.
+   *
+   * `Series.promptTemplateId` is what decides how every episode of a show is
+   * written, and the deletion here is soft — so without this check the row
+   * would survive the delete, the series would keep pointing at it, and the
+   * next scheduled run would fail inside a worker with `NotFoundError` at 09:00
+   * on a Monday. Three of those pause the schedule. Refusing now, naming the
+   * shows that use it, costs the operator one message; the alternative costs
+   * them a fortnight of videos and a confusing failure log.
+   */
   async remove(userId: string, id: string) {
     await this.get(userId, id);
+
+    const series = await prisma.series.findMany({
+      where: { promptTemplateId: id, userId, deletedAt: null },
+      select: { name: true },
+      take: 5,
+    });
+
+    if (series.length > 0) {
+      throw new ConflictError(
+        `This is the script style ${series.length === 1 ? "the" : ""} ${series
+          .map((show) => `"${show.name}"`)
+          .join(", ")} series ${series.length === 1 ? "is" : "are"} written with. ` +
+          "Point it at another style first, or delete the series.",
+      );
+    }
+
     await prisma.promptTemplate.update({
       where: { id },
       data: { deletedAt: new Date(), isDefault: false },
