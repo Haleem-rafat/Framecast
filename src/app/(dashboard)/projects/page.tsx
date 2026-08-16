@@ -13,9 +13,13 @@ export const metadata: Metadata = { title: "Projects" };
 export default async function ProjectsPage() {
   const user = await requireUser();
 
-  const [projects, channels] = await Promise.all([
+  const [projects, channels, mergeSuggestions] = await Promise.all([
     projectService.list(user.id),
     channelService.list(user.id),
+    // Read here rather than in the table so the duplicate groups are as fresh
+    // as the rows they describe, and so a merge's `revalidatePath("/projects")`
+    // takes the acted-on card away with it.
+    projectService.mergeSuggestions(user.id),
   ]);
 
   const channelOptions = channels.map((channel) => ({
@@ -36,7 +40,11 @@ export default async function ProjectsPage() {
       />
 
       <Reveal>
-        <ProjectTable projects={projects} channels={channelOptions} />
+        <ProjectTable
+          projects={projects}
+          channels={channelOptions}
+          mergeSuggestions={mergeSuggestions}
+        />
       </Reveal>
     </>
   );

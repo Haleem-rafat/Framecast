@@ -10,17 +10,23 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArchiveProjectButton } from "@/features/projects/components/archive-project-button";
 import { BulkArchiveProjectsButton } from "@/features/projects/components/bulk-archive-projects-button";
+import { BulkMergeProjectsButton } from "@/features/projects/components/bulk-merge-projects-button";
 import { DeleteProjectButton } from "@/features/projects/components/delete-project-button";
+import { MergeSuggestions } from "@/features/projects/components/merge-suggestions";
 import { ProjectDialog } from "@/features/projects/components/project-dialog";
 import { UnarchiveProjectButton } from "@/features/projects/components/unarchive-project-button";
 import type { ProjectWithVideoCount } from "@/features/projects/types";
+import type { MergeSuggestion } from "@/lib/project-merge";
 
 export function ProjectTable({
   projects,
   channels,
+  mergeSuggestions,
 }: {
   projects: ProjectWithVideoCount[];
   channels: { id: string; title: string }[];
+  /** Duplicate groups worth offering. See `MergeSuggestions`. */
+  mergeSuggestions: MergeSuggestion[];
 }) {
   // `projectService.list` selects `channelId` but not the channel's title, and
   // an id in a cell tells the operator nothing. The page already fetched the
@@ -177,28 +183,46 @@ export function ProjectTable({
   );
 
   return (
-    <DataTable
-      rows={projects}
-      columns={columns}
-      getRowId={(project) => project.id}
-      caption="Projects"
-      searchPlaceholder="Search projects"
-      pageSize={25}
-      selection={{
-        rowLabel: (project) => project.name,
-        actions: ({ rows, clear }) => (
-          <BulkArchiveProjectsButton projects={rows} onDone={clear} />
-        ),
-      }}
-      empty={
-        <EmptyState
-          icon={Library}
-          title="No projects yet"
-          description="Projects group related videos together and can carry a default publishing channel."
-          action={<ProjectDialog channels={channels} />}
-        />
-      }
-    />
+    <div className="space-y-4">
+      {/* Above the table, not inside the selection bar, because it is the
+          answer to a problem the selection bar cannot solve: the duplicates
+          are spread across pages, and paging clears the selection. */}
+      <MergeSuggestions
+        suggestions={mergeSuggestions}
+        projects={projects}
+        channels={channels}
+      />
+
+      <DataTable
+        rows={projects}
+        columns={columns}
+        getRowId={(project) => project.id}
+        caption="Projects"
+        searchPlaceholder="Search projects"
+        pageSize={25}
+        selection={{
+          rowLabel: (project) => project.name,
+          actions: ({ rows, clear }) => (
+            <>
+              <BulkMergeProjectsButton
+                projects={rows}
+                channels={channels}
+                onDone={clear}
+              />
+              <BulkArchiveProjectsButton projects={rows} onDone={clear} />
+            </>
+          ),
+        }}
+        empty={
+          <EmptyState
+            icon={Library}
+            title="No projects yet"
+            description="Projects group related videos together and can carry a default publishing channel."
+            action={<ProjectDialog channels={channels} />}
+          />
+        }
+      />
+    </div>
   );
 }
 
