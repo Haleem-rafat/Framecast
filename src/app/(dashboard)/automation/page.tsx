@@ -1,103 +1,112 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CalendarClock, Clapperboard } from "lucide-react";
+import { Repeat2, Sparkles } from "lucide-react";
 
+import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { Reveal } from "@/components/shared/reveal";
 import { Button } from "@/components/ui/button";
-import { AutomationFlow } from "@/features/automation/components/automation-flow";
-import { AutomationRunView } from "@/features/automation/components/automation-run-view";
+import { AutomationTable } from "@/features/automation/components/automation-table";
+import { NewAutomationMenu } from "@/features/automation/components/new-automation-menu";
 import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
 import { requireUser } from "@/server/session";
+import { automationListService } from "@/services/automation-list.service";
 import { automationService } from "@/services/automation.service";
-import { pipelineService } from "@/services/pipeline.service";
 
 export const metadata: Metadata = { title: "Automation" };
 
-interface AutomationPageProps {
-  /** `?video=<id>` addresses a run already under way — see below. */
-  searchParams: Promise<{ video?: string }>;
-}
-
 /**
- * The guided alternative to the step-by-step UI.
+ * Everything that makes videos on a repeating cadence.
  *
- * Two states, and which one renders is decided by the URL rather than by
- * component state. `?video=<id>` is a run in progress: a render takes minutes
- * on a worker that keeps going whether or not the tab is open, so the progress
- * view has to be something an operator can navigate away from and come back to.
- * Putting the id in the query string makes that free — the state is re-read
- * here, on the server, on every arrival.
+ * ## What this page used to be
  *
- * No Suspense boundary. Both branches are a handful of indexed lookups, and
- * the flow's first question depends on the answer to "can this account run at
- * all", so streaming a shell that might be replaced by a refusal would be
- * worse than waiting a few milliseconds for the real one.
+ * Three routes. `/automation` was a one-click generator with links out;
+ * `/automation/series` was a table of shows; `/automation/schedules` was a
+ * stack of cards listing the same shows *again*, alongside the schedules that
+ * belonged to no show. Three screens, two visual languages, one idea. An
+ * operator could not tell them apart, and they were right not to be able to —
+ * a series is a schedule with a recipe attached, and that is a fact about this
+ * codebase, not about their work.
+ *
+ * Now there is one table with one row per automation, and the retired routes
+ * redirect here rather than 404ing a bookmark. The one-click generator moved to
+ * `/automation/generate`, because it is genuinely a different thing — one video
+ * now, not a cadence — and its button is the first thing in this header.
+ *
+ * ## Why the readiness notice sits above the table rather than replacing it
+ *
+ * Both old lists hid themselves entirely behind `ReadinessNotice`, which was
+ * defensible when the notice stood between an operator and a *create* form that
+ * would spend money. It is not defensible for a list: an account that has lost
+ * its ElevenLabs key still has nine automations that will start skipping runs,
+ * and hiding them is hiding exactly the thing the operator needs to look at.
+ * The notice explains why nothing is producing; the table below it still says
+ * what "nothing" consists of.
+ *
+ * The create forms keep their own gates — `/automation/series/new` re-checks
+ * with the two extra conditions a series has — so nothing here weakens the
+ * rule that a run is refused before the first billed call.
  */
-export default async function AutomationPage({ searchParams }: AutomationPageProps) {
+export default async function AutomationPage() {
   const user = await requireUser();
-  const { video: videoId } = await searchParams;
 
-  if (videoId) {
-    const run = await automationService.getRun(user.id, videoId);
+  const [setup, automations] = await Promise.all([
+    automationService.getSetup(user.id),
+    automationListService.list(user.id),
+  ]);
 
-    // A missing or foreign id falls through to the normal starting state
-    // rather than erroring: the query string is operator-editable, and this
-    // way a stale link is simply a fresh flow instead of a dead end.
-    if (run) {
-      const state = await pipelineService.getState(user.id, run.videoId);
-
-      return (
-        <>
-          <PageHeader
-            title="Generating your video"
-            description="The script is written and approved. Narration, footage and the render run on their own machine — you can close this page and come back."
-          />
-          <AutomationRunView run={run} initialState={state} />
-        </>
-      );
-    }
-  }
-
-  const setup = await automationService.getSetup(user.id);
+  const ready = setup.blockers.length === 0 && setup.prompt !== null;
 
   return (
     <>
       <PageHeader
-        title="One-click video"
-        description="Answer a few questions and Framecast writes the script, approves it for you, and runs the pipeline through to a finished video. Publishing stays yours."
+        title="Automation"
+        description="Everything that makes videos on a repeating cadence, in one list — what it is, where it publishes, when it next runs and whether it is working. Publishing stays yours."
         actions={
-          /* The same flow, twice removed. A schedule is this page's own button
-             pressed for you every Monday; a series is that plus the answers, so
-             the questions below are never asked again. Both are surfaced here
-             rather than only in the sidebar because neither is a separate
-             feature — finding them beside the manual version is what makes the
-             relationship obvious. */
           <div className="flex flex-wrap items-center gap-2">
-            <Button asChild>
-              <Link href="/automation/series">
-                <Clapperboard />
-                Series
-              </Link>
-            </Button>
+            {/* The one-shot flow, kept at the top of the screen it is most
+                often reached from. Deliberately not the primary button: this
+                page is about the things that run without anybody present, and
+                the primary action on it should be making another one. */}
             <Button asChild variant="outline">
-              <Link href="/automation/schedules">
-                <CalendarClock />
-                Schedules
+              <Link href="/automation/generate">
+                <Sparkles />
+                Make one video now
               </Link>
             </Button>
+            {/* Offered whether or not the account is ready. The old lists hid
+                their create button behind the same readiness check that hid
+                the list, which left an operator with a blocked account looking
+                at a screen with nothing on it and nothing to press. The create
+                forms carry the gate that matters, and they explain it. Hidden
+                only when there are no rows, because the empty state below
+                already offers the same menu and two of them is noise. */}
+            {automations.length > 0 && <NewAutomationMenu />}
           </div>
         }
       />
 
-      {/* `prompt` is null exactly when the missing-default-prompt blocker is
-          present, so this branch covers both conditions the flow cannot run
-          without — and the type narrows for free rather than needing an
-          assertion. */}
-      {setup.blockers.length > 0 || !setup.prompt ? (
-        <ReadinessNotice blockers={setup.blockers} />
-      ) : (
-        <AutomationFlow projects={setup.projects} prompt={setup.prompt} />
-      )}
+      {!ready && <ReadinessNotice blockers={setup.blockers} />}
+
+      <Reveal>
+        <AutomationTable
+          automations={automations}
+          empty={
+            <EmptyState
+              icon={Repeat2}
+              title="Nothing runs on its own yet"
+              description="An automation is a cadence and a list of subjects: Framecast writes, narrates and renders one video each time it comes round, and stops when the list runs out rather than inventing a topic. Start with a series if the videos belong to one show."
+              action={
+                // Offered even when the account is not ready, because the
+                // create form's own gate explains what is missing better than a
+                // hidden button does — and a screen with no rows and no button
+                // is a dead end.
+                <NewAutomationMenu />
+              }
+            />
+          }
+        />
+      </Reveal>
     </>
   );
 }

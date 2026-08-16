@@ -87,7 +87,7 @@ export function SeriesControls({
       // The progress view of the guided flow, which is the same run: a render
       // takes minutes on a worker, and this is the page built to be left and
       // come back to.
-      router.push(`/automation?video=${response.data.videoId}`);
+      router.push(`/automation/generate?video=${response.data.videoId}`);
       router.refresh();
     });
   }
@@ -137,7 +137,7 @@ export function SeriesControls({
       }
 
       toast.success(`Deleted ${seriesName}`);
-      router.push("/automation/series");
+      router.push("/automation");
       router.refresh();
     });
   }

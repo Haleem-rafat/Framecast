@@ -2,7 +2,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   BarChart3,
-  Clapperboard,
   FileText,
   Image,
   KeyRound,
@@ -10,6 +9,7 @@ import {
   Library,
   Mic,
   MonitorPlay,
+  Repeat2,
   Settings,
   ShieldCheck,
   UserCheck,
@@ -126,15 +126,39 @@ export const navigation: NavGroup[] = [
       {
         title: "Automation",
         href: "/automation",
-        icon: Sparkles,
-        keywords: ["one click", "pipeline", "generate"],
+        icon: Repeat2,
+        /**
+         * One entry where there were two, because there is now one page.
+         *
+         * "Series" had a sidebar row of its own and its own keywords, which is
+         * how the palette taught the operator that a series and a schedule were
+         * different features. They are the same feature — a series is a
+         * schedule with a recipe attached — so both vocabularies now land on
+         * the one table that lists both. Somebody who types "schedules", the
+         * name of a page that no longer exists, gets the page it turned into.
+         */
+        keywords: [
+          "series",
+          "schedules",
+          "show",
+          "recurring",
+          "cadence",
+          "weekly",
+          "monthly",
+          "topic queue",
+          "paused",
+        ],
         built: true,
       },
       {
-        title: "Series",
-        href: "/automation/series",
-        icon: Clapperboard,
-        keywords: ["show", "recurring", "schedule", "cadence", "format", "recipe"],
+        title: "One-click video",
+        href: "/automation/generate",
+        icon: Sparkles,
+        // The opposite of the entry above it: one video now, no cadence. It
+        // keeps a row of its own because it is the single most common reason an
+        // operator opens this product, and burying it inside a screen about
+        // recurrence is what made the old /automation read as three features.
+        keywords: ["one click", "generate", "make a video", "pipeline", "now"],
         built: true,
       },
       {

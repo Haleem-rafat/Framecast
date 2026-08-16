@@ -113,7 +113,7 @@ export function ScheduleControls({
       }
 
       toast.success(`Deleted ${scheduleName}`);
-      router.push("/automation/schedules");
+      router.push("/automation");
       router.refresh();
     });
   }

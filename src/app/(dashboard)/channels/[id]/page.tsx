@@ -34,7 +34,7 @@ interface ChannelBrandingPageProps {
  * that exists nowhere else, which is exactly the thing that should not sit
  * behind a click-outside-to-dismiss; and the codebase already answers this
  * question the same way for the same shape — `/videos/[id]` and
- * `/automation/schedules/[id]` are both routes reached from a list of cards,
+ * `/automation/schedules/[id]` are both routes reached from a list of rows,
  * with the same `requireUser` → `await params` → service-scoped read →
  * `notFound()` skeleton this page uses.
  *

@@ -11,6 +11,7 @@ import { ScheduleControls } from "@/features/automation/components/schedule-cont
 import { ScheduleForm } from "@/features/automation/components/schedule-form";
 import { ScheduleRunHistory } from "@/features/automation/components/schedule-run-history";
 import { ScheduleTopicQueue } from "@/features/automation/components/schedule-topic-queue";
+import { describeNextRun } from "@/lib/automation-language";
 import { NotFoundError } from "@/lib/errors";
 import { requireUser } from "@/server/session";
 import { automationService } from "@/services/automation.service";
@@ -49,9 +50,9 @@ export default async function SchedulePage({ params }: SchedulePageProps) {
     <>
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href="/automation/schedules">
+          <Link href="/automation">
             <ArrowLeft />
-            All schedules
+            All automations
           </Link>
         </Button>
 
@@ -77,8 +78,12 @@ export default async function SchedulePage({ params }: SchedulePageProps) {
         {schedule.status === "ACTIVE" && schedule.nextRunAt && (
           <span className="text-muted-foreground text-sm">
             Next run{" "}
+            {/* The same sentence the automation table uses, so clicking a row
+                that said "Tomorrow at 6:00 AM" does not land on
+                "17/08/2026, 06:00:00". Read in the schedule's own zone, which
+                the cadence beside it names. */}
             <span className="text-foreground font-medium" suppressHydrationWarning>
-              {schedule.nextRunAt.toLocaleString()}
+              {describeNextRun(schedule.nextRunAt, schedule.timeZone, new Date())}
             </span>
           </span>
         )}

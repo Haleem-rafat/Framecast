@@ -23,20 +23,26 @@ import { scheduleService } from "@/services/schedule.service";
  * signed-in user, parse the payload, and funnel the result through `run()` so a
  * driver message can never reach the browser.
  *
- * `revalidatePath` covers `/automation/schedules` (the list) and the detail
+ * `revalidatePath` covers `/automation` (the one table every recurring
+ * automation is listed in, whatever kind it is) and this schedule's own detail
  * route, which are the only server-rendered surfaces these change. Nothing here
  * touches `/videos` or `/dashboard`: creating a schedule produces no video, and
  * the run that eventually does happens in the worker, where `revalidatePath`
  * has no meaning.
+ *
+ * The list and the detail page are no longer parent and child — the list moved
+ * up to `/automation` when the series and schedule screens merged — so the two
+ * paths are named separately rather than one being built from the other.
  */
 
-const LIST_PATH = "/automation/schedules";
+const LIST_PATH = "/automation";
+const DETAIL_BASE = "/automation/schedules";
 
 function revalidateSchedule(id?: string): void {
   revalidatePath(LIST_PATH);
 
   if (id) {
-    revalidatePath(`${LIST_PATH}/${id}`);
+    revalidatePath(`${DETAIL_BASE}/${id}`);
   }
 }
 

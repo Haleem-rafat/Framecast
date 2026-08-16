@@ -13,6 +13,7 @@ import { SeriesControls } from "@/features/automation/components/series-controls
 import { SeriesForm } from "@/features/automation/components/series-form";
 import { SeriesRecipe } from "@/features/automation/components/series-recipe";
 import { SeriesVideos } from "@/features/automation/components/series-videos";
+import { describeNextRun } from "@/lib/automation-language";
 import { NotFoundError } from "@/lib/errors";
 import { requireUser } from "@/server/session";
 import { seriesService } from "@/services/series.service";
@@ -60,9 +61,9 @@ export default async function SeriesDetailPage({ params }: SeriesDetailPageProps
     <>
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href="/automation/series">
+          <Link href="/automation">
             <ArrowLeft />
-            All series
+            All automations
           </Link>
         </Button>
 
@@ -88,8 +89,12 @@ export default async function SeriesDetailPage({ params }: SeriesDetailPageProps
         {series.status === "ACTIVE" && series.nextRunAt && (
           <span className="text-muted-foreground text-sm">
             Next episode{" "}
+            {/* The same sentence the automation table uses, so clicking a row
+                that said "Tomorrow at 6:00 AM" does not land on
+                "17/08/2026, 06:00:00". Read in the show's own zone, which the
+                cadence beside it names. */}
             <span className="text-foreground font-medium" suppressHydrationWarning>
-              {series.nextRunAt.toLocaleString()}
+              {describeNextRun(series.nextRunAt, series.timeZone, new Date())}
             </span>
           </span>
         )}

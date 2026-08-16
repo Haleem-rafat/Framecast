@@ -28,6 +28,31 @@ const nextConfig: NextConfig = {
   },
 
   /**
+   * Routes that have been merged away, kept alive for the bookmarks that point
+   * at them.
+   *
+   * `/automation/series` and `/automation/schedules` were two lists of the same
+   * idea — a thing that makes videos on a repeating cadence — drawn two
+   * different ways, with every series listed on both. They are now one table at
+   * `/automation`. Nothing *under* those paths moved: the detail pages and the
+   * create forms are still `/automation/series/:id`, `/automation/series/new`
+   * and their schedule counterparts, which is why each `source` matches the
+   * bare segment and nothing below it.
+   *
+   * Here rather than as a `page.tsx` calling `redirect()`, so a stale bookmark
+   * costs one HTTP hop instead of an authenticated render that exists only to
+   * throw. `permanent: false`: a 308 is cached by the browser indefinitely, and
+   * these are app routes behind a login rather than public URLs with search
+   * engines to inform.
+   */
+  async redirects() {
+    return [
+      { source: "/automation/series", destination: "/automation", permanent: false },
+      { source: "/automation/schedules", destination: "/automation", permanent: false },
+    ];
+  },
+
+  /**
    * The app served no security headers at all. These three are the ones that
    * matter for a site whose front door is a password form.
    *

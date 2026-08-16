@@ -331,7 +331,7 @@ export function AutomationFlow({
       // video" somewhere that survives that, and re-reads it from the server
       // on the way back. It also means the browser's Back button does not
       // return to a filled-in form whose submission already happened.
-      router.replace(`/automation?video=${response.data.videoId}`);
+      router.replace(`/automation/generate?video=${response.data.videoId}`);
     });
   }
 

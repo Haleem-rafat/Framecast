@@ -26,13 +26,21 @@ import { seriesService, type SeriesRunResult } from "@/services/series.service";
  * passes them the schedule id and reuses the same component.
  */
 
-const LIST_PATH = "/automation/series";
+/**
+ * The list a series appears in is `/automation` — the one table that holds
+ * every recurring automation, whatever kind it is — while the series' own page
+ * is still under `/automation/series/:id`. The two are no longer parent and
+ * child, so they are named separately rather than one being built from the
+ * other.
+ */
+const LIST_PATH = "/automation";
+const DETAIL_BASE = "/automation/series";
 
 function revalidateSeries(id?: string): void {
   revalidatePath(LIST_PATH);
 
   if (id) {
-    revalidatePath(`${LIST_PATH}/${id}`);
+    revalidatePath(`${DETAIL_BASE}/${id}`);
   }
 }
 
@@ -106,8 +114,10 @@ export async function deleteSeriesAction(id: string): Promise<ActionResult<null>
  *
  * `/videos` is revalidated as well as the series pages, because unlike every
  * other action in this file this one actually produces a video — the operator
- * lands back on a list that has to include it. `/automation/schedules` is not:
- * this run is not an occurrence of the cadence and writes no `ScheduleRun`.
+ * lands back on a list that has to include it. The episode count on the
+ * automation table moves too, which `revalidateSeries` already covers: it
+ * counts the series' videos rather than its runs, precisely so a show driven by
+ * hand is not under-reported.
  */
 export async function generateFromSeriesAction(
   id: string,

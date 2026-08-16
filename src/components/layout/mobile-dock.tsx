@@ -37,9 +37,15 @@ const FloatingDock = dynamic(
  * - `/dashboard` — the one glance that answers "is anything wrong".
  * - `/videos` — the unit of work, and the only route to a specific video's
  *   status while it is rendering.
- * - `/automation` — the one genuinely mobile *action* in the product: start a
- *   video from a phone. Every other tab answers a question; this one does
- *   something, which is what a native app's middle tab is usually for.
+ * - `/automation` — everything that runs without anybody present, plus the
+ *   button that starts a video right now. It held this slot when it *was* the
+ *   one-click flow, on the argument that every other tab answers a question
+ *   while this one does something; the slot survived the merge because the
+ *   argument did. "Make one video now" is the first control in its header, so
+ *   the action is one tap deeper and the list of what is already running — the
+ *   other genuinely away-from-a-desk question — arrived for free. Prefix
+ *   matching keeps the tab lit through `/automation/generate` and the run
+ *   progress view it hands off to.
  * - `/logs` — the follow-up to the dashboard when the answer was "yes,
  *   something is wrong": why did that render fail.
  *

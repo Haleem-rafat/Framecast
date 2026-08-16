@@ -23,7 +23,7 @@ import type { PipelineState } from "@/services/pipeline.service";
  * Everything the operator sees once the run is under way.
  *
  * Both props are resolved on the server by the page, and the run itself is
- * addressed by URL (`/automation?video=…`) rather than held in state, so
+ * addressed by URL (`/automation/generate?video=…`) rather than held in state, so
  * closing the tab and coming back re-reads the truth instead of losing it.
  * From there `usePipelineState` — the same hook, the same query key and the
  * same polling cadence the video detail page uses — keeps it current. There is
@@ -128,7 +128,7 @@ export function AutomationRunView({
           </Link>
         </Button>
         <Button variant="outline" asChild>
-          <Link href="/automation">
+          <Link href="/automation/generate">
             <Sparkles />
             Start another
           </Link>
