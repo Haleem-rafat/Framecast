@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Check, CircleAlert, ExternalLink, Loader2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -27,7 +28,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { publishVideoAction } from "@/actions/publish.action";
+import {
+  getPublishProgressAction,
+  publishVideoAction,
+} from "@/actions/publish.action";
+import { UploadProgressReadout } from "@/features/videos/components/publish-attempt-panel";
 import type { VideoStatus } from "@/generated/prisma/enums";
 import type { SerializedError } from "@/lib/errors";
 import {
@@ -143,6 +148,39 @@ const DAILY_UPLOAD_ALLOWANCE = 100;
 
 type Phase = "confirm" | "uploading" | "error" | "results";
 
+/** Matches `PUBLISH_POLL_INTERVAL_MS` in publish-attempt-panel.tsx — the same
+ *  row, the same cadence. Both observers share one React Query key, so a page
+ *  showing the panel *and* this dialog runs one poll between them, not two. */
+const PROGRESS_POLL_INTERVAL_MS = 5000;
+
+/**
+ * How far the upload this dialog started has actually got.
+ *
+ * The dialog cannot see the upload directly — `publishVideoAction` is one long
+ * Server Action that resolves when everything is over — so it reads the same
+ * server-written row the video page reads, on the same key. That is the whole
+ * reason this is a query rather than component state: an operator who closes
+ * the tab and comes back sees the identical bar, because none of it was ever in
+ * this browser.
+ *
+ * Polls only while `uploading`. Before the first byte the row does not exist
+ * yet, and `null` is the correct answer for that moment rather than an error —
+ * the readout draws its "preparing the upload" line and gives way to real
+ * numbers as soon as there are any.
+ */
+function useUploadProgress(videoId: string, uploading: boolean) {
+  return useQuery({
+    queryKey: ["publish-progress", videoId],
+    queryFn: async () => {
+      const result = await getPublishProgressAction(videoId);
+      if (!result.ok) throw new Error(result.error.message);
+      return result.data;
+    },
+    enabled: uploading,
+    refetchInterval: uploading ? PROGRESS_POLL_INTERVAL_MS : false,
+  });
+}
+
 export function PublishVideoButton({
   videoId,
   status,
@@ -230,6 +268,13 @@ export function PublishVideoButton({
   const visibilityId = useId();
   const shortsToggleId = useId();
   const channelPickerId = useId();
+
+  // Before the early returns below, because hooks are not conditional. Idle
+  // (and issuing no requests) at every phase but `uploading`.
+  const { data: progress, dataUpdatedAt } = useUploadProgress(
+    videoId,
+    phase === "uploading",
+  );
 
   const uploadCount = 1 + (includeShorts ? readyShortCount : 0);
 
@@ -400,18 +445,36 @@ export function PublishVideoButton({
             <>
               <DialogHeader>
                 <DialogTitle>Uploading to YouTube</DialogTitle>
+                {/* No longer "don't close this tab". The upload runs on the
+                  * server and its progress is written to the database as it
+                  * goes, so closing this costs the operator nothing — and
+                  * saying otherwise is what kept somebody watching a spinner
+                  * for two hours. */}
                 <DialogDescription>
-                  This takes a few minutes for a video this size — don&apos;t
-                  close this tab.
+                  A large video takes a while on this connection. The upload
+                  runs on the server, so you can close this and come back — the
+                  video page shows the same progress.
                 </DialogDescription>
               </DialogHeader>
               <DialogBody>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="size-4 animate-spin" />
                   {uploadCount > 1
-                    ? `Uploading ${uploadCount} videos, one after another — please wait…`
-                    : "Uploading, please wait…"}
+                    ? `Uploading ${uploadCount} videos, one after another`
+                    : "Uploading"}
                 </div>
+
+                {/* The real thing: bytes YouTube has confirmed, against the
+                  * size of the file, with a time estimate from the rate
+                  * actually observed. Absent for the first moment — the claim
+                  * row does not exist until the service takes it — and the
+                  * spinner above covers that gap. */}
+                {progress && (
+                  <UploadProgressReadout
+                    progress={progress}
+                    dataUpdatedAt={dataUpdatedAt}
+                  />
+                )}
               </DialogBody>
             </>
           ) : phase === "results" ? (

@@ -348,6 +348,20 @@ export default async function VideoDetailPage({
       ? await publishService.listPublishTargets(user.id, video.id)
       : null;
 
+  // This video's publish attempt, if it has one that has not reached YouTube.
+  //
+  // Read unconditionally rather than behind a status guard like the two above,
+  // because the states it exists to surface are precisely the ones no status
+  // reveals. A publish killed mid-upload leaves the video at READY — the failure
+  // branch that writes FAILED never runs, because a SIGKILL runs no `catch` —
+  // so the video looks publishable while a stuck `Publication` row silently
+  // refuses every attempt. That is the bug: the operator watched "uploading"
+  // for two hours and the page had nothing to say about it.
+  //
+  // One indexed lookup on `Publication.videoId`, which is `@unique`, and it
+  // returns null for every video that has never been published.
+  const publishProgress = await publishService.getPublishProgress(user.id, video.id);
+
   // Which script prompts the panel's picker offers. Only fetched for a draft:
   // generating is refused at every other status (`scriptService.generate`), so
   // for a video past the draft stage this is a query spent on a control the
@@ -432,6 +446,7 @@ export default async function VideoDetailPage({
         defaultVisibility={defaultVisibility}
         readyShortCount={readyShortCount}
         publishTargets={publishTargets}
+        publishProgress={publishProgress}
       />
 
       {/* Everything about the video on one page, folded, in the order its

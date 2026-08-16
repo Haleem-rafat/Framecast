@@ -6,6 +6,8 @@ import { run, type ActionResult } from "@/actions/action-result";
 import { publishVideoSchema } from "@/schemas/publish.schema";
 import {
   publishService,
+  type ClearedPublication,
+  type PublishProgress,
   type ShortPublishOutcome,
   type ThumbnailOutcome,
 } from "@/services/publish.service";
@@ -113,5 +115,72 @@ export async function retryThumbnailAction(
     revalidatePath(`/videos/${videoId}`);
 
     return outcome;
+  });
+}
+
+/**
+ * How far this video's upload has got, polled by the page while it runs.
+ *
+ * Read-only, and the one action here that is safe to call on a timer. It takes
+ * a single indexed lookup on `Publication.videoId` and touches neither YouTube
+ * nor the filesystem, which is what lets the publish dialog and the video page
+ * both poll it while a 463MB file goes out without competing with a render on
+ * the worker's two vCPUs.
+ *
+ * Deliberately not `revalidatePath`ing anything. A poll that invalidated the
+ * route would re-render the whole video page every few seconds for a number one
+ * client component owns — the same trap `pipeline-panel.tsx` documents in
+ * `useRefreshOnStageChange`, which refreshes on real transitions rather than on
+ * ticks.
+ *
+ * `null` for a video that has never been published, which is the common answer
+ * and draws nothing.
+ */
+export async function getPublishProgressAction(
+  videoId: string,
+): Promise<ActionResult<PublishProgress | null>> {
+  return run(async () => {
+    const session = await requireSession();
+
+    return publishService.getPublishProgress(session.user.id, videoId);
+  });
+}
+
+/**
+ * Removes a publish attempt that will never finish, so the video can be
+ * published again.
+ *
+ * The one action in this file that makes a *previously* irreversible situation
+ * recoverable, and it is deliberately the narrowest possible door out. It sends
+ * nothing to YouTube — there is no path from here to `videos.insert` at all —
+ * and it re-arms nothing by itself: what it does is delete a row whose only
+ * remaining effect was to block the operator's own retry, after
+ * `publishService.clearStuckPublication` has refused every state where that
+ * would be dangerous (an upload still heartbeating, a video already on the
+ * channel, a row that changed underneath the read).
+ *
+ * Gate 2 is untouched. `Publication.videoId` is still `@unique` and `publish()`
+ * still claims by `create()` before a byte is sent; a second publish after a
+ * clear is a *first* publish again, subject to every check it has always been
+ * subject to. The judgement this action cannot make — whether the interrupted
+ * upload actually left a video on the channel — is not made here or anywhere
+ * else in the app: the dialog that calls this requires the operator to confirm
+ * they have looked.
+ */
+export async function clearStuckPublicationAction(
+  videoId: string,
+): Promise<ActionResult<ClearedPublication>> {
+  return run(async () => {
+    const session = await requireSession();
+
+    const result = await publishService.clearStuckPublication(session.user.id, videoId);
+
+    revalidatePath("/videos");
+    revalidatePath(`/videos/${videoId}`);
+    // `/publishing` lists every Publication row; one of them has just stopped
+    // existing.
+    revalidatePath("/publishing");
+
+    return result;
   });
 }

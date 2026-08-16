@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -26,6 +26,7 @@ import {
   retryPipelineAction,
   startPipelineAction,
 } from "@/actions/video.action";
+import { useLiveElapsedSeconds } from "@/hooks/use-live-elapsed-seconds";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 import type { PipelineStage, PipelineState } from "@/services/pipeline.service";
@@ -243,44 +244,6 @@ function useRefreshOnStageChange(state: PipelineState): void {
     previous.current = signature;
     router.refresh();
   }, [state, router]);
-}
-
-/**
- * The render's elapsed time, advancing between polls.
- *
- * `elapsedSeconds` arrives every two seconds and then sits still, so a clock
- * driven straight off it visibly stutters — it is the one number on the page
- * an operator watches second by second, and a two-second step reads as the
- * page having frozen. This adds the wall-clock time since that number arrived,
- * which is not an estimate: the server said "N seconds as of `dataUpdatedAt`",
- * and time has genuinely passed since.
- *
- * Deliberately *not* a second polling loop. `setInterval` here only re-renders
- * this component; it never touches the network, and it stops the moment the
- * run does — a finished render's elapsed time is frozen, which is the truth.
- */
-function useLiveElapsedSeconds(
-  elapsedSeconds: number | null,
-  dataUpdatedAt: number,
-  ticking: boolean,
-): number | null {
-  const [now, setNow] = useState(dataUpdatedAt);
-
-  useEffect(() => {
-    if (!ticking) return;
-
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 1000);
-
-    return () => clearInterval(id);
-  }, [ticking]);
-
-  if (elapsedSeconds === null) return null;
-  if (!ticking) return elapsedSeconds;
-
-  // `Math.max(0, …)` because a clock skew between this browser and the server
-  // must never make the timer run backwards.
-  return elapsedSeconds + Math.max(0, Math.floor((now - dataUpdatedAt) / 1000));
 }
 
 const STATUS_ICON: Record<PipelineStage["status"], typeof Circle> = {

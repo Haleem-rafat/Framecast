@@ -3,12 +3,13 @@ import { Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ApproveScriptButton } from "@/features/videos/components/approve-script-button";
 import { DeleteVideoButton } from "@/features/videos/components/delete-video-button";
+import { PublishAttemptPanel } from "@/features/videos/components/publish-attempt-panel";
 import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import type { FootageStyle, VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import type { PublishVisibilityOption } from "@/schemas/publish.schema";
 import { VIDEO_FORMATS, WORDS_PER_MINUTE } from "@/lib/video-format";
-import type { PublishTargets } from "@/services/publish.service";
+import type { PublishProgress, PublishTargets } from "@/services/publish.service";
 
 export function VideoHeader({
   videoId,
@@ -25,6 +26,7 @@ export function VideoHeader({
   defaultVisibility,
   readyShortCount,
   publishTargets,
+  publishProgress,
 }: {
   videoId: string;
   title: string;
@@ -64,9 +66,30 @@ export function VideoHeader({
    * not be chosen — see `publishService.listPublishTargets`. Null for a video
    * that cannot be published yet, where there is no picker to draw. */
   publishTargets: PublishTargets | null;
+  /**
+   * This video's publish attempt, when it has one that has not reached YouTube:
+   * an upload running right now, one that stopped when its process died, or one
+   * that failed and said why. Null for every video with no `Publication` row and
+   * for every video already published — see `publishService.getPublishProgress`.
+   */
+  publishProgress: PublishProgress | null;
 }) {
   const estimatedMinutes = wordCount > 0 ? wordCount / WORDS_PER_MINUTE : 0;
   const canApprove = status === "DRAFT" && wordCount > 0;
+
+  /**
+   * An attempt that is running, or has stopped without finishing, takes the
+   * publish button's place.
+   *
+   * Not beside it. A `Publication` row blocks a second `create()` regardless of
+   * its status (Gate 2, and it stays that way), so a publish button next to a
+   * stuck row is a button whose only possible outcome is "This video is already
+   * being published" — which is exactly what an operator spent two hours
+   * discovering after a deploy killed an upload mid-flight. The panel says what
+   * the row actually is and offers the only action that helps.
+   */
+  const attemptInFlight =
+    publishProgress !== null && publishProgress.youtubeVideoId === null;
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -113,16 +136,24 @@ export function VideoHeader({
           characterCount={characterCount}
           footageStyle={channelFootageStyle}
         />
-        <PublishVideoButton
-          videoId={videoId}
-          status={status}
-          channelName={channelName}
-          channelMadeForKids={channelMadeForKids}
-          youtubeVideoId={youtubeVideoId}
-          defaultVisibility={defaultVisibility}
-          readyShortCount={readyShortCount}
-          publishTargets={publishTargets}
-        />
+        {attemptInFlight && publishProgress ? (
+          <PublishAttemptPanel
+            videoId={videoId}
+            videoTitle={title}
+            initialProgress={publishProgress}
+          />
+        ) : (
+          <PublishVideoButton
+            videoId={videoId}
+            status={status}
+            channelName={channelName}
+            channelMadeForKids={channelMadeForKids}
+            youtubeVideoId={youtubeVideoId}
+            defaultVisibility={defaultVisibility}
+            readyShortCount={readyShortCount}
+            publishTargets={publishTargets}
+          />
+        )}
       </div>
     </div>
   );
