@@ -90,6 +90,7 @@ model User {
   settings            UserSetting?
   schedules           Schedule[]
   series              Series[]
+  releaseCadences     ReleaseCadence[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
   @@index([approval, createdAt])
@@ -182,6 +183,8 @@ model Channel {
   projects          Project[]
   brand             ChannelBrand?
   series            Series[]
+  /// At most one, and it is this channel's shorts drip — see ReleaseCadence.
+  releaseCadence    ReleaseCadence?
 
   @@unique([userId, youtubeChannelId])
   @@index([userId, deletedAt])
@@ -947,6 +950,11 @@ model Short {
   /// cascade gives up.
   publication ShortPublication?
 
+  /// Every slot that released this clip — in practice zero rows or one, since
+  /// a published short leaves the release queue for good. Kept as a list
+  /// because the FK is `SetNull` and history outlives the row it points at.
+  releaseRuns ReleaseRun[]
+
   /// Doubles as the panel's list index: "every short for one video, in play
   /// order" is a prefix scan of this same b-tree, so no second `@@index`
   /// on `[videoId, index]` is added for it.
@@ -1364,6 +1372,10 @@ enum ScheduleFrequency {
 /// write `pausedReason`, because a schedule that stopped on its own has to be
 /// able to say why — an operator who finds no video on Monday needs the answer
 /// on the schedule itself, not in a log they would have to know to look for.
+///
+/// Shared with `ReleaseCadence`, which pauses for its own three reasons and
+/// writes `pausedReason` for the same one: an operator who finds no short on
+/// Tuesday needs the answer on the row, not in a log.
 enum ScheduleStatus {
   ACTIVE
   PAUSED
@@ -1551,6 +1563,184 @@ model ScheduleRun {
   @@unique([scheduleId, scheduledFor])
   @@index([scheduleId, createdAt])
   @@map("schedule_run")
+}
+
+// ---------------------------------------------------------------------------
+// Shorts release
+// ---------------------------------------------------------------------------
+
+/// A channel's standing instruction to release banked shorts at fixed times of
+/// day.
+///
+/// ## Why this is not a `Schedule`
+///
+/// The obvious move was a third `ScheduleFrequency` — `DAILY` — and it is the
+/// wrong one. A `Schedule` *produces*: every occurrence is a model call, a
+/// narration, a render and a bill. Three shorts a day on three channels would
+/// be twenty-one fresh videos a week per channel, for content the operator has
+/// already paid to make: the week's three long videos each yield around seven
+/// clips, and 3 × 7 is exactly the 21 a week that three-a-day needs. So the
+/// shorts half of the operator's week is not a production cadence at all — it
+/// is a *release* cadence, and releasing a banked clip is an ffmpeg output that
+/// already exists plus one upload. Nothing here calls a model, and nothing here
+/// can spend provider money.
+///
+/// That difference changes the failure the design has to defend against.
+/// `Schedule` protects a budget, which is why an empty topic queue pauses it:
+/// a schedule with nothing to make must stop rather than improvise. A cadence
+/// with nothing banked has not failed and must not pause — the operator simply
+/// has not published a long video this week, and the drip resumes by itself the
+/// moment one lands. See `ReleaseRun`'s SKIPPED outcome.
+///
+/// ## What it borrows unchanged
+///
+/// Everything about the timing. `slotMinutes` + `timeZone` are wall-clock
+/// fields plus a zone, never UTC times of day, for exactly the reason
+/// `Schedule`'s own comment gives — a stored UTC hour drifts by an hour twice a
+/// year in the direction nobody checks. `nextReleaseAt` is the only UTC instant
+/// here, it is derived from those fields, and it is re-derived (never
+/// incremented) in the same conditional update that claims it. See
+/// `ReleaseService.claimDue` and src/lib/release-time.ts.
+model ReleaseCadence {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Shared with `Schedule` rather than duplicated: ACTIVE/PAUSED means the
+  /// same thing here, and `claimDue` ignores a PAUSED row the same way.
+  status       ScheduleStatus @default(ACTIVE)
+  /// Written whenever `status` becomes PAUSED, cleared on resume. Reached by
+  /// the operator's own Pause, by repeated upload failures, and by a channel
+  /// that has gone — never by an empty queue, which is the one difference from
+  /// `Schedule.pausedReason` worth knowing.
+  pausedReason String?
+
+  /// Times of day, as minutes past local midnight, ascending and distinct —
+  /// `[480, 840, 1200]` is 08:00, 14:00 and 20:00.
+  ///
+  /// A scalar list rather than a child table because a slot has no state of
+  /// its own: which occurrence is next is a property of the whole set (see
+  /// `nextSlotAfter`), not of one row, and there is nothing per-slot to claim,
+  /// lease or count. Minutes rather than a pair of `hour`/`minute` columns
+  /// because the set is variable-length — three is the operator's case, not a
+  /// constraint — and one comparable integer is what makes "sort the day's
+  /// candidates by instant" (which DST forces, see `nextSlotAfter`) a sort
+  /// rather than a tuple comparison.
+  slotMinutes Int[]
+
+  /// IANA zone name, e.g. `Europe/London`. Validated on the way in, same as
+  /// `Schedule.timeZone` and for the same reason.
+  timeZone String
+
+  /// What a dripped short goes out as. PUBLIC by default, which is the one
+  /// default in the publishing path that is not PRIVATE, and deliberately: a
+  /// release cadence that published privately would be a standing instruction
+  /// to do nothing anybody can see. The safety rule publishing is built on —
+  /// nothing reaches YouTube the operator did not ask for — is satisfied by
+  /// the cadence itself being the ask.
+  visibility PublishVisibility @default(PUBLIC)
+
+  /// The next instant a slot is due. This column is the lock: a claim advances
+  /// it in the same conditional update that wins it, so two concurrent ticks
+  /// can never both release into the same slot. Null only while paused.
+  nextReleaseAt DateTime?
+  /// When the last slot was claimed — not when a short went out. A slot that
+  /// found nothing banked still moves this, because it is what proves the tick
+  /// looked.
+  lastReleaseAt DateTime?
+
+  /// Held for one release. An upload is tens of megabytes over a network that
+  /// can hang, so this is a lease and not a lock: a worker that dies mid-upload
+  /// must not strand the cadence until somebody notices.
+  claimExpiresAt DateTime?
+
+  /// Reset to zero by any successful release. A cadence that fails this many
+  /// times in a row pauses itself and says why — the case this exists for is a
+  /// spent YouTube quota, which is per Google Cloud project rather than per
+  /// channel and so fails identically on every slot until the operator is told.
+  /// An empty queue never touches this counter.
+  consecutiveFailures Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One cadence per channel, which is the operator's own model: a channel
+  /// posts three times a day at its own times, in its own zone, with its own
+  /// branding. Unique rather than a list because two cadences on one channel
+  /// would race for the same queue with no rule for who wins.
+  ///
+  /// No `deletedAt`, unlike most user-owned rows here. Soft deletion and this
+  /// `@unique` are incompatible: a soft-deleted cadence still occupies the
+  /// channel's slot, so the operator could never set a new one up. Pausing is
+  /// the off switch; deleting is explicit and takes the history with it.
+  channelId String  @unique @db.Uuid
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  runs ReleaseRun[]
+
+  /// The due-check's candidate scan: active cadences whose next slot has
+  /// arrived, oldest first. Mirrors `Schedule`'s own `[status, nextRunAt]`.
+  @@index([status, nextReleaseAt])
+  @@index([userId])
+  @@map("release_cadence")
+}
+
+/// Append-only history: one row per slot, whatever became of it.
+///
+/// The question this table exists to answer is "why did nothing go out on
+/// Tuesday?", and it can only answer it if a slot that released nothing is as
+/// visible as one that released something. The four outcomes are
+/// `ScheduleRunOutcome`'s, shared rather than duplicated because they mean the
+/// same four things:
+///
+///   * SUCCEEDED — a clip went up. `shortId` and `youtubeVideoId` say which.
+///   * SKIPPED — the slot came round, the worker looked, and there was a reason
+///     not to upload. Overwhelmingly "nothing is banked", which is a normal
+///     state and not a fault: it means the week's long videos have not produced
+///     clips yet.
+///   * FAILED — the upload was attempted and refused. A spent quota lands here.
+///   * MISSED — nothing looked at all: the slot passed while the worker was
+///     down, and `advancePastSlots` recorded it on the way past rather than
+///     releasing it late. A short published four hours after its slot is worse
+///     than one not published: the slot was chosen because of when the
+///     channel's audience is awake.
+model ReleaseRun {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// The slot this row is about, not when the row was written. Those differ
+  /// for a release the worker picked up late, and the slot is the one the
+  /// operator can reason about.
+  scheduledFor DateTime
+  outcome      ScheduleRunOutcome
+  /// Why, in the operator's terms. Always set for SKIPPED, FAILED and MISSED;
+  /// null for a plain success.
+  reason       String?
+
+  /// What was uploaded, copied rather than only referenced. Regenerating a
+  /// video's shorts hard-deletes the previous set (see `Short`), and history
+  /// that forgets what it released is not history.
+  shortTitle     String?
+  youtubeVideoId String?
+
+  createdAt DateTime @default(now())
+
+  cadenceId String         @db.Uuid
+  cadence   ReleaseCadence @relation(fields: [cadenceId], references: [id], onDelete: Cascade)
+
+  /// SetNull rather than Cascade, exactly as `ScheduleRun.videoId` is: a short
+  /// that is hard-deleted by a regeneration should not take the record of its
+  /// own release with it.
+  shortId String? @db.Uuid
+  short   Short?  @relation(fields: [shortId], references: [id], onDelete: SetNull)
+
+  /// Belt and braces behind the conditional-update claim. If a bug ever let two
+  /// ticks agree that the same slot was theirs, the second insert fails on this
+  /// constraint before a single byte is uploaded, so the worst case is a logged
+  /// error rather than the same clip on YouTube twice.
+  @@unique([cadenceId, scheduledFor])
+  @@index([cadenceId, createdAt])
+  @@map("release_run")
 }
 
 // ---------------------------------------------------------------------------

@@ -213,8 +213,13 @@ export function wallClockToInstant(wall: WallClock, timeZone: string): Date {
 
 /** Calendar-field date arithmetic, done in UTC on purpose: adding a day to a
  *  *date* has nothing to do with adding 24 hours to an *instant*, and doing it
- *  in UTC keeps the two from being confused. */
-function addCalendarDays(
+ *  in UTC keeps the two from being confused.
+ *
+ *  Exported for src/lib/release-time.ts, which walks days the same way for the
+ *  shorts drip. Shared rather than copied precisely because "add a day" being
+ *  date arithmetic and not 86,400,000 milliseconds is the mistake this whole
+ *  module exists to prevent, and a second copy is a second chance to make it. */
+export function addCalendarDays(
   year: number,
   month: number,
   day: number,
