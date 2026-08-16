@@ -336,6 +336,18 @@ export default async function VideoDetailPage({
       ? await publishService.countPublishableShorts(user.id, video.id)
       : 0;
 
+  // The publish dialog's channel picker, and — when this video's series and its
+  // project disagree about where it publishes — the warning that has to be on
+  // screen before the operator can press a button that cannot be un-pressed.
+  // Only read for a video that can actually be published, the same guard the
+  // shorts count above uses and for the same reason: the button renders nothing
+  // at any other status, so this would be queries spent on a control that is
+  // not on the page.
+  const publishTargets =
+    video.status === "READY"
+      ? await publishService.listPublishTargets(user.id, video.id)
+      : null;
+
   // Which script prompts the panel's picker offers. Only fetched for a draft:
   // generating is refused at every other status (`scriptService.generate`), so
   // for a video past the draft stage this is a query spent on a control the
@@ -419,6 +431,7 @@ export default async function VideoDetailPage({
         youtubeVideoId={youtubeVideoId}
         defaultVisibility={defaultVisibility}
         readyShortCount={readyShortCount}
+        publishTargets={publishTargets}
       />
 
       {/* Everything about the video on one page, folded, in the order its

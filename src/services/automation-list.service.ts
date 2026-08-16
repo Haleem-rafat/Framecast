@@ -122,6 +122,22 @@ export interface AutomationEntry {
   /** Where it publishes. Null only for a standalone schedule whose project has
    *  no channel — the one case where nothing can be said truthfully. */
   channel: { id: string; title: string } | null;
+  /**
+   * Set when the channel in the cell beside it is not the channel this
+   * automation's videos would actually upload to.
+   *
+   * Only a series can be in this state, and only a series created before
+   * `ProjectService.update` stopped moving a project's channel out from under
+   * one: a series carries its own `channelId` and this table reads it, while
+   * `PublishService` uploads to the project's. Null for every healthy row and
+   * for the two kinds that read the channel through the project anyway, so a
+   * non-null value is unambiguously "this row's channel column is not where its
+   * videos go".
+   *
+   * A sentence rather than a flag, because the only useful thing to show is
+   * which two channels disagree.
+   */
+  channelWarning: string | null;
   /** Where the videos are filed. Null for a kind that is not project-scoped. */
   project: { id: string; name: string } | null;
 }
@@ -148,7 +164,12 @@ const loadSeries: AutomationSource = async (userId) => {
       channelId: true,
       channel: { select: { title: true } },
       projectId: true,
-      project: { select: { name: true } },
+      // The project's own channel joins its name so this row can tell whether
+      // the channel it is about to print is the one an upload would use. See
+      // `AutomationEntry.channelWarning`.
+      project: {
+        select: { name: true, channelId: true, channel: { select: { title: true } } },
+      },
       _count: { select: { videos: { where: { deletedAt: null } } } },
       schedule: {
         select: {
@@ -203,6 +224,12 @@ const loadSeries: AutomationSource = async (userId) => {
         produced: row._count.videos,
         channel: { id: row.channelId, title: row.channel.title },
         project: { id: row.projectId, name: row.project.name },
+        channelWarning:
+          row.project.channelId === row.channelId
+            ? null
+            : `Episodes of this show are filed in "${row.project.name}", which publishes ` +
+              `to ${row.project.channel?.title ?? "no channel"} — not ` +
+              `${row.channel.title}. Publishing one is refused until the two agree.`,
       },
     ];
   });
@@ -283,6 +310,10 @@ const loadTopicQueues: AutomationSource = async (userId) => {
         ? { id: row.project.channelId, title: row.project.channel.title }
         : null,
     project: { id: row.projectId, name: row.project.name },
+    // A standalone schedule reads its channel through the project, exactly as
+    // the renderer and the publisher do, so there is no second copy to disagree
+    // with.
+    channelWarning: null,
   }));
 };
 
@@ -338,10 +369,28 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
 
   const videos = await prisma.video.findMany({
     where: { id: { in: banked.map((group) => group.videoId) } },
-    select: { id: true, project: { select: { channelId: true } } },
+    select: {
+      id: true,
+      project: { select: { channelId: true } },
+      // Read for the same reason `ReleaseService.bankedShortsWhere` filters on
+      // it: a clip whose series and whose project disagree about the channel is
+      // releasable by neither cadence, so counting it here would promise a drip
+      // that is never going to happen. The condition cannot be expressed in the
+      // `groupBy` above — Prisma compares a field to a literal, not to a field
+      // on a different relation — so it is applied while the videos are being
+      // mapped, which is a pass this loader was making anyway.
+      series: { select: { channelId: true } },
+    },
   });
 
-  const channelOfVideo = new Map(videos.map((video) => [video.id, video.project.channelId]));
+  const channelOfVideo = new Map(
+    videos
+      .filter(
+        (video) =>
+          video.series === null || video.series.channelId === video.project.channelId,
+      )
+      .map((video) => [video.id, video.project.channelId]),
+  );
   const bankByChannel = new Map<string, number>();
   for (const group of banked) {
     const channelId = channelOfVideo.get(group.videoId);
@@ -374,6 +423,9 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
     // Not project-scoped: a cadence spends every project's shorts for its
     // channel, so naming one project would be picking a favourite.
     project: null,
+    // A cadence *is* the channel's — `ReleaseCadence.channelId` is unique per
+    // channel and there is no second copy of it anywhere.
+    channelWarning: null,
   }));
 };
 

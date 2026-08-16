@@ -37,6 +37,15 @@ import { requireSession } from "@/server/session";
  * anything call this on a schedule: `/automation` and the schedules stop at a
  * READY video on purpose, and this action still runs only from a click.
  *
+ * `channelId` is the dialog's third question, and the one that used never to be
+ * asked at all: the upload went wherever the video's project pointed, which is
+ * how a video filed under the wrong project could only be corrected by moving
+ * the project — the very edit that used to redirect every series filed under it
+ * without saying so. It arrives seeded with the video's own channel, so the
+ * common case sends what the service would have derived anyway, and the service
+ * re-checks ownership, usability and series agreement regardless of what a
+ * hand-made request claims.
+ *
  * The shorts' outcomes come back one per short rather than folded into a
  * single verdict. A publish where the video and two of three clips went up is
  * neither a success nor a failure, and the dialog has to be able to say which
@@ -54,15 +63,21 @@ export async function publishVideoAction(
 > {
   return run(async () => {
     const session = await requireSession();
-    const { visibility, includeShorts } = publishVideoSchema.parse(input);
+    const { visibility, includeShorts, channelId } = publishVideoSchema.parse(input);
 
     const result = await publishService.publish(session.user.id, videoId, {
       visibility,
       includeShorts,
+      channelId,
     });
 
     revalidatePath("/videos");
     revalidatePath(`/videos/${videoId}`);
+    // A publish to a channel other than the video's own refiles the video into
+    // a project on that channel (see `publishService.publish`), so the projects
+    // page's video counts and the videos list's project column are both stale
+    // the moment this returns.
+    revalidatePath("/projects");
 
     return result;
   });

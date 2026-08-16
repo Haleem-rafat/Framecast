@@ -19,6 +19,13 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { publishVideoAction } from "@/actions/publish.action";
 import type { VideoStatus } from "@/generated/prisma/enums";
@@ -31,7 +38,7 @@ import {
   publishVisibilityOptions,
   type PublishVisibilityOption,
 } from "@/schemas/publish.schema";
-import type { ShortPublishOutcome } from "@/services/publish.service";
+import type { PublishTargets, ShortPublishOutcome } from "@/services/publish.service";
 
 /**
  * What each choice actually does, in the terms that decide it.
@@ -144,6 +151,7 @@ export function PublishVideoButton({
   youtubeVideoId,
   defaultVisibility,
   readyShortCount,
+  publishTargets,
 }: {
   videoId: string;
   status: VideoStatus;
@@ -186,6 +194,16 @@ export function PublishVideoButton({
    * "0 shorts" is a question nobody asked.
    */
   readyShortCount: number;
+  /**
+   * Every channel this operator owns, each already marked selectable or not,
+   * plus the disagreement (if any) between where this video says it publishes
+   * and where it would actually go — see `publishService.listPublishTargets`.
+   *
+   * Null for a video the page did not ask about, which is every video that is
+   * not READY. The picker is not rendered then, and this dialog behaves exactly
+   * as it did before it existed.
+   */
+  publishTargets: PublishTargets | null;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -198,14 +216,38 @@ export function PublishVideoButton({
   // irreversible option is the one the operator has to reach for — never the
   // one they have to notice and turn off.
   const [includeShorts, setIncludeShorts] = useState(false);
+  // Seeded with the channel this video is already filed under, so the common
+  // case is the click it always was and nobody has to think about the picker.
+  // Null only when the project has no channel at all, which the trigger button
+  // is already disabled for.
+  const [channelId, setChannelId] = useState<string | null>(
+    publishTargets?.defaultChannelId ?? null,
+  );
   const [shortOutcomes, setShortOutcomes] = useState<ShortPublishOutcome[]>([]);
   // Ids for the picker's labels. Generated rather than written out because
   // this component is rendered per video and nothing stops a future list view
   // from mounting two of them.
   const visibilityId = useId();
   const shortsToggleId = useId();
+  const channelPickerId = useId();
 
   const uploadCount = 1 + (includeShorts ? readyShortCount : 0);
+
+  const channelOptions = publishTargets?.options ?? [];
+  const chosenChannel = channelOptions.find((option) => option.id === channelId) ?? null;
+  /**
+   * Whether the chosen channel can actually be published to.
+   *
+   * The picker lists every channel the operator owns, including the ones they
+   * must not pick, because "my kids channel isn't in this list" is a question
+   * and "KIDO FUN ZONE — this show publishes to Money Mechanics" is an answer.
+   * The cost of listing them is that the confirm button has to be able to say
+   * no, and this is what it says no on. The server refuses the same choices
+   * independently — that is the guard that holds for every caller — but the
+   * operator should not have to press an irreversible button to be told.
+   */
+  const channelIsPublishable =
+    publishTargets === null ? true : (chosenChannel?.selectable ?? false);
 
   // Gate 2 already ran — the only thing left to show is the real result,
   // not another confirmation.
@@ -274,6 +316,11 @@ export function PublishVideoButton({
       // one way this picker could make an irreversible choice quieter than it
       // was before.
       setVisibility(defaultVisibility);
+      // Same reasoning again, and it matters most here: an abandoned attempt
+      // that had selected a *different* channel must not leave that selection
+      // sitting in a reopened dialog, where the next click would send it
+      // without anybody having chosen it a second time.
+      setChannelId(publishTargets?.defaultChannelId ?? null);
     }
   }
 
@@ -281,7 +328,14 @@ export function PublishVideoButton({
     setPhase("uploading");
     setFailure(null);
 
-    const result = await publishVideoAction(videoId, { visibility, includeShorts });
+    const result = await publishVideoAction(videoId, {
+      visibility,
+      includeShorts,
+      // Sent even when it is the video's own channel, so the request says what
+      // the operator was looking at rather than leaving the server to re-derive
+      // it from rows that may have moved since the page rendered.
+      channelId: channelId ?? undefined,
+    });
 
     if (!result.ok) {
       const described = describePublishFailure(result.error);
@@ -431,6 +485,93 @@ export function PublishVideoButton({
               </DialogHeader>
 
               <DialogBody>
+                {/* First, above the visibility picker, because it is the
+                  * question this dialog used never to ask and got wrong: which
+                  * channel. A video filed under the wrong project used to be
+                  * correctable only by moving the project — the very edit that
+                  * silently redirected every series filed under it. */}
+                {channelOptions.length > 0 && (
+                  <div className="space-y-2">
+                    <Label htmlFor={channelPickerId} className="text-sm font-medium">
+                      Channel
+                    </Label>
+                    <Select
+                      value={channelId ?? ""}
+                      onValueChange={(next) => setChannelId(next)}
+                    >
+                      <SelectTrigger id={channelPickerId} className="w-full">
+                        <SelectValue placeholder="Pick a channel" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {channelOptions.map((option) => (
+                          // Listed even when it cannot be chosen. An absent
+                          // channel teaches the operator nothing; a greyed-out
+                          // one with a reason under it tells them what to fix.
+                          <SelectItem
+                            key={option.id}
+                            value={option.id}
+                            disabled={!option.selectable}
+                          >
+                            {option.title}
+                            {option.id === publishTargets?.defaultChannelId && (
+                              <span className="text-muted-foreground text-xs">
+                                this video&apos;s channel
+                              </span>
+                            )}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    {chosenChannel && !chosenChannel.selectable && (
+                      <p className="text-destructive text-xs">{chosenChannel.reason}</p>
+                    )}
+
+                    {/* Named before the click, not reported after it. Choosing
+                      * another channel refiles the video into a project on that
+                      * channel — otherwise `ReleaseService` would go on dripping
+                      * this video's shorts to the old one on a timer, days
+                      * later, with nobody watching. */}
+                    {chosenChannel?.refileToProjectName && (
+                      <p className="text-muted-foreground text-xs">
+                        This also refiles the video into{" "}
+                        <strong className="text-foreground">
+                          {chosenChannel.refileToProjectName}
+                        </strong>
+                        , so its shorts are released on {chosenChannel.title} too
+                        rather than on the channel it is filed under now.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* The state where every other screen has been lying. Drawn
+                  * before the operator can press anything, because the button
+                  * underneath cannot be un-pressed. */}
+                {publishTargets?.mismatch && (
+                  <div className="border-destructive/30 bg-destructive/10 text-destructive flex items-start gap-2 rounded-lg border px-2.5 py-2 text-sm">
+                    <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                    <div className="space-y-1">
+                      <p>
+                        This is an episode of{" "}
+                        <strong>{publishTargets.mismatch.seriesName}</strong>, which
+                        publishes to {publishTargets.mismatch.seriesChannelTitle} —
+                        but it is filed in &ldquo;
+                        {publishTargets.mismatch.projectName}&rdquo;, which publishes
+                        to {publishTargets.mismatch.projectChannelTitle}. Nothing has
+                        been uploaded. Pick the channel this episode really belongs
+                        on.
+                      </p>
+                      <Link
+                        href={`/automation/series/${publishTargets.mismatch.seriesId}`}
+                        className="underline underline-offset-3"
+                      >
+                        Open {publishTargets.mismatch.seriesName}
+                      </Link>
+                    </div>
+                  </div>
+                )}
+
                 <fieldset className="space-y-2">
                   <legend id={`${visibilityId}-legend`} className="text-sm font-medium">
                     Who can watch it
@@ -545,7 +686,10 @@ export function PublishVideoButton({
                 <div className="space-y-2 text-sm text-muted-foreground">
                   <p>
                     It publishes to{" "}
-                    <strong className="text-foreground">{channelName}</strong>.
+                    <strong className="text-foreground">
+                      {chosenChannel?.title ?? channelName}
+                    </strong>
+                    .
                   </p>
                   <p>
                     This can&apos;t be undone from Framecast: there&apos;s no
@@ -581,7 +725,7 @@ export function PublishVideoButton({
                   * count joins it for the same reason — "publish" meaning four
                   * uploads instead of one is exactly the kind of thing that
                   * should be legible on the button doing it. */}
-                <Button onClick={onConfirm}>
+                <Button onClick={onConfirm} disabled={!channelIsPublishable}>
                   <Upload />
                   Publish {uploadCount > 1 ? `${uploadCount} videos ` : ""}as{" "}
                   {VISIBILITY_CHOICES[visibility].label.toLowerCase()}

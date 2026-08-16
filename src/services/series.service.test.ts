@@ -805,3 +805,93 @@ describe("a deployment with no series behaves exactly as it did before", () => {
     );
   });
 });
+
+/**
+ * The two copies of "which channel", and what happens when they disagree.
+ *
+ * A series stores its own `channelId` and every series screen reads it, while
+ * an upload goes to `project.channelId`. They are written to agree
+ * (`assertRecipe`, below) and kept that way (`ProjectService.update`), but rows
+ * predating both exist — one was found on staging, a children's show whose
+ * project still pointed at a personal finance channel. This is the reporting
+ * half: a mismatch that cannot be corrected automatically has to at least be
+ * impossible to miss.
+ */
+describe("seriesService — the two channels have to agree, and say so when they do not", () => {
+  it("refuses a project that belongs to a different channel, not merely one with none", async () => {
+    const { series } = makeServices();
+
+    const otherChannel = await channelService.connect(userId, {
+      youtubeChannelId: `UC_other_${RUN}_${randomUUID().slice(0, 8)}`,
+      title: "KIDO FUN ZONE",
+      accessToken: "ya29.test",
+      refreshToken: "1//test",
+      expiresInSeconds: 3600,
+      scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+    });
+
+    const otherProject = await projectService.create(userId, {
+      name: `Other ${RUN}`,
+      channelId: otherChannel.id,
+    });
+
+    // The series names `channelId` (Money Mechanics) while filing its episodes
+    // in a project that publishes to KIDO FUN ZONE — the exact shape of the row
+    // found in production, refused at the point it would be created.
+    await expect(
+      series.create(userId, seriesInput({ projectId: otherProject.id })),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    expect(await prisma.series.count({ where: { userId } })).toBe(0);
+    expect(await prisma.schedule.count({ where: { userId } })).toBe(0);
+
+    // The other direction is refused too: naming the project's channel while
+    // filing in the project that publishes elsewhere.
+    await expect(
+      series.create(userId, seriesInput({ channelId: otherChannel.id })),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("reports a mismatch it inherited rather than describing the row as healthy", async () => {
+    const { series } = makeServices();
+    const { id } = await series.create(userId, seriesInput());
+
+    // Written straight to Prisma because every service path now refuses it —
+    // which is the point. This is what a row that predates the guards looks
+    // like, and the read model has to be honest about it.
+    const strayChannel = await channelService.connect(userId, {
+      youtubeChannelId: `UC_stray_${RUN}_${randomUUID().slice(0, 8)}`,
+      title: "KIDO FUN ZONE",
+      accessToken: "ya29.test",
+      refreshToken: "1//test",
+      expiresInSeconds: 3600,
+      scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+    });
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { channelId: strayChannel.id },
+    });
+
+    const detail = await series.get(userId, id);
+
+    expect(detail.channelMismatch).toEqual({
+      // What the page has been showing all along…
+      seriesChannelTitle: "Money Mechanics",
+      // …and where a publish would actually have gone.
+      projectChannelTitle: "KIDO FUN ZONE",
+    });
+
+    // The list says so as well: the automation table is where an operator with
+    // several shows would notice it first.
+    const listed = (await series.list(userId)).find((row) => row.id === id);
+    expect(listed?.channelMismatch).not.toBeNull();
+  });
+
+  it("says nothing at all about a series whose two channels agree", async () => {
+    const { series } = makeServices();
+    const { id } = await series.create(userId, seriesInput());
+
+    expect((await series.get(userId, id)).channelMismatch).toBeNull();
+    expect((await series.list(userId))[0]?.channelMismatch).toBeNull();
+  });
+});

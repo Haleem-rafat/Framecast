@@ -468,6 +468,22 @@ export class ReleaseService {
         userId,
         deletedAt: null,
         project: { channelId, deletedAt: null },
+        // A clip of an episode goes out on that show's channel or it does not
+        // go out.
+        //
+        // The channel above comes through the project, which is how the
+        // renderer and `PublishService` resolve it. A series keeps its own copy
+        // and every series screen shows *that* — so for a row where the two
+        // disagree, this cadence would otherwise drip a children's show's clips
+        // onto a personal finance channel, on a timer, days after anyone looked
+        // at it. `PublishService.resolvePublishTarget` refuses the parent video
+        // outright in the same state; this is the same refusal on the path that
+        // has no operator in front of it at all.
+        //
+        // The clips are not lost: they stay banked, and go out on the next slot
+        // after the disagreement is resolved — which is the point, since
+        // resolving it is a decision only the operator can make.
+        OR: [{ seriesId: null }, { series: { channelId } }],
       },
     };
   }

@@ -45,6 +45,26 @@ export const publishVideoSchema = z.object({
    * same way, independently, for callers that never reach this schema.
    */
   includeShorts: z.boolean().default(false),
+  /**
+   * Which channel to publish to, when the operator picks one.
+   *
+   * Optional, and absent is the whole of the old behaviour: the target is
+   * derived from the video's filing, as it always was. The dialog seeds the
+   * picker with that same channel, so the common case sends the value it would
+   * have derived anyway and nothing changes.
+   *
+   * Unlike `visibility` this is not required, and the asymmetry is the point.
+   * Visibility has no safe default because every value is a real decision about
+   * an irreversible upload; the channel *does* have one — the channel the video
+   * is filed under — and it is the one every screen has been showing. A request
+   * that omits this field is asking for exactly that, which is a thing it is
+   * safe to give it.
+   *
+   * Trusted no further than any other field on a hand-made request:
+   * `publishService.publish` re-checks that the channel is the operator's, is
+   * usable, and does not contradict the series this video is an episode of.
+   */
+  channelId: z.string().uuid().optional(),
 });
 
 export type PublishVideoInput = z.infer<typeof publishVideoSchema>;

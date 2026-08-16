@@ -207,6 +207,45 @@ export interface ThumbnailOutcome {
   error: string | null;
 }
 
+/** One row of the publish dialog's channel picker — see
+ *  `PublishService.listPublishTargets`. */
+export interface PublishChannelOption {
+  id: string;
+  title: string;
+  /** False for a channel that is listed but must not be chosen. Every such row
+   *  carries a `reason`; the pair is what makes an unavailable channel an
+   *  instruction rather than an absence. */
+  selectable: boolean;
+  /** Null when `selectable`. Otherwise a complete sentence, safe to show
+   *  verbatim. */
+  reason: string | null;
+  /** The project this video would be refiled into if this channel is chosen,
+   *  named before the click rather than reported after it. Null for the channel
+   *  the video is already filed under — the default, where nothing moves. */
+  refileToProjectName: string | null;
+}
+
+/** What the publish dialog needs to draw its channel picker honestly. */
+export interface PublishTargets {
+  /** The video's own channel, via its project. What the picker starts on. */
+  defaultChannelId: string | null;
+  options: PublishChannelOption[];
+  /**
+   * Set when this video's series and its project disagree about where it
+   * publishes — the state `PublishService.resolvePublishTarget` refuses to
+   * guess its way out of. Carried here so the dialog can say so *before* the
+   * operator clicks a button that cannot be un-clicked, rather than only in the
+   * error that comes back if they do.
+   */
+  mismatch: {
+    seriesId: string;
+    seriesName: string;
+    seriesChannelTitle: string;
+    projectName: string;
+    projectChannelTitle: string;
+  } | null;
+}
+
 export interface PublishResult {
   youtubeVideoId: string;
   /**
@@ -246,6 +285,23 @@ export interface PublishOptions {
   visibility?: PublishVisibility;
   playlistId?: string;
   scheduledFor?: Date;
+  /**
+   * Which channel this upload goes to, when the operator says so explicitly.
+   *
+   * Omitted — which is every caller that has ever existed — the target is the
+   * one derived from the video's filing (`video -> project -> channel`), exactly
+   * as before. Supplied, it is an *override*: the operator looked at a picker,
+   * saw which channel this video was filed under, and chose a different one.
+   *
+   * An override is not a licence. `resolvePublishTarget` still checks the
+   * channel is one this operator owns and has not been marked inactive, still
+   * refuses a channel that contradicts the series this video is an episode of,
+   * and — because the choice must survive the upload rather than only describe
+   * it — refiles the video into a project on the chosen channel, so the shorts
+   * `ReleaseService` drips out afterwards follow the video rather than its old
+   * filing. See `resolvePublishTarget` for all of it.
+   */
+  channelId?: string;
   /**
    * Upload this video's READY shorts in the same call. Defaults to **false**,
    * and every caller has to say so explicitly.
@@ -423,7 +479,23 @@ export class PublishService {
         // below, and `PipelineState.isFinalizing` in pipeline.service.ts for
         // the same signal read for the same reason.
         leaseExpiresAt: true,
-        project: { select: { channelId: true } },
+        projectId: true,
+        // `channel.title` and the series below are read for the *refusals*, not
+        // for the upload: a mismatch between where the operator was shown this
+        // video publishing and where it would actually go has to name both
+        // channels, and a sentence that names ids is not a sentence anybody can
+        // act on. See `resolvePublishTarget`.
+        project: {
+          select: { name: true, channelId: true, channel: { select: { title: true } } },
+        },
+        series: {
+          select: {
+            id: true,
+            name: true,
+            channelId: true,
+            channel: { select: { title: true } },
+          },
+        },
         script: {
           select: { activeVersion: { select: { content: true, sources: true } } },
         },
@@ -488,11 +560,34 @@ export class PublishService {
       );
     }
 
-    const channelId = video.project?.channelId;
-    if (!channelId) {
-      throw new ConflictError(
-        "Assign this video's project a channel before publishing.",
-      );
+    // Where this upload actually goes, and the one place that question is
+    // answered. It used to be `video.project?.channelId` and nothing else,
+    // which is how a children's show came to be one click away from a personal
+    // finance channel: the series page, the automation table and every other
+    // screen read `Series.channelId`, and nothing ever checked the two agreed
+    // at the moment it mattered. See `resolvePublishTarget`.
+    const target = await this.resolvePublishTarget(userId, video, opts.channelId);
+    const channelId = target.channelId;
+
+    // An operator who picks a different channel is not asking for this one
+    // upload to go somewhere else — they are saying the video is filed wrong.
+    // Leaving it filed wrong would be worse than it sounds: `ReleaseService`
+    // banks and drips this video's shorts by `video -> project -> channel` on a
+    // timer, so an upload-only override would put the video on the kids channel
+    // today and its own clips on the finance channel next Tuesday, with nobody
+    // watching. So the filing moves with the upload.
+    //
+    // Done here, before the `Publication` claim below: a refile that fails costs
+    // a round trip and nothing else, whereas the same failure after the claim
+    // would leave a row that permanently blocks the retry (see this class's own
+    // doc comment). It is deliberately *not* undone if the upload then fails —
+    // the video really does belong on the chosen channel either way, and that is
+    // the state a retry should start from.
+    if (target.refileToProjectId !== null) {
+      await prisma.video.updateMany({
+        where: { id: videoId, userId, deletedAt: null },
+        data: { projectId: target.refileToProjectId },
+      });
     }
 
     // Unconditional, exactly like PIXABAY_CREDIT: the credit is derived from
@@ -800,6 +895,305 @@ export class PublishService {
     await this.reclaimRenderStorage(userId, videoId, outputUrl);
 
     return { youtubeVideoId, shorts, thumbnail };
+  }
+
+  /**
+   * The channel this upload goes to, decided once and defended three ways.
+   *
+   * ## The failure this exists to stop
+   *
+   * A channel is recorded in two places that were allowed to disagree.
+   * `Project.channelId` is what an upload has always used. `Series.channelId` is
+   * what the series page, the automation table and the recipe card show — every
+   * screen an operator reads. They are written to agree (`SeriesService.
+   * assertRecipe`) and now kept that way (`ProjectService.update`), but rows
+   * predating both exist: a children's bedtime-story series whose project still
+   * pointed at a personal finance channel, four episodes deep. Every screen said
+   * kids. One click would have said finance, permanently — `videos.insert`
+   * cannot be undone, and the `Publication` row it leaves behind blocks the
+   * retry that might have looked like a fix.
+   *
+   * So a disagreement is not resolved here in either direction. It is refused,
+   * with both channels named, because there is no way to tell from the data
+   * which of the two the operator meant and exactly one of the two possible
+   * guesses is unrecoverable.
+   *
+   * ## What an explicit choice changes, and what it does not
+   *
+   * A caller may name a channel (the publish dialog's picker). That settles the
+   * "which did they mean" question — an explicit choice is not a mismatch — but
+   * it is checked as hard as the derived answer:
+   *
+   *   - it must be a channel this operator owns and has not soft-deleted, so a
+   *     tampered request cannot publish onto somebody else's connection (it
+   *     never could — `resolveAccessToken` is scoped by `userId` — but it would
+   *     have failed with a confusing "Channel not found" from three frames
+   *     deeper, after the claim row had already been taken);
+   *   - it must not be a channel marked inactive, whose stored OAuth grant is
+   *     the thing this app has been told is no longer good;
+   *   - and for an episode of a series it must be *that series' channel*. A
+   *     series cannot override its channel's niche, voice, art style or
+   *     made-for-kids declaration — see the `Series.channelId` comment in
+   *     schema.prisma — so an episode published elsewhere would carry a
+   *     different brand and a different COPPA declaration from every other
+   *     episode of the same show. That is not an override anybody can mean, so
+   *     it is refused with the series named rather than quietly published or
+   *     quietly turned into a move of the whole show.
+   *
+   * The series rule is also what makes the picker the remedy for a legacy
+   * mismatch rather than another way into one: the operator is shown both
+   * channels, and the only one they are allowed to pick is the one every screen
+   * has been telling them the show publishes to.
+   */
+  private async resolvePublishTarget(
+    userId: string,
+    video: {
+      id: string;
+      projectId: string;
+      project: {
+        name: string;
+        channelId: string | null;
+        channel: { title: string } | null;
+      } | null;
+      series: {
+        id: string;
+        name: string;
+        channelId: string;
+        channel: { title: string };
+      } | null;
+    },
+    chosenChannelId: string | undefined,
+  ): Promise<{ channelId: string; refileToProjectId: string | null }> {
+    const projectChannelId = video.project?.channelId ?? null;
+    const series = video.series;
+
+    let channelId: string;
+
+    if (chosenChannelId) {
+      const channel = await prisma.channel.findFirst({
+        where: { id: chosenChannelId, userId, deletedAt: null },
+        select: { id: true, title: true, isActive: true },
+      });
+
+      if (!channel) {
+        throw new NotFoundError("Channel");
+      }
+
+      if (!channel.isActive) {
+        throw new ConflictError(
+          `"${channel.title}" is marked inactive, so its YouTube connection is not ` +
+            `usable for an upload. Reconnect it on the channels page and try again.`,
+        );
+      }
+
+      if (series && channel.id !== series.channelId) {
+        throw new ConflictError(
+          `This is an episode of "${series.name}", which publishes to ` +
+            `${series.channel.title}. An episode cannot go to ${channel.title} on its ` +
+            `own — a series takes its niche, voice, art style and made-for-kids ` +
+            `declaration from its channel, so one episode elsewhere would not match ` +
+            `the rest of the show. Move the whole series if that is what you meant.`,
+        );
+      }
+
+      channelId = channel.id;
+    } else {
+      // The refusal. Both channels named, neither used — see this method's own
+      // doc comment for why guessing is the one thing that must not happen here.
+      if (series && projectChannelId !== null && series.channelId !== projectChannelId) {
+        throw new ConflictError(
+          `This video's series and its project disagree about where it publishes. ` +
+            `"${series.name}" says ${series.channel.title}; the project ` +
+            `"${video.project?.name ?? "it is filed in"}" says ` +
+            `${video.project?.channel?.title ?? "another channel"}. Nothing has been ` +
+            `uploaded — an upload to the wrong channel cannot be taken back. Pick the ` +
+            `channel explicitly, or point the project at ${series.channel.title} so the ` +
+            `two agree.`,
+        );
+      }
+
+      // Unchanged, and deliberately still the first thing a video with no
+      // channel at all hits: the dialog matches on this sentence to offer a
+      // link to the channels page.
+      if (!projectChannelId) {
+        throw new ConflictError(
+          "Assign this video's project a channel before publishing.",
+        );
+      }
+
+      channelId = projectChannelId;
+    }
+
+    if (channelId === projectChannelId) {
+      return { channelId, refileToProjectId: null };
+    }
+
+    // The video is going somewhere its filing does not point at, so the filing
+    // moves too — see the call site for why an upload-only override is not on
+    // offer. Any of the operator's own active projects on the chosen channel
+    // will do; the most recently touched one is picked so the destination is
+    // deterministic, and `listPublishTargets` names it in the dialog before the
+    // click rather than reporting it afterwards.
+    const destination = await prisma.project.findFirst({
+      where: { userId, deletedAt: null, status: "ACTIVE", channelId },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true },
+    });
+
+    if (!destination) {
+      const channel = await prisma.channel.findFirst({
+        where: { id: channelId, userId, deletedAt: null },
+        select: { title: true },
+      });
+
+      throw new ConflictError(
+        `Nothing files videos under ${channel?.title ?? "that channel"} yet, and this ` +
+          `video has to be filed where it publishes — otherwise its shorts would go on ` +
+          `being released to ${video.project?.channel?.title ?? "its old channel"} ` +
+          `afterwards. Point a project at ${channel?.title ?? "that channel"} on the ` +
+          `projects page, then publish.`,
+      );
+    }
+
+    return { channelId, refileToProjectId: destination.id };
+  }
+
+  /**
+   * The channels this video may be published to, as the dialog has to draw
+   * them: every channel the operator owns, each either selectable or carrying
+   * the reason it is not.
+   *
+   * Everything unselectable is still *listed*. A picker that silently omits the
+   * channel an operator is looking for teaches them nothing — "my kids channel
+   * isn't in the list" is a support question, "KIDO FUN ZONE — marked inactive,
+   * reconnect it" is an instruction — and the mismatch case in particular is
+   * one where the channel they must not pick is exactly the one they need to
+   * see, next to the one they may.
+   *
+   * The reasons are the same three `resolvePublishTarget` enforces, phrased for
+   * a list rather than for a refusal. This is a projection of that method, never
+   * a second opinion: it decides nothing, and the publish itself re-checks all
+   * of it against rows read at the moment of the click.
+   */
+  async listPublishTargets(
+    userId: string,
+    videoId: string,
+  ): Promise<PublishTargets> {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, userId, deletedAt: null },
+      select: {
+        id: true,
+        project: {
+          select: { name: true, channelId: true, channel: { select: { title: true } } },
+        },
+        series: {
+          select: { id: true, name: true, channelId: true, channel: { select: { title: true } } },
+        },
+      },
+    });
+
+    if (!video) {
+      throw new NotFoundError("Video");
+    }
+
+    const projectChannelId = video.project?.channelId ?? null;
+    const series = video.series;
+
+    const [channels, projects] = await Promise.all([
+      prisma.channel.findMany({
+        where: { userId, deletedAt: null },
+        orderBy: { connectedAt: "asc" },
+        // Never the token columns, the same discipline `channelService`'s
+        // SUMMARY_SELECT keeps.
+        select: { id: true, title: true, isActive: true },
+      }),
+      prisma.project.findMany({
+        where: { userId, deletedAt: null, status: "ACTIVE", channelId: { not: null } },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, name: true, channelId: true },
+      }),
+    ]);
+
+    // First per channel, over the same `updatedAt desc` order
+    // `resolvePublishTarget` picks by, so the name shown in the dialog is the
+    // project the publish will actually use.
+    const projectByChannel = new Map<string, { id: string; name: string }>();
+    for (const project of projects) {
+      if (project.channelId && !projectByChannel.has(project.channelId)) {
+        projectByChannel.set(project.channelId, { id: project.id, name: project.name });
+      }
+    }
+
+    const options: PublishChannelOption[] = channels.map((channel) => {
+      const refile =
+        channel.id === projectChannelId ? null : (projectByChannel.get(channel.id) ?? null);
+
+      if (!channel.isActive) {
+        return {
+          id: channel.id,
+          title: channel.title,
+          selectable: false,
+          reason:
+            "Marked inactive — its YouTube connection needs reconnecting before " +
+            "anything can be uploaded to it.",
+          refileToProjectName: null,
+        };
+      }
+
+      if (series && channel.id !== series.channelId) {
+        return {
+          id: channel.id,
+          title: channel.title,
+          selectable: false,
+          reason:
+            `This is an episode of "${series.name}", which publishes to ` +
+            `${series.channel.title}. Episodes of a show cannot be split across ` +
+            `channels — they would carry a different brand and a different ` +
+            `made-for-kids declaration from the rest of it.`,
+          refileToProjectName: null,
+        };
+      }
+
+      if (channel.id !== projectChannelId && refile === null) {
+        return {
+          id: channel.id,
+          title: channel.title,
+          selectable: false,
+          reason:
+            `No active project files videos under ${channel.title}, and a video has to ` +
+            `be filed where it publishes or its shorts get released somewhere else ` +
+            `later. Point a project at it first.`,
+          refileToProjectName: null,
+        };
+      }
+
+      return {
+        id: channel.id,
+        title: channel.title,
+        selectable: true,
+        reason: null,
+        refileToProjectName: refile?.name ?? null,
+      };
+    });
+
+    return {
+      // The channel the video is filed under — what the picker starts on, so
+      // the common case is one click and nobody has to think about it. Null
+      // only when the project has no channel at all, which the publish button
+      // already refuses on.
+      defaultChannelId: projectChannelId,
+      options,
+      mismatch:
+        series && projectChannelId !== null && series.channelId !== projectChannelId
+          ? {
+              seriesId: series.id,
+              seriesName: series.name,
+              seriesChannelTitle: series.channel.title,
+              projectName: video.project?.name ?? "",
+              projectChannelTitle: video.project?.channel?.title ?? "another channel",
+            }
+          : null,
+    };
   }
 
   /**

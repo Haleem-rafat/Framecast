@@ -103,6 +103,40 @@ export default async function SeriesDetailPage({ params }: SeriesDetailPageProps
         )}
       </div>
 
+      {/* The one state on this page where everything else it says is a lie.
+          Every screen — this header, the recipe card, the automation table —
+          reads this show's own `channelId`, while an upload goes to the
+          project's. When they disagree, a publish would put this show's
+          episodes on a channel nobody was ever shown, permanently.
+
+          Stated rather than corrected, and stated here rather than fixed
+          quietly somewhere: nothing can tell which of the two the operator
+          meant, and both possible guesses (re-brand the show, or redirect the
+          episodes already filed under it) are the operator's call. Publishing
+          refuses outright until they make it — see
+          `PublishService.resolvePublishTarget`. */}
+      {series.channelMismatch && (
+        <Alert variant="destructive">
+          <AlertTriangle />
+          <AlertTitle>
+            This series and its project disagree about the channel
+          </AlertTitle>
+          <AlertDescription>
+            This show says {series.channelMismatch.seriesChannelTitle}, and the
+            project &ldquo;{series.projectName}&rdquo; it files episodes in says{" "}
+            {series.channelMismatch.projectChannelTitle ?? "no channel at all"}.
+            Everything on this page describes the first; a publish would have
+            used the second, and an upload to the wrong channel cannot be undone.
+            Publishing an episode is refused until the two agree.{" "}
+            <Link href="/projects" className="underline underline-offset-3">
+              Point the project at{" "}
+              {series.channelMismatch.seriesChannelTitle}
+            </Link>{" "}
+            if this show is right, or edit the series below if it is not.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* A show that stopped on its own has to say why, prominently: the
           operator was by definition not watching when it happened. */}
       {series.status === "PAUSED" && series.pausedReason && (

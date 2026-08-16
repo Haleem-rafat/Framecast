@@ -106,6 +106,28 @@ export interface SeriesSummary {
   queuedTopicCount: number;
   nextTopic: string | null;
   videoCount: number;
+  /**
+   * Set only when this show's own `channelId` and its project's disagree — the
+   * state that used to be silently reachable by editing the project's channel,
+   * and which every screen including this one would otherwise keep describing
+   * as if it were fine.
+   *
+   * Null is the normal, healthy answer and draws nothing. Non-null names both
+   * channels, because the whole failure is that one number was shown and a
+   * different one was going to be used: `PublishService` uploads to the
+   * project's channel, so a row in this state was showing "kids channel"
+   * everywhere while its next publish would have gone to a finance channel.
+   *
+   * Reported rather than corrected. Nothing here can tell which of the two the
+   * operator meant, and picking one would either re-brand a show or redirect
+   * episodes already filed under it — see `ProjectService.update`, which refuses
+   * the same guess for the same reason.
+   */
+  channelMismatch: {
+    /** What this series says, and what every screen has been showing. */
+    seriesChannelTitle: string;
+    projectChannelTitle: string | null;
+  } | null;
 }
 
 export interface SeriesDetail extends SeriesSummary {
@@ -215,7 +237,14 @@ export class SeriesService {
         channelId: true,
         channel: { select: { title: true } },
         projectId: true,
-        project: { select: { name: true } },
+        // The project's *own* channel, alongside this series' copy of it. Read
+        // on every list and detail query rather than only where it is displayed:
+        // the two disagreeing is the one thing about a series that has to be
+        // impossible to miss, and a query that does not fetch it cannot report
+        // it. See `SeriesSummary.channelMismatch`.
+        project: {
+          select: { name: true, channelId: true, channel: { select: { title: true } } },
+        },
         promptTemplateId: true,
         promptTemplate: { select: { name: true } },
         _count: { select: { videos: { where: { deletedAt: null } } } },
@@ -263,7 +292,14 @@ export class SeriesService {
         channelId: true,
         channel: { select: { title: true } },
         projectId: true,
-        project: { select: { name: true } },
+        // The project's *own* channel, alongside this series' copy of it. Read
+        // on every list and detail query rather than only where it is displayed:
+        // the two disagreeing is the one thing about a series that has to be
+        // impossible to miss, and a query that does not fetch it cannot report
+        // it. See `SeriesSummary.channelMismatch`.
+        project: {
+          select: { name: true, channelId: true, channel: { select: { title: true } } },
+        },
         promptTemplateId: true,
         promptTemplate: { select: { name: true } },
         _count: { select: { videos: { where: { deletedAt: null } } } },
@@ -749,7 +785,11 @@ export class SeriesService {
       channelId: string;
       channel: { title: string };
       projectId: string;
-      project: { name: string };
+      project: {
+        name: string;
+        channelId: string | null;
+        channel: { title: string } | null;
+      };
       promptTemplateId: string;
       promptTemplate: { name: string };
       _count: { videos: number };
@@ -794,6 +834,19 @@ export class SeriesService {
       queuedTopicCount: schedule._count.topics,
       nextTopic: schedule.topics[0]?.topic ?? null,
       videoCount: row._count.videos,
+      // Both copies are written to agree (`assertRecipe`) and now kept that way
+      // (`ProjectService.update`), so this is null for every row created since.
+      // It is computed anyway, on every read, because the rows that predate both
+      // are exactly the rows nobody is looking at — a show quietly filed against
+      // the wrong channel does not announce itself, and the next thing that
+      // happens to it is an upload that cannot be taken back.
+      channelMismatch:
+        row.project.channelId === row.channelId
+          ? null
+          : {
+              seriesChannelTitle: row.channel.title,
+              projectChannelTitle: row.project.channel?.title ?? null,
+            },
     };
   }
 }

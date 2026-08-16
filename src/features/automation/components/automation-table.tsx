@@ -137,12 +137,29 @@ export function AutomationTable({
         header: "Channel",
         cell: (entry) =>
           entry.channel ? (
-            <Link
-              href={`/channels/${entry.channel.id}`}
-              className="underline-offset-4 hover:underline"
-            >
-              {entry.channel.title}
-            </Link>
+            <span className="flex items-center gap-1.5">
+              <Link
+                href={`/channels/${entry.channel.id}`}
+                className="underline-offset-4 hover:underline"
+              >
+                {entry.channel.title}
+              </Link>
+              {/* The cell is not telling the truth for this row, and the row is
+                * the only place the operator would ever notice. A series keeps
+                * its own copy of the channel and this column prints it, while
+                * an upload uses the project's — so a mismatch means every word
+                * beside this icon describes a channel the videos will not go
+                * to. See `AutomationEntry.channelWarning`; publishing refuses
+                * outright until it is resolved. */}
+              {entry.channelWarning && (
+                <AlertTriangle className="text-destructive size-3.5 shrink-0" role="img">
+                  {/* Inside the SVG rather than beside it: it is both the
+                    * accessible name and the hover tooltip, in one element, in
+                    * a cell with no room for a sentence. */}
+                  <title>{entry.channelWarning}</title>
+                </AlertTriangle>
+              )}
+            </span>
           ) : (
             // Not a dash. A cadence whose project publishes nowhere will
             // produce videos that sit there, and that is worth a sentence

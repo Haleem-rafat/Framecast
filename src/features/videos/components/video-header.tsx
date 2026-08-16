@@ -8,6 +8,7 @@ import { VideoStatusBadge } from "@/features/videos/components/video-status-badg
 import type { FootageStyle, VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import type { PublishVisibilityOption } from "@/schemas/publish.schema";
 import { VIDEO_FORMATS, WORDS_PER_MINUTE } from "@/lib/video-format";
+import type { PublishTargets } from "@/services/publish.service";
 
 export function VideoHeader({
   videoId,
@@ -23,6 +24,7 @@ export function VideoHeader({
   youtubeVideoId,
   defaultVisibility,
   readyShortCount,
+  publishTargets,
 }: {
   videoId: string;
   title: string;
@@ -58,6 +60,10 @@ export function VideoHeader({
   /** How many shorts the publish dialog could upload alongside the video —
    * READY, with a file, never published. Zero hides the offer entirely. */
   readyShortCount: number;
+  /** The publish dialog's channel picker, already resolved to what may and may
+   * not be chosen — see `publishService.listPublishTargets`. Null for a video
+   * that cannot be published yet, where there is no picker to draw. */
+  publishTargets: PublishTargets | null;
 }) {
   const estimatedMinutes = wordCount > 0 ? wordCount / WORDS_PER_MINUTE : 0;
   const canApprove = status === "DRAFT" && wordCount > 0;
@@ -115,6 +121,7 @@ export function VideoHeader({
           youtubeVideoId={youtubeVideoId}
           defaultVisibility={defaultVisibility}
           readyShortCount={readyShortCount}
+          publishTargets={publishTargets}
         />
       </div>
     </div>

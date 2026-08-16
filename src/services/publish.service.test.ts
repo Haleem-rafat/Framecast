@@ -217,7 +217,14 @@ async function makePublishableVideo(
      *  than passing for the wrong reason. */
     withoutRenderFile?: boolean;
   } = {},
-): Promise<{ videoId: string; channelId: string; outputUrl: string }> {
+): Promise<{
+  videoId: string;
+  channelId: string;
+  /** The project the video is filed in — what the channel tests below assert
+   *  moves, or does not, when a publish targets a different channel. */
+  projectId: string;
+  outputUrl: string;
+}> {
   const channel = await channelService.connect(userId, {
     youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
     title: "Money Mechanics",
@@ -273,7 +280,12 @@ async function makePublishableVideo(
     data: { status: opts.status ?? "READY" },
   });
 
-  return { videoId: video.id, channelId: channel.id, outputUrl };
+  return {
+    videoId: video.id,
+    channelId: channel.id,
+    projectId: project.id,
+    outputUrl,
+  };
 }
 
 describe("publishService.publish — extractSourcesSection", () => {
@@ -2149,5 +2161,329 @@ describe("publishService.publish — the daily upload allowance", () => {
     // Winter, so the same wall-clock hour is a different UTC instant — the
     // zone does the work, not a fixed offset.
     expect(hoursUntilQuotaReset(new Date("2026-01-15T11:00:00.000Z"))).toBe(21);
+  });
+});
+
+/**
+ * Which channel an upload actually goes to.
+ *
+ * The defect these cover was found in production data: a channel is recorded in
+ * two places that were allowed to disagree. `Project.channelId` is what this
+ * service uploads to; `Series.channelId` is what the series page, the
+ * automation table and every other screen shows. A children's bedtime-story
+ * series had the first pointing at a personal finance channel and the second at
+ * a kids channel, four episodes deep, with nothing on screen to suggest it.
+ * `videos.insert` cannot be undone, so the first anyone would have learned of it
+ * is a bedtime story on a finance channel.
+ *
+ * Two things are asserted throughout, and they matter more than the error
+ * types: that a refusal reaches YouTube's API *zero* times, and that it leaves
+ * no `Publication` row behind — because a `Publication` row permanently blocks
+ * the retry (see the service's own doc comment), a refusal that wrote one would
+ * cost the operator the video just as surely as publishing it to the wrong
+ * place.
+ */
+describe("publishService.publish — which channel it goes to", () => {
+  /** A second connected channel, so "the wrong one" is a real row rather than
+   *  an invented id. */
+  async function connectChannel(
+    title: string,
+    opts: { owner?: string; isActive?: boolean } = {},
+  ) {
+    const channel = await channelService.connect(opts.owner ?? userId, {
+      youtubeChannelId: `UC_${randomUUID().slice(0, 8)}`,
+      title,
+      accessToken: "ya29.test-access-token",
+      refreshToken: "1//test-refresh-token",
+      expiresInSeconds: 3600,
+      scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+    });
+
+    if (opts.isActive === false) {
+      await prisma.channel.update({
+        where: { id: channel.id },
+        data: { isActive: false },
+      });
+    }
+
+    return channel;
+  }
+
+  /**
+   * Files a video under a series, with the series' own channel set
+   * independently of the project's.
+   *
+   * Written straight to Prisma rather than through `SeriesService`, and
+   * deliberately: `SeriesService.assertRecipe` refuses to *create* a series
+   * whose channel disagrees with its project's, which is exactly the guard that
+   * makes this state unreachable through the app today. The rows under test are
+   * the ones that predate it, so they have to be built the way the database
+   * holds them.
+   */
+  async function fileUnderSeries(
+    videoId: string,
+    projectId: string,
+    seriesChannelId: string,
+    name: string,
+  ): Promise<string> {
+    const template = await prisma.promptTemplate.create({
+      data: {
+        userId,
+        name: `Bedtime style ${randomUUID().slice(0, 8)}`,
+        category: "SCRIPT",
+        content: "Tell a gentle bedtime story about {{topic}}.",
+      },
+      select: { id: true },
+    });
+
+    const series = await prisma.series.create({
+      data: {
+        userId,
+        name,
+        channelId: seriesChannelId,
+        projectId,
+        promptTemplateId: template.id,
+      },
+      select: { id: true },
+    });
+
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { seriesId: series.id },
+    });
+
+    return series.id;
+  }
+
+  it("refuses a video whose series and project disagree, naming both channels", async () => {
+    const { fetchImpl, calls } = createUploadFetch();
+    const { videoId, channelId, projectId } = await makePublishableVideo();
+    const kids = await connectChannel("Pip's Little Wonders");
+    await fileUnderSeries(videoId, projectId, kids.id, "Pip's Little Wonders");
+
+    await expect(
+      new PublishService(fetchImpl).publish(userId, videoId, { visibility: "PUBLIC" }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    // Both channels named, so the operator can tell which of the two they meant
+    // without going and looking either of them up.
+    await expect(
+      new PublishService(fetchImpl).publish(userId, videoId, { visibility: "PUBLIC" }),
+    ).rejects.toThrow(/Pip's Little Wonders[\s\S]*Money Mechanics/);
+
+    // Nothing was uploaded to *either* channel, and — just as important —
+    // nothing was claimed, so the video is still publishable once the operator
+    // resolves it.
+    expect(calls).toHaveLength(0);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+    expect(
+      (await prisma.video.findUniqueOrThrow({ where: { id: videoId } })).status,
+    ).toBe("READY");
+    expect(channelId).not.toBe(kids.id);
+  });
+
+  it("publishes to the video's own channel when no choice is made, unchanged", async () => {
+    const { fetchImpl } = createUploadFetch({ youtubeVideoId: "yt_default" });
+    const { videoId, channelId, projectId } = await makePublishableVideo();
+
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+    });
+
+    expect(result.youtubeVideoId).toBe("yt_default");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.channelId).toBe(channelId);
+    // Nothing was refiled: the default path moves no rows it did not use to.
+    expect(
+      (await prisma.video.findUniqueOrThrow({ where: { id: videoId } })).projectId,
+    ).toBe(projectId);
+  });
+
+  it("publishes to a channel the operator picks, and refiles the video with it", async () => {
+    const { fetchImpl } = createUploadFetch({ youtubeVideoId: "yt_chosen" });
+    const { videoId, channelId, projectId } = await makePublishableVideo();
+    const kids = await connectChannel("KIDO FUN ZONE");
+    const kidsProject = await projectService.create(userId, {
+      name: `${PROJECT_NAME}-kids-${randomUUID().slice(0, 8)}`,
+      channelId: kids.id,
+    });
+
+    const result = await new PublishService(fetchImpl).publish(userId, videoId, {
+      visibility: "PUBLIC",
+      channelId: kids.id,
+    });
+
+    expect(result.youtubeVideoId).toBe("yt_chosen");
+
+    const publication = await prisma.publication.findUniqueOrThrow({ where: { videoId } });
+    expect(publication.channelId).toBe(kids.id);
+    expect(publication.channelId).not.toBe(channelId);
+
+    // The filing follows the upload. Without this the video would still be
+    // filed on the old channel, and `ReleaseService` — which banks and drips
+    // shorts by `video -> project -> channel` on a timer — would go on
+    // releasing this video's clips there for days afterwards.
+    const moved = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(moved.projectId).toBe(kidsProject.id);
+    expect(moved.projectId).not.toBe(projectId);
+  });
+
+  it("refuses a channel the operator does not own", async () => {
+    const { fetchImpl, calls } = createUploadFetch();
+    const { videoId } = await makePublishableVideo();
+    const strangerId = await createTestUser("publish-stranger");
+
+    try {
+      const stranger = await connectChannel("Somebody Else's Channel", {
+        owner: strangerId,
+      });
+
+      await expect(
+        new PublishService(fetchImpl).publish(userId, videoId, {
+          visibility: "PUBLIC",
+          channelId: stranger.id,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    } finally {
+      await deleteTestUser(strangerId);
+    }
+
+    expect(calls).toHaveLength(0);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+  });
+
+  it("refuses a channel marked inactive, whose stored grant is not usable", async () => {
+    const { fetchImpl, calls } = createUploadFetch();
+    const { videoId } = await makePublishableVideo();
+    const dead = await connectChannel("Lapsed Channel", { isActive: false });
+    await projectService.create(userId, {
+      name: `${PROJECT_NAME}-dead-${randomUUID().slice(0, 8)}`,
+      channelId: dead.id,
+    });
+
+    await expect(
+      new PublishService(fetchImpl).publish(userId, videoId, {
+        visibility: "PUBLIC",
+        channelId: dead.id,
+      }),
+    ).rejects.toThrow(/inactive/i);
+
+    expect(calls).toHaveLength(0);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+  });
+
+  it("refuses to split an episode off onto a channel its series does not publish to", async () => {
+    const { fetchImpl, calls } = createUploadFetch();
+    const { videoId, channelId, projectId } = await makePublishableVideo();
+    await fileUnderSeries(videoId, projectId, channelId, "Money Mechanics Weekly");
+
+    const other = await connectChannel("KIDO FUN ZONE");
+    await projectService.create(userId, {
+      name: `${PROJECT_NAME}-other-${randomUUID().slice(0, 8)}`,
+      channelId: other.id,
+    });
+
+    // An explicit choice settles "which did they mean", but not this: a series
+    // cannot override its channel's brand or its made-for-kids declaration, so
+    // one episode elsewhere would not match the rest of the show.
+    await expect(
+      new PublishService(fetchImpl).publish(userId, videoId, {
+        visibility: "PUBLIC",
+        channelId: other.id,
+      }),
+    ).rejects.toThrow(/Money Mechanics Weekly/);
+
+    expect(calls).toHaveLength(0);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+  });
+
+  it("refuses a chosen channel that nothing files videos under", async () => {
+    const { fetchImpl, calls } = createUploadFetch();
+    const { videoId } = await makePublishableVideo();
+    // Connected, active, owned — and with no project pointing at it, so the
+    // video could not be filed where it publishes.
+    const unused = await connectChannel("Nothing Filed Here");
+
+    await expect(
+      new PublishService(fetchImpl).publish(userId, videoId, {
+        visibility: "PUBLIC",
+        channelId: unused.id,
+      }),
+    ).rejects.toThrow(/Nothing Filed Here/);
+
+    expect(calls).toHaveLength(0);
+    expect(await prisma.publication.count({ where: { videoId } })).toBe(0);
+  });
+
+  it("lists every owned channel, marking the ones that cannot be chosen and why", async () => {
+    const { fetchImpl } = createUploadFetch();
+    const { videoId, channelId, projectId } = await makePublishableVideo();
+    const kids = await connectChannel("KIDO FUN ZONE");
+    const kidsProject = await projectService.create(userId, {
+      name: `${PROJECT_NAME}-kids-${randomUUID().slice(0, 8)}`,
+      channelId: kids.id,
+    });
+    const dead = await connectChannel("Lapsed Channel", { isActive: false });
+
+    const targets = await new PublishService(fetchImpl).listPublishTargets(
+      userId,
+      videoId,
+    );
+
+    expect(targets.defaultChannelId).toBe(channelId);
+    expect(targets.mismatch).toBeNull();
+
+    const byId = new Map(targets.options.map((option) => [option.id, option]));
+    // Every channel is *listed*, including the one that must not be picked —
+    // an absent channel is a support question, a greyed-out one with a reason
+    // is an instruction.
+    expect(byId.size).toBe(3);
+
+    expect(byId.get(channelId)).toMatchObject({
+      selectable: true,
+      reason: null,
+      // Already filed here, so nothing would move.
+      refileToProjectName: null,
+    });
+    expect(byId.get(kids.id)).toMatchObject({
+      selectable: true,
+      reason: null,
+      refileToProjectName: kidsProject.name,
+    });
+    expect(byId.get(dead.id)?.selectable).toBe(false);
+    expect(byId.get(dead.id)?.reason).toMatch(/inactive/i);
+
+    expect(projectId).toBeTruthy();
+  });
+
+  it("reports the series/project disagreement before anything is clicked", async () => {
+    const { fetchImpl } = createUploadFetch();
+    const { videoId, projectId } = await makePublishableVideo();
+    const kids = await connectChannel("Pip's Little Wonders");
+    const seriesId = await fileUnderSeries(
+      videoId,
+      projectId,
+      kids.id,
+      "Pip's Little Wonders",
+    );
+
+    const targets = await new PublishService(fetchImpl).listPublishTargets(
+      userId,
+      videoId,
+    );
+
+    expect(targets.mismatch).toMatchObject({
+      seriesId,
+      seriesName: "Pip's Little Wonders",
+      seriesChannelTitle: "Pip's Little Wonders",
+      projectChannelTitle: "Money Mechanics",
+    });
+
+    // The finance channel the video is *filed* under is exactly the one the
+    // operator must not pick, and the reason names the show.
+    const filed = targets.options.find((option) => option.title === "Money Mechanics");
+    expect(filed?.selectable).toBe(false);
+    expect(filed?.reason).toMatch(/Pip's Little Wonders/);
   });
 });
