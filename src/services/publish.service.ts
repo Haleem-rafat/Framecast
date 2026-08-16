@@ -10,9 +10,152 @@ import { getObject, objectContentType, removeObjects } from "@/lib/storage";
 import { clampTitle, composeDescription } from "@/lib/youtube-limits";
 import { brandService } from "@/services/brand.service";
 import { channelService } from "@/services/channel.service";
+import { HEARTBEAT_SECONDS } from "@/services/job.service";
 
 /** Injectable so tests never make a real call to YouTube. */
 export type FetchLike = typeof fetch;
+
+/**
+ * How long a publish's claim stays credible after its last heartbeat.
+ *
+ * The same 600 seconds `job.service.ts` gives a render's lease, renewed on the
+ * same `HEARTBEAT_SECONDS` timer, because it is answering the same question:
+ * is the process that took this row still alive? What differs is entirely in
+ * what a lapse *permits*. A lapsed render lease is reclaimed automatically —
+ * `claimNext` takes the video and runs it again, and re-running a render costs
+ * CPU and nothing else. A lapsed publish lease is reclaimed by nobody, ever:
+ * the process may have died with the video already sitting on YouTube, and a
+ * second `videos.insert` would put a second copy on the operator's channel with
+ * no way to take either of them back. So this constant does not authorise a
+ * retry. It authorises the app to stop claiming the upload is still running,
+ * and to offer the operator — the only party who can look at the channel — a
+ * way to clear the row themselves. See `clearStuckPublication`.
+ *
+ * Twenty missed heartbeats is deliberately far past "busy". The whole risk in
+ * this direction is calling a healthy upload dead: a 463MB file over this VPS's
+ * uplink is a legitimately long publish, and the heartbeat that keeps this
+ * lease alive is on a timer rather than on upload progress precisely so that a
+ * slow network cannot be mistaken for a dead process. Only a process that no
+ * longer exists stops renewing this.
+ */
+export const PUBLISH_LEASE_SECONDS = 600;
+
+/**
+ * Below this, `publish()` sends the file as one PUT, exactly as it always has.
+ * Above it, the same resumable session is filled a chunk at a time so that
+ * progress is a measurement rather than a guess.
+ *
+ * 8 MiB satisfies YouTube's rule that every chunk but the last be a multiple of
+ * 256 KiB, and it is the number two constraints meet at. Smaller chunks report
+ * progress more finely and cost a round trip each; larger ones sit in the app
+ * container's memory, which is capped at 1024m alongside a Next.js server (see
+ * deploy/docker-compose.yml). At 8 MiB a 463MB render reports 56 times — a step
+ * roughly every couple of minutes on a slow link, which is what a progress bar
+ * needs to read as alive — while never holding more than 8 MiB of video.
+ *
+ * That memory point is not incidental. Buffering the whole file, which is what
+ * this method used to do unconditionally, allocated ~463MB with a transient
+ * peak near double that while the chunks were concatenated; an OOM kill there
+ * is a SIGKILL, which runs no `catch`, which leaves precisely the stuck
+ * `UPLOADING` row this task exists to make recoverable.
+ */
+const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/** Google's "I have the bytes so far, keep going" answer to a chunk that is not
+ *  the last one. `Response.ok` is false for it, so it has to be matched before
+ *  any `!ok` branch or every intermediate chunk reads as a failed upload. */
+const RESUME_INCOMPLETE = 308;
+
+/**
+ * How long an upload must have been running before its observed rate is worth
+ * showing as an estimate.
+ *
+ * The first chunk's rate includes the TCP handshake, the TLS negotiation and
+ * YouTube's own session setup, so an estimate drawn from it is wrong by a wide
+ * margin in whichever direction the first few seconds happened to go. An
+ * operator who is told "about 40 minutes left" and then "about 4" has been told
+ * nothing twice.
+ */
+const MIN_SECONDS_FOR_ESTIMATE = 10;
+
+/**
+ * The bytes of one upload, and how to read them a piece at a time.
+ *
+ * An interface rather than a `Buffer` parameter because the two callers want
+ * genuinely different things from the same upload path. A short is a few
+ * megabytes that were already read off disk in one go, and buffering it is
+ * free; the video is up to half a gigabyte that must never all be in memory at
+ * once, and whose bytes have to be countable as they leave. `read` takes an
+ * inclusive range because that is what both a `Buffer` slice and
+ * `getRenderFile`'s `Range` header speak.
+ */
+interface UploadSource {
+  totalBytes: number;
+  /** Inclusive on both ends, like HTTP's own byte ranges. */
+  read(start: number, end: number): Promise<Buffer>;
+}
+
+/** An already-in-memory file — every short, and any render small enough that
+ *  chunking it would be ceremony. */
+function bufferSource(buffer: Buffer): UploadSource {
+  return {
+    totalBytes: buffer.byteLength,
+    read: async (start, end) => buffer.subarray(start, end + 1),
+  };
+}
+
+/**
+ * A render read from disk on demand, one chunk per request.
+ *
+ * Each `read` reopens the file at the requested range rather than holding a
+ * single long-lived stream, which costs an `open`/`stat` per 8 MiB and buys the
+ * property that matters: nothing here keeps a file descriptor, a buffer or a
+ * stream alive across the minutes an upload can take, so a chunk that fails
+ * leaves no resource behind to leak.
+ */
+function renderRangeSource(
+  videoId: string,
+  location: string,
+  totalBytes: number,
+): UploadSource {
+  return {
+    totalBytes,
+    read: async (start, end) => {
+      const file = await getRenderFile(videoId, location, `bytes=${start}-${end}`);
+
+      // The render was there a moment ago — `publish()` opened it to measure
+      // it. Gone now means it was deleted underneath a live upload, which is a
+      // real state (a hand-tidied RENDER_ROOT) and one the operator needs named
+      // rather than reported as a byte-count mismatch three frames later.
+      if (file === null) {
+        throw new RenderFileMissingError(videoId);
+      }
+
+      if (file === "unsatisfiable") {
+        throw new InternalError(
+          `The render for video ${videoId} is shorter than the upload expected ` +
+            `(asked for bytes ${start}-${end} of ${totalBytes}).`,
+        );
+      }
+
+      return Buffer.from(await new Response(file.stream).arrayBuffer());
+    },
+  };
+}
+
+/**
+ * The last byte YouTube says it holds, read off a 308's `Range` header.
+ *
+ * The header is `Range: bytes=0-8388607` — an *inclusive* last byte, so the
+ * next offset is one past it. Returns null when the header is missing or
+ * unparseable, which is not a failure: the caller then falls back to the end of
+ * the chunk it just sent, the same assumption a non-chunked upload makes about
+ * every byte in its body.
+ */
+function confirmedOffset(rangeHeader: string | null): number | null {
+  const match = /bytes=0-(\d+)/.exec(rangeHeader?.trim() ?? "");
+  return match ? Number(match[1]) + 1 : null;
+}
 
 /** Postgres unique-violation code — `Publication.videoId` is `@unique`, so a
  * second concurrent claim's `create()` fails with this rather than data
@@ -267,6 +410,83 @@ export interface PublishResult {
    * not reporting it.
    */
   thumbnail: ThumbnailOutcome;
+}
+
+/**
+ * What one publish attempt is doing right now, as the page has to draw it.
+ *
+ * Every number here is derived from columns the *server* wrote, never from
+ * anything the browser observed, which is the only way progress survives the
+ * tab being closed and reopened — the operator's actual complaint was that they
+ * could not tell a two-hour upload from a dead one, and a spinner owned by a
+ * component that unmounts on navigation cannot answer that at all.
+ *
+ * The pair that matters is `isLive` / `isStalled`. They are not two readings of
+ * the same thing: `isLive` means a process renewed this row's lease within the
+ * last `PUBLISH_LEASE_SECONDS`, and `isStalled` means one did not. Bytes are
+ * deliberately no part of either. An upload that has sent nothing for four
+ * minutes because the uplink is saturated is live; an upload that sent 60% of
+ * the file and then had its container restarted is stalled at 60%.
+ */
+export interface PublishProgress {
+  publicationId: string;
+  status: PublishStatus;
+  /** What the operator was told this upload would be — named in the recovery
+   *  dialog, because "clear the attempt that was going to publish this
+   *  publicly" is a different sentence from "clear the private one". */
+  visibility: PublishVisibility;
+  /** The channel this attempt was uploading to. The one thing the operator has
+   *  to go and look at before they are allowed to clear anything. */
+  channelTitle: string;
+  /** That channel on YouTube, so "go and check" is a link rather than an
+   *  instruction to go and find something. */
+  youtubeChannelId: string;
+  /** Confirmed by YouTube, not merely written to a socket. */
+  uploadedBytes: number;
+  /** Null for an attempt that failed before the render was ever opened. */
+  totalBytes: number | null;
+  /** 0-100, or null when there is no total to be a percentage of. */
+  percent: number | null;
+  /** Since the first byte, not since the row was created. Null before the
+   *  upload started. Smoothed on the client between polls, exactly as the
+   *  render's own elapsed time is. */
+  elapsedSeconds: number | null;
+  /** The rate actually observed, null until `MIN_SECONDS_FOR_ESTIMATE` of it
+   *  has been observed. */
+  bytesPerSecond: number | null;
+  /** At that rate. Null whenever `bytesPerSecond` is. */
+  remainingSeconds: number | null;
+  /** A process has renewed this row's lease recently: the upload is running,
+   *  however slowly. */
+  isLive: boolean;
+  /** `UPLOADING` with no live lease — the process that held this row is gone.
+   *  Nothing acts on this automatically; it is what makes the row clearable. */
+  isStalled: boolean;
+  /** How long since the last heartbeat, so a stalled row can say "silent for 3
+   *  hours" rather than an unfalsifiable "stuck". Null while live. */
+  silentForSeconds: number | null;
+  youtubeVideoId: string | null;
+  error: string | null;
+  /** Whether `clearStuckPublication` would accept this row right now. False
+   *  while an upload is live, and false forever once YouTube has the video. */
+  canClear: boolean;
+}
+
+/** What clearing a stuck attempt did, so the confirmation can say it rather
+ *  than the operator having to infer it from a refreshed page. */
+export interface ClearedPublication {
+  /** The status the cleared row was in — `UPLOADING` for an interrupted
+   *  publish, `FAILED` for one that reported why it stopped. */
+  clearedStatus: PublishStatus;
+  /**
+   * Whether the video went back to READY and is therefore publishable again.
+   *
+   * False when the video is FAILED with no successful render left to publish —
+   * clearing the row is still correct there (it was blocking everything), but
+   * the next step is a re-render, not a publish, and saying so beats leaving a
+   * READY badge over a video with no file behind it.
+   */
+  videoRestoredToReady: boolean;
 }
 
 /**
@@ -693,6 +913,11 @@ export class PublishService {
           visibility,
           scheduledFor: opts.scheduledFor,
           status: "UPLOADING",
+          // The lease starts with the claim, not with the first byte. The gap
+          // between them — resolving an OAuth token, opening the render — is
+          // short but it is not zero, and a row created without a lease is a
+          // row that reads as stalled the instant it exists.
+          leaseExpiresAt: new Date(Date.now() + PUBLISH_LEASE_SECONDS * 1000),
         },
       });
     } catch (error) {
@@ -701,6 +926,30 @@ export class PublishService {
       }
       throw error;
     }
+
+    // The heartbeat, started the moment the claim exists and stopped in every
+    // exit below. This is what separates "slow" from "dead": it is a timer, so
+    // it keeps renewing through a chunk that takes four minutes, and it stops
+    // dead the instant this process does. See `PUBLISH_LEASE_SECONDS`.
+    //
+    // Same in-flight tracking `worker/index.ts` keeps around its own heartbeat
+    // and for the same reason: `clearInterval` stops future ticks but not a
+    // tick already dispatched, and a renewal landing after the final write
+    // would leave a finished publish looking leased for another ten minutes.
+    // Belt and braces on top of that, `heartbeatPublication` only renews a row
+    // that is still `UPLOADING`, so even a lost race writes nothing.
+    let heartbeatInFlight: Promise<void> = Promise.resolve();
+    const heartbeatTimer = setInterval(() => {
+      heartbeatInFlight = this.heartbeatPublication(publication.id);
+    }, HEARTBEAT_SECONDS * 1000);
+    // Nothing about a publish should keep a process alive on its own; the
+    // upload's own awaits are what hold the event loop.
+    heartbeatTimer.unref?.();
+
+    const stopHeartbeat = async (): Promise<void> => {
+      clearInterval(heartbeatTimer);
+      await heartbeatInFlight;
+    };
 
     let youtubeVideoId: string;
     // Lifted out of the try block below (rather than declared with `const`
@@ -727,23 +976,53 @@ export class PublishService {
         );
       }
       // YouTube's resumable upload needs the full byte length up front (see
-      // uploadToYouTube's X-Upload-Content-Length below), so the stream is
-      // buffered here rather than piped through — same memory tradeoff the
-      // local-disk version made reading the whole file at once.
+      // uploadToYouTube's X-Upload-Content-Length below), so the size is
+      // measured before anything is sent either way. What differs is whether
+      // the bytes themselves are held.
       //
-      // THIS LINE IS WHY `app-prod` IS CAPPED AT 1024m AND NOT 512m.
-      // publish() runs in the **app** process, not the worker —
+      // A file at or under UPLOAD_CHUNK_BYTES is buffered whole, exactly as
+      // every publish did before chunking existed. Anything larger is read a
+      // chunk at a time straight into the PUT that sends it, and the stream
+      // opened here — which covers the whole file — is dropped unread.
+      //
+      // THAT IS THE LINE THAT USED TO CAP `app-prod` AT 1024m RATHER THAN
+      // 512m. publish() runs in the **app** process, not the worker —
       // `publishVideoAction` (src/actions/publish.action.ts) is a Server
-      // Action — so this ~170MB allocation, whose transient peak is close to
-      // double that while the chunks are concatenated, lands on top of the
-      // 150-250MB a Next.js standalone server already holds. See
+      // Action — so buffering the whole render put a ~170MB allocation, with a
+      // transient peak close to double that while the chunks were
+      // concatenated, on top of the 150-250MB a Next.js standalone server
+      // already holds. The 463MB render that prompted all of this was several
+      // times worse than the case that limit was chosen for. See
       // deploy/docker-compose.yml's `app-prod`/`app-staging` limits and
-      // deploy/README.md's "Why `app-prod` gets 1024m" section before
-      // trimming either number, and before assuming this buffer is free:
-      // an OOM kill here is a SIGKILL, so the catch below never runs, the
-      // `Publication` row created above stays `UPLOADING` forever, and every
-      // retry gets ConflictError while YouTube may already hold the video.
-      const fileBuffer = Buffer.from(await new Response(file.stream).arrayBuffer());
+      // deploy/README.md's "Why `app-prod` gets 1024m" section before trimming
+      // either number: an OOM kill here is a SIGKILL, so the catch below never
+      // runs, and the `Publication` row created above is left `UPLOADING`
+      // forever — which is exactly the state `clearStuckPublication` exists to
+      // let the operator out of.
+      const totalBytes = file.sizeBytes;
+      let source: UploadSource;
+      if (totalBytes <= UPLOAD_CHUNK_BYTES) {
+        source = bufferSource(Buffer.from(await new Response(file.stream).arrayBuffer()));
+      } else {
+        // Nothing has read from it, so it holds an open descriptor until it is
+        // cancelled. `renderRangeSource` reopens the file per chunk instead.
+        await file.stream.cancel().catch(() => {
+          // Best-effort: a stream that refuses to cancel is a leaked handle for
+          // the life of this request, which is bad and still strictly better
+          // than failing a publish over it.
+        });
+        source = renderRangeSource(video.id, outputUrl, totalBytes);
+      }
+
+      // Recorded before the first byte and separately from the claim, because
+      // `createdAt` is when the row was taken and this is when the upload
+      // actually starts — every rate the operator is shown is measured from
+      // here, so the two must not be conflated.
+      await prisma.publication.update({
+        where: { id: publication.id },
+        data: { totalBytes, uploadStartedAt: new Date() },
+      });
+
       youtubeVideoId = await this.uploadToYouTube(
         accessToken,
         {
@@ -757,18 +1036,51 @@ export class PublishService {
           categoryId: brand.categoryId,
           madeForKids: brand.madeForKids,
         },
-        fileBuffer,
+        source,
+        // One write per confirmed chunk — 56 of them for a 463MB render, which
+        // is nothing against a database, and the only thing standing between
+        // the operator and a spinner that means nothing.
+        (bytes) => this.recordUploadProgress(publication.id, bytes),
       );
+
+      // Written the instant YouTube hands it over, ahead of the transaction
+      // below that writes it again along with everything else.
+      //
+      // Redundant on the happy path and load-bearing on exactly one unhappy
+      // one: if that transaction fails — a lost connection between two
+      // statements in the same request — the video is on YouTube and the only
+      // record of it was, until this line, a local variable in a stack frame
+      // about to be unwound. The row would then look like an interrupted
+      // upload, which is a state `clearStuckPublication` is willing to clear,
+      // and clearing it would re-arm the publish button on a video that is
+      // already live. Recording the id first makes that refusal permanent and
+      // automatic, and costs one indexed update per publish.
+      await prisma.publication
+        .update({ where: { id: publication.id }, data: { youtubeVideoId } })
+        .catch(() => {
+          // Best-effort: the transaction below writes the same value, and this
+          // is the belt to its braces rather than the other way round.
+        });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+
+      // Before the writes below, so a heartbeat already in flight cannot land
+      // after them and put a lease back on a row that has finished failing.
+      await stopHeartbeat();
 
       // The claim row is never deleted on failure — it's the record that an
       // attempt happened, and it's what stops a retry storm from firing
       // another upload immediately (see the module doc comment on retries).
+      // Only the operator removes it, and only after checking the channel:
+      // see `clearStuckPublication`.
       await prisma.$transaction(async (tx) => {
         await tx.publication.update({
           where: { id: publication.id },
-          data: { status: "FAILED", error: message },
+          // The lease is dropped with the same write that records the failure.
+          // A FAILED row is not running, so leaving it looking leased would
+          // make the one row the operator most needs to act on refuse to be
+          // cleared for another ten minutes.
+          data: { status: "FAILED", error: message, leaseExpiresAt: null },
         });
 
         const { count } = await tx.video.updateMany({
@@ -806,6 +1118,12 @@ export class PublishService {
     // models a YouTube-side publish state — reflects the wait.
     const publicationStatus: PublishStatus = opts.scheduledFor ? "SCHEDULED" : "PUBLISHED";
 
+    // The upload is over, so the lease has nothing left to assert. Stopped
+    // before the transaction below for the reason `worker/index.ts` stops its
+    // own before `release`: a tick already dispatched would otherwise renew a
+    // lease the transaction is about to clear.
+    await stopHeartbeat();
+
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.video.updateMany({
         where: { id: videoId, userId, deletedAt: null, status: "READY" },
@@ -835,6 +1153,12 @@ export class PublishService {
           status: publicationStatus,
           youtubeVideoId,
           publishedAt: opts.scheduledFor ? null : new Date(),
+          // Nothing is running this row any more, and — unlike every other
+          // state — nothing may ever clear it either: it names a video that is
+          // on YouTube. `clearStuckPublication` refuses on `youtubeVideoId`
+          // rather than on this, but a PUBLISHED row still carrying a live
+          // lease would be a lie about a process that has finished.
+          leaseExpiresAt: null,
         },
       });
     });
@@ -898,6 +1222,367 @@ export class PublishService {
     await this.reclaimRenderStorage(userId, videoId, outputUrl);
 
     return { youtubeVideoId, shorts, thumbnail };
+  }
+
+  /**
+   * Renews a running publish's lease. The publish-side twin of
+   * `JobService.heartbeat`, minus the cancellation channel — there is nothing
+   * to cancel here, because a `videos.insert` that has started cannot be
+   * un-started and stopping halfway would leave exactly the ambiguity this
+   * whole mechanism exists to remove.
+   *
+   * Conditional on `UPLOADING`, which is what makes a late tick harmless: by
+   * the time the final transaction has run the row is PUBLISHED or FAILED, and
+   * this writes nothing to either. Never throws — a database hiccup on a
+   * bookkeeping write must not take down an upload that is otherwise fine, and
+   * the cost of a lost tick is one twentieth of the lease.
+   */
+  private async heartbeatPublication(publicationId: string): Promise<void> {
+    await prisma.publication
+      .updateMany({
+        where: { id: publicationId, status: "UPLOADING" },
+        data: { leaseExpiresAt: new Date(Date.now() + PUBLISH_LEASE_SECONDS * 1000) },
+      })
+      .then(() => {})
+      .catch(() => {
+        // Best-effort, exactly as the worker's own heartbeat failure is: one
+        // missed renewal is twenty short of a lapsed lease, and the upload
+        // itself is unaffected.
+      });
+  }
+
+  /**
+   * Records how far the upload has actually got, and renews the lease in the
+   * same statement.
+   *
+   * Both, together, because a chunk landing is the strongest possible evidence
+   * of both facts at once and writing them separately would let a row show
+   * bytes moving while its lease lapsed. The lease is still renewed on a timer
+   * as well — see `PUBLISH_LEASE_SECONDS` for why liveness must not depend on
+   * bytes — so this is a reinforcement of the heartbeat, never a replacement
+   * for it.
+   *
+   * Never throws, for the same reason `heartbeatPublication` does not: the
+   * upload is the work, and progress reporting is not permitted to fail it.
+   */
+  private async recordUploadProgress(
+    publicationId: string,
+    uploadedBytes: number,
+  ): Promise<void> {
+    await prisma.publication
+      .updateMany({
+        where: { id: publicationId, status: "UPLOADING" },
+        data: {
+          uploadedBytes,
+          leaseExpiresAt: new Date(Date.now() + PUBLISH_LEASE_SECONDS * 1000),
+        },
+      })
+      .then(() => {})
+      .catch(() => {
+        // The bar stops moving; the upload does not.
+      });
+  }
+
+  /**
+   * What this video's publish attempt is doing, for the page that has to show
+   * it — and, when nothing is doing anything, for the page that has to say so.
+   *
+   * This is the read model behind both halves of the fix. The bar an operator
+   * watches during a long upload and the notice that tells them an upload died
+   * are the same query, because they are the same fact seen at two different
+   * moments: the server wrote down how far it got and when it last drew breath.
+   * A publish that reports progress is a publish whose silence is measurable.
+   *
+   * `null` for a video with no `Publication` row at all, which is every video
+   * that has never been published — the caller draws nothing rather than an
+   * empty progress bar.
+   *
+   * Deliberately answers with plain numbers rather than the timestamps they are
+   * derived from. Elapsed and remaining seconds are computed here, against the
+   * server's own clock, so a browser whose clock is wrong shows a wrong-by-a-
+   * second estimate rather than a negative one — the same discipline
+   * `pipeline.service.ts` follows for the render's elapsed time.
+   */
+  async getPublishProgress(
+    userId: string,
+    videoId: string,
+  ): Promise<PublishProgress | null> {
+    const publication = await prisma.publication.findFirst({
+      where: { videoId, video: { userId, deletedAt: null } },
+      select: {
+        id: true,
+        status: true,
+        visibility: true,
+        youtubeVideoId: true,
+        error: true,
+        uploadedBytes: true,
+        totalBytes: true,
+        uploadStartedAt: true,
+        leaseExpiresAt: true,
+        channel: { select: { title: true, youtubeChannelId: true } },
+      },
+    });
+
+    if (!publication) {
+      return null;
+    }
+
+    const now = Date.now();
+    const leaseMs = publication.leaseExpiresAt?.getTime() ?? null;
+    const isUploading = publication.status === "UPLOADING";
+    // The lease, and nothing else. Not "bytes moved recently" — see
+    // `PublishProgress`'s own comment on why those are different questions.
+    const isLive = isUploading && leaseMs !== null && leaseMs > now;
+    const isStalled = isUploading && !isLive;
+
+    const elapsedMs = publication.uploadStartedAt
+      ? Math.max(0, now - publication.uploadStartedAt.getTime())
+      : null;
+    const elapsedSeconds = elapsedMs === null ? null : Math.floor(elapsedMs / 1000);
+
+    // Averaged over the whole upload rather than sampled between polls. A
+    // sampled rate on a link this lumpy swings by an order of magnitude between
+    // one chunk and the next, and an estimate that jumps from 8 minutes to 90
+    // and back is read — correctly — as the app not knowing.
+    const bytesPerSecond =
+      elapsedSeconds !== null &&
+      elapsedSeconds >= MIN_SECONDS_FOR_ESTIMATE &&
+      publication.uploadedBytes > 0
+        ? publication.uploadedBytes / elapsedSeconds
+        : null;
+
+    const remainingBytes =
+      publication.totalBytes === null
+        ? null
+        : Math.max(0, publication.totalBytes - publication.uploadedBytes);
+
+    return {
+      publicationId: publication.id,
+      status: publication.status,
+      visibility: publication.visibility,
+      channelTitle: publication.channel.title,
+      youtubeChannelId: publication.channel.youtubeChannelId,
+      uploadedBytes: publication.uploadedBytes,
+      totalBytes: publication.totalBytes,
+      percent:
+        publication.totalBytes && publication.totalBytes > 0
+          ? Math.min(100, (publication.uploadedBytes / publication.totalBytes) * 100)
+          : null,
+      elapsedSeconds,
+      bytesPerSecond,
+      remainingSeconds:
+        bytesPerSecond !== null && remainingBytes !== null
+          ? Math.ceil(remainingBytes / bytesPerSecond)
+          : null,
+      isLive,
+      isStalled,
+      // Derived rather than stored: the lease is always set to
+      // `PUBLISH_LEASE_SECONDS` past the heartbeat that wrote it, so the last
+      // sign of life is that far behind it. Worth saying out loud on the page —
+      // "silent for 3 hours" is a fact the operator can weigh, where "stuck" is
+      // just the app repeating their own complaint back at them.
+      silentForSeconds:
+        isStalled && leaseMs !== null
+          ? Math.max(0, Math.floor((now - leaseMs) / 1000) + PUBLISH_LEASE_SECONDS)
+          : null,
+      youtubeVideoId: publication.youtubeVideoId,
+      error: publication.error,
+      // The same three refusals `clearStuckPublication` enforces, projected for
+      // a screen rather than for a throw. It decides nothing: the clear itself
+      // re-checks all of it against rows read at the moment of the click, and
+      // settles the race with a conditional delete.
+      canClear:
+        publication.youtubeVideoId === null &&
+        publication.status !== "PUBLISHED" &&
+        publication.status !== "SCHEDULED" &&
+        !isLive,
+    };
+  }
+
+  /**
+   * Removes a publish attempt that is not going to finish, so the video can be
+   * published again.
+   *
+   * This is the "separate, explicit action that resets or removes the failed
+   * row first" this class's own doc comment has always said a real retry would
+   * need. It is that and nothing more: it never uploads anything, never queues
+   * anything, and cannot be reached by a timer, a worker or a schedule. Exactly
+   * one thing can call it — an operator pressing a button in a dialog that told
+   * them to go and look at their channel first.
+   *
+   * ## Why it is not automatic
+   *
+   * Because only the operator can answer the question that matters. A publish
+   * killed mid-PUT may have left a complete video on the channel: YouTube's
+   * resumable session can have accepted every byte and this process can have
+   * died before it read the response with the id in it. Nothing in this app can
+   * distinguish that from a publish that sent 90% and stopped — `videos.list`
+   * would not settle it either, since the upload may be processing under a
+   * title that also exists on three other videos. So the app does the half it
+   * can prove (the process is gone; the row will never move again) and hands
+   * the operator the half only they can check (is it on the channel?). An
+   * unattended retry that guessed wrong would publish a second copy, and there
+   * is no unpublish action here to undo it with.
+   *
+   * ## What it refuses, and why each refusal is the safe direction
+   *
+   *   - **A live lease.** Something is uploading *right now*, however slowly.
+   *     Clearing here would free the unique constraint while bytes are still in
+   *     flight, so a second click could start a second upload of the same file
+   *     into a second YouTube video. This is the refusal that makes the
+   *     heartbeat load-bearing rather than decorative.
+   *   - **A row that reached YouTube** — `youtubeVideoId` set, or PUBLISHED or
+   *     SCHEDULED. There is no ambiguity to resolve: the video is up. Clearing
+   *     would re-arm the publish button on a video that is already live, which
+   *     is the duplicate this class exists to prevent, reached by the one door
+   *     that was supposed to be an exit.
+   *   - **A row that changed underneath the read.** The delete is conditional
+   *     on the exact state that was checked, the same way `claimNext`'s
+   *     conditional update is the lock rather than the read above it. A publish
+   *     that heartbeats between the check and the delete keeps its row.
+   *
+   * Gate 2 is untouched by all of this. `Publication.videoId` is still
+   * `@unique`, `publish()` still claims by `create()` before a byte is sent,
+   * and a second concurrent publish still loses to Postgres. The only thing
+   * that changed is that a row nothing will ever finish is no longer permanent.
+   */
+  async clearStuckPublication(
+    userId: string,
+    videoId: string,
+  ): Promise<ClearedPublication> {
+    const publication = await prisma.publication.findFirst({
+      where: { videoId, video: { userId, deletedAt: null } },
+      select: {
+        id: true,
+        status: true,
+        youtubeVideoId: true,
+        leaseExpiresAt: true,
+        uploadedBytes: true,
+        totalBytes: true,
+        video: { select: { status: true } },
+      },
+    });
+
+    if (!publication) {
+      throw new NotFoundError("Publication");
+    }
+
+    if (
+      publication.youtubeVideoId !== null ||
+      publication.status === "PUBLISHED" ||
+      publication.status === "SCHEDULED"
+    ) {
+      throw new ConflictError(
+        `This video is on YouTube${
+          publication.youtubeVideoId ? ` as ${publication.youtubeVideoId}` : ""
+        }, so this record is not a stuck attempt — it is the receipt. Clearing it ` +
+          `would let Framecast upload a second copy to the same channel, and ` +
+          `neither copy could be removed from here. Use YouTube Studio to delete ` +
+          `or hide the video instead.`,
+      );
+    }
+
+    const now = new Date();
+    const leaseIsLive =
+      publication.leaseExpiresAt !== null &&
+      publication.leaseExpiresAt.getTime() > now.getTime();
+
+    if (leaseIsLive) {
+      throw new ConflictError(
+        `An upload of this video is running right now — it checked in less than ` +
+          `${Math.ceil(PUBLISH_LEASE_SECONDS / 60)} minutes ago. A large render ` +
+          `takes a long time on this connection, and clearing the record while ` +
+          `bytes are still going out would let a second upload start alongside ` +
+          `the first. Wait for it to finish or fail, then look again.`,
+      );
+    }
+
+    // The conditional delete *is* the lock — the read above is only what
+    // decided which error to throw. A heartbeat landing between the two puts a
+    // future `leaseExpiresAt` on the row, and this `where` then matches
+    // nothing, so a publish that came back to life keeps its claim.
+    const { count } = await prisma.publication.deleteMany({
+      where: {
+        id: publication.id,
+        youtubeVideoId: null,
+        status: { in: ["PENDING", "UPLOADING", "FAILED"] },
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }],
+      },
+    });
+
+    if (count === 0) {
+      throw new ConflictError(
+        "This publish attempt changed while you were looking at it — it is either " +
+          "running again or it has finished. Reload the page and check before " +
+          "trying anything else.",
+      );
+    }
+
+    // A video only reaches FAILED here by way of `publish()`'s own failure
+    // branch, so restoring it is undoing that and nothing else. Guarded on a
+    // render still existing: a video with no file to send is not publishable,
+    // and a READY badge over one would send the operator to a button that
+    // refuses. That video needs a re-render, which the pipeline panel already
+    // offers on a FAILED video and would hide on a READY one.
+    const render = await prisma.renderJob.findFirst({
+      where: { videoId, status: "SUCCEEDED", outputUrl: { not: null } },
+      select: { id: true },
+    });
+
+    let videoRestoredToReady = false;
+
+    if (publication.video.status === "FAILED" && render !== null) {
+      const { count: restored } = await prisma.video.updateMany({
+        where: { id: videoId, userId, deletedAt: null, status: "FAILED" },
+        data: { status: "READY", failureReason: null },
+      });
+      videoRestoredToReady = restored > 0;
+    }
+
+    const sent =
+      publication.totalBytes !== null && publication.uploadedBytes > 0
+        ? ` It had sent ${publication.uploadedBytes} of ${publication.totalBytes} bytes.`
+        : "";
+    const message =
+      `Cleared a stuck publish attempt (${publication.status.toLowerCase()}) so this ` +
+      `video can be published again.${sent} The operator confirmed the channel does ` +
+      `not already have it.`;
+
+    // Two records, deliberately, because they answer different questions. The
+    // status event is what the video's own Activity list shows — this is the
+    // one moment a publish record disappeared, and a page that simply stopped
+    // mentioning it would be indistinguishable from a bug. The ActivityLog row
+    // is the account-wide trail every other irreversible-adjacent step here
+    // writes to (see `reclaimClipStorage`).
+    //
+    // Both best-effort and after the delete, never inside a transaction with
+    // it: the clear has succeeded, and a bookkeeping write that fails must not
+    // roll back the one thing the operator pressed a button for.
+    await prisma.videoStatusEvent
+      .create({
+        data: {
+          videoId,
+          from: publication.video.status,
+          to: videoRestoredToReady ? "READY" : publication.video.status,
+          message,
+        },
+      })
+      .catch(() => {});
+
+    await prisma.activityLog
+      .create({
+        data: {
+          userId,
+          level: "WARN",
+          action: "publish.clearStuckPublication",
+          entityType: "Video",
+          entityId: videoId,
+          message,
+        },
+      })
+      .catch(() => {});
+
+    return { clearedStatus: publication.status, videoRestoredToReady };
   }
 
   /**
@@ -1645,7 +2330,11 @@ export class PublishService {
             // operator never saw a separate question about.
             madeForKids: args.madeForKids,
           },
-          Buffer.from(await new Response(file.stream).arrayBuffer()),
+          // Buffered whole: a short is a few megabytes that were read off disk in
+
+          // one go, and chunking one would be ceremony — see `UploadSource`.
+
+          bufferSource(Buffer.from(await new Response(file.stream).arrayBuffer())),
         );
 
         await prisma.shortPublication.update({
@@ -1880,7 +2569,11 @@ export class PublishService {
           // own publish resolves it — never derived, guessed or defaulted here.
           madeForKids: brand.madeForKids,
         },
-        Buffer.from(await new Response(file.stream).arrayBuffer()),
+        // Buffered whole: a short is a few megabytes that were read off disk in
+
+        // one go, and chunking one would be ceremony — see `UploadSource`.
+
+        bufferSource(Buffer.from(await new Response(file.stream).arrayBuffer())),
       );
 
       await prisma.shortPublication.update({
@@ -2216,7 +2909,14 @@ export class PublishService {
        */
       madeForKids: boolean;
     },
-    fileBuffer: Buffer,
+    source: UploadSource,
+    /**
+     * Called with the number of bytes YouTube has *confirmed*, after each chunk
+     * it confirms. Only the video's own publish passes one — a short is a
+     * single PUT that is over in seconds, and a progress bar with one step in
+     * it is a spinner with extra machinery.
+     */
+    onProgress?: (uploadedBytes: number) => Promise<void>,
   ): Promise<string> {
     const privacyStatus = metadata.publishAt
       ? "private"
@@ -2230,7 +2930,7 @@ export class PublishService {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
           "X-Upload-Content-Type": "video/mp4",
-          "X-Upload-Content-Length": String(fileBuffer.byteLength),
+          "X-Upload-Content-Length": String(source.totalBytes),
         },
         body: JSON.stringify({
           snippet: {
@@ -2282,38 +2982,140 @@ export class PublishService {
       );
     }
 
-    const uploadResponse = await this.fetchImpl(location, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "video/mp4",
-        "Content-Length": String(fileBuffer.byteLength),
-      },
-      body: fileBuffer as unknown as BodyInit,
-    });
+    return this.sendBytes(location, source, metadata.label, onProgress);
+  }
 
-    if (!uploadResponse.ok) {
-      // Checked on this leg too: the resumable init can succeed and the PUT
-      // still come back 403 `uploadLimitExceeded` when the allowance runs out
-      // between the two calls — which is exactly what publishing four files in
-      // one click makes possible.
-      await this.throwIfQuotaExceeded(uploadResponse, metadata.label);
-      throw new ProviderError(
-        "YOUTUBE",
-        `The YouTube upload failed (${uploadResponse.status}).`,
-        uploadResponse.status >= 500,
-      );
+  /**
+   * Fills an open resumable session, and returns the video id YouTube answers
+   * the final chunk with.
+   *
+   * Two shapes, one session. A file at or under `UPLOAD_CHUNK_BYTES` goes as a
+   * single PUT with no `Content-Range` at all — byte-for-byte the request this
+   * method has always sent, which is what keeps every short and every small
+   * render on a path that has not changed. A larger file is sent as a sequence
+   * of `Content-Range` chunks against the same `location`, which is the only
+   * way to learn anything about an upload's progress from an API that reports
+   * nothing until it is finished.
+   *
+   * The loop advances on *YouTube's* accounting, not on this process's. A
+   * `308` answers with `Range: bytes=0-N` naming the last byte it stored, which
+   * can be short of what was just sent — a truncated chunk, a retried socket —
+   * and continuing from that number rather than from the end of the chunk is
+   * what makes the recorded progress a fact about the video on YouTube rather
+   * than a fact about this process's optimism. A confirmation that fails to
+   * advance at all ends the upload rather than spinning: an endpoint that
+   * accepts a chunk and reports no progress will do it again forever.
+   *
+   * Nothing here retries a failed chunk. A resumable session could be resumed —
+   * that is the point of the protocol — but resuming is a decision about
+   * whether an upload is still worth continuing, and making it automatically
+   * inside a Server Action the operator is watching is how a publish comes to
+   * take two hours without anybody choosing that. The failure is reported, the
+   * `Publication` row records how far it got, and the operator decides.
+   */
+  private async sendBytes(
+    location: string,
+    source: UploadSource,
+    label: string | undefined,
+    onProgress?: (uploadedBytes: number) => Promise<void>,
+  ): Promise<string> {
+    /** Shared by both shapes: a non-308 response is either the finished upload
+     *  or a failure, and the failure half is identical in each. */
+    const finish = async (response: Response): Promise<string> => {
+      if (!response.ok) {
+        // Checked on this leg too: the resumable init can succeed and the PUT
+        // still come back 403 `uploadLimitExceeded` when the allowance runs out
+        // between the two calls — which is exactly what publishing four files
+        // in one click makes possible.
+        await this.throwIfQuotaExceeded(response, label);
+        throw new ProviderError(
+          "YOUTUBE",
+          `The YouTube upload failed (${response.status}).`,
+          response.status >= 500,
+        );
+      }
+
+      const body = (await response.json()) as { id?: string };
+      if (!body.id) {
+        throw new ProviderError(
+          "YOUTUBE",
+          "YouTube accepted the upload but returned no video id.",
+          false,
+        );
+      }
+
+      return body.id;
+    };
+
+    if (source.totalBytes <= UPLOAD_CHUNK_BYTES) {
+      const fileBuffer = await source.read(0, source.totalBytes - 1);
+      const uploadResponse = await this.fetchImpl(location, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Length": String(source.totalBytes),
+        },
+        body: fileBuffer as unknown as BodyInit,
+      });
+
+      const id = await finish(uploadResponse);
+      // After the id, never before it. Reporting 100% for an upload that then
+      // fails to come back with an id would leave the bar full over a video
+      // that does not exist.
+      await onProgress?.(source.totalBytes);
+      return id;
     }
 
-    const body = (await uploadResponse.json()) as { id?: string };
-    if (!body.id) {
-      throw new ProviderError(
-        "YOUTUBE",
-        "YouTube accepted the upload but returned no video id.",
-        false,
-      );
+    let offset = 0;
+
+    while (offset < source.totalBytes) {
+      const end = Math.min(offset + UPLOAD_CHUNK_BYTES, source.totalBytes) - 1;
+      const chunk = await source.read(offset, end);
+
+      const response = await this.fetchImpl(location, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Length": String(chunk.byteLength),
+          // Inclusive on both ends, total after the slash — Google's resumable
+          // protocol, not RFC 7233's response form.
+          "Content-Range": `bytes ${offset}-${end}/${source.totalBytes}`,
+        },
+        body: chunk as unknown as BodyInit,
+      });
+
+      if (response.status !== RESUME_INCOMPLETE) {
+        const id = await finish(response);
+        await onProgress?.(source.totalBytes);
+        return id;
+      }
+
+      const next = confirmedOffset(response.headers.get("range")) ?? end + 1;
+
+      if (next <= offset) {
+        throw new ProviderError(
+          "YOUTUBE",
+          `The YouTube upload stopped making progress at ${offset} of ` +
+            `${source.totalBytes} bytes — YouTube accepted a chunk without ` +
+            `recording any of it. Nothing was published.`,
+          true,
+        );
+      }
+
+      offset = next;
+      await onProgress?.(offset);
     }
 
-    return body.id;
+    // Every byte went out and YouTube never answered with anything but "keep
+    // going". Not a success: there is no id, so there is nothing to record as
+    // published, and the row this leaves behind is a FAILED one the operator
+    // can clear after checking the channel.
+    throw new ProviderError(
+      "YOUTUBE",
+      `The whole file was sent (${source.totalBytes} bytes) but YouTube never ` +
+        `confirmed the finished upload. Check the channel before retrying.`,
+      true,
+    );
   }
 }
 

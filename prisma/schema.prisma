@@ -1101,6 +1101,51 @@ model Publication {
   /// the same image twice is idempotent — none of the reasons publishing is
   /// one-shot apply to it.
   thumbnailError   String?
+  /// How many of `totalBytes` YouTube has confirmed it holds, written once per
+  /// upload chunk by `publish()` — see `uploadToYouTube`'s chunked branch.
+  ///
+  /// Confirmed, not merely written to a socket: an intermediate chunk answers
+  /// `308` with a `Range` header naming the last byte YouTube actually stored,
+  /// and that is the number recorded here. Anything looser would be an
+  /// optimistic guess presented as a measurement, which is the exact failure
+  /// this column exists to end — a publish that reports nothing and a publish
+  /// that has died look identical from a spinner.
+  ///
+  /// `Int`, not `BigInt`, caps this at ~2GB. A Framecast render is ~170MB and
+  /// the largest one this app has produced is 463MB, and a `BigInt` here would
+  /// travel to a client component through a Server Action, where it is not
+  /// serialisable. If renders ever approach 2GB, this column and `totalBytes`
+  /// move together.
+  uploadedBytes    Int               @default(0)
+  /// The size of the file this attempt is uploading, recorded the moment the
+  /// render is opened and before the first byte goes out. Null for an attempt
+  /// that failed before it got that far (a missing render, an unusable OAuth
+  /// grant), which is the honest reading: nothing was ever going to be sent.
+  totalBytes       Int?
+  /// When bytes actually started moving, which is *not* `createdAt` — the claim
+  /// row is taken first, and resolving a token and opening the render sit
+  /// between them. The observed rate, and therefore every estimate shown to the
+  /// operator, is measured from here.
+  uploadStartedAt  DateTime?
+  /// The lease, and the only thing that tells a slow upload apart from a dead
+  /// one. Exactly the mechanism `Video.leaseExpiresAt` uses for renders (see
+  /// `JobService.claimNext`), for exactly the same failure: the process holding
+  /// this row can be killed — a deploy restarting the app container mid-upload
+  /// is how this was found — and a killed process runs no `catch`, so the row
+  /// it left behind says `UPLOADING` forever and `videoId @unique` then blocks
+  /// every retry.
+  ///
+  /// Renewed every `HEARTBEAT_SECONDS` for as long as `publish()` is running,
+  /// on a timer rather than on upload progress. That distinction is the whole
+  /// safety argument: a 463MB file over a slow uplink legitimately sends
+  /// nothing for minutes at a time, so "no bytes recently" is not evidence of
+  /// death, whereas "no heartbeat for ten minutes" means the process is gone.
+  ///
+  /// Nothing reclaims a lapsed lease automatically. Unlike a render, an
+  /// interrupted upload may already have left a video on the channel, so a
+  /// lapsed lease only makes the row *clearable by the operator* — see
+  /// `PublishService.clearStuckPublication`.
+  leaseExpiresAt   DateTime?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
