@@ -59,8 +59,8 @@ export const HELP_TOPICS: HelpTopic[] = [
       "without the show: subjects and a clock, written with your default " +
       "style. A shorts drip is the odd one out — it makes nothing, it " +
       "publishes clips already cut from videos you finished, a few a day. " +
-      "That makes it the only thing in Framecast that puts anything on " +
-      "YouTube without you pressing something.",
+      "A series or a queue can publish its own videos too, but only once you " +
+      "have switched that on: it is off by default, and private when you do.",
     action: { label: "Make one video now", href: "/automation/generate" },
   },
   {

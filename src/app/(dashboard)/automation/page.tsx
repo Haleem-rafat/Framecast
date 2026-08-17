@@ -96,12 +96,18 @@ export default async function AutomationPage() {
     <>
       <PageHeader
         title="Automation"
-        description="Everything that makes videos on a repeating cadence, in one list — what it is, where it publishes, when it next runs and whether it is working. Publishing stays yours."
+        // Deliberately short, and shorter than it was. Two things sit above
+        // this list already — the screen's own help note, which explains what
+        // the three kinds are, and the readiness notice when something is
+        // wrong. A third paragraph restating them made the top of the page a
+        // wall of prose with three buttons buried beside it.
+        //
+        // It also no longer ends "Publishing stays yours", which stopped being
+        // true when auto-publish shipped. A sentence that reassures an operator
+        // about a guarantee the app no longer makes is worse than no sentence.
+        description="Everything that makes videos on a repeating cadence — what it is, when it next runs, and whether it is working."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {/* Hidden with no rows for the same reason the create menu is:
-                offering a choice of two ways to draw nothing is noise. */}
-            {automations.length > 0 && <ViewToggle view={view} />}
             {/* The one-shot flow, kept at the top of the screen it is most
                 often reached from. Deliberately not the primary button: this
                 page is about the things that run without anybody present, and
@@ -125,6 +131,18 @@ export default async function AutomationPage() {
       />
 
       {!ready && <ReadinessNotice blockers={setup.blockers} />}
+
+      {/* The view switch belongs to the thing it switches, not to the header.
+          It is not an action — nothing is created, nothing is spent — and
+          sitting it beside "Make one video now" and "New automation" made three
+          controls that look alike and do unlike things. Here it reads as a
+          control *for the list below it*, which is what it is, and the header
+          is back to two real calls to action. */}
+      {automations.length > 0 && (
+        <div className="flex justify-end">
+          <ViewToggle view={view} />
+        </div>
+      )}
 
       <Reveal>
         {automations.length > 0 && view === "CANVAS" ? (

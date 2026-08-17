@@ -11,9 +11,8 @@ import {
   type Connection,
   type Edge,
   type Node,
-  type NodeChange,
 } from "@xyflow/react";
-import { useCallback, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
@@ -232,7 +231,7 @@ function Canvas({ model }: { model: CanvasModel }) {
 
   const initial = useMemo(() => buildGraph(model), [model]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
-  const [edges, , onEdgesChange] = useEdgesState(initial.edges);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
 
   /** Which automation the inspector is showing, by `rowId`. Held as an id
    *  rather than the entry itself so a refresh after an edit re-reads the row
@@ -250,27 +249,62 @@ function Canvas({ model }: { model: CanvasModel }) {
     [model, selectedRowId],
   );
 
-  // The rows changed underneath us — an automation was paused, a video
-  // published. Rebuild rather than merge: everything but the positions is
-  // derived, and the positions are in `model` too.
-  useMemo(() => {
-    setNodes(initial.nodes);
-  }, [initial.nodes, setNodes]);
+  /**
+   * The rows changed underneath us — an automation was paused, auto-publish was
+   * switched on, a video published.
+   *
+   * Data is taken from the server; **position is not**. A node already on
+   * screen keeps exactly where it is, and only a node that has just appeared
+   * takes the position `buildGraph` worked out for it.
+   *
+   * That split is the whole fix for a card springing back after being dragged.
+   * The save is debounced by 400ms, so any refresh inside that window — the
+   * inspector toggling auto-publish, a revalidate from anywhere else, React
+   * Strict Mode in development — used to hand back the *previous* stored
+   * position and undo the drag in front of the operator. Treating the screen as
+   * authoritative for position removes the race rather than narrowing it.
+   *
+   * A real `useEffect`, not a `useMemo`. The previous version called `setNodes`
+   * during render, which is a React violation that happens to work until it
+   * does not.
+   */
+  useEffect(() => {
+    setNodes((current) => {
+      const placed = new Map(current.map((node) => [node.id, node.position]));
 
-  const handleNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      onNodesChange(changes);
+      return initial.nodes.map((node) => {
+        const held = placed.get(node.id);
 
-      for (const change of changes) {
-        // `dragging: false` is the end of a gesture. Positions during one are
-        // local only — see `useNodePositions` for why this is debounced rather
-        // than fired per frame.
-        if (change.type === "position" && change.position && !change.dragging) {
-          savePosition(change.id, change.position.x, change.position.y);
-        }
+        return held ? { ...node, position: held } : node;
+      });
+    });
+    // Edges carry state now — animated while active, dashed while publishing is
+    // off — so they have to be rebuilt too. Without this, switching
+    // auto-publish on left its edge dashed until a full page load.
+    setEdges(initial.edges);
+  }, [initial, setNodes, setEdges]);
+
+  /**
+   * Saves where a drag finished.
+   *
+   * `onNodeDragStop` rather than watching `NodeChange`s. React Flow does not
+   * guarantee a `position` on the final change of a gesture, so the previous
+   * version's `change.position && !change.dragging` guard silently skipped some
+   * drags entirely — the position was never sent and the node moved back on the
+   * next render. This callback is handed the node itself, with its final
+   * position, every time.
+   *
+   * The third argument is every node that moved, which is more than one when a
+   * selection is dragged. Saving only the one under the cursor would strand the
+   * rest.
+   */
+  const handleNodeDragStop = useCallback(
+    (_event: unknown, _node: Node, dragged: Node[]) => {
+      for (const node of dragged) {
+        savePosition(node.id, node.position.x, node.position.y);
       }
     },
-    [onNodesChange, savePosition],
+    [savePosition],
   );
 
   const isValidConnection = useCallback(
@@ -400,7 +434,8 @@ function Canvas({ model }: { model: CanvasModel }) {
         nodes={nodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
-        onNodesChange={handleNodesChange}
+        onNodesChange={onNodesChange}
+        onNodeDragStop={handleNodeDragStop}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
