@@ -137,7 +137,13 @@ export function MobileDock({ isOperator }: { isOperator: boolean }) {
        * itself: the wrapper spans the viewport so the bar can be centred, and
        * without this it would swallow taps on whatever sits either side of the
        * dock — including a button in the last row of the page. */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] md:hidden">
+      <div
+        // The phone half of the tour's navigation step. `md:hidden` means this
+        // measures zero on a desktop, where the sidebar carries the same
+        // attribute and wins instead — see `elementFor` in the tour.
+        data-tour="tour-nav"
+        className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] md:hidden"
+      >
         <FloatingDock
           items={items}
           aria-label="Primary"

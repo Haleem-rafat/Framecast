@@ -1,14 +1,16 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   Library,
+  Lightbulb,
   Monitor,
   Moon,
   MonitorPlay,
+  PlayCircle,
   Search,
   Sparkles,
   Sun,
@@ -27,6 +29,9 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { visibleNavigation } from "@/config/navigation";
+import { helpKey } from "@/features/onboarding/dismissal";
+import { resolveHelpTopic } from "@/features/onboarding/help-topics";
+import { useOnboarding } from "@/features/onboarding/components/onboarding-provider";
 import { useKeyboardShortcut } from "@/hooks/use-keyboard-shortcut";
 // From `@/lib/search`, never from `@/services/search.service` — the service is
 // `server-only` and importing it here would fail the client build.
@@ -102,7 +107,9 @@ export function CommandPalette({ isOperator }: { isOperator: boolean }) {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const router = useRouter();
+  const pathname = usePathname();
   const { setTheme } = useTheme();
+  const { requestTour, restoreHelpHints, restore, isDismissed } = useOnboarding();
 
   /**
    * Monotonic id of the most recent search worth rendering.
@@ -211,12 +218,74 @@ export function CommandPalette({ isOperator }: { isOperator: boolean }) {
     [trimmedQuery],
   );
 
+  /**
+   * Onboarding's second home.
+   *
+   * /settings carries the same three controls in a card, and this is the fast
+   * path to them: an operator who dismissed the tour on day one is far more
+   * likely to type "help" than to go looking through preferences for it. The
+   * third command only exists where there is a note for the current screen and
+   * it has already been put away — offering "show it again" for a screen that
+   * has nothing to show, or is showing it right now, is a dead row.
+   */
+  const helpItems = useMemo(() => {
+    const topic = resolveHelpTopic(pathname, isOperator);
+
+    const commands = [
+      {
+        id: "tour",
+        title: "Replay the welcome tour",
+        icon: PlayCircle,
+        keywords: [
+          "onboarding",
+          "guide",
+          "tutorial",
+          "walkthrough",
+          "getting started",
+          "tour",
+          "help",
+        ],
+        run: requestTour,
+      },
+      {
+        id: "hints",
+        title: "Bring back every screen note",
+        icon: Lightbulb,
+        keywords: ["onboarding", "help", "tips", "hints", "guide", "explain"],
+        run: restoreHelpHints,
+      },
+    ];
+
+    if (topic && isDismissed(helpKey(topic.id))) {
+      commands.push({
+        id: "this-screen",
+        title: "Explain this screen again",
+        icon: Lightbulb,
+        keywords: ["help", "hint", "tip", "what is this", "onboarding"],
+        run: () => restore([helpKey(topic.id)]),
+      });
+    }
+
+    return commands.filter((command) =>
+      matches(trimmedQuery, command.title, command.keywords),
+    );
+  }, [
+    isDismissed,
+    isOperator,
+    pathname,
+    requestTour,
+    restore,
+    restoreHelpHints,
+    trimmedQuery,
+  ]);
+
   const navCount = navGroups.reduce((total, group) => total + group.items.length, 0);
   const contentCount = groups.reduce(
     (total, group) => total + group.results.length,
     0,
   );
-  const totalCount = navCount + themeItems.length + contentCount;
+  const totalCount =
+    navCount + themeItems.length + helpItems.length + contentCount;
 
   /**
    * What a screen reader is told after each change.
@@ -247,6 +316,10 @@ export function CommandPalette({ isOperator }: { isOperator: boolean }) {
         variant="outline"
         onClick={() => setOpen(true)}
         aria-label="Search"
+        // The tour's last step points here. In the top bar rather than the
+        // sidebar deliberately: this is the one control the tour highlights
+        // that is in the same place at every viewport width.
+        data-tour="tour-search"
         className="text-muted-foreground relative size-11 justify-center gap-0 p-0 sm:h-9 sm:w-64 sm:justify-start sm:gap-2 sm:px-3 sm:pr-2"
       >
         <Search className="size-4" />
@@ -311,6 +384,24 @@ export function CommandPalette({ isOperator }: { isOperator: boolean }) {
               ))}
             </CommandGroup>
           ))}
+
+          {helpItems.length > 0 && (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading="Help">
+                {helpItems.map((command) => (
+                  <CommandItem
+                    key={command.id}
+                    value={`help:${command.id}`}
+                    onSelect={() => runCommand(command.run)}
+                  >
+                    <command.icon />
+                    <span>{command.title}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </>
+          )}
 
           {themeItems.length > 0 && (
             <>

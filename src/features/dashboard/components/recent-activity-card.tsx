@@ -51,7 +51,11 @@ export function RecentActivityCard({ items }: { items: RecentActivity[] }) {
           <EmptyState
             icon={Activity}
             title="Nothing logged yet"
-            description="Actions across the studio will appear here as they happen."
+            // Named triggers rather than "actions across the studio", which
+            // told an operator nothing they could act on. The activity list on
+            // /logs already says this; the dashboard's copy of the same empty
+            // state was the one still describing itself in the abstract.
+            description="Writing a script, narrating one, or publishing a video each leaves a line here — so this fills up on its own the moment you make something."
           />
         ) : (
           <ul className="space-y-4">

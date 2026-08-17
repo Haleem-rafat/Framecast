@@ -75,7 +75,11 @@ export function AppSidebar({ user, isOperator }: AppSidebarProps) {
        * of which is navigation. A label is mandatory rather than nicety: the
        * breadcrumb ("breadcrumb") and the mobile dock ("Primary") are already
        * navigation landmarks, and three unnamed ones are worse than none. */}
-      <SidebarContent role="navigation" aria-label="Studio">
+      {/* The tour's navigation step points here on a desktop, and at the dock
+       * on a phone — both carry `data-tour="tour-nav"` and exactly one of them
+       * is ever rendered, so the tour highlights whichever this account is
+       * actually looking at. */}
+      <SidebarContent role="navigation" aria-label="Studio" data-tour="tour-nav">
         {visibleNavigation(isOperator).map((group) => (
           <SidebarGroup key={group.label}>
             <SidebarGroupLabel>{group.label}</SidebarGroupLabel>

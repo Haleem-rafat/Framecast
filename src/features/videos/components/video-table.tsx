@@ -7,6 +7,7 @@ import { Video } from "lucide-react";
 import { DataTable, type DataTableColumn } from "@/components/shared/data-table";
 import { EmptyState } from "@/components/shared/empty-state";
 import { RelativeTime } from "@/components/shared/relative-time";
+import { Button } from "@/components/ui/button";
 import { BulkDeleteVideosButton } from "@/features/videos/components/bulk-delete-videos-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import { VideoStatus } from "@/generated/prisma/enums";
@@ -129,13 +130,26 @@ export function VideoTable({
         ),
       }}
       empty={
+        // Both branches now offer a way out, which neither did. The unfiltered
+        // one pointed at "create your first video" without saying where the
+        // button was — and the create dialog lives in the page header, which is
+        // above the fold on a desktop and a scroll away on a phone. The
+        // filtered one said "try a different status filter" to somebody whose
+        // filter is a URL parameter, so the fastest undo is a link back.
         <EmptyState
           icon={Video}
           title={hasFilter ? "No videos match that status" : "No videos yet"}
           description={
             hasFilter
-              ? "Try a different status filter."
-              : "Create your first video and take it from script to publish."
+              ? "Nothing in your library is at that stage right now. Clear the filter to see everything."
+              : "One-click video writes, approves and renders one from a subject you pick — or use New video above to start a draft and write the script yourself."
+          }
+          action={
+            <Button asChild variant={hasFilter ? "outline" : "default"} size="sm">
+              <Link href={hasFilter ? "/videos" : "/automation/generate"}>
+                {hasFilter ? "Show every video" : "Make a video"}
+              </Link>
+            </Button>
           }
         />
       }

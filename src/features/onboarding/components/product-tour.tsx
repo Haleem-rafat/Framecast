@@ -1,28 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { TOUR_KEY } from "@/features/onboarding/dismissal";
+import { useOnboarding } from "@/features/onboarding/components/onboarding-provider";
 import { TOUR_STEPS, type TourStep } from "@/features/onboarding/tour-steps";
-
-/**
- * Marks the tour as seen. A UI preference, not domain state: it belongs to this
- * browser, needs no history, and nothing server-side ever asks about it — so it
- * lives in localStorage rather than costing a column and a migration. The cost
- * of being wrong is that someone sees the tour twice on a second device.
- */
-const SEEN_KEY = "framecast:tour-seen:v1";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 
 /** Breathing room between the highlighted element and the cutout's edge. */
 const SPOTLIGHT_PADDING = 6;
 /** Gap between the cutout and the card that explains it. */
 const CARD_GAP = 12;
 const CARD_WIDTH = 340;
-/** Below this the sidebar is a drawer, so its items aren't on screen to point
- *  at. The tour would be pointing at nothing, so it doesn't run at all. */
-const MIN_VIEWPORT_WIDTH = 768;
+/**
+ * Below this there is no room to put a 340px card *beside* anything, so the
+ * card goes above or below the target instead and spans the screen.
+ *
+ * This used to be `MIN_VIEWPORT_WIDTH`, and the tour refused to run at all
+ * under it. That was defensible only because every step but two pointed at a
+ * sidebar row, and the sidebar does not render below `md` — so the tour would
+ * have been narrating an empty left margin. The steps now point at the page and
+ * the top bar, both of which exist at every width, and the dock stands in for
+ * the sidebar. There is nothing left to bail out for, and bailing out meant no
+ * first-run experience at all on a phone.
+ */
+const NARROW_VIEWPORT = 640;
+/** Margin from the screen edge for the full-width card on a narrow viewport. */
+const EDGE_MARGIN = 12;
+/**
+ * Space to assume the card needs when deciding which side of the target it goes
+ * on. Its real height is not known until it has rendered, and anchoring by the
+ * near edge (`top` below the target, `bottom` above it) means an under-estimate
+ * costs nothing — the card grows away from the thing it is pointing at.
+ */
+const ASSUMED_CARD_HEIGHT = 220;
 
 interface Rect {
   top: number;
@@ -31,92 +45,163 @@ interface Rect {
   height: number;
 }
 
-function rectOf(target: string): Rect | null {
-  const element = document.querySelector(`[data-tour="${target}"]`);
+/**
+ * The first *rendered* element carrying this target, not the first in the DOM.
+ *
+ * `tour-nav` is on the sidebar and on the mobile dock, exactly one of which is
+ * ever displayed. A bare `querySelector` returns the sidebar every time, and on
+ * a phone the sidebar is a closed drawer — so the tour would point at a
+ * zero-sized box and skip its own navigation step on the one device where
+ * navigation most needs explaining.
+ */
+function elementFor(target: string): HTMLElement | null {
+  const candidates = document.querySelectorAll<HTMLElement>(
+    `[data-tour="${target}"]`,
+  );
 
-  if (!element) {
-    return null;
+  for (const candidate of candidates) {
+    const { width, height } = candidate.getBoundingClientRect();
+    // A zero-sized box means the element is in the DOM but not rendered — a
+    // collapsed sidebar, a hidden panel, a `md:hidden` dock on a desktop.
+    if (width > 0 && height > 0) return candidate;
   }
 
-  const { top, left, width, height } = element.getBoundingClientRect();
+  return null;
+}
 
-  // A zero-sized box means the element is in the DOM but not rendered — a
-  // collapsed sidebar, a hidden panel. Pointing at it would put the card in a
-  // corner with nothing under it.
-  if (width === 0 || height === 0) {
-    return null;
-  }
-
-  return { top, left, width, height };
+interface CardPosition {
+  left: number;
+  width: number;
+  /** Exactly one of these is set — see `ASSUMED_CARD_HEIGHT`. */
+  top?: number;
+  bottom?: number;
 }
 
 /**
- * Places the card beside the cutout, preferring the right — the sidebar is on
- * the left, so most targets have room there — and flipping when it would leave
- * the viewport. Clamped on both axes so the card is never partly off screen,
- * whatever the target's position.
+ * Beside the target on a desktop, above or below it on a phone.
+ *
+ * The wide branch prefers the right, because the sidebar is on the left and
+ * most targets have room there, and flips when the card would leave the
+ * viewport. The narrow branch has no sideways room at all, so it goes below the
+ * target when there is space beneath and above it otherwise — anchored by
+ * whichever edge faces the target, so the card can be any height without ever
+ * covering the thing it is describing.
  */
-function placeCard(rect: Rect, viewport: { width: number; height: number }) {
-  const wouldOverflowRight = rect.left + rect.width + CARD_GAP + CARD_WIDTH > viewport.width;
+function placeCard(
+  rect: Rect,
+  viewport: { width: number; height: number },
+): CardPosition {
+  if (viewport.width < NARROW_VIEWPORT) {
+    const width = viewport.width - EDGE_MARGIN * 2;
+    const below = rect.top + rect.height + CARD_GAP;
+    const fitsBelow = below + ASSUMED_CARD_HEIGHT <= viewport.height;
+
+    return fitsBelow
+      ? { left: EDGE_MARGIN, width, top: below }
+      : {
+          left: EDGE_MARGIN,
+          width,
+          bottom: Math.max(EDGE_MARGIN, viewport.height - rect.top + CARD_GAP),
+        };
+  }
+
+  const wouldOverflowRight =
+    rect.left + rect.width + CARD_GAP + CARD_WIDTH > viewport.width;
 
   const left = wouldOverflowRight
     ? Math.max(CARD_GAP, rect.left - CARD_GAP - CARD_WIDTH)
     : rect.left + rect.width + CARD_GAP;
 
-  // Roughly vertically centred on the target, then clamped. The card's real
-  // height isn't known before paint, so this reserves a conservative 220px.
+  // Roughly vertically centred on the target, then clamped.
   const top = Math.min(
-    Math.max(CARD_GAP, rect.top + rect.height / 2 - 110),
-    Math.max(CARD_GAP, viewport.height - 220 - CARD_GAP),
+    Math.max(CARD_GAP, rect.top + rect.height / 2 - ASSUMED_CARD_HEIGHT / 2),
+    Math.max(CARD_GAP, viewport.height - ASSUMED_CARD_HEIGHT - CARD_GAP),
   );
 
-  return { top, left };
+  return { left, width: CARD_WIDTH, top };
 }
 
+/**
+ * The first-run walkthrough. Five steps, ending at the operator's first video.
+ *
+ * `autoStart` is the dashboard's judgement about whether this account still
+ * needs it; `tourRequested` is the operator asking for it back from /settings
+ * or the ⌘K palette, and outranks having finished it before. Whether it has
+ * been seen lives on the user row rather than in this browser — see
+ * `UserSetting.onboardingSeen` — so an operator who learned the app on a laptop
+ * is not taught it again on their phone.
+ */
 export function ProductTour({ autoStart }: { autoStart: boolean }) {
+  const { isDismissed, dismiss, tourRequested, clearTourRequest } =
+    useOnboarding();
+  const reducedMotion = usePrefersReducedMotion();
+
   const [steps, setSteps] = useState<TourStep[] | null>(null);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  const wanted = tourRequested || (autoStart && !isDismissed(TOUR_KEY));
 
   const finish = useCallback(() => {
-    window.localStorage.setItem(SEEN_KEY, "1");
     setSteps(null);
-  }, []);
+    setIndex(0);
+    clearTourRequest();
+    dismiss(TOUR_KEY);
+  }, [clearTourRequest, dismiss]);
 
-  // Deciding what to run has to happen on the client: it depends on
-  // localStorage and on which targets actually rendered, neither of which the
-  // server knows. Running it in an effect also keeps the first paint identical
-  // between server and client, so there's no hydration mismatch.
+  // Which steps can actually run has to be decided in the browser: it depends
+  // on which targets rendered, which the server does not know. Doing it in an
+  // effect also keeps the first paint identical on both sides, so there is no
+  // hydration mismatch.
   useEffect(() => {
-    if (!autoStart || window.localStorage.getItem(SEEN_KEY) === "1") {
+    if (!wanted) {
+      setSteps(null);
       return;
     }
 
-    if (window.innerWidth < MIN_VIEWPORT_WIDTH) {
-      return;
-    }
-
-    const present = TOUR_STEPS.filter((step) => rectOf(step.target) !== null);
+    const present = TOUR_STEPS.filter((step) => elementFor(step.target) !== null);
 
     // One lonely step isn't a tour. Better to show nothing than to interrupt
-    // someone with a single popover.
+    // someone with a single popover — and if this ever fires it means the
+    // targets have drifted, which `tour-steps.test.ts` is there to catch first.
     if (present.length < 2) {
+      clearTourRequest();
       return;
     }
 
+    setIndex(0);
     setSteps(present);
-  }, [autoStart]);
+  }, [wanted, clearTourRequest]);
 
   const current = steps?.[index] ?? null;
 
   // Measured before paint, so the spotlight never appears at a stale position
   // for a frame when moving between steps.
   useLayoutEffect(() => {
-    if (!current) {
-      return;
-    }
+    if (!current) return;
 
-    const measure = () => setRect(rectOf(current.target));
+    const measure = () => {
+      const element = elementFor(current.target);
+      if (!element) {
+        setRect(null);
+        return;
+      }
+
+      const box = element.getBoundingClientRect();
+      // A target below the fold — the checklist on a phone, say — would
+      // otherwise be spotlit off screen with the card floating over nothing.
+      // Instant rather than smooth on purpose: the measurement below has to
+      // describe where the element *is*, and a smooth scroll would make that
+      // true only several frames later.
+      if (box.top < 0 || box.bottom > window.innerHeight) {
+        element.scrollIntoView({ block: "center", behavior: "auto" });
+      }
+
+      const { top, left, width, height } = element.getBoundingClientRect();
+      setRect(width > 0 && height > 0 ? { top, left, width, height } : null);
+    };
+
     measure();
 
     window.addEventListener("resize", measure);
@@ -128,6 +213,14 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
+  }, [current]);
+
+  // Focus follows the step. Without this, tabbing from the page behind the
+  // overlay walks the whole dimmed studio before reaching the one dialog that
+  // is actually operable — and a keyboard user who pressed nothing has no idea
+  // the tour has moved on.
+  useEffect(() => {
+    if (current) cardRef.current?.focus();
   }, [current]);
 
   const isLast = steps !== null && index === steps.length - 1;
@@ -143,9 +236,7 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
   const back = useCallback(() => setIndex((i) => Math.max(0, i - 1)), []);
 
   useEffect(() => {
-    if (!current) {
-      return;
-    }
+    if (!current) return;
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -175,6 +266,10 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
 
   const viewport = { width: window.innerWidth, height: window.innerHeight };
   const card = placeCard(rect, viewport);
+  // The spotlight and the card slide between steps. For somebody who asked
+  // their system for less motion they jump instead, which is the same
+  // information with none of the travel.
+  const motion = reducedMotion ? "" : "transition-all duration-200";
 
   return createPortal(
     <div
@@ -187,7 +282,7 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
        * darkens everything outside this box, so the highlighted element stays
        * at full brightness without a second overlay or a clip-path. */}
       <div
-        className="pointer-events-none absolute rounded-lg ring-2 ring-background/80 transition-all duration-200"
+        className={`pointer-events-none absolute rounded-lg ring-2 ring-background/80 ${motion}`}
         style={{
           top: rect.top - SPOTLIGHT_PADDING,
           left: rect.left - SPOTLIGHT_PADDING,
@@ -206,8 +301,8 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
        * name of the real X button a few stops later. Two identically named
        * controls, one of them nine tenths of the screen and invisible, is a
        * worse outcome than the click-to-dismiss affordance it was buying.
-       * Dismissal by keyboard is unaffected: Escape is bound above and the X
-       * button is properly focusable. */}
+       * Dismissal by keyboard is unaffected: Escape is bound above, the card
+       * itself takes focus on every step, and the X button is focusable. */}
       <div
         aria-hidden="true"
         onClick={finish}
@@ -215,8 +310,18 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
       />
 
       <div
-        className="bg-popover text-popover-foreground absolute flex flex-col gap-3 rounded-xl p-5 shadow-2xl shadow-black/30 ring-1 ring-foreground/10 transition-all duration-200"
-        style={{ top: card.top, left: card.left, width: CARD_WIDTH }}
+        ref={cardRef}
+        // Focusable by script but not in the tab order: focus is moved here on
+        // every step so the next Tab lands on Back or Next, not on the page
+        // behind the dim.
+        tabIndex={-1}
+        className={`bg-popover text-popover-foreground absolute flex flex-col gap-3 rounded-xl p-5 shadow-2xl shadow-black/30 ring-1 ring-foreground/10 outline-none ${motion}`}
+        style={{
+          top: card.top,
+          bottom: card.bottom,
+          left: card.left,
+          width: card.width,
+        }}
       >
         <div className="flex items-start justify-between gap-3">
           <h2 id="tour-title" className="text-base leading-tight font-semibold tracking-tight">
@@ -233,7 +338,9 @@ export function ProductTour({ autoStart }: { autoStart: boolean }) {
           </Button>
         </div>
 
-        <p className="text-muted-foreground text-sm leading-relaxed">{current.body}</p>
+        <p className="text-muted-foreground text-sm leading-relaxed text-pretty">
+          {current.body}
+        </p>
 
         <div className="flex items-center justify-between gap-3 pt-1">
           {/* Advancing swaps the title and body in place, which a screen

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { AlertTriangle, Clock, Radio } from "lucide-react";
 
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -74,8 +75,14 @@ export function ChannelPerformance({
         </CardHeader>
         <CardContent>
           <p className="text-muted-foreground py-6 text-center text-sm text-balance">
-            No channels are connected, so there is nothing to pull. Connect one
-            on the Channels page and collection starts on its own.
+            No channels are connected, so there is nothing to pull.{" "}
+            {/* Named the page and made the operator go and find it. It is one
+                link; the whole point of an empty state is that the next step is
+                in it. */}
+            <Link href="/channels" className="text-foreground underline underline-offset-4">
+              Connect one
+            </Link>{" "}
+            and collection starts on its own.
           </p>
         </CardContent>
       </Card>

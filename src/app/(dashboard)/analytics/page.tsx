@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { CircleAlert, Clapperboard, Timer, Wallet, Zap } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
@@ -170,8 +171,15 @@ export default async function AnalyticsPage() {
           </CardHeader>
           <CardContent>
             {overview.videosByStatus.length === 0 ? (
-              <p className="text-muted-foreground py-6 text-center text-sm">
-                No videos yet.
+              <p className="text-muted-foreground py-6 text-center text-sm text-balance">
+                No videos yet, so there is nothing to break down.{" "}
+                <Link
+                  href="/automation/generate"
+                  className="text-foreground underline underline-offset-4"
+                >
+                  Make one
+                </Link>{" "}
+                and it appears here as soon as it exists.
               </p>
             ) : (
               <BarList

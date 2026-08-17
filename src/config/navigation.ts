@@ -252,7 +252,21 @@ export const navigation: NavGroup[] = [
         title: "Settings",
         href: "/settings",
         icon: Settings,
-        keywords: ["theme", "defaults", "storage"],
+        // "guides", "onboarding" and "tour" are here because the page now
+        // carries the Guides card — the one place that replays the welcome
+        // tour and brings the per-screen notes back. Somebody who dismissed
+        // onboarding and wants it again will type one of those three words,
+        // and the same rule as ever applies: each one leads to something the
+        // page actually displays.
+        keywords: [
+          "theme",
+          "defaults",
+          "storage",
+          "guides",
+          "onboarding",
+          "tour",
+          "help",
+        ],
         built: true,
       },
     ],

@@ -401,8 +401,11 @@ export function EasyModeFlow({
 
         <CardContent className="space-y-5">
           {groups.length === 0 ? (
-            <p className="text-muted-foreground rounded-md border border-dashed px-3 py-4 text-sm">
-              No subjects to offer for this channel yet.
+            <p className="text-muted-foreground rounded-md border border-dashed px-3 py-4 text-sm text-balance">
+              Nothing to offer yet. Press the button below and Framecast will
+              write six subjects for this channel&apos;s niche — or put your own
+              in a topic queue on an automation and they will appear here first,
+              marked as yours.
             </p>
           ) : (
             <RadioGroup

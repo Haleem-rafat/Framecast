@@ -1972,6 +1972,29 @@ model UserSetting {
   defaultTags           String[]
   storageBucket         String?
   defaultScriptPromptId String?           @db.Uuid
+  /// Which pieces of onboarding this person has already read and put away:
+  /// the first-run tour, the setup checklist, and one entry per screen hint
+  /// (`help:automation`, `help:channels`, …). See
+  /// src/features/onboarding/dismissal.ts for the key vocabulary.
+  ///
+  /// A column rather than `localStorage`, which is where the single
+  /// tour-seen flag used to live and where the video page's section state
+  /// still does. Three things changed the answer:
+  ///
+  ///   1. It is no longer one flag. Twenty-odd hints times however many
+  ///      browsers an operator uses is twenty-odd re-teachings per device,
+  ///      and being re-taught what you already know is the same complaint —
+  ///      "it's so difficult" — pointed the other way.
+  ///   2. Replay has to be findable. "Show the guides again" on /settings can
+  ///      only clear what the server can see; a `localStorage` set is
+  ///      invisible to the phone the operator is holding.
+  ///   3. It removes a flash. The layout already reads this row for theme and
+  ///      accent, so a hint that will not be shown is never rendered at all,
+  ///      rather than rendered and then withdrawn by a client effect.
+  ///
+  /// A `String[]` rather than a column per hint so that adding a screen hint
+  /// is a content change, never a migration.
+  onboardingSeen        String[]          @default([])
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 

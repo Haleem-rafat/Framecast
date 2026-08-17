@@ -4,6 +4,7 @@ import { Info } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { GuidesCard } from "@/features/onboarding/components/guides-card";
 import { SettingsForm } from "@/features/settings/components/settings-form";
 import {
   TOTAL_SETTING_COUNT,
@@ -58,6 +59,16 @@ export default async function SettingsPage() {
       )}
 
       <SettingsForm settings={settings} scriptPrompts={scriptPrompts} />
+
+      {/* Below the form rather than in it. Nothing here is a saved preference —
+       * these three buttons take effect the moment they are pressed and there
+       * is nothing to submit — so putting them inside a form whose Save button
+       * would not apply to them would be the misleading arrangement. This is
+       * also the answer to "I closed the thing that explained the product":
+       * /settings is reachable from the sidebar, the account menu and the
+       * phone dock's More sheet, so onboarding is findable again from every
+       * navigation surface without any of them growing a new control. */}
+      <GuidesCard />
 
       <p className="text-muted-foreground text-xs">
         {settings.updatedAt ? (

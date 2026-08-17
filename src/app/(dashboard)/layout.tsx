@@ -5,9 +5,12 @@ import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppTopbar } from "@/components/layout/app-topbar";
 import { MobileDock } from "@/components/layout/mobile-dock";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { HelpHint } from "@/features/onboarding/components/help-hint";
+import { OnboardingProvider } from "@/features/onboarding/components/onboarding-provider";
 import { Appearance } from "@/providers/appearance";
 import { requireUser } from "@/server/session";
 import { accountService } from "@/services/account.service";
+import { onboardingService } from "@/services/onboarding.service";
 import { settingsService } from "@/services/settings.service";
 
 /**
@@ -77,9 +80,16 @@ export default async function DashboardLayout({
   children: ReactNode;
 }) {
   const user = await requireUser();
-  const [appearance, role] = await Promise.all([
+  const [appearance, role, onboarding] = await Promise.all([
     settingsService.appearance(user.id),
     accountService.roleFor(user.id),
+    // A third lookup on the critical path of every authenticated render, and it
+    // buys the absence of a flash: the screen note for this route is either
+    // rendered in the first frame or never rendered at all, rather than
+    // appearing and then withdrawing itself once a client effect has read
+    // storage. One indexed read of one column, in parallel with two that were
+    // already happening.
+    onboardingService.getProgress(user.id),
   ]);
 
   /**
@@ -97,79 +107,92 @@ export default async function DashboardLayout({
   const isOperator = role === "OPERATOR";
 
   return (
-    <SidebarProvider>
-      {/* First in the tree, so the accent stylesheet and the theme sync land
-          ahead of every pixel they affect. Renders nothing visible. */}
-      <Appearance theme={appearance.theme} accent={appearance.accent} />
+    /* Renders no DOM of its own. It wraps every navigation surface and `main`
+     * because all three onboarding surfaces need the same answer to "has this
+     * person already read that": the tour on the dashboard, the note at the top
+     * of each screen, and the ⌘K commands that bring them back. Held by the
+     * layout rather than by a page so the set survives client-side navigation
+     * instead of being re-read on every route. */
+    <OnboardingProvider dismissed={onboarding.dismissed}>
+      <SidebarProvider>
+        {/* First in the tree, so the accent stylesheet and the theme sync land
+            ahead of every pixel they affect. Renders nothing visible. */}
+        <Appearance theme={appearance.theme} accent={appearance.accent} />
 
-      {/* First focusable thing in the document, and invisible until it is
-       * focused. Without it a keyboard or switch user arrives on every page
-       * behind the sidebar's fifteen nav items plus the topbar's controls, and
-       * has to tab past all of them again on the next page — the sidebar is
-       * persistent, so the cost is paid per navigation, forever.
-       *
-       * `sr-only` with a `focus:` escape rather than the usual off-screen
-       * `-top-full` trick: `sr-only` already keeps it out of layout without
-       * removing it from the accessibility tree, and `focus:not-sr-only` is the
-       * one-class undo. z-50 puts it over the sticky topbar, which would
-       * otherwise cover it at the moment it becomes visible. */}
-      <a
-        href="#main-content"
-        className="bg-background text-foreground ring-ring sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:ring-2"
-      >
-        Skip to content
-      </a>
+        {/* First focusable thing in the document, and invisible until it is
+         * focused. Without it a keyboard or switch user arrives on every page
+         * behind the sidebar's fifteen nav items plus the topbar's controls, and
+         * has to tab past all of them again on the next page — the sidebar is
+         * persistent, so the cost is paid per navigation, forever.
+         *
+         * `sr-only` with a `focus:` escape rather than the usual off-screen
+         * `-top-full` trick: `sr-only` already keeps it out of layout without
+         * removing it from the accessibility tree, and `focus:not-sr-only` is the
+         * one-class undo. z-50 puts it over the sticky topbar, which would
+         * otherwise cover it at the moment it becomes visible. */}
+        <a
+          href="#main-content"
+          className="bg-background text-foreground ring-ring sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:ring-2"
+        >
+          Skip to content
+        </a>
 
-      <AppSidebar
-        user={{ name: user.name, email: user.email, image: user.image ?? null }}
-        isOperator={isOperator}
-      />
-      <SidebarInset>
-        <AppTopbar
-          user={{
-            name: user.name,
-            email: user.email,
-            image: user.image ?? null,
-          }}
+        <AppSidebar
+          user={{ name: user.name, email: user.email, image: user.image ?? null }}
           isOperator={isOperator}
         />
-        <main
-          id="main-content"
-          // The skip link above lands here, and a heading-less landing point is
-          // a dead end for anyone who cannot see where focus went. -1 makes the
-          // element focusable by script and by that link without inserting it
-          // into the tab order.
-          tabIndex={-1}
-          className={[
-            "flex min-w-0 flex-1 flex-col gap-6 p-4 md:p-6",
-            // The dock is fixed, so it is out of flow and would otherwise sit
-            // on top of whatever the page ends with — a table's last row, a
-            // form's Save button. This reserves the bar's height (44px item +
-            // 8px padding + 12px lift) plus the home indicator beneath it, and
-            // it does so once here rather than in every page.
-            "pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-6",
-            // Every control in the studio is sized for a cursor: the design
-            // system's default button is 32px tall and its `sm` is 28px. Rather
-            // than annotate a few hundred call sites — and rather than change
-            // the buttons themselves, which would resize the desktop app — this
-            // raises anything interactive to a 44px target on touch devices
-            // only. `pointer: coarse` rather than a width breakpoint, because
-            // what matters is the finger, not the viewport.
-            "[@media(pointer:coarse)]:[&_[data-slot=button]]:min-h-11",
-            "[@media(pointer:coarse)]:[&_[data-slot=button][data-size^=icon]]:min-w-11",
-            "[@media(pointer:coarse)]:[&_[data-slot=select-trigger]]:min-h-11",
-            // 16px is the threshold below which iOS Safari zooms the whole page
-            // in when a field takes focus — the single most website-like thing
-            // a form can do on a phone.
-            "[@media(pointer:coarse)]:[&_input]:min-h-11 [@media(pointer:coarse)]:[&_input]:text-base",
-            "[@media(pointer:coarse)]:[&_textarea]:text-base",
-          ].join(" ")}
-        >
-          {children}
-        </main>
-      </SidebarInset>
+        <SidebarInset>
+          <AppTopbar
+            user={{
+              name: user.name,
+              email: user.email,
+              image: user.image ?? null,
+            }}
+            isOperator={isOperator}
+          />
+          <main
+            id="main-content"
+            // The skip link above lands here, and a heading-less landing point is
+            // a dead end for anyone who cannot see where focus went. -1 makes the
+            // element focusable by script and by that link without inserting it
+            // into the tab order.
+            tabIndex={-1}
+            className={[
+              "flex min-w-0 flex-1 flex-col gap-6 p-4 md:p-6",
+              // The dock is fixed, so it is out of flow and would otherwise sit
+              // on top of whatever the page ends with — a table's last row, a
+              // form's Save button. This reserves the bar's height (44px item +
+              // 8px padding + 12px lift) plus the home indicator beneath it, and
+              // it does so once here rather than in every page.
+              "pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-6",
+              // Every control in the studio is sized for a cursor: the design
+              // system's default button is 32px tall and its `sm` is 28px. Rather
+              // than annotate a few hundred call sites — and rather than change
+              // the buttons themselves, which would resize the desktop app — this
+              // raises anything interactive to a 44px target on touch devices
+              // only. `pointer: coarse` rather than a width breakpoint, because
+              // what matters is the finger, not the viewport.
+              "[@media(pointer:coarse)]:[&_[data-slot=button]]:min-h-11",
+              "[@media(pointer:coarse)]:[&_[data-slot=button][data-size^=icon]]:min-w-11",
+              "[@media(pointer:coarse)]:[&_[data-slot=select-trigger]]:min-h-11",
+              // 16px is the threshold below which iOS Safari zooms the whole page
+              // in when a field takes focus — the single most website-like thing
+              // a form can do on a phone.
+              "[@media(pointer:coarse)]:[&_input]:min-h-11 [@media(pointer:coarse)]:[&_input]:text-base",
+              "[@media(pointer:coarse)]:[&_textarea]:text-base",
+            ].join(" ")}
+          >
+            {/* Above the page's own `h1`, and only ever on the first visit to a
+             * route. Mounted here rather than in each page so that a screen added
+             * later is covered by adding a topic to `help-topics.ts` — never by
+             * remembering to import something. */}
+            <HelpHint isOperator={isOperator} />
+            {children}
+          </main>
+        </SidebarInset>
 
-      <MobileDock isOperator={isOperator} />
-    </SidebarProvider>
+        <MobileDock isOperator={isOperator} />
+      </SidebarProvider>
+    </OnboardingProvider>
   );
 }

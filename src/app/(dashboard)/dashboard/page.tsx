@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Suspense } from "react";
 import { Sparkles } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { Reveal } from "@/components/shared/reveal";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -39,9 +39,12 @@ async function DashboardContent() {
        * interrupting them to explain their own app is worse than silence. */}
       <ProductTour autoStart={!checklist.isComplete} />
 
-      <div data-tour="tour-checklist">
-        <OnboardingChecklistCard checklist={checklist} />
-      </div>
+      {/* `data-tour="tour-checklist"` is on the card itself rather than on a
+       * wrapper here. A wrapper survives the card rendering null — when every
+       * step is done, or the operator hid it — and an empty flex child still
+       * costs one `gap-6` of blank page, as well as giving the tour a
+       * zero-height box to point at. */}
+      <OnboardingChecklistCard checklist={checklist} />
       {/* The checklist above is the only thing reliably on screen on a phone,
        * so these two are where the reveal actually has something to do here.
        * On a desktop viewport both start above the fold and `Reveal` measures
@@ -82,14 +85,20 @@ export default function DashboardPage() {
           title="Dashboard"
           description="Everything moving through your production pipeline."
           actions={
-            // /automation isn't built yet — disabled here for the same reason
-            // it's disabled in the sidebar: don't link to a page that 404s.
-            <Button disabled>
-              <Sparkles />
-              One-click generate
-              <Badge variant="secondary" className="ml-1">
-                Soon
-              </Badge>
+            // Was a disabled button with a "Soon" badge, on the grounds that
+            // /automation did not exist. It does, and so does the one-click
+            // flow it grew into — the badge had been advertising a shipped
+            // feature as unbuilt, from the most-visited screen in the studio.
+            //
+            // The tour's second step points at this button, which is why it is
+            // inside the header rather than further down the page: the shortest
+            // route to a first video should be the first thing a new operator's
+            // eye lands on after the title.
+            <Button asChild data-tour="tour-first-video">
+              <Link href="/automation/generate">
+                <Sparkles />
+                Make a video
+              </Link>
             </Button>
           }
         />

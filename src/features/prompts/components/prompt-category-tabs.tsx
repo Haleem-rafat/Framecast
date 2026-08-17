@@ -53,7 +53,11 @@ export function PromptCategoryTabs({
               <EmptyState
                 icon={Library}
                 title={`No ${PROMPT_CATEGORY_LABELS[category].toLowerCase()} templates`}
-                description="Create one to control how this content is generated."
+                // Was "Create one to control how this content is generated",
+                // which is an instruction with no mechanism attached — it never
+                // said which of two buttons on the screen does it, nor that
+                // having a template is not the same as using one.
+                description="“New template” just above adds one. Mark a template as the default and it becomes the one this category generates from."
               />
             ) : (
               <PromptTemplateTable
