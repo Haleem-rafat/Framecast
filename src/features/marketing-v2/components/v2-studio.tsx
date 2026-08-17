@@ -73,6 +73,7 @@ export function V2Studio() {
           eyebrow="The studio"
           title="And a room"
           accent="to watch it from"
+          reveal
         >
           Automation you cannot see is just something going wrong quietly. Four
           screens carry the parts of a run you actually need in front of you.

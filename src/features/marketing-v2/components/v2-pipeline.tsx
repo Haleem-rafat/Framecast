@@ -9,8 +9,10 @@ import {
   UploadCloud,
 } from "lucide-react";
 
+import { V2GateBorder } from "@/features/marketing-v2/components/v2-gate-border";
 import { V2Reveal } from "@/features/marketing-v2/components/v2-reveal";
 import { V2BandHeading } from "@/features/marketing-v2/components/v2-shell";
+import { V2TypedTopic } from "@/features/marketing-v2/components/v2-typed-topic";
 
 /**
  * The six stages, as a filmstrip you scroll sideways.
@@ -90,6 +92,7 @@ export function V2Pipeline() {
           eyebrow="The run"
           title="Six stages."
           accent="It stops twice, on purpose."
+          reveal
         >
           A run goes end to end on its own, but it is built to halt and wait for
           a person — once before it starts spending, once before it publishes.
@@ -110,6 +113,12 @@ export function V2Pipeline() {
               key={stage.title}
               className="w-[min(20rem,78vw)] shrink-0 snap-start sm:w-[22rem]"
             >
+              {/* The two gates get React Bits' ElectricBorder, in amber. It is
+                  the one place on the page where an effect is carrying the
+                  meaning rather than decorating it: these are the stages where
+                  the machine stops and waits for a person, and a card that
+                  crackles is a card you look at. The other four are plain. */}
+              <V2GateBorder gated={Boolean(stage.gate)}>
               <div
                 className={`bg-card relative flex h-full flex-col overflow-hidden rounded-2xl border p-5 sm:p-6 ${
                   stage.gate ? "border-brand-amber-ink/40" : ""
@@ -150,6 +159,7 @@ export function V2Pipeline() {
                   </p>
                 ) : null}
               </div>
+              </V2GateBorder>
             </li>
           ))}
         </ol>
@@ -170,9 +180,7 @@ export function V2Pipeline() {
               </span>
               topic
             </figcaption>
-            <p className="mt-2 text-sm font-medium text-pretty">
-              {EXAMPLE_TOPIC}
-            </p>
+            <V2TypedTopic topic={EXAMPLE_TOPIC} />
             <hr className="my-3" />
             <span className="text-muted-foreground font-mono text-[11px] tracking-wide uppercase">
               script

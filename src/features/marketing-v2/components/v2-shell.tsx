@@ -4,6 +4,7 @@ import { LogoMark } from "@/components/brand/logo-mark";
 import { Button } from "@/components/ui/button";
 import { MarketingNavSheet } from "@/features/marketing/components/marketing-nav";
 import { MarketingThemeToggle } from "@/features/marketing/components/marketing-theme-toggle";
+import { V2Lead } from "@/features/marketing-v2/components/v2-lead";
 
 /**
  * v2's chrome, and it is not v1's.
@@ -49,7 +50,7 @@ export function V2Shell({ children }: { children: React.ReactNode }) {
             <span className="bg-primary text-primary-foreground flex size-6 items-center justify-center rounded-md">
               <LogoMark className="size-3.5" />
             </span>
-            <span className="hidden sm:inline">Framecast</span>
+            <span>Framecast</span>
           </Link>
 
           <nav
@@ -127,12 +128,19 @@ export function V2BandHeading({
   accent,
   children,
   align = "left",
+  reveal = false,
 }: {
   eyebrow: string;
   title: string;
   accent?: string;
   children?: React.ReactNode;
   align?: "left" | "center";
+  /**
+   * Un-blur the supporting line word by word as the band scrolls up. Only for
+   * bands whose opening line is a claim rather than a label, and only where
+   * `children` is a plain string — see `V2Lead`.
+   */
+  reveal?: boolean;
 }) {
   return (
     <div className={align === "center" ? "mx-auto max-w-2xl text-center" : "max-w-2xl"}>
@@ -161,9 +169,13 @@ export function V2BandHeading({
       </h2>
 
       {children ? (
-        <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
-          {children}
-        </p>
+        reveal && typeof children === "string" ? (
+          <V2Lead>{children}</V2Lead>
+        ) : (
+          <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
+            {children}
+          </p>
+        )
       ) : null}
     </div>
   );

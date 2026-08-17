@@ -8,6 +8,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
+import { V2MagneticCta } from "@/features/marketing-v2/components/v2-magnetic-cta";
 import { V2Reveal } from "@/features/marketing-v2/components/v2-reveal";
 import { V2BandHeading } from "@/features/marketing-v2/components/v2-shell";
 
@@ -170,11 +171,14 @@ export function V2Cta() {
                 it before it can be used.
               </p>
 
+              {/* React Bits' Magnet on the last ask of the page. The
+                  vendored copy is inert under `prefers-reduced-motion` and on
+                  any coarse pointer, so a thumb is never aiming at a target
+                  that slides away from it — it is a flourish for a mouse and
+                  nothing else. */}
               <div className="mt-8 flex flex-wrap items-center gap-3">
-                <Button asChild size="lg">
-                  <Link href="/sign-up">Create an account</Link>
-                </Button>
-                <Button asChild size="lg" variant="ghost">
+                <V2MagneticCta />
+                <Button asChild size="lg" variant="ghost" className="rounded-full">
                   <Link href="/privacy">How your data is used</Link>
                 </Button>
               </div>

@@ -7,9 +7,15 @@
  * Copied in by the shadcn CLI. Changes from upstream, marked `EDIT:`:
  *
  *   1. `"use client"` — upstream targets Vite and ships no directive.
- *   2. `prefers-reduced-motion` — the SVG `<animate>` elements are dropped, so
- *      the border renders as a still glow in the same colour rather than
- *      crackling. The card still reads as marked; it just stops moving.
+ *   2. `prefers-reduced-motion` — the `requestAnimationFrame` loop that draws
+ *      the crackling arcs is never started. The three static glow layers
+ *      underneath still paint, so the card stays visibly ringed in its colour;
+ *      it just stops moving. That matters here, because the colour is the
+ *      information: these are the two stages where a run waits for a person.
+ *
+ * Correction to the obvious guess about how this works: the arcs are drawn on
+ * a `<canvas>` with hand-rolled octaved value noise, not with an SVG
+ * `feTurbulence` filter.
  */
 
 import React, { useEffect, useRef, useCallback, type CSSProperties, type ReactNode } from 'react';
@@ -309,7 +315,11 @@ const ElectricBorder: React.FC<ElectricBorderProps> = ({
     });
     resizeObserver.observe(container);
 
-    animationRef.current = requestAnimationFrame(drawElectricBorder);
+    // EDIT: see note 2 at the top of the file. The static glow layers in the
+    // markup below are untouched — only the animated arcs are skipped.
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      animationRef.current = requestAnimationFrame(drawElectricBorder);
+    }
 
     return () => {
       if (animationRef.current) {

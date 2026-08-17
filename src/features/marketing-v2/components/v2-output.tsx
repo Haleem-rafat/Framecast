@@ -109,6 +109,7 @@ export function V2Output() {
             eyebrow="Output"
             title="What a finished run"
             accent="leaves behind"
+            reveal
           >
             One long video, the Shorts you choose to cut from it, and the
             listing that goes up with it — all from the same script.
