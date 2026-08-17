@@ -36,24 +36,80 @@ import { cn } from "@/lib/utils";
  * no new dependency.
  */
 
+/** The top of the page, where the header is always shown. */
+const REVEAL_ZONE = 80;
+
+/** How far the page must move before a direction counts. See the hook below. */
+const DEADBAND = 4;
+
 /**
- * True once the page has moved far enough that the bar should contract.
+ * Two pieces of scroll state, read from one listener.
  *
- * 24px rather than 0, so the rubber-band at the top of an iOS scroll does not
- * flicker it. The listener is `passive` and reads a single number — no layout
- * is measured, so there is nothing here worth throttling.
+ * `scrolled` — past 24px, so the bar contracts into its pill. 24 rather than 0
+ * so the rubber-band at the top of an iOS scroll does not flicker it.
+ *
+ * `hidden` — the visitor is scrolling *down*, and is far enough into the page
+ * that the header is in the way rather than in use. It comes back the instant
+ * they scroll up, at any position, and it is never hidden in the top 80px
+ * whatever the direction. This is a phone-app behaviour rather than a web one:
+ * on a page five screens long, a bar that follows you down is a bar covering
+ * the thing you scrolled to read.
+ *
+ * The ±4px deadband is what makes it usable with a finger. Touch scrolling
+ * arrives as a stream of small, noisy deltas with momentum wobble at the end
+ * of a fling, and comparing raw `y` against `lastY` without a deadband makes
+ * the header strobe on every one of them.
+ *
+ * One `passive` listener, and the work is deferred to a frame — `scroll` can
+ * fire many times between paints, and there is no reason to set state more
+ * often than the screen updates. Nothing here measures layout, so nothing here
+ * can cause a synchronous reflow.
+ *
+ * Note it listens to `scroll` rather than to `wheel` or `touchmove`, so it is
+ * indifferent to what did the scrolling: a wheel, a finger, a trackpad fling,
+ * a keyboard PageDown, or a fragment link jumping to a section all arrive the
+ * same way.
  */
-function useScrolled(threshold = 24) {
+function useHeaderScroll() {
   const [scrolled, setScrolled] = useState(false);
+  const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > threshold);
-    onScroll();
+    let lastY = Math.max(0, window.scrollY);
+    let queued = false;
+
+    const update = () => {
+      queued = false;
+      // Clamped: iOS reports a negative `scrollY` while rubber-banding at the
+      // top, which would otherwise read as a scroll upward of some hundreds of
+      // pixels and then a scroll back down.
+      const y = Math.max(0, window.scrollY);
+
+      setScrolled(y > 24);
+
+      if (y <= REVEAL_ZONE) {
+        setHidden(false);
+      } else if (y > lastY + DEADBAND) {
+        setHidden(true);
+      } else if (y < lastY - DEADBAND) {
+        setHidden(false);
+      }
+
+      lastY = y;
+    };
+
+    const onScroll = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(update);
+    };
+
+    update();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, [threshold]);
+  }, []);
 
-  return scrolled;
+  return { scrolled, hidden };
 }
 
 /**
@@ -62,7 +118,7 @@ function useScrolled(threshold = 24) {
  * sections on them, where a bare `#pricing` scrolls nowhere.
  */
 export function MarketingNavBar({ basePath }: { basePath: string }) {
-  const scrolled = useScrolled();
+  const { scrolled, hidden } = useHeaderScroll();
 
   const links = [
     { href: `${basePath}#the-run`, label: "How it works" },
@@ -72,7 +128,20 @@ export function MarketingNavBar({ basePath }: { basePath: string }) {
   ];
 
   return (
-    <header className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 sm:pt-4">
+    <header
+      className={cn(
+        "pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 transition-transform duration-300 ease-out motion-reduce:transition-none sm:pt-4",
+        // `translateY`, not `display` or `height`: the header is `fixed`, so
+        // the page underneath it never reflows either way, but a transform is
+        // also the only one of the three the compositor can do without
+        // touching layout at all.
+        //
+        // `focus-within` overrides the hidden state. Tabbing into a bar that
+        // has slid off the top of the screen is the classic way this pattern
+        // strands a keyboard user on a focused control they cannot see.
+        hidden ? "-translate-y-[130%] focus-within:translate-y-0" : "translate-y-0",
+      )}
+    >
       <div
         className={cn(
           "pointer-events-auto flex w-full items-center gap-2 rounded-full border transition-all duration-300 ease-out motion-reduce:transition-none sm:gap-3",
