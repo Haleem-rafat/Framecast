@@ -315,6 +315,37 @@
     }
   }
 
+  /*
+   * React Bits' StarBorder, ported off `tailwind.config.js` for the same
+   * reason: it ships its keyframes as a v3 config snippet in a trailing
+   * comment. Used only by the /v2 landing page. Purely additive — no token
+   * above or below this block changes because of it.
+   */
+  --animate-star-movement-bottom: star-movement-bottom linear infinite alternate;
+  --animate-star-movement-top: star-movement-top linear infinite alternate;
+
+  @keyframes star-movement-bottom {
+    0% {
+      transform: translate(0%, 0%);
+      opacity: 1;
+    }
+    100% {
+      transform: translate(-100%, 0%);
+      opacity: 0;
+    }
+  }
+
+  @keyframes star-movement-top {
+    0% {
+      transform: translate(0%, 0%);
+      opacity: 1;
+    }
+    100% {
+      transform: translate(100%, 0%);
+      opacity: 0;
+    }
+  }
+
   /* Aceternity's Meteors, ported off `tailwind.config.js` for the same reason. */
   @keyframes meteor {
     0% {
