@@ -13,7 +13,7 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { useCallback, useMemo, useTransition } from "react";
+import { useCallback, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
@@ -21,6 +21,7 @@ import "@xyflow/react/dist/style.css";
 
 import { setAutoPublishAction } from "@/actions/canvas.action";
 import { autoPlace, type Point } from "@/features/automation/canvas/auto-place";
+import { NodeInspector } from "@/features/automation/canvas/node-inspector";
 import { AutomationNode } from "@/features/automation/canvas/nodes/automation-node";
 import { ChannelNode } from "@/features/automation/canvas/nodes/channel-node";
 import { PublishNode } from "@/features/automation/canvas/nodes/publish-node";
@@ -207,6 +208,19 @@ function Canvas({ model }: { model: CanvasModel }) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
   const [edges, , onEdgesChange] = useEdgesState(initial.edges);
 
+  /** Which automation the inspector is showing, by `rowId`. Held as an id
+   *  rather than the entry itself so a refresh after an edit re-reads the row
+   *  instead of leaving the panel showing what it was before the change. */
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+
+  const selected = useMemo(
+    () =>
+      model.branches
+        .flatMap((branch) => branch.automations)
+        .find((entry) => entry.rowId === selectedRowId) ?? null,
+    [model, selectedRowId],
+  );
+
   // The rows changed underneath us — an automation was paused, a video
   // published. Rebuild rather than merge: everything but the positions is
   // derived, and the positions are in `model` too.
@@ -315,8 +329,15 @@ function Canvas({ model }: { model: CanvasModel }) {
   );
 
   return (
-    <div className="h-[calc(100vh-16rem)] min-h-[32rem] w-full rounded-xl border">
+    <div className="relative h-[calc(100vh-16rem)] min-h-[32rem] w-full overflow-hidden rounded-xl border">
       <ReactFlow
+        onNodeClick={(_event, node) => {
+          // Only an automation has an inspector. A channel's own page is one
+          // click away on its title, and a publish step has nothing to say that
+          // its automation's panel does not say better.
+          setSelectedRowId(node.type === "automation" ? node.id : null);
+        }}
+        onPaneClick={() => setSelectedRowId(null)}
         nodes={nodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
@@ -334,6 +355,10 @@ function Canvas({ model }: { model: CanvasModel }) {
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable />
       </ReactFlow>
+
+      {selected && (
+        <NodeInspector entry={selected} onClose={() => setSelectedRowId(null)} />
+      )}
     </div>
   );
 }
