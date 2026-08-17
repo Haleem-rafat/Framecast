@@ -1,12 +1,24 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import { ArrowRight, Hand } from "lucide-react";
 
 import StarBorder from "@/components/react-bits/StarBorder";
 import TextCursor from "@/components/react-bits/TextCursor";
 import { Button } from "@/components/ui/button";
+import { useAmbientEffectsAllowed } from "@/hooks/use-ambient-effects-allowed";
+
+/**
+ * Loaded on demand rather than imported outright, because it drags `ogl` — a
+ * WebGL library — in behind it. `HeroTunnel` below refuses to mount on a phone
+ * or under reduced motion, and a static import would have shipped the library
+ * to those visitors regardless, to sit in the bundle unused.
+ */
+const LightTunnel = dynamic(
+  () => import("@/components/react-bits/LightTunnel"),
+  { ssr: false },
+);
 
 /**
  * React Bits' TextCursor, over the hero's title area.
@@ -22,27 +34,11 @@ import { Button } from "@/components/ui/button";
  * no text to the accessible tree. The word it trails is "topic", which is the
  * thing the visitor is about to type — the same idea the headline states.
  *
- * Not mounted at all in two cases: when the visitor has asked for reduced
- * motion, and when the pointer is coarse. The second is not an accessibility
- * nicety but arithmetic — there is no cursor to trail on a touchscreen, so on
- * a phone this component is a `mousemove` listener that never fires and a
- * bundle nobody uses.
+ * Not mounted at all under reduced motion or on a coarse pointer; see
+ * `useAmbientEffectsAllowed`, which the tunnel behind it is gated on too.
  */
 function TitleCursorTrail() {
-  const [enabled, setEnabled] = useState(false);
-
-  useEffect(() => {
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const coarse = window.matchMedia("(pointer: coarse)");
-    const sync = () => setEnabled(!reduced.matches && !coarse.matches);
-    sync();
-    reduced.addEventListener("change", sync);
-    coarse.addEventListener("change", sync);
-    return () => {
-      reduced.removeEventListener("change", sync);
-      coarse.removeEventListener("change", sync);
-    };
-  }, []);
+  const enabled = useAmbientEffectsAllowed();
 
   if (!enabled) return null;
 
@@ -67,20 +63,11 @@ function TitleCursorTrail() {
 /**
  * The wash the hero stands on, drawn in CSS and always painted.
  *
- * There is no canvas behind this hero and that is deliberate. Four of the
- * library's WebGL backgrounds were tried in this slot — Aurora, Threads,
- * GradientWaves and Galaxy — and all four are gone. The technical objections
- * were real: each binds hex colours to shader uniforms, so it cannot read the
- * `oklch()` brand tokens and needs a hand-maintained sRGB copy of the palette
- * beside it; each runs a frame loop that has to be gated on
- * `prefers-reduced-motion` from outside; and Aurora in particular painted a
- * saturated field across the whole frame, on which the lead paragraph measured
- * as grey text on teal. But the deciding objection was simpler: the owner does
- * not want an animated background, and a hero does not need one.
- *
- * What is here instead costs one composite, needs no dependency, follows the
- * theme through the tokens directly, and has nothing to switch off for reduced
- * motion because nothing moves.
+ * This layer exists whether or not the tunnel above it does, and it is the
+ * reason the hero still looks finished on a phone, under reduced motion, and
+ * in the moment before the WebGL chunk arrives. It costs one composite, needs
+ * no dependency, and follows the theme through the tokens directly rather than
+ * through a hand-copied palette.
  */
 function HeroGround() {
   return (
@@ -94,11 +81,86 @@ function HeroGround() {
 }
 
 /**
+ * React Bits' LightTunnel, behind the hero.
+ *
+ * A radial field of fibre-optic cables running away into the centre, with
+ * pulses racing along them. `flowDirection="outward"` sends the pulses towards
+ * the viewer, which reads as arrival rather than departure — the right verb for
+ * a page whose promise is that something comes back finished.
+ *
+ * Four things about this component are load-bearing and should survive edits:
+ *
+ *  - **It is not mounted at all on a phone or under reduced motion.** Not
+ *    paused — absent, along with its WebGL context and, because of the
+ *    `dynamic()` above, its download. See `useAmbientEffectsAllowed`.
+ *  - **It cannot read the brand tokens.** The shader binds sRGB hex to
+ *    uniforms, so the two colours below are a hand-maintained copy of the
+ *    ramp and will drift if `globals.css` changes: `#9083FF` is
+ *    `--brand-violet` on the dark theme and `#44D4E2` is `--brand-cyan` there.
+ *    Violet cables carrying cyan pulses is the headline's own gradient, moving.
+ *    (`tunnelColor` is inert while `tunnelOpacity` is 0 — the shader multiplies
+ *    the two — but it is passed for the day someone raises the opacity.)
+ *  - **The middle is masked out.** This is the contrast fix, and it is the
+ *    reason an animated background is survivable here at all. An earlier
+ *    attempt in this slot put a saturated field across the whole frame and the
+ *    lead paragraph measured as grey text on teal. The radial mask keeps the
+ *    canvas away from the column the type occupies, so the cables read as a
+ *    rim of light around the content rather than a wash under it; the light
+ *    theme is dimmed further, because dark violet on white is a far harder
+ *    ground for `text-muted-foreground` than the same violet on near-black.
+ *  - **It is decorative.** `aria-hidden`, no text, and it sits at `-z-10`
+ *    inside the section's own stacking context, so it can neither reorder nor
+ *    displace anything. Nothing here participates in layout.
+ *
+ * Pointer events are deliberately *not* disabled. `mouseStrength` is small
+ * enough to read as parallax rather than as a toy, and the canvas is behind
+ * everything, so it only ever sees the pointer where no content is — the
+ * headline stays selectable and the buttons stay clickable.
+ */
+function HeroTunnel() {
+  const enabled = useAmbientEffectsAllowed();
+
+  if (!enabled) return null;
+
+  return (
+    <div
+      aria-hidden="true"
+      className="absolute inset-0 -z-10 opacity-40 [mask-image:radial-gradient(75%_60%_at_50%_45%,transparent_0%,transparent_35%,black_78%)] dark:opacity-90"
+    >
+      <LightTunnel
+        cableColor="#9083FF"
+        pulseColor="#44D4E2"
+        tunnelColor="#6B55DF"
+        tunnelOpacity={0}
+        speed={0.1}
+        flowDirection="outward"
+        pulseSpeed={2}
+        pulseLength={0.28}
+        cableCount={20}
+        thickness={0.35}
+        rimWidth={0.15}
+        waviness={0.3}
+        sway={0.5}
+        glow={1}
+        grain
+        grainIntensity={0.03}
+        mouseInteraction
+        mouseStrength={0.1}
+      />
+    </div>
+  );
+}
+
+/**
  * The landing hero.
  *
- * Lives in the shared marketing feature rather than beside the v2 sections
- * because both the landing page at `/` and the comparison page at `/v2` render
- * it — it is the one piece of v2 that has already graduated.
+ * Lives in the shared marketing feature rather than beside a set of numbered
+ * variants because there are none left: `/` is the only landing page, and this
+ * is its hero.
+ *
+ * Three layers, back to front: `HeroGround` (CSS, always painted),
+ * `HeroTunnel` (WebGL, desktop and full-motion only), then the content below.
+ * Only the third is in the accessible tree.
  *
  * Two things it is not allowed to lose, both carried over from v1 and both
  * documented there:
@@ -137,6 +199,7 @@ export function LandingHero() {
   return (
     <section className="relative isolate flex min-h-svh flex-col justify-center overflow-hidden border-b">
       <HeroGround />
+      <HeroTunnel />
 
       <div className="mx-auto flex w-full max-w-4xl flex-col items-center px-6 pt-24 pb-14 text-center sm:pt-32 sm:pb-24">
         <p className="text-muted-foreground bg-background/60 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs backdrop-blur-sm">
