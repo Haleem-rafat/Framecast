@@ -240,3 +240,59 @@ describe("sectionDurations", () => {
     expect(sectionDurations([0], 0.5, 1)).toEqual([0.5]);
   });
 });
+
+describe("cue metadata", () => {
+  const content = "One two three four five. Six seven eight nine ten.";
+
+  /** An alignment where every character is one tenth of a second, so a window's
+   *  times are just its character offsets over ten. */
+  function evenAlignment(text: string) {
+    return {
+      characters: [...text],
+      characterStartTimesSeconds: [...text].map((_, index) => index / 10),
+      characterEndTimesSeconds: [...text].map((_, index) => (index + 1) / 10),
+    };
+  }
+
+  it("carries a beat and its emphasis from cue to window", () => {
+    // The renderer needs both after the anchor is gone: the beat decides which
+    // join dips through black, the emphasis colours the caption. Re-deriving
+    // them later would be the orphaning problem all over again.
+    const cues = [
+      { anchor: "One two three four five.", cue: "a doorway", beat: "HOOK", emphasis: ["two"] },
+      { anchor: "Six seven eight nine ten.", cue: "a staircase", beat: "NAME_IT", emphasis: [] },
+    ];
+
+    const { anchored } = anchorCues(cues, content);
+    const windows = cueWindows(anchored, evenAlignment(content));
+
+    expect(anchored.map((entry) => entry.beat)).toEqual(["HOOK", "NAME_IT"]);
+    expect(windows.map((entry) => entry.beat)).toEqual(["HOOK", "NAME_IT"]);
+    expect(windows[0].emphasis).toEqual(["two"]);
+    expect(windows[1].emphasis).toEqual([]);
+  });
+
+  it("leaves a cue without metadata exactly as it was", () => {
+    // Every cue written before this format existed has neither field, and its
+    // anchored form must not grow an undefined key — the objects are persisted
+    // as JSON and a new null in them is a diff in every stored script.
+    const { anchored } = anchorCues(
+      [{ anchor: "One two three four five.", cue: "a doorway" }],
+      content,
+    );
+
+    expect(Object.keys(anchored[0]).sort()).toEqual([
+      "cue",
+      "endChar",
+      "startChar",
+    ]);
+
+    const windows = cueWindows(anchored, evenAlignment(content));
+
+    expect(Object.keys(windows[0]).sort()).toEqual([
+      "cue",
+      "endSeconds",
+      "startSeconds",
+    ]);
+  });
+});

@@ -5,14 +5,37 @@ import type { Alignment } from "@/lib/captions";
  *  cue — only rewriting the opening orphans it. */
 const ANCHOR_WORDS = 8;
 
-export interface ScriptCue {
+/**
+ * What a formatted script says about one section, beyond what to show.
+ *
+ * Both optional, and absent on every cue written before the single-insight
+ * format existed — which is every cue in the database today. They ride on the
+ * cue rather than on the `Scene` table because `Scene` is not read by anything:
+ * `ScriptVersion.cues` is the live per-section record, and this is the one
+ * place a section's facts are already kept together.
+ */
+export interface CueMeta {
+  /**
+   * Which narrative beat this section is — HOOK, TENSION, MECHANISM, NAME_IT,
+   * TURN, LOOP for the single-insight format.
+   *
+   * A string, not an enum, because it is one format's vocabulary. The renderer
+   * reads it for exactly one thing: which join dips through black.
+   */
+  beat?: string;
+  /** Words the voice should stress and the captions should colour. Matched
+   *  case-insensitively and through punctuation — see `kinetic-captions.ts`. */
+  emphasis?: string[];
+}
+
+export interface ScriptCue extends CueMeta {
   /** The first `ANCHOR_WORDS` words of this cue's section, verbatim. */
   anchor: string;
-  /** What to show: a stock-footage search query. */
+  /** What to show: a stock-footage search query, or a generation brief. */
   cue: string;
 }
 
-export interface AnchoredCue {
+export interface AnchoredCue extends CueMeta {
   cue: string;
   /** Index into the narration content where this section starts. */
   startChar: number;
@@ -20,7 +43,7 @@ export interface AnchoredCue {
   endChar: number;
 }
 
-export interface CueWindow {
+export interface CueWindow extends CueMeta {
   cue: string;
   startSeconds: number;
   endSeconds: number;
@@ -81,7 +104,18 @@ export function anchorCues(
       continue;
     }
 
-    anchored.push({ cue: cue.cue, startChar: at, endChar: content.length });
+    // The beat and the emphasis travel with the cue rather than being looked
+    // up again later: by the time the renderer needs them the anchor is gone,
+    // and re-matching a section to its cue is the orphaning problem all over
+    // again. Spread conditionally so a cue without them produces an object
+    // byte-identical to the one this has always pushed.
+    anchored.push({
+      cue: cue.cue,
+      startChar: at,
+      endChar: content.length,
+      ...(cue.beat !== undefined ? { beat: cue.beat } : {}),
+      ...(cue.emphasis !== undefined ? { emphasis: cue.emphasis } : {}),
+    });
     searchFrom = at + cue.anchor.length;
   }
 
@@ -109,7 +143,7 @@ export function cueWindows(
 ): CueWindow[] {
   const lastIndex = alignment.characters.length - 1;
 
-  return anchored.map(({ cue, startChar, endChar }) => {
+  return anchored.map(({ cue, startChar, endChar, beat, emphasis }) => {
     const start = Math.min(Math.max(0, startChar), lastIndex);
     // endChar is exclusive, so the last spoken character is endChar - 1 —
     // except when the range is zero-width (endChar === startChar, which
@@ -126,6 +160,8 @@ export function cueWindows(
       cue,
       startSeconds: alignment.characterStartTimesSeconds[start],
       endSeconds: alignment.characterEndTimesSeconds[end],
+      ...(beat !== undefined ? { beat } : {}),
+      ...(emphasis !== undefined ? { emphasis } : {}),
     };
   });
 }
