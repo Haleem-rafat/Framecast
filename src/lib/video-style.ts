@@ -47,6 +47,16 @@ export interface AudioStyle {
 export interface TransitionStyle {
   enabled: boolean;
   durationSeconds: number;
+  /**
+   * Which `xfade` transition this join uses — see `TransitionKind` in
+   * ffmpeg-command.ts.
+   *
+   * Optional, and absent means `fade`, which is what every render before this
+   * field existed produced. Set per boundary rather than per video by the
+   * formats that need one join to read differently from the rest: a dip
+   * through black before a payoff line is a beat, and a dissolve is not.
+   */
+  kind?: "fade" | "fadeblack";
 }
 
 export interface VoiceStyle {

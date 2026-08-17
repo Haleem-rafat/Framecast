@@ -824,6 +824,33 @@ model Scene {
   status       SceneStatus @default(PENDING)
   startSeconds Float?
   endSeconds   Float?
+
+  /// Which of the six narrative beats this scene belongs to — HOOK, TENSION,
+  /// MECHANISM, NAME_IT, TURN, LOOP.
+  ///
+  /// Null for every scene produced by any other format, which is every scene
+  /// that exists today. A `String?` rather than an enum precisely because it is
+  /// one format's vocabulary: a second format with different beats should be a
+  /// different set of strings, not a migration that teaches the database about
+  /// somebody else's story structure.
+  ///
+  /// The renderer reads this for exactly one thing — which join dips through
+  /// black, being the one before NAME_IT. Everything else a beat means is the
+  /// writer's concern and never reaches FFmpeg.
+  beat String?
+
+  /// Words the narration should stress, as the script chose them.
+  ///
+  /// A `String[]` rather than markup inside `narration`, so the narration stays
+  /// the plain text that both the aligner and the captions read. Marking up the
+  /// spoken text would mean every consumer had to know how to strip it, and the
+  /// one that forgot would either speak the markup aloud or burn it on screen.
+  ///
+  /// Applied by the TTS layer and coloured by the kinetic captions
+  /// (`kinetic-captions.ts`). Empty for every scene that does not stress
+  /// anything, which is every scene that exists today.
+  emphasis String[]
+
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 

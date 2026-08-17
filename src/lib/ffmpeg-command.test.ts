@@ -238,6 +238,106 @@ describe("concatListLine with a trim", () => {
   });
 });
 
+describe("planRender with a transition per boundary", () => {
+  const dissolve = { enabled: true, durationSeconds: 0.5 };
+  const cut = { enabled: false, durationSeconds: 0 };
+  const dip = { enabled: true, durationSeconds: 0.2, kind: "fadeblack" as const };
+
+  const clips = ["/tmp/a.mp4", "/tmp/b.mp4", "/tmp/c.mp4", "/tmp/d.mp4"];
+  const lengths = [6, 6, 6, 6];
+
+  it("builds a stub only where a join actually dissolves", () => {
+    const plan = planRender(clips, "/tmp", lengths, [cut, dip, cut]);
+
+    expect(plan.transitions).toHaveLength(1);
+    expect(plan.transitions[0].kind).toBe("fadeblack");
+    expect(plan.transitions[0].durationSeconds).toBe(0.2);
+  });
+
+  it("tells each job which join it covers", () => {
+    // The whole reason boundaryIndex exists: with hard cuts in the timeline a
+    // job's position in the array is no longer the boundary it covers, and the
+    // composer keys built stubs by this.
+    const plan = planRender(clips, "/tmp", lengths, [cut, dip, cut]);
+
+    expect(plan.transitions[0].boundaryIndex).toBe(1);
+  });
+
+  it("answers for every boundary, including the hard cuts", () => {
+    const plan = planRender(clips, "/tmp", lengths, [cut, dip, cut]);
+
+    // Three joins between four clips. Zero is a real answer and means a cut —
+    // the composer walks this to place cues, and a missing entry would drift
+    // everything after it.
+    expect(plan.boundaryOverlaps).toEqual([0, 0.2, 0]);
+  });
+
+  it("only lengthens the segment that actually donates a tail", () => {
+    const plan = planRender(clips, "/tmp", lengths, [cut, dip, cut]);
+
+    // Clip 2 donates 0.2s to the dip; the rest are exactly their slot.
+    expect(plan.segments.map((segment) => segment.clipSeconds)).toEqual([6, 6.2, 6, 6]);
+  });
+
+  it("trims only at the boundaries that have a stub", () => {
+    const plan = planRender(clips, "/tmp", lengths, [cut, dip, cut]);
+
+    expect(plan.trims[0]).toEqual({ inpoint: undefined, outpoint: undefined });
+    expect(plan.trims[1]).toEqual({ inpoint: undefined, outpoint: 6 });
+    expect(plan.trims[2]).toEqual({ inpoint: 0.2, outpoint: undefined });
+    expect(plan.trims[3]).toEqual({ inpoint: undefined, outpoint: undefined });
+  });
+
+  it("keeps the timeline the same length as the narration", () => {
+    const plan = planRender(clips, "/tmp", lengths, [cut, dip, cut]);
+
+    const played =
+      plan.trimmedSeconds.reduce((sum, seconds) => sum + seconds, 0) +
+      plan.boundaryOverlaps.reduce((sum, seconds) => sum + seconds, 0);
+
+    expect(played).toBeCloseTo(24, 5);
+  });
+
+  it("matches the single-style plan when every boundary is the same", () => {
+    // The compatibility guarantee. An array of identical styles must produce
+    // exactly what the old single-style argument produced, or every existing
+    // render changes the day a caller switches form.
+    const perBoundary = planRender(clips, "/tmp", lengths, [
+      dissolve,
+      dissolve,
+      dissolve,
+    ]);
+    const single = planRender(clips, "/tmp", lengths, dissolve);
+
+    expect(perBoundary.segments).toEqual(single.segments);
+    expect(perBoundary.playOrder).toEqual(single.playOrder);
+    expect(perBoundary.trims).toEqual(single.trims);
+    expect(perBoundary.trimmedSeconds).toEqual(single.trimmedSeconds);
+    expect(perBoundary.transitions).toEqual(single.transitions);
+  });
+
+  it("refuses a list that does not have one entry per join", () => {
+    // The message names both numbers, because "wrong length" without them is
+    // a puzzle for whoever built the array.
+    expect(() => planRender(clips, "/tmp", lengths, [dissolve, dissolve])).toThrow(
+      /4 clip\(s\) have 3 joins between them, but 2 transition\(s\)/,
+    );
+  });
+
+  it("still refuses a clip shorter than the join beside it", () => {
+    expect(() =>
+      planRender(clips, "/tmp", [6, 0.1, 6, 6], [cut, dissolve, cut]),
+    ).toThrow(/shorter than/);
+  });
+
+  it("builds no stub at all when every join is a cut", () => {
+    const plan = planRender(clips, "/tmp", lengths, [cut, cut, cut]);
+
+    expect(plan.transitions).toEqual([]);
+    expect(plan.trimmedSeconds).toEqual(lengths);
+  });
+});
+
 describe("buildTransitionArgs", () => {
   it("crossfades exactly two inputs and nothing else", () => {
     const args = buildTransitionArgs({
@@ -246,6 +346,7 @@ describe("buildTransitionArgs", () => {
       outputPath: "/tmp/stub-0.mp4",
       durationSeconds: 0.5,
       startSeconds: 7.5,
+      boundaryIndex: 0,
     });
 
     // Two decoders at a time is the whole point — this is why xfade is never
@@ -262,6 +363,7 @@ describe("buildTransitionArgs", () => {
       outputPath: "/tmp/stub-0.mp4",
       durationSeconds: 0.5,
       startSeconds: 7.5,
+      boundaryIndex: 0,
     });
 
     // -ss before the first -i, so it seeks the input rather than the output.

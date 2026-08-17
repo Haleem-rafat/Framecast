@@ -498,6 +498,19 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
   ];
 }
 
+/**
+ * Which `xfade` transition a boundary uses.
+ *
+ * Two, because two is what any of this app's formats need and every extra one
+ * is a name that has to keep meaning the same thing to FFmpeg forever.
+ *
+ * `fade` dissolves one shot into the next and is what every render before this
+ * used. `fadeblack` goes through black on the way — it reads as a beat rather
+ * than a join, which is why the single-insight format uses exactly one of them,
+ * immediately before the line that names the concept.
+ */
+export type TransitionKind = "fade" | "fadeblack";
+
 export interface TransitionJob {
   fromPath: string;
   toPath: string;
@@ -505,6 +518,22 @@ export interface TransitionJob {
   durationSeconds: number;
   /** Offset into `fromPath` where the crossfade begins. */
   startSeconds: number;
+  /** Absent means `fade`, which is what every job built before this field
+   *  existed was — so an unchanged render's argv is unchanged. */
+  kind?: TransitionKind;
+  /**
+   * Which join this covers: the one between clip `boundaryIndex` and clip
+   * `boundaryIndex + 1`.
+   *
+   * Carried explicitly because this list is no longer dense. When every
+   * boundary dissolved, a job's position in the array *was* its boundary, and
+   * the composer relied on that — it keyed built stubs by array index and then
+   * looked them up by clip index. The moment one join is a hard cut those two
+   * numbers diverge, and every stub after it would be placed against the wrong
+   * segment. Stating the boundary removes the coincidence the old code was
+   * standing on.
+   */
+  boundaryIndex: number;
 }
 
 export interface RenderPlan {
@@ -512,9 +541,21 @@ export interface RenderPlan {
   segments: SegmentInput[];
   /** Segment output paths in playing order, repeats included. */
   playOrder: string[];
-  /** One per adjacent pair. Empty when transitions are off or there is only
-   *  one entry to play. */
+  /** One per join that actually dissolves — sparse, because a hard cut needs
+   *  no stub built. Each carries its own `boundaryIndex`; never assume a job's
+   *  position in this array is the boundary it covers. */
   transitions: TransitionJob[];
+  /**
+   * How long the join after each clip lasts, one entry per boundary
+   * (`clips - 1` of them, empty for a single clip). Zero at a hard cut.
+   *
+   * Separate from `transitions` because the *timeline* needs an answer at
+   * every boundary while only some boundaries have a stub to build. The
+   * composer walks this to work out where each join lands in the finished
+   * video, and reading it off a sparse job list is what would put every later
+   * cue at the wrong second.
+   */
+  boundaryOverlaps: number[];
   /** Index-aligned with `playOrder`. What the concat demuxer must skip at each
    *  end because a stub already covers it. */
   trims: SegmentTrim[];
@@ -543,7 +584,8 @@ export function buildTransitionArgs(job: TransitionJob): string[] {
     "-t", String(job.durationSeconds),
     "-i", job.toPath,
     "-filter_complex",
-    `[0:v][1:v]xfade=transition=fade:duration=${job.durationSeconds}:offset=0[vout]`,
+    `[0:v][1:v]xfade=transition=${job.kind ?? "fade"}:` +
+      `duration=${job.durationSeconds}:offset=0[vout]`,
     "-map", "[vout]",
     "-an",
     "-c:v", "libx264",
@@ -579,7 +621,7 @@ export function planRender(
   clipPaths: string[],
   segmentDir: string,
   durations: number[],
-  transitions?: TransitionStyle,
+  transitions?: TransitionStyle | readonly (TransitionStyle | null)[],
 ): RenderPlan {
   if (clipPaths.length === 0) {
     throw new ValidationError("Cannot render without at least one clip.");
@@ -593,8 +635,39 @@ export function planRender(
   }
 
   const count = clipPaths.length;
-  const overlap = transitions?.enabled ? transitions.durationSeconds : 0;
-  const hasStubs = overlap > 0 && count > 1;
+
+  /**
+   * The style at one boundary. Boundary `i` sits between clip `i` and clip
+   * `i + 1`, so there are `count - 1` of them.
+   *
+   * A single style — which is every caller that existed before this — answers
+   * the same for all of them, so those renders produce byte-for-byte the argv
+   * they always did. An array answers per boundary, which is what lets one join
+   * dip through black while the rest hard-cut.
+   */
+  const styleAt = (boundary: number): TransitionStyle | null =>
+    Array.isArray(transitions)
+      ? (transitions[boundary] ?? null)
+      : ((transitions as TransitionStyle | undefined) ?? null);
+
+  /** How much clip `boundary` donates to the stub after it. Zero is a hard
+   *  cut, and a hard cut costs nothing — no stub, no trim, no re-encode. */
+  const overlapAt = (boundary: number): number => {
+    if (boundary < 0 || boundary >= count - 1) return 0;
+
+    const style = styleAt(boundary);
+
+    return style?.enabled ? style.durationSeconds : 0;
+  };
+
+  if (Array.isArray(transitions) && transitions.length !== count - 1) {
+    throw new ValidationError(
+      `Cannot render: ${count} clip(s) have ${count - 1} joins between them, ` +
+        `but ${transitions.length} transition(s) were given.`,
+    );
+  }
+
+  const hasStubs = count > 1 && Array.from({ length: count - 1 }, (_, i) => overlapAt(i)).some((o) => o > 0);
 
   durations.forEach((seconds, index) => {
     if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -603,17 +676,27 @@ export function planRender(
       );
     }
 
-    // A crossfade eats `overlap` from the end of the section before it and the
-    // start of the section after it. A section shorter than that would be
-    // asked to give away more than it has: its outpoint (`seconds`) would land
-    // before its inpoint (`overlap`), and the concat demuxer reads that
-    // backwards range as an empty entry — every later section then plays early
-    // against the narration. Refusing is the only outcome that cannot ship a
-    // mistimed video.
-    if (hasStubs && seconds <= overlap) {
+    // A crossfade eats from the end of the section before it and the start of
+    // the section after it. A section shorter than what the join *before* it
+    // takes would be asked to give away more than it has: its outpoint would
+    // land before its inpoint, and the concat demuxer reads that backwards
+    // range as an empty entry — every later section then plays early against
+    // the narration. Refusing is the only outcome that cannot ship a mistimed
+    // video.
+    //
+    // Both joins, not just the incoming one. The incoming overlap is what can
+    // invert the trim and produce an empty concat entry; the outgoing one is
+    // arithmetically survivable — the segment is generated longer to pay for it
+    // — but a clip that is on screen for less time than it spends dissolving
+    // was never really in the video. The original single-style check refused
+    // both, and generalising it to `max` is what keeps a timeline of equal
+    // transitions behaving exactly as it always did.
+    const worst = Math.max(overlapAt(index - 1), overlapAt(index));
+
+    if (worst > 0 && seconds <= worst) {
       throw new ValidationError(
         `Cannot render: clip ${index + 1} is ${seconds}s, shorter than the ` +
-          `${overlap}s transition it has to make room for.`,
+          `${worst}s transition it has to make room for.`,
       );
     }
   });
@@ -625,10 +708,11 @@ export function planRender(
   clipPaths.forEach((clipPath, index) => {
     const clipSeconds = durations[index];
 
-    // Every segment but the last donates its tail to an outgoing stub, so it
-    // must be generated that much longer. Without this the timeline comes out
-    // `overlap` short per boundary and the picture drifts off the narration.
-    const sourceSeconds = hasStubs && index < count - 1 ? clipSeconds + overlap : clipSeconds;
+    // A segment donates its tail to the stub after it, so it must be generated
+    // that much longer. Without this the timeline comes out short by one
+    // overlap per boundary and the picture drifts off the narration. A hard cut
+    // donates nothing, so its segment is exactly its slot.
+    const sourceSeconds = clipSeconds + overlapAt(index);
     sourceSecondsOf.push(sourceSeconds);
 
     // Keyed on both path and length, not path alone: a clip used mid-timeline
@@ -656,11 +740,16 @@ export function planRender(
     (clipPath, index) => segmentPathOf.get(`${clipPath}@${sourceSecondsOf[index]}`)!,
   );
 
+  const boundaryOverlaps = Array.from({ length: Math.max(0, count - 1) }, (_, i) =>
+    overlapAt(i),
+  );
+
   if (!hasStubs) {
     return {
       segments,
       playOrder,
       transitions: [],
+      boundaryOverlaps,
       trims: playOrder.map(() => ({})),
       trimmedSeconds: [...durations],
     };
@@ -672,25 +761,34 @@ export function planRender(
 
   playOrder.forEach((segmentPath, index) => {
     const source = sourceSecondsOf[index];
-    const dropsHead = index > 0;
-    const dropsTail = index < count - 1;
+    // What the joins either side of this clip actually take. Zero at a hard
+    // cut, and zero at both ends of the timeline.
+    const head = overlapAt(index - 1);
+    const tail = overlapAt(index);
 
     trims.push({
-      inpoint: dropsHead ? overlap : undefined,
-      outpoint: dropsTail ? source - overlap : undefined,
+      // `undefined`, not `0`: the concat demuxer only needs the directive when
+      // there is something to skip, and emitting `inpoint 0` would change the
+      // list file for every render that has always omitted it.
+      inpoint: head > 0 ? head : undefined,
+      outpoint: tail > 0 ? source - tail : undefined,
     });
-    trimmedSeconds.push(source - (dropsHead ? overlap : 0) - (dropsTail ? overlap : 0));
+    trimmedSeconds.push(source - head - tail);
 
-    if (dropsTail) {
+    if (tail > 0) {
       jobs.push({
         fromPath: segmentPath,
         toPath: playOrder[index + 1],
         outputPath: `${segmentDir}/stub-${index}.mp4`,
-        durationSeconds: overlap,
-        startSeconds: source - overlap,
+        durationSeconds: tail,
+        startSeconds: source - tail,
+        boundaryIndex: index,
+        // Only when it is not the default, so a plain crossfade's job object is
+        // exactly what it always was.
+        ...(styleAt(index)?.kind ? { kind: styleAt(index)!.kind } : {}),
       });
     }
   });
 
-  return { segments, playOrder, transitions: jobs, trims, trimmedSeconds };
+  return { segments, playOrder, transitions: jobs, boundaryOverlaps, trims, trimmedSeconds };
 }

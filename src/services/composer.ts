@@ -131,7 +131,11 @@ export async function compose(input: ComposeInput, deps: ComposeDeps): Promise<v
 
     try {
       await runFfmpeg(buildTransitionArgs(transition), null, () => {});
-      stubPathByIndex.set(index, transition.outputPath);
+      // Keyed by the boundary the job says it covers, not by its position in
+      // this list. The two are only equal while every join dissolves; with one
+      // hard cut in the timeline they diverge, and every later stub would be
+      // concatenated after the wrong segment.
+      stubPathByIndex.set(transition.boundaryIndex, transition.outputPath);
     } catch (error) {
       if (shouldCancel?.()) {
         throw error;
@@ -178,9 +182,11 @@ export async function compose(input: ComposeInput, deps: ComposeDeps): Promise<v
     elapsedSeconds += plan.trimmedSeconds[index];
 
     // Undefined for the final segment, which donates no tail and has no
-    // boundary after it. Read off the plan rather than the style so this
-    // cannot disagree with what was actually encoded.
-    const boundaryOverlap = plan.transitions[index]?.durationSeconds;
+    // boundary after it. Read off `boundaryOverlaps` rather than the job list,
+    // because that list is sparse once a timeline mixes dissolves with hard
+    // cuts — indexing it by clip would answer for the wrong boundary. Zero is
+    // a real answer here and means a hard cut.
+    const boundaryOverlap = plan.boundaryOverlaps[index];
     if (boundaryOverlap === undefined) {
       return;
     }
