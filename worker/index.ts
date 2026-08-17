@@ -51,6 +51,19 @@ const SCHEDULE_TICK_INTERVAL_MS = 30_000;
 const RELEASE_TICK_INTERVAL_MS = 30_000;
 
 /**
+ * How often to ask whether a finished video is booked to publish itself.
+ *
+ * The same thirty seconds as the two above, and for a simpler reason than
+ * either of them: this tick has no cadence to keep up with. It fires on a
+ * *state* — a video an automation made has reached READY — so the only latency
+ * it can add is between the render finishing and the upload starting, measured
+ * against a schedule that comes round once a week. Thirty seconds there is not
+ * a number anybody can notice. The query is the same single indexed lookup that
+ * almost always returns nothing, so asking more often would buy nothing.
+ */
+const AUTO_PUBLISH_TICK_INTERVAL_MS = 30_000;
+
+/**
  * How often to ask whether a channel is due for an analytics collection.
  *
  * Coarser than the schedule and release ticks, and deliberately so. Those two
@@ -90,6 +103,7 @@ async function main(): Promise<void> {
   const { runPipeline, PipelineCancelledError } = await import("@/services/pipeline-runner");
   const { scheduleService } = await import("@/services/schedule.service");
   const { releaseService } = await import("@/services/release.service");
+  const { autoPublishService } = await import("@/services/auto-publish.service");
   const { shortsService } = await import("@/services/shorts.service");
   const { channelAnalyticsService } = await import(
     "@/services/channel-analytics.service"
@@ -296,6 +310,11 @@ async function main(): Promise<void> {
    *  slot is most likely to be overdue. */
   let nextReleaseTickAt = 0;
 
+  /** When the auto-publish due-check may next run. Zero for the same reason as
+   *  the other two: a worker that has just come back up is exactly when a
+   *  finished video is most likely to have been waiting to go out. */
+  let nextAutoPublishTickAt = 0;
+
   /** When the analytics collector may next look. Zero so a freshly deployed
    *  worker collects on its first idle moment rather than two minutes later —
    *  which matters exactly once, on the deploy that first creates any
@@ -396,6 +415,40 @@ async function main(): Promise<void> {
               `${release.outcome}` +
               `${release.youtubeVideoId ? ` (youtube ${release.youtubeVideoId})` : ""}` +
               `${release.reason ? ` — ${release.reason}` : ""}`,
+          );
+        }
+      }
+
+      // Beside the release tick and ahead of the video claim, for a different
+      // reason from either of the two above. Those sit here because they
+      // *create* queued work, and behind the claim they would never fire on a
+      // busy worker. This one creates nothing — it finishes something. What it
+      // shares is the consequence of sitting behind the claim: on a worker with
+      // a render backlog, an episode would go up whenever that backlog happened
+      // to clear, which is precisely the opposite of the promise "publishes
+      // itself" makes to somebody who is not watching.
+      //
+      // The cost when it fires is an upload — tens of megabytes to YouTube with
+      // the loop held, seconds to tens of seconds. Identical to the release
+      // tick's, and accepted for the identical reason: running it without
+      // awaiting would put a multi-megabyte buffer beside whatever FFmpeg is
+      // holding, on a box with 4GB and two vCPUs, at exactly the moment renders
+      // are most likely to be running.
+      //
+      // `tick()` claims at most one job, which is also the answer to a worker
+      // coming back after a day down with nine episodes finished and booked:
+      // they go out one poll apart rather than nine at once onto a channel
+      // whose audience is asleep.
+      if (Date.now() >= nextAutoPublishTickAt) {
+        nextAutoPublishTickAt = Date.now() + AUTO_PUBLISH_TICK_INTERVAL_MS;
+
+        const published = await autoPublishService.tick();
+
+        if (published) {
+          log(
+            `auto-publish "${published.videoTitle}" → ${published.outcome}` +
+              `${published.youtubeVideoId ? ` (youtube ${published.youtubeVideoId})` : ""}` +
+              `${published.reason ? ` — ${published.reason}` : ""}`,
           );
         }
       }

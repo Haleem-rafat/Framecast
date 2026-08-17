@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConflictError, NotFoundError } from "@/lib/errors";
@@ -395,5 +397,163 @@ describe("executeClaim", () => {
     const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
     expect(job?.status).toBe("WAITING");
     expect(job?.attempts).toBe(2);
+  });
+});
+
+/**
+ * A show with a schedule under it, which is the only arrangement that can be
+ * paused. Returns the ids `tick`'s tests need to assert against.
+ */
+async function makeSeriesWithSchedule() {
+  const channel = await prisma.channel.create({
+    data: {
+      userId,
+      youtubeChannelId: `yt-${randomUUID()}`,
+      title: "Kids",
+      accessToken: "a",
+      refreshToken: "r",
+      tokenExpiresAt: new Date(Date.now() + 3_600_000),
+      scopes: [],
+    },
+    select: { id: true },
+  });
+  const project = await prisma.project.create({
+    data: { userId, name: "Kids", channelId: channel.id },
+    select: { id: true },
+  });
+  const template = await prisma.promptTemplate.create({
+    data: {
+      userId,
+      name: "Bedtime script",
+      category: "SCRIPT",
+      content: "Write about {{topic}}",
+    },
+    select: { id: true },
+  });
+  const series = await prisma.series.create({
+    data: {
+      userId,
+      name: "Bedtime Stories",
+      channelId: channel.id,
+      projectId: project.id,
+      promptTemplateId: template.id,
+      autoPublish: true,
+      publishVisibility: "PUBLIC",
+    },
+    select: { id: true },
+  });
+  const schedule = await prisma.schedule.create({
+    data: {
+      userId,
+      name: "Bedtime Stories",
+      projectId: project.id,
+      seriesId: series.id,
+      frequency: "WEEKLY",
+      dayOfWeek: 1,
+      hour: 6,
+      minute: 0,
+      timeZone: "Africa/Cairo",
+      status: "ACTIVE",
+      nextRunAt: new Date(Date.now() + 7 * 24 * 3_600_000),
+    },
+    select: { id: true },
+  });
+
+  return { channelId: channel.id, projectId: project.id, seriesId: series.id, scheduleId: schedule.id };
+}
+
+describe("tick", () => {
+  it("returns null when nothing is due", async () => {
+    const service = new AutoPublishService(noPublish);
+
+    expect(await service.tick()).toBeNull();
+  });
+
+  it("pauses the parent series' schedule when a job gives up", async () => {
+    // A show whose episodes cannot publish must stop producing more of them.
+    // The sentence is the one the operator reads on the automation list, so it
+    // has to name what actually happened.
+    const service = new AutoPublishService(
+      refusesWith(new ConflictError("This video is filed under a different channel.")),
+    );
+    const { seriesId, scheduleId, projectId: seriesProjectId } =
+      await makeSeriesWithSchedule();
+    const video = await prisma.video.create({
+      data: {
+        userId,
+        projectId: seriesProjectId,
+        seriesId,
+        title: "Ep 1",
+        status: "READY",
+      },
+      select: { id: true },
+    });
+    await service.enqueue(userId, video.id, "PUBLIC");
+
+    const result = await service.tick();
+
+    expect(result?.outcome).toBe("FAILED");
+    const paused = await prisma.schedule.findUnique({ where: { id: scheduleId } });
+    expect(paused?.status).toBe("PAUSED");
+    expect(paused?.pausedReason).toContain("different channel");
+    // A paused schedule must not advertise an occurrence that is not coming.
+    expect(paused?.nextRunAt).toBeNull();
+  });
+
+  it("leaves the parent alone when the job only defers", async () => {
+    // The distinction the whole failure taxonomy exists for: a spent quota
+    // must not stop a show that is working perfectly well.
+    const service = new AutoPublishService(
+      refusesWith(new YouTubeQuotaError("this episode")),
+    );
+    const { seriesId, scheduleId, projectId: seriesProjectId } =
+      await makeSeriesWithSchedule();
+    const video = await prisma.video.create({
+      data: {
+        userId,
+        projectId: seriesProjectId,
+        seriesId,
+        title: "Ep 1",
+        status: "READY",
+      },
+      select: { id: true },
+    });
+    await service.enqueue(userId, video.id, "PUBLIC");
+
+    const result = await service.tick();
+
+    expect(result?.outcome).toBe("DEFERRED");
+    const schedule = await prisma.schedule.findUnique({ where: { id: scheduleId } });
+    expect(schedule?.status).toBe("ACTIVE");
+    expect(schedule?.pausedReason).toBeNull();
+  });
+
+  it("does not overwrite a pause the operator already made", async () => {
+    // The first reason a schedule stopped is the useful one.
+    const service = new AutoPublishService(
+      refusesWith(new ConflictError("This video is filed under a different channel.")),
+    );
+    const { seriesId, scheduleId, projectId: seriesProjectId } =
+      await makeSeriesWithSchedule();
+    await prisma.schedule.update({
+      where: { id: scheduleId },
+      data: { status: "PAUSED", pausedReason: "Paused by hand." },
+    });
+    const video = await prisma.video.create({
+      data: {
+        userId,
+        projectId: seriesProjectId,
+        seriesId,
+        title: "Ep 1",
+        status: "READY",
+      },
+      select: { id: true },
+    });
+    await service.enqueue(userId, video.id, "PUBLIC");
+
+    await service.tick();
+
+    const schedule = await prisma.schedule.findUnique({ where: { id: scheduleId } });
+    expect(schedule?.pausedReason).toBe("Paused by hand.");
   });
 });

@@ -942,11 +942,18 @@ export class ScheduleService {
    *
    * `automationService.start` is the identical call the Generate button makes:
    * it creates the video, writes the script, approves it, and leaves it queued
-   * for the render worker. It stops there. Nothing in this file, and nothing in
-   * that method, creates a `Publication` or moves a video toward `PUBLISHED` —
-   * a scheduled run ends at a finished video waiting for the operator's own
-   * publish click, which is the property that makes unattended spending
-   * acceptable at all.
+   * for the render worker. It stops there, and nothing in this file creates a
+   * `Publication`.
+   *
+   * What changed is what happens *after* it. This used to end at a finished
+   * video waiting for the operator's own publish click, and that was the
+   * property that made unattended spending acceptable at all. An automation
+   * with `autoPublish` set now books the video at creation
+   * (`AutomationOptions.autoPublish`), and `AutoPublishService` uploads it once
+   * it has rendered — so unattended spending can end in an unattended publish.
+   * The replacement safeguard is that the switch is off by default, defaults to
+   * PRIVATE, and is the one thing on this path an operator has to turn on by
+   * hand. See `resolveAutoPublish` for which row decides it.
    *
    * A schedule that belongs to a series hands `start` that show's recipe as
    * well — its script style, its shape, and its own id for the produced row —

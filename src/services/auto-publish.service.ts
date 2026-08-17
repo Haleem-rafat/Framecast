@@ -336,6 +336,93 @@ export class AutoPublishService {
       return { ...base, outcome: "DEFERRED", youtubeVideoId: null, reason };
     }
   }
+
+  /**
+   * One due-check: claim at most one job, run it, and stop the automation
+   * behind it if it has given up.
+   *
+   * At most one, which is also this app's answer to a worker coming back after
+   * a day down with nine finished videos booked. They go out one poll apart
+   * rather than nine at once onto a channel whose audience is asleep — the same
+   * property `ReleaseService.tick` has, reached the same way.
+   */
+  async tick(): Promise<AutoPublishTickResult | null> {
+    const claim = await this.claimDue();
+
+    if (!claim) {
+      return null;
+    }
+
+    const result = await this.executeClaim(claim);
+
+    if (result.outcome === "FAILED") {
+      await this.pauseParent(claim.videoId, result.reason);
+    }
+
+    return result;
+  }
+
+  /**
+   * Stops the automation that made a video whose publish has given up.
+   *
+   * A show whose episodes cannot reach YouTube must stop producing more of
+   * them. The alternative is a topic queue draining into a folder nobody is
+   * watching, at full provider cost, until somebody notices — which is exactly
+   * the unattended spending the rest of this codebase is careful about.
+   *
+   * Two ways to find the automation, because the two kinds record their output
+   * differently: a series tags its videos (`Video.seriesId`), and a standalone
+   * schedule does not, so it is reachable only through the run that produced
+   * this video. Both land on the same `Schedule` row, which is where `status`
+   * and `pausedReason` live for both kinds and what `describeHealth` already
+   * reads for the automation list.
+   *
+   * Jobs already booked for this automation are deliberately left alone. A
+   * video that is finished and was meant to go out should still go out once the
+   * operator fixes whatever broke; pausing stops the *making* of more.
+   */
+  private async pauseParent(videoId: string, reason: string | null): Promise<void> {
+    const video = await prisma.video.findUnique({
+      where: { id: videoId },
+      select: { seriesId: true },
+    });
+
+    const scheduleId = video?.seriesId
+      ? (
+          await prisma.schedule.findFirst({
+            where: { seriesId: video.seriesId, deletedAt: null },
+            select: { id: true },
+          })
+        )?.id
+      : (
+          await prisma.scheduleRun.findFirst({
+            where: { videoId },
+            orderBy: { createdAt: "desc" },
+            select: { scheduleId: true },
+          })
+        )?.scheduleId;
+
+    // No automation to stop. A video booked by a series whose schedule has
+    // since been deleted, or one whose run record is gone — the publish still
+    // failed and the job still records why, but there is nothing left to pause.
+    if (!scheduleId) return;
+
+    await prisma.schedule.updateMany({
+      // `status: "ACTIVE"` so this never overwrites a `pausedReason` the
+      // operator or another path already wrote. The first reason a schedule
+      // stopped is the useful one.
+      where: { id: scheduleId, status: "ACTIVE" },
+      data: {
+        status: "PAUSED",
+        pausedReason:
+          `Paused because publishing an episode to YouTube failed and stopped ` +
+          `retrying. The last attempt said: ${reason ?? "no reason was recorded"}`,
+        // Cleared for the same reason every other pause path clears it: showing
+        // a next occurrence would advertise a video that is not coming.
+        nextRunAt: null,
+      },
+    });
+  }
 }
 
 export const autoPublishService = new AutoPublishService();
