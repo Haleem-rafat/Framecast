@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { AutoPublishService } from "@/services/auto-publish.service";
+import { YouTubeQuotaError } from "@/services/publish.service";
 import { resolveAutoPublish } from "@/services/schedule.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -50,6 +52,27 @@ const noPublish = {
     throw new Error("publish should not have been called");
   },
 } as never;
+
+/** A publisher whose upload always succeeds, returning the shape
+ *  `PublishService.publish` really returns. */
+function publishesAs(youtubeVideoId: string) {
+  return {
+    publish: async () => ({
+      youtubeVideoId,
+      shorts: [],
+      thumbnail: { applied: true, error: null },
+    }),
+  } as never;
+}
+
+/** A publisher that always throws what it was given. */
+function refusesWith(error: Error) {
+  return {
+    publish: async () => {
+      throw error;
+    },
+  } as never;
+}
 
 /** A video still on its way through the pipeline. */
 async function makeVideo(title = "Episode"): Promise<string> {
@@ -249,5 +272,128 @@ describe("claimDue", () => {
     });
 
     expect(await service.claimDue()).toBeNull();
+  });
+});
+
+/** Books a READY video and wins its claim, which is the state every
+ *  `executeClaim` test starts from. */
+async function claimFor(service: AutoPublishService, title = "Episode") {
+  const videoId = await makeReadyVideo(title);
+  await service.enqueue(userId, videoId, "PUBLIC");
+  const claim = await service.claimDue();
+
+  if (!claim) throw new Error("fixture failed to claim its own job");
+
+  return { claim, videoId };
+}
+
+describe("executeClaim", () => {
+  it("marks the job DONE when the upload succeeds", async () => {
+    const service = new AutoPublishService(publishesAs("yt-123"));
+    const { claim, videoId } = await claimFor(service);
+
+    const result = await service.executeClaim(claim);
+
+    expect(result.outcome).toBe("PUBLISHED");
+    expect(result.youtubeVideoId).toBe("yt-123");
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("DONE");
+    expect(job?.leaseExpiresAt).toBeNull();
+    expect(job?.error).toBeNull();
+  });
+
+  it("defers a spent quota without counting a failure", async () => {
+    // A quota ceiling is a fact about the day, not a fault in the automation.
+    // Every automation on the account meets it within the same hour, so
+    // counting it would pause all of them on one busy Monday.
+    const service = new AutoPublishService(
+      refusesWith(new YouTubeQuotaError("this episode")),
+    );
+    const { claim, videoId } = await claimFor(service);
+
+    const result = await service.executeClaim(claim);
+
+    expect(result.outcome).toBe("DEFERRED");
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("WAITING");
+    expect(job?.attempts).toBe(0);
+    expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("fails immediately on a refusal a retry cannot fix", async () => {
+    // PublishService refuses a video whose project and series disagree about
+    // the channel. Retrying that three times over thirty-five minutes helps
+    // nobody, and the operator has to change something either way.
+    const service = new AutoPublishService(
+      refusesWith(new ConflictError("This video is filed under a different channel.")),
+    );
+    const { claim, videoId } = await claimFor(service);
+
+    const result = await service.executeClaim(claim);
+
+    expect(result.outcome).toBe("FAILED");
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("FAILED");
+    expect(job?.error).toContain("different channel");
+  });
+
+  it("fails immediately when the video cannot be found", async () => {
+    const service = new AutoPublishService(
+      refusesWith(new NotFoundError("That video no longer exists.")),
+    );
+    const { claim, videoId } = await claimFor(service);
+
+    await service.executeClaim(claim);
+
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("FAILED");
+    // Not counted — it never got as far as being an attempt at anything.
+    expect(job?.attempts).toBe(0);
+  });
+
+  it("backs off an ordinary failure and keeps the job waiting", async () => {
+    const service = new AutoPublishService(refusesWith(new Error("socket hang up")));
+    const { claim, videoId } = await claimFor(service);
+
+    const result = await service.executeClaim(claim);
+
+    expect(result.outcome).toBe("DEFERRED");
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("WAITING");
+    expect(job?.attempts).toBe(1);
+    expect(job?.error).toContain("socket hang up");
+    expect(job!.runAfter.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("gives up on the third ordinary failure", async () => {
+    const service = new AutoPublishService(refusesWith(new Error("socket hang up")));
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.autoPublishJob.update({ where: { videoId }, data: { attempts: 2 } });
+    const claim = await service.claimDue();
+
+    const result = await service.executeClaim(claim!);
+
+    expect(result.outcome).toBe("FAILED");
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("FAILED");
+    expect(job?.attempts).toBe(3);
+  });
+
+  it("does not give up on the second", async () => {
+    // The boundary, asserted from the other side. Off by one here is either a
+    // show that stops too early or one that never stops at all.
+    const service = new AutoPublishService(refusesWith(new Error("socket hang up")));
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.autoPublishJob.update({ where: { videoId }, data: { attempts: 1 } });
+    const claim = await service.claimDue();
+
+    const result = await service.executeClaim(claim!);
+
+    expect(result.outcome).toBe("DEFERRED");
+    const job = await prisma.autoPublishJob.findUnique({ where: { videoId } });
+    expect(job?.status).toBe("WAITING");
+    expect(job?.attempts).toBe(2);
   });
 });

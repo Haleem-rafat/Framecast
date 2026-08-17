@@ -1,8 +1,14 @@
 import "server-only";
 
 import type { PublishVisibility } from "@/generated/prisma/enums";
+import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { publishService, type PublishService } from "@/services/publish.service";
+import {
+  hoursUntilQuotaReset,
+  publishService,
+  YouTubeQuotaError,
+  type PublishService,
+} from "@/services/publish.service";
 
 /**
  * The long-video drip: a video that its automation said should publish itself.
@@ -42,6 +48,30 @@ const CLAIM_LEASE_SECONDS = 300;
  */
 const CANDIDATE_BATCH = 5;
 
+/**
+ * How many ordinary failures give up on a job.
+ *
+ * Three, the same as `MAX_CONSECUTIVE_FAILURES` in schedule.service.ts and
+ * release.service.ts. A repeated threshold rather than a shared constant,
+ * because the three answer the same question about three different things and
+ * should be able to diverge without a rename.
+ */
+const MAX_ATTEMPTS = 3;
+
+/**
+ * How long to wait after the Nth ordinary failure, in minutes.
+ *
+ * Five, then thirty. The failures this covers are network hiccups and 5xxs from
+ * YouTube: the first retry wants to be soon enough that a blip costs nothing,
+ * and the second far enough out that a provider having a bad half-hour is not
+ * spent on. There is no third — `MAX_ATTEMPTS` ends it there.
+ */
+const BACKOFF_MINUTES = [5, 30];
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** A job won by `claimDue`, carrying everything `executeClaim` needs so it never
  *  re-reads a row another process may have moved underneath it. */
 export interface AutoPublishClaim {
@@ -55,6 +85,22 @@ export interface AutoPublishClaim {
   /** How many ordinary failures this job has already had. `executeClaim` needs
    *  it to decide between another backoff and giving up. */
   attempts: number;
+}
+
+/** What one due-check produced, for the worker's log and for `tick`'s decision
+ *  about whether to stop the automation behind it. */
+export interface AutoPublishTickResult {
+  jobId: string;
+  videoId: string;
+  videoTitle: string;
+  /**
+   * `DEFERRED` covers both a spent quota and a backed-off failure. They differ
+   * in the *bookkeeping* — one counts an attempt and one does not — and are
+   * identical in what happens next, which is "try again later".
+   */
+  outcome: "PUBLISHED" | "DEFERRED" | "FAILED";
+  youtubeVideoId: string | null;
+  reason: string | null;
 }
 
 export class AutoPublishService {
@@ -179,6 +225,116 @@ export class AutoPublishService {
     }
 
     return null;
+  }
+
+  /**
+   * Uploads one claimed video, and decides what its failure means.
+   *
+   * Three kinds, and separating them is most of the value of this method.
+   *
+   *   1. **A spent quota** is a fact about the day rather than a fault in the
+   *      automation. The job waits for the reset, `attempts` is untouched, and
+   *      nothing is paused. Counting it would stop a perfectly healthy show for
+   *      the crime of being third in the queue on a busy Monday — and every
+   *      automation on the account would hit it within the same hour, so one
+   *      busy day would pause all of them at once.
+   *   2. **A refusal a retry cannot fix** — `PublishService` refusing a video
+   *      whose project and series disagree about the channel, or one it cannot
+   *      find. Three attempts over thirty-five minutes would produce the same
+   *      sentence three times. The job fails now, carrying that sentence, so
+   *      the operator has something to act on rather than a delay to wait out.
+   *   3. **Everything else** — a socket, a token refresh, a 5xx. Backoff, then
+   *      give up at `MAX_ATTEMPTS`.
+   *
+   * The `Publication` row `PublishService` writes already carries the outcome,
+   * the error and the thumbnail state. Nothing here duplicates it: this row
+   * records only what the *queue* needs to know.
+   *
+   * Note what this method does NOT do: pause the automation. That is `tick`'s
+   * job, because the decision needs the outcome and this method is also called
+   * directly by tests that are asserting the bookkeeping alone.
+   */
+  async executeClaim(
+    claim: AutoPublishClaim,
+    now: Date = new Date(),
+  ): Promise<AutoPublishTickResult> {
+    const base = {
+      jobId: claim.jobId,
+      videoId: claim.videoId,
+      videoTitle: claim.videoTitle,
+    };
+
+    try {
+      const result = await this.publisher.publish(claim.userId, claim.videoId, {
+        visibility: claim.visibility,
+      });
+
+      await prisma.autoPublishJob.update({
+        where: { id: claim.jobId },
+        data: { status: "DONE", leaseExpiresAt: null, error: null },
+      });
+
+      return {
+        ...base,
+        outcome: "PUBLISHED",
+        youtubeVideoId: result.youtubeVideoId,
+        reason: null,
+      };
+    } catch (error) {
+      const reason = messageOf(error);
+
+      if (error instanceof YouTubeQuotaError) {
+        await prisma.autoPublishJob.update({
+          where: { id: claim.jobId },
+          data: {
+            status: "WAITING",
+            leaseExpiresAt: null,
+            // Not `attempts + 1`. See this method's doc comment.
+            runAfter: new Date(
+              now.getTime() + hoursUntilQuotaReset(now) * 60 * 60 * 1000,
+            ),
+            error: reason,
+          },
+        });
+
+        return { ...base, outcome: "DEFERRED", youtubeVideoId: null, reason };
+      }
+
+      if (error instanceof ConflictError || error instanceof NotFoundError) {
+        await prisma.autoPublishJob.update({
+          where: { id: claim.jobId },
+          data: { status: "FAILED", leaseExpiresAt: null, error: reason },
+        });
+
+        return { ...base, outcome: "FAILED", youtubeVideoId: null, reason };
+      }
+
+      const attempts = claim.attempts + 1;
+
+      if (attempts >= MAX_ATTEMPTS) {
+        await prisma.autoPublishJob.update({
+          where: { id: claim.jobId },
+          data: { status: "FAILED", attempts, leaseExpiresAt: null, error: reason },
+        });
+
+        return { ...base, outcome: "FAILED", youtubeVideoId: null, reason };
+      }
+
+      await prisma.autoPublishJob.update({
+        where: { id: claim.jobId },
+        data: {
+          status: "WAITING",
+          attempts,
+          leaseExpiresAt: null,
+          runAfter: new Date(
+            now.getTime() + BACKOFF_MINUTES[attempts - 1] * 60 * 1000,
+          ),
+          error: reason,
+        },
+      });
+
+      return { ...base, outcome: "DEFERRED", youtubeVideoId: null, reason };
+    }
   }
 }
 

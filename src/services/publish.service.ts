@@ -237,7 +237,8 @@ export class YouTubeQuotaError extends ProviderError {
       `YouTube's daily upload allowance for this project is used up, so ${what} ` +
         `could not be uploaded. The allowance is 100 uploads a day and it resets ` +
         `at midnight Pacific Time — about ${hours} hour${hours === 1 ? "" : "s"} ` +
-        `from now. Nothing retries automatically.`,
+        `from now. A publish you started by hand is not retried; one an ` +
+        `automation started waits for the reset and goes out by itself.`,
       false,
     );
   }
