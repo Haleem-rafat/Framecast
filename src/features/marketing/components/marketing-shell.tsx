@@ -1,16 +1,10 @@
 import Link from "next/link";
 
-import { LogoMark } from "@/components/brand/logo-mark";
-import { Button } from "@/components/ui/button";
 import {
   MarketingDock,
   MarketingDockSpacer,
 } from "@/features/marketing/components/marketing-dock";
-import {
-  MarketingNavLinks,
-  MarketingNavSheet,
-} from "@/features/marketing/components/marketing-nav";
-import { MarketingThemeToggle } from "@/features/marketing/components/marketing-theme-toggle";
+import { MarketingHeader } from "@/features/marketing/components/marketing-header";
 import { cn } from "@/lib/utils";
 
 /**
@@ -48,54 +42,17 @@ export function MarketingShell({
     // explicit bg/text pair repaints the ground with the tokens this class has
     // just redefined — `body` is outside it and keeps the studio's.
     <div className="marketing bg-background text-foreground flex min-h-svh flex-col">
-      <header className="bg-background/80 sticky top-0 z-50 border-b backdrop-blur-sm">
-        <div className={cn(bar, "flex items-center gap-4 py-3")}>
-          <Link
-            href="/"
-            className="flex shrink-0 items-center gap-2 font-semibold"
-          >
-            <span className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg">
-              <LogoMark className="size-4" />
-            </span>
-            Framecast
-          </Link>
+      <MarketingHeader />
 
-          {/* Rendered on every page in this shell, including /privacy and
-              /terms. That is what the `/#…` anchors in NAV_LINKS are for: a
-              bare `#pricing` on the privacy policy scrolls nowhere, while
-              `/#pricing` goes home and lands on the section. A visitor who
-              reached the legal pages should not have to find their own way
-              back to the product. */}
-          <MarketingNavLinks className="mr-auto" />
-
-          <div className="ml-auto flex items-center gap-1">
-            <MarketingThemeToggle />
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="hidden sm:inline-flex"
-            >
-              <Link href="/sign-in">Sign in</Link>
-            </Button>
-            <Button asChild size="sm" className="hidden sm:inline-flex">
-              <Link href="/sign-up">Create an account</Link>
-            </Button>
-            {/* Below md the sections move to the floating dock at the bottom
-                of the screen — thumb reach, and with the section you are
-                reading lit up — and this menu keeps what is left: contact and
-                the two account actions, which hide from the bar below sm. So a
-                375px bar is the wordmark, the theme toggle and one button,
-                never a row of truncated pills. */}
-            <MarketingNavSheet />
-          </div>
-        </div>
-      </header>
-
+      {/* The header is `fixed` — it floats over the page as a pill once you
+          scroll — so it occupies no layout. The landing page's hero pads for
+          it itself; the document pages get the offset here, because a privacy
+          policy whose first line starts underneath the bar is the kind of
+          thing a compliance reviewer notices. */}
       <main
         className={cn(
           "flex-1",
-          wide ? "w-full" : cn(bar, "py-12"),
+          wide ? "w-full" : cn(bar, "pt-24 pb-12"),
         )}
       >
         {children}

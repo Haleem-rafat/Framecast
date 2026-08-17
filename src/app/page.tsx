@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { LandingCta } from "@/features/marketing/components/landing-cta";
 import { LandingFaq } from "@/features/marketing/components/landing-faq";
 import { LandingFeatures } from "@/features/marketing/components/landing-features";
-import { LandingHero } from "@/features/marketing/components/landing-hero";
+import { LandingHeroGalaxy } from "@/features/marketing/components/landing-hero-galaxy";
 import { LandingOutput } from "@/features/marketing/components/landing-output";
 import { LandingPipeline } from "@/features/marketing/components/landing-pipeline";
 import { LandingPricing } from "@/features/marketing/components/landing-pricing";
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
 export default function HomePage() {
   return (
     <MarketingShell width="wide">
-      <LandingHero />
+      <LandingHeroGalaxy />
       <LandingPipeline />
       {/*
         There was a section here that put the approval gate on screen as a
