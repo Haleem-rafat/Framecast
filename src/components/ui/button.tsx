@@ -25,13 +25,38 @@ const buttonVariants = cva(
           "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
         xs: "h-6 gap-1 rounded-[min(var(--radius-md),10px)] px-2 text-xs in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
         sm: "h-7 gap-1 rounded-[min(var(--radius-md),12px)] px-2.5 text-[0.8rem] in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3.5",
-        lg: "h-9 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
-        icon: "size-8",
+        /**
+         * `lg` is the size a page uses to say "this is the action". On a
+         * phone that is a landing-page CTA or a form's submit, and 36px is
+         * shorter than a thumb expects — so it grows to the 44px floor when a
+         * finger is pointing, and stays 36px under a cursor.
+         *
+         * Height rather than a hit area, unlike the icon sizes: this button's
+         * visible size *is* its emphasis, and a primary action that looks
+         * small but tests large is still a primary action that looks small.
+         */
+        lg: "h-9 gap-1.5 px-2.5 pointer-coarse:h-11 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
+        /**
+         * Icon buttons carry an invisible hit area on touch devices.
+         *
+         * These are 24–36px square, which is right for a cursor and well under
+         * the ~44px both Apple and Google put the floor at for a finger. The
+         * app's density is deliberate and growing every icon button by a third
+         * would coarsen every toolbar on every screen — so the *dot stays the
+         * size it is* and an `::after` extends what is tappable past it. Same
+         * trick `switch.tsx` and the canvas handles already use.
+         *
+         * `pointer-coarse` rather than a width breakpoint: the thing that
+         * matters is whether a finger is doing the pointing, and a tablet with
+         * a mouse should keep the tight targets while a small touchscreen
+         * laptop should not.
+         */
+        icon: "relative size-8 pointer-coarse:after:absolute pointer-coarse:after:-inset-1.5 pointer-coarse:after:content-['']",
         "icon-xs":
-          "size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg [&_svg:not([class*='size-'])]:size-3",
+          "relative size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5 pointer-coarse:after:content-[''] [&_svg:not([class*='size-'])]:size-3",
         "icon-sm":
-          "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg",
-        "icon-lg": "size-9",
+          "relative size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']",
+        "icon-lg": "relative size-9 pointer-coarse:after:absolute pointer-coarse:after:-inset-1 pointer-coarse:after:content-['']",
       },
     },
     defaultVariants: {
