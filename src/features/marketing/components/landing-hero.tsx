@@ -116,6 +116,18 @@ function HeroGround() {
  *    rim of light around the content rather than a wash under it; the light
  *    theme is dimmed further, because dark violet on white is a far harder
  *    ground for `text-muted-foreground` than the same violet on near-black.
+ *
+ *    The horizontal radius is `48rem` — a length, not a percentage — and that
+ *    is deliberate. A percentage scales the hole with the viewport, so it
+ *    shrinks exactly when it is needed most: the text column stays about as
+ *    wide as it was while the clear area closes in around it. Measured in a
+ *    browser, a 75%-wide hole let the cables back under the lead paragraph at
+ *    390px and it fell to 2.2:1 on the dark theme. Pinned to a length a little
+ *    wider than the `max-w-xl` the prose sits in, the hole stops tracking the
+ *    viewport: on a narrow window it covers the whole frame and the tunnel
+ *    simply fades out, and it only opens into a visible rim once the window is
+ *    wider than the text. The vertical radius stays a percentage because the
+ *    hero's height is what it needs to track.
  *  - **It is decorative.** `aria-hidden`, no text, and it sits at `-z-10`
  *    inside the section's own stacking context, so it can neither reorder nor
  *    displace anything. Nothing here participates in layout.
@@ -133,7 +145,7 @@ function HeroTunnel() {
   return (
     <div
       aria-hidden="true"
-      className="absolute inset-0 -z-10 opacity-40 [mask-image:radial-gradient(75%_60%_at_50%_45%,transparent_0%,transparent_35%,black_78%)] dark:opacity-90"
+      className="absolute inset-0 -z-10 opacity-40 [mask-image:radial-gradient(48rem_60%_at_50%_45%,transparent_0%,transparent_45%,black_100%)] dark:opacity-75"
     >
       <LightTunnel
         cableColor="#9083FF"
