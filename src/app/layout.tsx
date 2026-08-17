@@ -47,6 +47,33 @@ export const metadata: Metadata = {
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
+  /**
+   * iOS's own install layer, which predates the web manifest and still wins on
+   * iPhone.
+   *
+   * Safari reads `apple-mobile-web-app-capable` rather than the manifest's
+   * `display` when deciding whether a home-screen launch opens in its own
+   * window or in a Safari tab, so without this the whole standalone experience
+   * simply does not happen on the one platform most likely to be holding this
+   * app.
+   *
+   * `statusBarStyle: "default"` rather than `black-translucent`. Translucent
+   * puts the page *under* the status bar, which sounds like the more immersive
+   * choice and is the wrong one here: the dashboard's own header would slide
+   * beneath the clock. `viewportFit: "cover"` plus the safe-area padding the
+   * layout already applies is how this app reaches the edges, and the two
+   * approaches conflict.
+   */
+  appleWebApp: {
+    capable: true,
+    title: SITE_NAME,
+    statusBarStyle: "default",
+  },
+  /** Stops iOS turning anything that looks like a phone number into a link —
+   *  a video's duration ("12 05") and a render's stats read as one often
+   *  enough to matter, and a tel: link inside a table is a tap that goes
+   *  nowhere useful. */
+  formatDetection: { telephone: false },
   keywords: [
     "automated video production",
     "YouTube automation",
@@ -125,6 +152,32 @@ export const metadata: Metadata = {
  */
 export const viewport: Viewport = {
   viewportFit: "cover",
+  /**
+   * The colour the browser paints its own chrome — the status bar on an
+   * installed Android app, the address bar on Chrome, the notch surround when
+   * `viewportFit: "cover"` lets the page under it.
+   *
+   * Two entries rather than one, matched to `prefers-color-scheme`, because a
+   * single value is wrong half the time: a dark bar above a light page reads as
+   * a rendering fault, and a light bar above a dark page is the flash of white
+   * people describe as "it still feels like a web page".
+   *
+   * The values are the base `--background` token for each scheme —
+   * `oklch(1 0 0)` and `oklch(0.145 0 0)` in globals.css. An accent shifts that
+   * token by a few hundredths of a percent (`oklch(0.995 0.004 285)` and
+   * friends), which is below the threshold anyone can see against the page it
+   * sits above, and a per-accent colour cannot be expressed in a static meta
+   * tag anyway.
+   *
+   * next-themes can also resolve to a *chosen* theme that disagrees with the
+   * system one. That case is not covered here and cannot be: this is a static
+   * meta tag emitted on the server, and the alternative — a client effect
+   * rewriting it after hydration — would paint the wrong colour first anyway.
+   */
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 };
 
 export default function RootLayout({
