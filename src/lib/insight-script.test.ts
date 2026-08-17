@@ -344,3 +344,44 @@ describe("insightTransitions", () => {
     expect(transitions).toEqual([null, null]);
   });
 });
+
+describe("emphasis becomes words the captions can colour", () => {
+  it("splits a phrase into its words", () => {
+    // The model answers "which words does the voice lean on?" with phrases,
+    // because that is how a person thinks about stress. buildAss matches one
+    // caption word at a time, so "Zeigarnik effect" normalises to
+    // `zeigarnikeffect` and colours nothing — silently, on the exact line the
+    // whole video builds to.
+    const script = validScript();
+    script.scenes[7].emphasis = ["Zeigarnik effect"];
+
+    const parsed = insightScriptToScript(script);
+
+    expect(parsed.cues[7].emphasis).toEqual(["Zeigarnik", "effect"]);
+  });
+
+  it("leaves a single word alone", () => {
+    const script = validScript();
+    script.scenes[4].emphasis = ["unfinished"];
+
+    expect(insightScriptToScript(script).cues[4].emphasis).toEqual(["unfinished"]);
+  });
+
+  it("does not colour the same word twice", () => {
+    // A phrase and one of its own words would otherwise appear twice.
+    const script = validScript();
+    script.scenes[7].emphasis = ["Zeigarnik effect", "Zeigarnik"];
+
+    expect(insightScriptToScript(script).cues[7].emphasis).toEqual([
+      "Zeigarnik",
+      "effect",
+    ]);
+  });
+
+  it("drops empty entries, which would match every word", () => {
+    const script = validScript();
+    script.scenes[4].emphasis = ["  ", "open"];
+
+    expect(insightScriptToScript(script).cues[4].emphasis).toEqual(["open"]);
+  });
+});

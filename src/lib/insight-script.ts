@@ -313,6 +313,32 @@ export interface ParsedInsightScript {
  * Pure and total — it validates nothing. `validateInsightScript` is the gate
  * and runs before this, so a script that reaches here has already been judged.
  */
+/**
+ * Breaks multi-word emphasis into the words a caption can actually colour.
+ *
+ * The model reliably returns phrases — "Zeigarnik effect", "no clear reason",
+ * "still open" — because that is how a person thinks about stress. The captions
+ * match **per word**, stripping punctuation and case (see `kinetic-captions.ts`),
+ * so "Zeigarnik effect" normalises to `zeigarnikeffect` and matches nothing at
+ * all. The amber keyword simply never appears, and it never appears *most
+ * loudly* on the NAME_IT line, where the concept is almost always two words.
+ *
+ * Nothing reports that. The caption renders, the word is just not coloured, and
+ * the failure looks like the feature was never switched on.
+ *
+ * Splitting here rather than in `buildAss` because this is a fact about what the
+ * model returns, and `buildAss` should keep answering one question — "is this
+ * word stressed" — rather than growing a phrase matcher. The stored cue then
+ * holds exactly what the renderer will look for.
+ */
+function splitEmphasis(emphasis: readonly string[]): string[] {
+  const words = emphasis.flatMap((entry) => entry.split(/\s+/));
+
+  // A phrase and one of its own words would otherwise colour the same word
+  // twice, and an empty string matches everything.
+  return [...new Set(words.map((word) => word.trim()).filter(Boolean))];
+}
+
 export function insightScriptToScript(script: InsightScript): ParsedInsightScript {
   const narrations = script.scenes.map((scene) => normalise(scene.narration));
 
@@ -322,7 +348,7 @@ export function insightScriptToScript(script: InsightScript): ParsedInsightScrip
       anchor: extractAnchor(narrations[index]),
       cue: scene.visualBrief,
       beat: scene.beat,
-      emphasis: scene.emphasis,
+      emphasis: splitEmphasis(scene.emphasis),
     })),
   };
 }
