@@ -60,6 +60,16 @@ async function makeVideo(title = "Episode"): Promise<string> {
   return video.id;
 }
 
+/** A video that has finished rendering, which is the only kind a job is due
+ *  for. */
+async function makeReadyVideo(title = "Episode"): Promise<string> {
+  const video = await prisma.video.create({
+    data: { userId, projectId, title, status: "READY" },
+    select: { id: true },
+  });
+  return video.id;
+}
+
 describe("enqueue", () => {
   it("writes a waiting job carrying the visibility it was given", async () => {
     const service = new AutoPublishService(noPublish);
@@ -131,5 +141,113 @@ describe("resolveAutoPublish", () => {
     expect(
       resolveAutoPublish(null, { autoPublish: false, publishVisibility: "PUBLIC" }),
     ).toBeNull();
+  });
+});
+
+describe("claimDue", () => {
+  it("does not claim a job whose video has not rendered yet", async () => {
+    // The whole reason booking early is safe. A job written while the video was
+    // QUEUED is not due until the render finishes.
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+
+    expect(await service.claimDue()).toBeNull();
+  });
+
+  it("claims a job whose video is READY", async () => {
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo("Bedtime Stories 4");
+    await service.enqueue(userId, videoId, "PUBLIC");
+
+    const claim = await service.claimDue();
+
+    expect(claim?.videoId).toBe(videoId);
+    expect(claim?.videoTitle).toBe("Bedtime Stories 4");
+    expect(claim?.visibility).toBe("PUBLIC");
+    expect(claim?.attempts).toBe(0);
+  });
+
+  it("cannot be claimed twice", async () => {
+    // The property that matters most in this file: a second claim means the
+    // same video uploaded to the same channel twice, and there is no way to
+    // take either copy down from here.
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+
+    const first = await service.claimDue();
+    const second = await service.claimDue();
+
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+  });
+
+  it("does not claim a job that is not due yet", async () => {
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.autoPublishJob.update({
+      where: { videoId },
+      data: { runAfter: new Date(Date.now() + 60 * 60 * 1000) },
+    });
+
+    expect(await service.claimDue()).toBeNull();
+  });
+
+  it("retakes a claim whose lease has lapsed, without counting a failure", async () => {
+    // A dead worker is not a failed publish. Nothing else would ever clear its
+    // claim, which is why this is a lease and not a lock.
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.autoPublishJob.update({
+      where: { videoId },
+      data: { status: "CLAIMED", leaseExpiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    const claim = await service.claimDue();
+
+    expect(claim?.videoId).toBe(videoId);
+    expect(claim?.attempts).toBe(0);
+  });
+
+  it("leaves a claim whose lease is still running alone", async () => {
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.autoPublishJob.update({
+      where: { videoId },
+      data: {
+        status: "CLAIMED",
+        leaseExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+
+    expect(await service.claimDue()).toBeNull();
+  });
+
+  it("does not touch a deleted video's job", async () => {
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.video.update({
+      where: { id: videoId },
+      data: { deletedAt: new Date() },
+    });
+
+    expect(await service.claimDue()).toBeNull();
+  });
+
+  it("does not reclaim a job that already finished", async () => {
+    const service = new AutoPublishService(noPublish);
+    const videoId = await makeReadyVideo();
+    await service.enqueue(userId, videoId, "PUBLIC");
+    await prisma.autoPublishJob.update({
+      where: { videoId },
+      data: { status: "DONE" },
+    });
+
+    expect(await service.claimDue()).toBeNull();
   });
 });
