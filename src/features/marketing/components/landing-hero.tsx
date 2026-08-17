@@ -160,6 +160,32 @@ function HeroTunnel() {
 }
 
 /**
+ * Put a CSS colour through a 1×1 canvas and read back what landed, as
+ * `rgb(r, g, b)`.
+ *
+ * This exists because of a trap. The brand tokens are `oklch()`, and Chromium
+ * resolves `getComputedStyle().color` on them to a *`lab()`* string — not
+ * `rgb()`. Handing that straight to a 2D context's `fillStyle` works in a
+ * browser new enough to parse `lab()` and silently does nothing in one that is
+ * not: `fillStyle` rejects values it cannot parse without throwing, leaving
+ * whatever was set before, which for a fresh context is opaque black. The
+ * failure mode is therefore a black headline on the dark theme — invisible,
+ * and only on the browsers that are hardest to notice it on.
+ *
+ * The same assignment happens here, where a wrong answer is harmless, and the
+ * result is read back as bytes. Whatever the browser understood, it now says
+ * in the one syntax every canvas has understood since canvas existed.
+ */
+function toCanvasColor(color: string): string {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return color;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/**
  * The hero's headline, and — on a big enough screen — React Bits' WarpText
  * drawn over it.
  *
@@ -220,7 +246,7 @@ function HeroHeadline() {
 
   useEffect(() => {
     if (!warped || !headingRef.current) return;
-    setInk(window.getComputedStyle(headingRef.current).color);
+    setInk(toCanvasColor(window.getComputedStyle(headingRef.current).color));
   }, [warped, resolvedTheme]);
 
   return (
