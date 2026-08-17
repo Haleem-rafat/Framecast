@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BANNED_PHRASES,
+  insightScriptToScript,
   MAX_WORDS_PER_SCENE,
   validateInsightScript,
   type InsightScene,
@@ -210,6 +211,73 @@ describe("validateInsightScript", () => {
       // instruction rather than a code.
       expect(error.trim()).toMatch(/\.$/);
       expect(error.length).toBeGreaterThan(20);
+    }
+  });
+});
+
+describe("insightScriptToScript", () => {
+  it("joins the narrations into the words that get spoken", () => {
+    const { content } = insightScriptToScript(validScript());
+
+    expect(content).toContain(
+      "You forgot the task you finished this morning. You still remember the one you did not.",
+    );
+    // Nothing but narration. The caption, the beat and the visual brief are
+    // metadata, and a viewer would hear every one of them if they leaked in.
+    expect(content).not.toContain("AN OPEN FILE");
+    expect(content).not.toContain("NAME_IT");
+    expect(content).not.toContain("staircase");
+  });
+
+  it("gives every scene a cue whose anchor is where that scene starts", () => {
+    const script = validScript();
+    const { content, cues } = insightScriptToScript(script);
+
+    expect(cues).toHaveLength(script.scenes.length);
+
+    // The property the whole timing model rests on: an anchor that is not
+    // literally in `content` is orphaned by anchorCues and that scene loses
+    // its picture. Searched in order, exactly as anchorCues searches.
+    let searchFrom = 0;
+    for (const cue of cues) {
+      const at = content.indexOf(cue.anchor, searchFrom);
+      expect(at).toBeGreaterThanOrEqual(0);
+      searchFrom = at + cue.anchor.length;
+    }
+  });
+
+  it("carries the beat, the emphasis and the visual brief onto the cue", () => {
+    const script = validScript();
+    script.scenes[7].emphasis = ["Zeigarnik"];
+    script.scenes[7].visualBrief = "A hand closing a filing cabinet drawer.";
+
+    const { cues } = insightScriptToScript(script);
+
+    expect(cues[7]).toMatchObject({
+      beat: "NAME_IT",
+      emphasis: ["Zeigarnik"],
+      cue: "A hand closing a filing cabinet drawer.",
+    });
+  });
+
+  it("survives a scene whose narration carries stray whitespace", () => {
+    const script = validScript();
+    script.scenes[0].narration = "  You   forgot the task\tyou finished this morning.  ";
+
+    const { content, cues } = insightScriptToScript(script);
+
+    // Collapsed on both sides of the join, so the anchor still occurs in the
+    // content byte for byte — the failure this normalisation exists to stop.
+    expect(content.startsWith(cues[0].anchor)).toBe(true);
+    expect(content).not.toMatch(/ {2}/);
+  });
+
+  it("keeps an anchor to eight words however long the sentence is", () => {
+    const script = validScript();
+    const { cues } = insightScriptToScript(script);
+
+    for (const cue of cues) {
+      expect(cue.anchor.split(" ").length).toBeLessThanOrEqual(8);
     }
   });
 });
