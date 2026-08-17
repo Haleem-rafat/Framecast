@@ -3,7 +3,12 @@
 /*
  * Vendored from React Bits (https://reactbits.dev/r/SplitFlapText-TS-TW),
  * MIT + Commons Clause, no third-party dependency. Copied in by the shadcn
- * CLI. The only change from upstream is `"use client"`.
+ * CLI. Changes from upstream, marked `EDIT:`:
+ *
+ *   1. `"use client"` — upstream targets Vite and ships no directive.
+ *   2. One `window.setTimeout` → `setTimeout`, because upstream does not
+ *      typecheck in a project that has `@types/node` on the path. See the note
+ *      at the call site.
  *
  * Nothing else needed changing, which is worth saying out loud: it already
  * checks `prefers-reduced-motion` itself, it takes `tileColor` and
@@ -312,7 +317,13 @@ const SplitFlapText = ({
     };
 
     const scheduleNext = (delay: number) => {
-      cycleTimerRef.current = window.setTimeout(() => {
+      // EDIT: `setTimeout`, not `window.setTimeout`. The ref above is typed
+      // `ReturnType<typeof setTimeout>`, which in a project that has
+      // `@types/node` on the path is Node's `Timeout` object — while
+      // `window.setTimeout` returns a `number`. Upstream does not typecheck in
+      // that configuration; this is the one-word fix rather than widening the
+      // ref, because `clearTimeout` accepts either.
+      cycleTimerRef.current = setTimeout(() => {
         if (cancelled) return;
 
         const nextIndex = phraseIndex + 1;

@@ -62,6 +62,9 @@ const TextType = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [currentTextIndex, setCurrentTextIndex] = useState(0);
   const [isVisible, setIsVisible] = useState(!startOnVisible);
+  // EDIT: see note 2 at the top of the file. Resolved once on mount, because
+  // this component is either a typewriter or a plain string and never both.
+  const [reduceMotion, setReduceMotion] = useState(false);
   const cursorRef = useRef<HTMLSpanElement>(null);
   const containerRef = useRef<HTMLElement>(null);
 
@@ -97,7 +100,11 @@ const TextType = ({
   }, [startOnVisible]);
 
   useEffect(() => {
-    if (showCursor && cursorRef.current) {
+    setReduceMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }, []);
+
+  useEffect(() => {
+    if (showCursor && !reduceMotion && cursorRef.current) {
       gsap.set(cursorRef.current, { opacity: 1 });
       gsap.to(cursorRef.current, {
         opacity: 0,
@@ -107,10 +114,10 @@ const TextType = ({
         ease: 'power2.inOut'
       });
     }
-  }, [showCursor, cursorBlinkDuration]);
+  }, [showCursor, cursorBlinkDuration, reduceMotion]);
 
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible || reduceMotion) return;
 
     let timeout: ReturnType<typeof setTimeout>;
 
@@ -162,6 +169,10 @@ const TextType = ({
     }
 
     return () => clearTimeout(timeout);
+    // `getRandomSpeed` is a `useCallback` over `variableSpeed` and
+    // `typingSpeed`, both already listed. Adding it as well would restart the
+    // typewriter mid-word on any render that changed neither.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     currentCharIndex,
     displayedText,
@@ -176,11 +187,21 @@ const TextType = ({
     isVisible,
     reverseMode,
     variableSpeed,
-    onSentenceComplete
+    onSentenceComplete,
+    reduceMotion
   ]);
 
   const shouldHideCursor =
     hideCursorWhileTyping && (currentCharIndex < textArray[currentTextIndex].length || isDeleting);
+
+  // EDIT: the whole first phrase, no cursor, no timers.
+  if (reduceMotion) {
+    return createElement(
+      Component,
+      { className: `inline-block whitespace-pre-wrap tracking-tight ${className}`, ...props },
+      textArray[0]
+    );
+  }
 
   return createElement(
     Component,

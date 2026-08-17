@@ -22,8 +22,11 @@
  *
  * Pure and dependency-free on purpose: no Prisma, no `server-only`, no React.
  * The same function checks a script in a test, in the generator's retry loop
- * and, if it is ever wanted, in the browser.
+ * and, if it is ever wanted, in the browser. `script-cues.ts` is the one import
+ * and it is pure for the same reasons.
  */
+
+import { extractAnchor, normalise, type ScriptCue } from "@/lib/script-cues";
 
 /** How fast the narration is assumed to be read, in words per second.
  *
@@ -223,4 +226,49 @@ export function validateInsightScript(script: InsightScript): ValidationResult {
   }
 
   return { ok: errors.length === 0, errors };
+}
+
+/** A script in the shape `ScriptVersion` actually stores: the narration as one
+ *  string, and one cue per scene pointing into it. */
+export interface ParsedInsightScript {
+  content: string;
+  cues: ScriptCue[];
+}
+
+/**
+ * Turns the model's scene array into the two columns the pipeline reads.
+ *
+ * The mapping is one scene to one cue, and that is the whole reason this format
+ * needed no new render path: `ScriptVersion.cues` is already a per-section
+ * record of "what to show while these words are read", which is what a scene
+ * is. `visualBrief` becomes the cue, the beat and the emphasis ride along on it
+ * (see `CueMeta`), and the declared `duration` is deliberately dropped — the
+ * render derives a clip's length from where its section actually falls in the
+ * ElevenLabs alignment, so a model's guess about timing would be a second,
+ * disagreeing answer to a question that already has a real one. The validator
+ * above is the only thing that reads `duration`, and it reads it as a signal
+ * that the script will run long rather than as an instruction.
+ *
+ * Every narration is run through `normalise` before being joined, and each
+ * anchor is taken from the same normalised text, for the reason
+ * `gateway.provider.ts` gives at its own join: an anchor that does not occur
+ * byte-for-byte in `content` is orphaned by `anchorCues` on the very first
+ * lookup, and a model that emits a double space inside a scene's opening would
+ * otherwise cost that scene its picture for a reason no operator could see.
+ *
+ * Pure and total — it validates nothing. `validateInsightScript` is the gate
+ * and runs before this, so a script that reaches here has already been judged.
+ */
+export function insightScriptToScript(script: InsightScript): ParsedInsightScript {
+  const narrations = script.scenes.map((scene) => normalise(scene.narration));
+
+  return {
+    content: narrations.join(" "),
+    cues: script.scenes.map((scene, index) => ({
+      anchor: extractAnchor(narrations[index]),
+      cue: scene.visualBrief,
+      beat: scene.beat,
+      emphasis: scene.emphasis,
+    })),
+  };
 }
