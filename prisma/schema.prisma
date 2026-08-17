@@ -92,6 +92,7 @@ model User {
   series              Series[]
   releaseCadences     ReleaseCadence[]
   autoPublishJobs     AutoPublishJob[]
+  canvasNodes         CanvasNode[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
   @@index([approval, createdAt])
@@ -1543,6 +1544,17 @@ enum AutoPublishStatus {
   FAILED
 }
 
+/// Which way /automation draws itself for this operator.
+///
+/// A column rather than `localStorage`, for the third reason
+/// `UserSetting.onboardingSeen` gives for the same choice: the dashboard layout
+/// already reads this row for theme and accent, so the chosen view renders on
+/// the server and there is no flash of the wrong one on every navigation.
+enum AutomationView {
+  CANVAS
+  TABLE
+}
+
 /// What happened at one occurrence.
 ///
 /// SKIPPED and MISSED are different things and the distinction is the point.
@@ -1789,6 +1801,45 @@ model AutoPublishJob {
   /// The claim query's index: due jobs, oldest first.
   @@index([status, runAfter])
   @@map("auto_publish_job")
+}
+
+/// Where one node sits on this operator's automation canvas.
+///
+/// Positions carry no information — the structure *is* the data, in the foreign
+/// keys between channel, project, series and schedule — so this table buys
+/// arrangement rather than meaning. That is a real thing to want, and wanting it
+/// is the only reason this exists.
+///
+/// It is also why nothing here is load bearing. A row that goes missing costs a
+/// node its remembered place and `autoPlace` puts it somewhere sensible; no
+/// read anywhere fails because a position is absent.
+model CanvasNode {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// "channel:<id>", "series:<id>", "schedule:<id>", "release:<id>",
+  /// "publish:series:<id>".
+  ///
+  /// A string rather than a foreign key, and the same choice
+  /// `AutomationEntry.rowId` and `UserSetting.onboardingSeen` already make: ids
+  /// are unique only within one table, five kinds of thing share this canvas,
+  /// and a sixth should be a content change rather than a migration.
+  ///
+  /// The cost is that a deleted series leaves a row pointing at nothing. That is
+  /// harmless — `CanvasService.read` looks positions *up* by the keys it is
+  /// already drawing and never lists this table — so they are swept lazily
+  /// rather than by a cascade this key cannot express.
+  nodeKey String
+
+  x Float
+  y Float
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, nodeKey])
+  @@map("canvas_node")
 }
 
 // ---------------------------------------------------------------------------
@@ -2092,6 +2143,14 @@ model UserSetting {
   /// A `String[]` rather than a column per hint so that adding a screen hint
   /// is a content change, never a migration.
   onboardingSeen        String[]          @default([])
+  /// Canvas or table on /automation.
+  ///
+  /// CANVAS by default because the complaint that produced the canvas was that
+  /// the table reads like a CRM — it answers "which automation is unhealthy"
+  /// and not "what is my kids channel doing". An operator who prefers the table
+  /// flips it once and it sticks, which is why this is a column and not a
+  /// constant.
+  automationView        AutomationView    @default(CANVAS)
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 
