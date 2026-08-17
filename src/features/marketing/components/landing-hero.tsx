@@ -18,7 +18,12 @@ export function LandingHero() {
       // of the pixels to composite.
       className="[mask-image:radial-gradient(150%_120%_at_50%_-20%,black_0%,transparent_72%)]"
     >
-      <div className="mx-auto flex w-full max-w-4xl flex-col items-center px-6 py-24 text-center sm:py-32 lg:py-44">
+      {/* Tighter on a phone than it was. At `py-24` with the stack below it,
+          the first screen of a 390px device held the badge, the headline and
+          most of a seven-line paragraph — and the buttons the whole page exists
+          to get pressed sat under the fold, behind the floating dock. The
+          desktop rhythm is untouched from `sm` up. */}
+      <div className="mx-auto flex w-full max-w-4xl flex-col items-center px-6 py-14 text-center sm:py-32 lg:py-44">
         <p className="text-muted-foreground bg-background/60 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs backdrop-blur-sm">
           <span className="from-brand-violet to-brand-cyan size-1.5 rounded-full bg-gradient-to-r" />
           Self-hosted video production. Free while in beta.
@@ -28,7 +33,7 @@ export function LandingHero() {
             appear as plain text only — this domain is under a Safe Browsing
             review and borrowing anyone's mark or brand colour is exactly the
             signal not to send. */}
-        <h1 className="mt-6 text-[2.25rem] leading-[1.06] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl">
+        <h1 className="mt-5 text-[2.25rem] leading-[1.06] font-semibold tracking-tight text-balance sm:mt-6 sm:text-6xl lg:text-7xl">
           Type a topic. Get a{" "}
           {/* Ink stops, not decorative ones. `bg-clip-text` makes the gradient
               the text's actual colour, so its pale end has to be readable: the
@@ -46,7 +51,7 @@ export function LandingHero() {
         {/* Two sentences, not one seven-clause list: the first says what you
             stop doing, the second is the pipeline in the order it runs. A
             reader who quits after the first has still got the point. */}
-        <p className="text-muted-foreground mt-6 max-w-2xl text-base text-pretty sm:text-lg">
+        <p className="text-muted-foreground mt-5 max-w-2xl text-base text-pretty sm:mt-6 sm:text-lg">
           No writing, no recording, no editing. Framecast drafts a sourced
           script, narrates it with ElevenLabs, matches footage to every line,
           then renders the cut with burned-in captions, music and motion and
@@ -57,7 +62,12 @@ export function LandingHero() {
         {/* The approval gate is the most trust-building true thing about this
             product, so it gets its own object rather than a clause at the end
             of a paragraph nobody finishes. */}
-        <p className="border-brand-violet/30 bg-background/50 mt-6 max-w-xl rounded-xl border px-4 py-3 text-sm text-pretty backdrop-blur-sm">
+        {/* `order-last` on a phone, in place on a laptop.
+            This is the most trust-building sentence on the page and it still
+            should not stand between a first-time visitor and the button. On a
+            narrow screen it moves below the actions; from `sm` up, where the
+            whole hero is visible at once, the reading order is unchanged. */}
+        <p className="border-brand-violet/30 bg-background/50 order-last mt-6 max-w-xl rounded-xl border px-4 py-3 text-sm text-pretty backdrop-blur-sm sm:order-none">
           <span className="font-medium">And it stops twice, for you.</span>{" "}
           <span className="text-muted-foreground">
             Nothing runs until you have approved the script. Nothing publishes
@@ -70,7 +80,7 @@ export function LandingHero() {
             behind the primary action only, so it reads as the lit thing on the
             section without the button being recoloured. `blur` on a static
             element is composited once, not per frame. */}
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3 sm:mt-8">
           <div className="relative">
             <span
               aria-hidden="true"
