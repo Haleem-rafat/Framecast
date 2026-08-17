@@ -6,6 +6,7 @@ import { z } from "zod";
 import { env } from "@/config/env";
 import { estimateCostUsd } from "@/lib/cost";
 import { ProviderError } from "@/lib/errors";
+import { insightScriptToScript, type InsightScript } from "@/lib/insight-script";
 import { normalise } from "@/lib/script-cues";
 import type {
   MetadataGenerationInput,
@@ -68,6 +69,89 @@ const scriptSchema = z.object({
         "belong here and nowhere in any section's text.",
     ),
 });
+
+/**
+ * The single-insight format's scene array — the pack's Stage 1 output, as a
+ * schema rather than as a paragraph of the prompt asking nicely for JSON.
+ *
+ * Snake_case field names because that is what the format's own prompt pack
+ * names them, and the prompt and the schema arriving at the model together
+ * disagreeing about a field name is a needless retry. They are mapped to the
+ * camelCase `InsightScene` immediately below, in the one place that mapping
+ * happens.
+ *
+ * `beat` is a plain string, deliberately, even though only six values are ever
+ * valid. Making it a `z.enum` would move the check from `validateInsightScript`
+ * — which explains what is wrong in a sentence written to be pasted back into a
+ * retry prompt — into the AI SDK, which would throw a schema-validation error
+ * naming a Zod path. The gate is the single authority on what a well-formed
+ * script is, and it can only be that if it is what does the rejecting.
+ */
+const insightScriptSchema = z.object({
+  concept_name: z
+    .string()
+    .describe(
+      "The real psychological effect or principle the video names, e.g. " +
+        '"the Zeigarnik effect". Not a slogan and not invented.',
+    ),
+  scenes: z
+    .array(
+      z.object({
+        id: z.number().int().describe("1-based scene number, in spoken order."),
+        beat: z
+          .string()
+          .describe(
+            "Which narrative beat this scene is: HOOK, TENSION, MECHANISM, " +
+              "NAME_IT, TURN or LOOP. All six must appear, in that order; a " +
+              "beat may span several consecutive scenes.",
+          ),
+        duration: z
+          .number()
+          .describe("How long this scene should run, in seconds. 2.5 to 5.0."),
+        narration: z
+          .string()
+          .describe(
+            "One sentence, spoken in the second person, read aloud exactly as " +
+              "written. 8-14 words, one clause, no dashes and no emoji.",
+          ),
+        caption: z
+          .string()
+          .describe("The words burned on screen for this scene. Never empty."),
+        visual_brief: z
+          .string()
+          .describe(
+            "What is on screen while this is read — one shot, described as a " +
+              "shot. An emotional rhyme of the line rather than an " +
+              'illustration of it: "a woman pausing in a doorway", not "a brain".',
+          ),
+        emphasis: z
+          .array(z.string())
+          .describe(
+            "Words from this scene's own narration that the voice leans on. " +
+              "Each must occur in the narration verbatim.",
+          ),
+      }),
+    )
+    .min(1),
+});
+
+/** The one place the pack's field names become the validator's. */
+function toInsightScript(
+  object: z.infer<typeof insightScriptSchema>,
+): InsightScript {
+  return {
+    conceptName: object.concept_name,
+    scenes: object.scenes.map((scene) => ({
+      id: scene.id,
+      beat: scene.beat,
+      duration: scene.duration,
+      narration: scene.narration,
+      caption: scene.caption,
+      visualBrief: scene.visual_brief,
+      emphasis: scene.emphasis,
+    })),
+  };
+}
 
 // Structured output for the video's discoverability fields, following the
 // same `generateObject` pattern as `scriptSchema` above. Descriptions live on
@@ -133,6 +217,7 @@ export class GatewayProvider implements TextGenerationProvider {
       let content: string;
       let sections: ScriptGenerationResult["sections"];
       let sources: ScriptGenerationResult["sources"];
+      let insight: ScriptGenerationResult["insight"];
       let inputTokens: number;
       let outputTokens: number;
 
@@ -172,6 +257,22 @@ export class GatewayProvider implements TextGenerationProvider {
         sources = result.object.sources;
         inputTokens = result.usage.inputTokens ?? 0;
         outputTokens = result.usage.outputTokens ?? 0;
+      } else if (input.withInsightScenes) {
+        const result = await generateObject({
+          model: languageModel,
+          schema: insightScriptSchema,
+          prompt: input.prompt,
+          ...system,
+        });
+
+        insight = toInsightScript(result.object);
+        // Derived by the same function ScriptService uses to build the cues,
+        // rather than joined a second time here. Two joins would be two answers
+        // to "what does this video say", and the anchors are offsets into
+        // whichever one wins.
+        content = insightScriptToScript(insight).content;
+        inputTokens = result.usage.inputTokens ?? 0;
+        outputTokens = result.usage.outputTokens ?? 0;
       } else {
         const result = await generateText({
           model: languageModel,
@@ -194,6 +295,7 @@ export class GatewayProvider implements TextGenerationProvider {
         latencyMs: Date.now() - startedAt,
         sections,
         sources,
+        insight,
       };
     } catch (cause) {
       throw new ProviderError(

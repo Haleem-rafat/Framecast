@@ -1,5 +1,6 @@
 import type { AiProviderType } from "@/generated/prisma/enums";
 import type { Alignment } from "@/lib/captions";
+import type { InsightScript } from "@/lib/insight-script";
 import type { VoiceStyle } from "@/lib/video-style";
 
 export interface ScriptGenerationInput {
@@ -43,6 +44,23 @@ export interface ScriptGenerationInput {
    * callers working without having to know sections exist at all.
    */
   withSections?: boolean;
+  /**
+   * Asks for the single-insight format's scene array instead — see
+   * `ScriptGenerationResult.insight`.
+   *
+   * A third shape rather than a variant of `withSections`, because the two ask
+   * for genuinely different things: a section is narration plus a search query,
+   * a scene is narration plus a visual brief plus which of the six narrative
+   * beats it is plus which words the voice leans on. Collapsing them into one
+   * schema would send every ordinary script a beat field it has no structure
+   * for, and would make "the model returned no beats" indistinguishable from
+   * "this prompt has no beats to return".
+   *
+   * Off by default and mutually exclusive with `withSections` in practice —
+   * `withSections` is checked first below, so a caller that sets both gets the
+   * behaviour it had before this field existed.
+   */
+  withInsightScenes?: boolean;
 }
 
 export interface ScriptSection {
@@ -76,6 +94,21 @@ export interface ScriptGenerationResult {
    * back to whatever inline SOURCES section an older script happens to carry.
    */
   sources?: string[];
+  /**
+   * The single-insight format's scenes, exactly as the model returned them.
+   *
+   * Present only when `withInsightScenes` was set. Handed up unvalidated on
+   * purpose: `ScriptService` runs `validateInsightScript` over it and, on
+   * failure, re-asks the model with the validator's own error sentences
+   * appended. A provider that rejected the script itself would have nothing to
+   * say about *why* that a retry prompt could use, and would spend the
+   * operator's money twice to discover it.
+   *
+   * `content` is set alongside it to the scenes' narrations joined, by the same
+   * pure function `ScriptService` then uses to build the cues — so the words
+   * that get narrated and the anchors that locate them cannot disagree.
+   */
+  insight?: InsightScript;
 }
 
 export interface MetadataGenerationInput {

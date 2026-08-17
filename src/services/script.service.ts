@@ -1,7 +1,8 @@
 import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
-import { ConflictError, NotFoundError } from "@/lib/errors";
+import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
+import { insightScriptToScript, validateInsightScript } from "@/lib/insight-script";
 import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
 import { recurringCharacterInstruction } from "@/lib/recurring-character";
@@ -28,13 +29,76 @@ function isUniqueConstraintViolation(
   );
 }
 
+/**
+ * Which shape of script to ask the model for.
+ *
+ * `prose` is what every generation this app has ever made asked for: narration
+ * split into sections, each with a b-roll cue. `insight` is the single-insight
+ * short (see docs/superpowers/specs/2026-08-17-knowsense-format-design.md) — six
+ * named narrative beats, one sentence a scene, and a per-scene visual brief.
+ *
+ * A parameter rather than something derived from the chosen `PromptTemplate`,
+ * and that was a choice worth making explicitly. `PromptTemplate` has no column
+ * saying what shape its output is, and adding one would put a format flag on
+ * every template an operator writes for a format that has one prompt. It is not
+ * derived from the channel's `footageStyle` either, tempting as that is — the
+ * two do belong together, but "what the writer is asked for" and "where the
+ * pictures come from" are different decisions and coupling them means a channel
+ * cannot try one without the other.
+ *
+ * Absent means `prose`, so every existing caller — the script panel, the
+ * pipeline, the schedule — sends exactly the request it always did.
+ */
+export type ScriptFormat = "prose" | "insight";
+
 export interface GenerateScriptInput {
   templateId?: string;
   variables?: Record<string, string>;
+  format?: ScriptFormat;
 }
+
+/** How many times the insight format's script is asked for before the
+ *  generation is abandoned. Two: the first ask, and one retry carrying the
+ *  validator's complaints. A third would be a third bill for a model that has
+ *  now twice ignored rules stated twice. */
+const INSIGHT_ATTEMPTS = 2;
+
+/**
+ * What the model is told before the validator's own sentences.
+ *
+ * Short, and it says "return the whole script again" rather than "fix scene 4":
+ * a partial answer would have to be merged with the previous one, and a merge
+ * of two scripts is a script nobody wrote.
+ */
+const INSIGHT_RETRY_PREFACE =
+  "Your previous answer was rejected. Fix every problem listed below and " +
+  "return the complete script again in the same shape. Change nothing else.";
 
 function countWords(content: string): number {
   return content.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * What a generation cost in total, across however many attempts it took.
+ *
+ * The insight format can bill twice for one script — see `generateInsight` —
+ * and a `ProviderUsage` row recording only the successful attempt would report
+ * a rejected first draft as free. Summed rather than recorded as two rows
+ * because one operator action is one line on the cost dashboard; the retry is
+ * an implementation detail of that action, not a second thing that happened.
+ *
+ * A single attempt sums to itself, so the prose path's row is unchanged.
+ */
+function billedTotals(attempts: readonly ScriptGenerationResult[]) {
+  return attempts.reduce(
+    (total, attempt) => ({
+      inputTokens: total.inputTokens + attempt.inputTokens,
+      outputTokens: total.outputTokens + attempt.outputTokens,
+      costUsd: total.costUsd + attempt.costUsd,
+      latencyMs: total.latencyMs + attempt.latencyMs,
+    }),
+    { inputTokens: 0, outputTokens: 0, costUsd: 0, latencyMs: 0 },
+  );
 }
 
 export class ScriptService {
@@ -134,15 +198,36 @@ export class ScriptService {
     // real figures: if generateScript() resolves, the operator has already
     // been billed even if a later step in the transaction fails.
     let result: ScriptGenerationResult | undefined;
+    // Every attempt that reached the provider, in order. One entry for a prose
+    // generation; up to two for an insight one, including a first draft the
+    // gate threw away — which was still billed. See `billedTotals`.
+    const attempts: ScriptGenerationResult[] = [];
+    const record = (attempt: ScriptGenerationResult) => {
+      attempts.push(attempt);
+      result = attempt;
+    };
 
     try {
-      const generated = await this.provider.generateScript({
-        prompt,
-        system,
-        apiKey,
-        withSections: true,
-      });
-      result = generated;
+      const generated =
+        input.format === "insight"
+          ? await this.generateInsight({ prompt, system, apiKey }, record)
+          : await this.provider.generateScript({
+              prompt,
+              system,
+              apiKey,
+              withSections: true,
+            });
+
+      if (input.format !== "insight") {
+        record(generated);
+      }
+
+      // Non-null for the insight format and undefined for prose, which is what
+      // decides both the cues written below and whether `content` came from a
+      // scene array or from sections. Parsed once here rather than at each use.
+      const parsedInsight = generated.insight
+        ? insightScriptToScript(generated.insight)
+        : null;
 
       return await prisma.$transaction(async (tx) => {
         const script = await tx.script.upsert({
@@ -166,11 +251,25 @@ export class ScriptService {
             // Null rather than an empty array when the model returned prose:
             // the column's meaning is "this script has no cues", and an empty
             // array would read as "it has cues, and there are none".
+            //
+            // An insight script's cues carry two extra fields — see `CueMeta`
+            // in script-cues.ts. They are spread into fresh object literals
+            // rather than stored as `ScriptCue[]` for the reason `saveEdit`
+            // gives below: Prisma's JSON input type wants a plain object shape,
+            // which a literal satisfies structurally and an imported interface
+            // does not.
             cues:
+              parsedInsight?.cues.map((cue) => ({
+                anchor: cue.anchor,
+                cue: cue.cue,
+                beat: cue.beat,
+                emphasis: cue.emphasis,
+              })) ??
               generated.sections?.map((section) => ({
                 anchor: extractAnchor(section.text),
                 cue: section.cue,
-              })) ?? undefined,
+              })) ??
+              undefined,
             // Stored beside the narration rather than inside it. `content` is
             // what voiceover.service.ts sends to ElevenLabs, so a citation
             // appended to it would be narrated; publish.service.ts reads this
@@ -235,10 +334,10 @@ export class ScriptService {
             provider: generated.provider,
             operation: "script.generate",
             model: generated.model,
-            inputTokens: generated.inputTokens,
-            outputTokens: generated.outputTokens,
-            costUsd: generated.costUsd,
-            latencyMs: generated.latencyMs,
+            // The whole generation, retries included. Identical to
+            // `generated`'s own figures whenever there was only one attempt,
+            // which is every prose generation.
+            ...billedTotals(attempts),
             succeeded: true,
           },
         });
@@ -266,10 +365,15 @@ export class ScriptService {
           provider: result?.provider ?? "ANTHROPIC",
           operation: "script.generate",
           model: result?.model ?? null,
-          inputTokens: result?.inputTokens ?? 0,
-          outputTokens: result?.outputTokens ?? 0,
-          costUsd: result?.costUsd ?? 0,
-          latencyMs: result?.latencyMs ?? null,
+          // Everything the provider was paid for before this failed — which
+          // for an insight script that was rejected twice is two drafts, not
+          // one. Zeros when the provider threw before returning, which is the
+          // one case that truthfully cost nothing.
+          ...billedTotals(attempts),
+          // Null rather than 0 when nothing was ever called, exactly as before:
+          // a zero here would claim a request that took no time, and null says
+          // there was no request.
+          latencyMs: attempts.length > 0 ? billedTotals(attempts).latencyMs : null,
           succeeded: false,
         },
       });
@@ -288,6 +392,84 @@ export class ScriptService {
 
       throw error;
     }
+  }
+
+  /**
+   * Asks for a single-insight script and refuses to hand back one that breaks
+   * the format.
+   *
+   * ## Why the gate is here and not further down
+   *
+   * Everything after the script costs money — narration is billed per
+   * character, every scene is a generated picture, the render burns worker
+   * minutes — and none of it can tell that a script has five beats instead of
+   * six. `validateInsightScript` is cheap, pure, and its messages were written
+   * to be pasted into a retry verbatim, so this is the one place where "the
+   * model wrote the wrong thing" is both detectable and fixable.
+   *
+   * ## Why exactly one retry
+   *
+   * The first ask is a model reading the format's rules. The retry is the same
+   * model reading the rules *and* a list of the ones it broke, which is the
+   * strongest prompt available; a third ask would add nothing new and bill for
+   * it. Two failures is a report, not a third attempt — and never a silently
+   * persisted bad script, which is the outcome this whole method exists to
+   * prevent. The operator sees the validator's own sentences, because they are
+   * the specific thing that is wrong and they are already in plain English.
+   *
+   * Every attempt is handed to `onAttempt` as soon as it resolves, including
+   * the ones that are then thrown away: they were billed the moment the
+   * provider answered, and the cost dashboard must say so.
+   */
+  private async generateInsight(
+    request: { prompt: string; system?: string; apiKey?: string },
+    onAttempt: (result: ScriptGenerationResult) => void,
+  ): Promise<ScriptGenerationResult> {
+    let errors: string[] = [];
+
+    for (let attempt = 0; attempt < INSIGHT_ATTEMPTS; attempt += 1) {
+      const generated = await this.provider.generateScript({
+        // The operator's template first and unchanged, then the complaints —
+        // so the retry reads as the original brief with corrections attached
+        // rather than as a new, shorter brief about error messages.
+        prompt:
+          errors.length === 0
+            ? request.prompt
+            : `${request.prompt}\n\n${INSIGHT_RETRY_PREFACE}\n\n` +
+              errors.map((error) => `- ${error}`).join("\n"),
+        system: request.system,
+        apiKey: request.apiKey,
+        withInsightScenes: true,
+      });
+
+      onAttempt(generated);
+
+      // A provider that was asked for scenes and returned none is a wiring
+      // fault, not a bad script: there is nothing for the validator to
+      // complain about and nothing a retry would say differently. Named as
+      // ours rather than reported to the operator as a script problem.
+      if (!generated.insight) {
+        throw new InternalError(
+          "The model provider was asked for a single-insight script and " +
+            "returned no scenes.",
+        );
+      }
+
+      const validation = validateInsightScript(generated.insight);
+
+      if (validation.ok) {
+        return generated;
+      }
+
+      errors = validation.errors;
+    }
+
+    throw new ConflictError(
+      `The script did not meet the single-insight format after ` +
+        `${INSIGHT_ATTEMPTS} attempts, so nothing was saved. What was wrong ` +
+        `with the last one:\n` +
+        errors.map((error) => `- ${error}`).join("\n"),
+    );
   }
 
   /**
