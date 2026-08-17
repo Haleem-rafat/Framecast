@@ -12,6 +12,8 @@ import { writeRenderFile } from "@/lib/render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
+import { frameSize } from "@/lib/ffmpeg-command";
+import { buildAss } from "@/lib/kinetic-captions";
 import { prisma } from "@/lib/prisma";
 import {
   anchorCues,
@@ -20,6 +22,7 @@ import {
   sectionDurations,
 } from "@/lib/script-cues";
 import {
+  kineticCaptionStyle,
   SHORT_MAX_CHARS_PER_LINE,
   SHORT_MAX_WORDS_PER_LINE,
   verticalCaptionStyle,
@@ -488,26 +491,6 @@ export class RenderService {
         downloadedClipPaths.push(clipPath);
       }
 
-      const alignmentBuffer = await getObject(subtitleAsset.storagePath);
-      const alignment = JSON.parse(alignmentBuffer.toString("utf-8")) as Alignment;
-      const srtPath = path.join(tempDir, "captions.srt");
-      // A vertical frame is 1080px wide, not 1920, and the line that fits
-      // comfortably across a landscape frame wraps into a three-row tower in a
-      // vertical one. The two limits are the ones shorts already use and are
-      // measured rather than guessed — see SHORT_MAX_CHARS_PER_LINE. A
-      // landscape render calls `buildSrt` with no limits at all, exactly as it
-      // always has.
-      await writeFile(
-        srtPath,
-        vertical
-          ? buildSrt(alignment, SHORT_MAX_WORDS_PER_LINE, SHORT_MAX_CHARS_PER_LINE)
-          : buildSrt(alignment),
-      );
-
-      onProgress(
-        `fetched narration + ${clipAssets.length} clip(s) + captions from storage (${formatElapsed(Date.now() - setupStartedAt)})`,
-      );
-
       // The channel's own look, sound and music query — never the video's own
       // fields. `resolve` never throws and falls back to DEFAULT_STYLE and a
       // generic music query for a channel with no brand row, a video whose
@@ -515,8 +498,69 @@ export class RenderService {
       // to parse (see brand.service.ts), so every one of those still renders
       // exactly as it did before this brand lookup existed — this call adds
       // a per-channel choice on top of that fallback, it does not remove it.
+      //
+      // Resolved before the captions are written rather than after, because
+      // which subtitle FORMAT gets written is now one of the things it decides.
       const brand = await brandService.resolve(video.project?.channelId ?? null);
       const style = brand.videoStyle;
+
+      const alignmentBuffer = await getObject(subtitleAsset.storagePath);
+      const alignment = JSON.parse(alignmentBuffer.toString("utf-8")) as Alignment;
+
+      // Word-by-word captions in a file libass reads natively, instead of SRT.
+      // Off unless the channel asked for it, and `DEFAULT_STYLE.captionMode` is
+      // "srt" — so every existing render takes the `buildSrt` branch below and
+      // its argv is byte-for-byte what it has always been, down to the filename.
+      const kinetic = style.captionMode === "kinetic";
+      const frame = frameSize(vertical ? "VERTICAL" : undefined);
+
+      // Which words the voice leans on, from the script's own cues.
+      //
+      // Flattened into one list for the whole video, and that is a real
+      // compromise rather than an oversight: `buildAss` matches emphasis
+      // case-insensitively across the whole alignment, so a word stressed in
+      // scene three is also coloured if it recurs in scene nine. The
+      // alternative is one ASS file per cue window and a filter chain to match,
+      // which is a second renderer for a case — the same content word stressed
+      // in one scene and incidental in another — that a 100-word script barely
+      // has room to produce. Empty for every script written before beats
+      // existed, which colours nothing.
+      const emphasis = [
+        ...new Set(anchored.flatMap((cue) => cue.emphasis ?? [])),
+      ];
+
+      const subtitlePath = path.join(tempDir, kinetic ? "captions.ass" : "captions.srt");
+      // A vertical frame is 1080px wide, not 1920, and the line that fits
+      // comfortably across a landscape frame wraps into a three-row tower in a
+      // vertical one. The two limits are the ones shorts already use and are
+      // measured rather than guessed — see SHORT_MAX_CHARS_PER_LINE. A
+      // landscape render calls `buildSrt` with no limits at all, exactly as it
+      // always has.
+      //
+      // The kinetic branch uses the SAME two limits whatever the format: the
+      // whole point of the look is one to three words on screen, and a
+      // six-word cue revealed word by word is a different effect.
+      await writeFile(
+        subtitlePath,
+        kinetic
+          ? buildAss({
+              alignment,
+              style: kineticCaptionStyle(style.captions, frame.width, frame.height),
+              width: frame.width,
+              height: frame.height,
+              maxWordsPerLine: SHORT_MAX_WORDS_PER_LINE,
+              maxCharsPerLine: SHORT_MAX_CHARS_PER_LINE,
+              emphasis,
+            })
+          : vertical
+            ? buildSrt(alignment, SHORT_MAX_WORDS_PER_LINE, SHORT_MAX_CHARS_PER_LINE)
+            : buildSrt(alignment),
+      );
+
+      onProgress(
+        `fetched narration + ${clipAssets.length} clip(s) + captions from storage (${formatElapsed(Date.now() - setupStartedAt)})`,
+      );
+
       const outputPath = path.join(tempDir, "video.mp4");
 
       // A slot has to outlast the crossfade it gives its tail to, or the
@@ -652,12 +696,21 @@ export class RenderService {
           format: vertical ? "VERTICAL" : undefined,
           audioPath,
           durationSeconds,
-          srtPath,
+          srtPath: subtitlePath,
           // The same geometry a short's captions use, and deliberately the
           // same function: it is a 1080x1920 frame either way, so the safe
           // area that clears YouTube's action rail and its bottom chrome is
           // the same safe area. See `verticalCaptionStyle`.
-          captions: vertical ? verticalCaptionStyle(style.captions) : style.captions,
+          //
+          // Undefined for a kinetic render, and it must be: `force_style`
+          // overrides what is inside the ASS file, so passing these numbers
+          // beside an `.ass` would throw away the font and the pixel sizes
+          // `kineticCaptionStyle` computed. See `ComposeInput.captions`.
+          captions: kinetic
+            ? undefined
+            : vertical
+              ? verticalCaptionStyle(style.captions)
+              : style.captions,
           musicPath,
           outputPath,
         },

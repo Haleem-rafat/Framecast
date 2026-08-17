@@ -248,6 +248,13 @@ const videoStyleSchema = z.object({
   audio: audioStyleSchema.optional(),
   transitions: transitionStyleSchema.optional(),
   voice: voiceStyleSchema.optional(),
+  // The one leaf that is not inside a section. An enum rather than a string
+  // because the value picks a code path in render.service.ts, and an
+  // unrecognised one there would silently fall through to SRT — which is the
+  // "the setting looks applied and is not" failure the whole file guards
+  // against. A stored value outside the pair fails the parse and, by the
+  // whole-or-nothing rule below, is discarded loudly with the rest.
+  captionMode: z.enum(["srt", "kinetic"]).optional(),
 });
 
 type ParsedVideoStyle = z.infer<typeof videoStyleSchema>;
@@ -399,9 +406,23 @@ function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle 
 
   for (const key of Object.keys(DEFAULT_STYLE) as (keyof VideoStyle)[]) {
     const section = parsed[key];
-    if (section) {
-      merged[key] = { ...DEFAULT_STYLE[key], ...section } as never;
+
+    if (!section) {
+      continue;
     }
+
+    // A section is merged field by field so a brand that sets only
+    // `transitions.durationSeconds` keeps every other transition field. A
+    // scalar — `captionMode` is the only one — is replaced outright, because
+    // there is nothing inside a string to merge and spreading one would
+    // produce an object of numbered characters.
+    const fallback: VideoStyle[keyof VideoStyle] = DEFAULT_STYLE[key];
+
+    merged[key] = (
+      typeof section === "object" && typeof fallback === "object"
+        ? { ...fallback, ...section }
+        : section
+    ) as never;
   }
 
   return merged;

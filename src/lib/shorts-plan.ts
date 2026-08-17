@@ -1,4 +1,6 @@
+import { KINETIC_CAPTION_FONT } from "@/lib/brand-fonts";
 import type { Alignment } from "@/lib/captions";
+import type { KineticCaptionStyle } from "@/lib/kinetic-captions";
 import type { CaptionStyle } from "@/lib/video-style";
 import type { AnchoredCue, CueWindow } from "@/lib/script-cues";
 
@@ -500,6 +502,69 @@ export interface VerticalCaptionStyle extends CaptionStyle {
  * `fontName` and the colours pass through untouched: the channel's brand does
  * not change because the frame is on its side.
  */
+/**
+ * The same channel's captions, in the units an ASS file this codebase writes
+ * actually uses — real frame pixels.
+ *
+ * This is a second function rather than a flag on `verticalCaptionStyle` because
+ * the two answer the same question against different canvases, and mixing them
+ * up produces captions wrong by a factor of six with nothing anywhere to say so.
+ * `verticalCaptionStyle` produces numbers for the ASS script *FFmpeg* synthesises
+ * when it converts an SRT, whose `PlayResY` is 288 and is a property of the
+ * FFmpeg build. `buildAss` writes its own header and sets `PlayResX`/`PlayResY`
+ * to the real frame, so one unit is one pixel and every number here has to be
+ * scaled up by `frame / PlayRes` — 3.75x vertically for a 1080-high reference,
+ * 2.8125x horizontally on a 1080-wide frame.
+ *
+ * The sizes are still expressed against the landscape style the operator already
+ * approves of, exactly as `verticalCaptionStyle` derives its own: a kinetic
+ * caption comes out `SHORT_CAPTION_BOOST` times the pixel height of that
+ * channel's ordinary captions, whatever the channel set. Nothing here is a
+ * chosen pixel size.
+ *
+ * The safe area is the Shorts one, and it is applied whatever `width`/`height`
+ * say — `SHORT_SIDE_SAFE_FRACTION` is the width of YouTube's action rail and
+ * `SHORT_BOTTOM_SAFE_FRACTION` its bottom chrome. A landscape kinetic render
+ * would therefore get an inset it does not need. That is deliberate rather than
+ * overlooked: the format this exists for is vertical, and a caption inset too
+ * far is legible while one under the action rail is not.
+ */
+export function kineticCaptionStyle(
+  style: CaptionStyle,
+  width: number,
+  height: number,
+): KineticCaptionStyle {
+  // What one `force_style` unit is worth in pixels on the landscape frame the
+  // channel's numbers were chosen against. `PlayResY` does not cancel here the
+  // way it does in `verticalCaptionStyle`, because the destination canvas is
+  // pixels rather than another PlayRes.
+  const unitPx = SOURCE_HEIGHT / PLAY_RES_Y;
+  const round = (value: number) => Math.round(value * unitPx * SHORT_CAPTION_BOOST * 10) / 10;
+
+  return {
+    // Not the channel's `fontName`. A word-by-word caption is read in a
+    // quarter of a second on a phone held at arm's length, and DejaVu Sans has
+    // no weight above Bold — see `KINETIC_CAPTION_FONT`, which is asserted
+    // present in the worker image at build time because libass falls back
+    // silently on a face it cannot resolve.
+    fontName: KINETIC_CAPTION_FONT,
+    fontSize: round(style.fontSize),
+    primaryColour: style.primaryColour,
+    outlineColour: style.outlineColour,
+    outline: round(style.outline),
+    shadow: round(style.shadow),
+    marginL: Math.round(SHORT_SIDE_SAFE_FRACTION * width),
+    marginR: Math.round(SHORT_SIDE_SAFE_FRACTION * width),
+    // A floor, not a replacement, exactly as the vertical SRT style treats it:
+    // a channel that has asked for captions higher than the chrome keeps them
+    // there.
+    marginV: Math.max(
+      Math.round(style.marginV * unitPx),
+      Math.round(SHORT_BOTTOM_SAFE_FRACTION * height),
+    ),
+  };
+}
+
 export function verticalCaptionStyle(style: CaptionStyle): VerticalCaptionStyle {
   const factor = (SHORT_CAPTION_BOOST * SOURCE_HEIGHT) / SHORT_HEIGHT;
   // One decimal place. libass parses fractional sizes happily, but a

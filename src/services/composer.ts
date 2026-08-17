@@ -63,10 +63,22 @@ export interface ComposeInput {
   /** What the output is cut to. For a window this is the window's length, not
    *  the narration's. */
   durationSeconds: number;
+  /** The subtitle file to burn in. An `.srt` for every render this app has
+   *  made; an `.ass` when the channel's `captionMode` is `kinetic`, which
+   *  libass reads natively and `subtitles=` accepts unchanged. */
   srtPath: string;
-  /** Already adapted to `format` by the caller. Landscape passes the channel's
-   *  own style through; vertical passes `verticalCaptionStyle(...)`. */
-  captions: SafeAreaCaptionStyle;
+  /**
+   * Already adapted to `format` by the caller. Landscape passes the channel's
+   * own style through; vertical passes `verticalCaptionStyle(...)`.
+   *
+   * Omitted for a kinetic composition, and it has to be. `force_style`
+   * OVERRIDES the styles inside an ASS file, so passing the SRT-unit numbers
+   * alongside an `.ass` that carries its own would replace the font and the
+   * sizes `buildAss` computed in frame pixels with numbers meant for FFmpeg's
+   * synthesised 384x288 canvas — captions six times too small, with nothing
+   * anywhere reporting it.
+   */
+  captions?: SafeAreaCaptionStyle;
   musicPath?: string;
   outputPath: string;
 }
