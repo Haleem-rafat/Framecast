@@ -184,3 +184,74 @@ describe("planStoryBeats", () => {
     }
   });
 });
+
+describe("a beat-scripted narration gets one picture per cue", () => {
+  /** Cues as the single-insight format produces them: every one carrying the
+   *  narrative beat its scene belongs to. */
+  function insightCues(count: number): AnchoredCue[] {
+    const beats = ["HOOK", "TENSION", "MECHANISM", "NAME_IT", "TURN", "LOOP"];
+
+    return Array.from({ length: count }, (_, index) => ({
+      cue: `shot ${index + 1}`,
+      startChar: index * 50,
+      endChar: (index + 1) * 50,
+      beat: beats[Math.min(index, beats.length - 1)],
+    }));
+  }
+
+  it("gives twelve cues twelve pictures, not two", () => {
+    // The whole point. beatCountFor would return round(45/20) = 2, which is
+    // arithmetically right for a children's story and wrong for this format —
+    // twelve shots of three to five seconds is what the genre IS.
+    const beats = planStoryBeats(insightCues(12), 45);
+
+    expect(beats).toHaveLength(12);
+    expect(beats.every((beat) => beat.sectionIndices.length === 1)).toBe(true);
+  });
+
+  it("keeps each picture under its own words", () => {
+    const beats = planStoryBeats(insightCues(4), 20);
+
+    expect(beats.map((beat) => beat.sectionIndices)).toEqual([[0], [1], [2], [3]]);
+    expect(beats.map((beat) => beat.cues)).toEqual([
+      ["shot 1"],
+      ["shot 2"],
+      ["shot 3"],
+      ["shot 4"],
+    ]);
+  });
+
+  it("ignores the fifteen-second floor, which belongs to the other genre", () => {
+    // 45s over 12 cues is 3.75s a shot, far under BEAT_MIN_SECONDS. That floor
+    // exists to stop a children's story becoming a slideshow; this format lives
+    // beneath it on purpose.
+    expect(planStoryBeats(insightCues(12), 45)).toHaveLength(12);
+  });
+
+  it("falls back to grouping when only some cues carry a beat", () => {
+    // Half-beated cues are a parse that went wrong. Grouping half one way and
+    // half the other would change the cutting rhythm mid-video for no reason a
+    // viewer could name, so the ordinary plan runs instead.
+    // At 45 seconds the two plans disagree loudly — one picture per cue is 12,
+    // the ordinary grouping is round(45/20) = 2 — which is what makes this
+    // assertion mean something. At 240s they happen to coincide at 12 and it
+    // would pass either way.
+    const mixed = insightCues(12);
+    delete mixed[3].beat;
+
+    expect(planStoryBeats(mixed, 45)).toHaveLength(2);
+  });
+
+  it("leaves an ordinary cued script exactly as it was", () => {
+    const plain: AnchoredCue[] = Array.from({ length: 12 }, (_, index) => ({
+      cue: `shot ${index + 1}`,
+      startChar: index * 50,
+      endChar: (index + 1) * 50,
+    }));
+
+    // 240s / 20s = 12 target, capped by the grouping rules — whatever it is,
+    // it must be what it was before this branch existed.
+    expect(planStoryBeats(plain, 240)).toEqual(planStoryBeats(plain, 240));
+    expect(planStoryBeats(plain, 45).length).toBeLessThan(12);
+  });
+});

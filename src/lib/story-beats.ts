@@ -166,10 +166,55 @@ function groupByWeight(weights: number[], count: number): number[][] {
  * Empty for a script with no cues — there is nothing to group, and the caller
  * treats that exactly as it treats a video with no cues at all.
  */
+/**
+ * True when this script was written to a beat structure rather than as prose.
+ *
+ * Every cue carrying a `beat` — HOOK, TENSION, MECHANISM and the rest — means
+ * the script came from the single-insight format, where the author decided
+ * where every shot changes and the whole genre depends on that happening every
+ * three to five seconds.
+ *
+ * This is the signal that lets `footage.service.ts` and `render.service.ts`
+ * reach the same picture count without either of them knowing the channel's
+ * `footageStyle`, which was the reason this could not simply be configured:
+ * the renderer deliberately reads what collection *produced* rather than what
+ * the channel is set to today, so a setting it cannot see is no use to it. The
+ * cues, both services already have.
+ *
+ * `every`, not `some`: a script where only half the cues carry a beat is a
+ * parse that went wrong, and grouping half of it one way and half the other
+ * would produce a video whose cutting rhythm changes halfway through for no
+ * reason a viewer could name.
+ */
+function isBeatScripted(anchored: readonly AnchoredCue[]): boolean {
+  return anchored.length > 0 && anchored.every((cue) => Boolean(cue.beat));
+}
+
 export function planStoryBeats(
   anchored: readonly AnchoredCue[],
   durationSeconds: number,
 ): StoryBeat[] {
+  // One picture per cue, and none of the grouping below.
+  //
+  // The rest of this function exists to make a four-minute children's story
+  // into ten to sixteen pictures held for fifteen to twenty-five seconds each,
+  // because a picture cut faster than that becomes the slideshow YouTube's kids
+  // principles name by its own word. The single-insight format is the exact
+  // opposite instrument: forty-five seconds, twelve shots, three to five
+  // seconds apiece, and the cutting *is* the form. Running it through
+  // `beatCountFor` gives two pictures of twenty-two seconds — arithmetically
+  // correct, and a slideshow of the other kind.
+  //
+  // So this is not a tuned constant but a different plan. `BEAT_MIN_SECONDS`
+  // does not apply and must not: it is a floor written for the genre above, and
+  // the format below deliberately lives beneath it.
+  if (isBeatScripted(anchored)) {
+    return anchored.map((cue, index) => ({
+      sectionIndices: [index],
+      cues: [cue.cue],
+    }));
+  }
+
   let count = beatCountFor(durationSeconds, anchored.length);
 
   if (count === 0) {
