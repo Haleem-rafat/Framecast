@@ -1,9 +1,10 @@
 "use client";
 
-import { Handle, Position } from "@xyflow/react";
+import { Position } from "@xyflow/react";
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 
+import { CanvasHandle } from "@/features/automation/canvas/nodes/canvas-handle";
 import { Badge } from "@/components/ui/badge";
 import {
   countOf,
@@ -49,22 +50,40 @@ const HEALTH_VARIANT: Record<
 
 export interface AutomationNodeData {
   entry: AutomationEntry;
+  /** Its branch's colour, so a card is visibly one channel's even when the
+   *  channel node is off screen — which on a phone it usually is. */
+  tint: string;
   [key: string]: unknown;
 }
 
-export function AutomationNode({ data }: { data: AutomationNodeData }) {
+export function AutomationNode({
+  data,
+  selected,
+}: {
+  data: AutomationNodeData;
+  selected?: boolean;
+}) {
   const { entry } = data;
   const meta = AUTOMATION_KINDS[entry.kind];
   const health = describeHealth(entry);
   const Icon = meta.icon;
 
   return (
-    <div className="w-72 rounded-xl border bg-card p-4 shadow-sm">
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!size-3 !border-2 !bg-background"
-      />
+    <div
+      style={{
+        // A left edge in the branch's colour rather than a full border: it
+        // identifies the branch at a glance while leaving the card's own
+        // border to carry selection, which is the state that changes.
+        borderLeftColor: data.tint,
+        borderLeftWidth: 4,
+      }}
+      className={
+        "w-72 rounded-xl border bg-card p-4 shadow-sm transition-all duration-200 " +
+        "hover:-translate-y-0.5 hover:shadow-md " +
+        (selected ? "ring-primary/60 shadow-md ring-2" : "")
+      }
+    >
+      <CanvasHandle type="target" position={Position.Left} />
 
       <div className="flex items-start gap-3">
         <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
@@ -138,11 +157,7 @@ export function AutomationNode({ data }: { data: AutomationNodeData }) {
           other half of `connectionOutcome`'s refusal for a shorts drip, said
           in the DOM so the drag cannot even start. */}
       {entry.autoPublish && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="!size-3 !border-2 !bg-background"
-        />
+        <CanvasHandle type="source" position={Position.Right} />
       )}
     </div>
   );

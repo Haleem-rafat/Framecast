@@ -21,11 +21,17 @@ import "@xyflow/react/dist/style.css";
 
 import { setAutoPublishAction } from "@/actions/canvas.action";
 import { autoPlace, type Point } from "@/features/automation/canvas/auto-place";
+import { branchColour } from "@/features/automation/canvas/branch-colour";
 import { NodeInspector } from "@/features/automation/canvas/node-inspector";
 import { AutomationNode } from "@/features/automation/canvas/nodes/automation-node";
 import { ChannelNode } from "@/features/automation/canvas/nodes/channel-node";
 import { PublishNode } from "@/features/automation/canvas/nodes/publish-node";
+import {
+  ReparentDialog,
+  type PendingMove,
+} from "@/features/automation/canvas/reparent-dialog";
 import { useNodePositions } from "@/features/automation/canvas/use-node-positions";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   connectionOutcome,
   type CanvasNodeRef,
@@ -103,6 +109,11 @@ function buildGraph(model: CanvasModel): BuiltGraph {
 
     const produced = branch.automations.reduce((sum, entry) => sum + entry.produced, 0);
     const published = branch.automations.reduce((sum, entry) => sum + entry.published, 0);
+    // One colour per branch, derived once here and handed to every node and
+    // edge in it. Computed in the builder rather than in each node so a card
+    // and the edge reaching it can never disagree about which branch they are.
+    const colour = branchColour(branch.channel?.id ?? null);
+    const tint = colour.light;
 
     nodes.push({
       id: chKey,
@@ -114,6 +125,7 @@ function buildGraph(model: CanvasModel): BuiltGraph {
         automationCount: branch.automations.length,
         produced,
         published,
+        tint,
       },
     });
 
@@ -125,14 +137,23 @@ function buildGraph(model: CanvasModel): BuiltGraph {
         id: aKey,
         type: "automation",
         position: place(aKey, anchor),
-        data: { entry },
+        data: { entry, tint },
       });
 
       edges.push({
         id: `${chKey}->${aKey}`,
         source: chKey,
         target: aKey,
+        // Animated only while the automation is actually going to run. A dashed
+        // line crawling towards a paused show would be the canvas asserting
+        // that work is flowing when none is.
         animated: entry.status === "ACTIVE",
+        style: {
+          stroke: tint,
+          strokeWidth: 2,
+          // A paused branch keeps its colour and loses its confidence.
+          opacity: entry.status === "ACTIVE" ? 1 : 0.4,
+        },
       });
 
       // Null means the kind cannot publish itself — a shorts drip, which
@@ -158,7 +179,11 @@ function buildGraph(model: CanvasModel): BuiltGraph {
         source: aKey,
         target: pKey,
         animated: entry.autoPublish.enabled,
-        style: entry.autoPublish.enabled ? undefined : { strokeDasharray: "6 4" },
+        style: entry.autoPublish.enabled
+          ? { stroke: tint, strokeWidth: 2 }
+          : // Dashed and faint: the connection exists as an offer, and nothing
+            // is travelling along it.
+            { stroke: tint, strokeWidth: 2, strokeDasharray: "6 4", opacity: 0.35 },
       });
     });
   });
@@ -203,6 +228,7 @@ function Canvas({ model }: { model: CanvasModel }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   const savePosition = useNodePositions();
+  const isMobile = useIsMobile();
 
   const initial = useMemo(() => buildGraph(model), [model]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
@@ -212,6 +238,9 @@ function Canvas({ model }: { model: CanvasModel }) {
    *  rather than the entry itself so a refresh after an edit re-reads the row
    *  instead of leaving the panel showing what it was before the change. */
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+
+  /** A move waiting on its confirmation. Null the rest of the time. */
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
 
   const selected = useMemo(
     () =>
@@ -313,23 +342,53 @@ function Canvas({ model }: { model: CanvasModel }) {
         return;
       }
 
-      // REPARENT and ATTACH_CADENCE both move an automation between channels,
-      // which changes where finished videos go. That is not a drag-and-drop
-      // decision — it is one the form makes with the project picker in front of
-      // it and `assertRecipe` behind it — so the canvas points at the form
-      // rather than performing it.
-      toast.info("Open the automation to move it", {
-        description:
-          "Moving an automation to another channel changes where its finished " +
-          "videos publish, so it is done on its own page where the project and " +
-          "channel are shown together.",
+      if (outcome.action === "ATTACH_CADENCE") {
+        // A shorts drip is `@unique` per channel and is created *on* a channel
+        // rather than moved between them — there is no "move" that would not
+        // really be a delete and a create, which would take its run history
+        // with it.
+        toast.info("Create the drip on that channel", {
+          description:
+            "A shorts drip belongs to one channel and cannot be moved. Make a " +
+            "new one on the channel you want, and delete this one.",
+        });
+        return;
+      }
+
+      // REPARENT. Dropping a card is a cheap gesture and this one changes where
+      // finished videos publish, so it asks — and it has to ask *which project*
+      // anyway, which the canvas cannot infer. See `ReparentDialog`.
+      //
+      // Note the direction: the drag runs channel → automation, so the SOURCE
+      // is the destination channel and the TARGET is the thing being moved.
+      // That reads backwards and is right — the handle you pull from is the one
+      // doing the adopting.
+      const branch = model.branches.find(
+        (candidate) => candidate.channel?.id === source.id,
+      );
+      const entry = model.branches
+        .flatMap((candidate) => candidate.automations)
+        .find((candidate) => candidate.id === target.id);
+
+      if (!branch?.channel || !entry) return;
+
+      setPendingMove({
+        entry,
+        channelId: branch.channel.id,
+        channelTitle: branch.channel.title,
+        projects: branch.projects,
       });
     },
     [nodes, model, router, startTransition],
   );
 
   return (
-    <div className="relative h-[calc(100vh-16rem)] min-h-[32rem] w-full overflow-hidden rounded-xl border">
+    /* Shorter on a phone, where 100vh−16rem leaves almost nothing after the
+       header, the mobile dock and the browser's own chrome. `dvh` rather than
+       `vh` because Safari's toolbar collapses on scroll and `vh` is measured
+       against the *expanded* height — a canvas sized in `vh` is cut off by the
+       toolbar for as long as it is showing. */
+    <div className="relative h-[70dvh] min-h-[26rem] w-full overflow-hidden rounded-xl border md:h-[calc(100dvh-16rem)] md:min-h-[32rem]">
       <ReactFlow
         onNodeClick={(_event, node) => {
           // Only an automation has an inspector. A channel's own page is one
@@ -350,14 +409,43 @@ function Canvas({ model }: { model: CanvasModel }) {
         fitView
         fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
         proOptions={{ hideAttribution: false }}
+        /* Touch. React Flow supports it out of the box; what it does not do is
+           guess which gestures belong to the canvas and which to the page.
+           Dragging with one finger pans the canvas, so a node has to be taken
+           deliberately — `nodeDragThreshold` means a tap that moves a few
+           pixels is still a tap and opens the inspector, rather than nudging
+           the card and saving a position the operator never chose. */
+        panOnDrag
+        nodeDragThreshold={6}
+        zoomOnPinch
+        /* Off, and this is the one that makes the page usable on a phone.
+           With it on, a two-finger scroll over the canvas zooms instead of
+           scrolling the page — so an operator swiping past the canvas to reach
+           what is under it finds themselves trapped in it. Pinch still
+           zooms. */
+        zoomOnScroll={false}
+        preventScrolling={false}
+        /* A phone has no cursor to hover with, so a double tap is how you get
+           in close. */
+        zoomOnDoubleClick
+        minZoom={0.25}
+        maxZoom={1.75}
       >
         <Background gap={16} />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable />
+        {/* The minimap is a desktop affordance. On a 390px screen it covers an
+            eighth of the canvas to show a picture of the canvas, and the
+            gesture it exists to replace — pinch to zoom out — is the one
+            gesture a phone does better than a mouse. */}
+        {!isMobile && <MiniMap pannable zoomable />}
       </ReactFlow>
 
       {selected && (
         <NodeInspector entry={selected} onClose={() => setSelectedRowId(null)} />
+      )}
+
+      {pendingMove && (
+        <ReparentDialog move={pendingMove} onDone={() => setPendingMove(null)} />
       )}
     </div>
   );

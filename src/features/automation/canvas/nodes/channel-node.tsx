@@ -1,9 +1,10 @@
 "use client";
 
-import { Handle, Position } from "@xyflow/react";
+import { Position } from "@xyflow/react";
 import { Tv, Unlink } from "lucide-react";
 import Link from "next/link";
 
+import { CanvasHandle } from "@/features/automation/canvas/nodes/canvas-handle";
 import { Badge } from "@/components/ui/badge";
 import { countOf } from "@/lib/automation-language";
 
@@ -29,6 +30,9 @@ export interface ChannelNodeData {
   automationCount: number;
   produced: number;
   published: number;
+  /** This branch's own colour, from `branchColour`. Passed down rather than
+   *  computed here so the node and the edges leaving it cannot disagree. */
+  tint: string;
   [key: string]: unknown;
 }
 
@@ -40,16 +44,28 @@ export function ChannelNode({ data }: { data: ChannelNodeData }) {
 
   return (
     <div
+      // The tint is inline because it is per-channel and derived at runtime;
+      // there is no class for "channel 7's hue". Everything that is not
+      // per-channel stays in Tailwind where the rest of the app can see it.
+      style={unrooted ? undefined : { borderColor: data.tint }}
       className={
-        "w-64 rounded-xl border-2 bg-card p-4 shadow-sm transition-colors " +
-        (unrooted ? "border-destructive/60" : "border-primary/60")
+        "w-64 rounded-xl border-2 bg-card p-4 shadow-sm transition-all duration-200 " +
+        "hover:-translate-y-0.5 hover:shadow-md " +
+        (unrooted ? "border-destructive/60" : "")
       }
     >
       <div className="flex items-start gap-3">
         <div
+          style={
+            unrooted
+              ? undefined
+              : // A tenth-opacity wash of the same hue, so the chip reads as
+                // the branch's without competing with the text beside it.
+                { backgroundColor: `color-mix(in oklch, ${data.tint} 15%, transparent)`, color: data.tint }
+          }
           className={
             "flex size-9 shrink-0 items-center justify-center rounded-lg " +
-            (unrooted ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary")
+            (unrooted ? "bg-destructive/10 text-destructive" : "")
           }
         >
           {unrooted ? <Unlink className="size-5" /> : <Tv className="size-5" />}
@@ -91,11 +107,7 @@ export function ChannelNode({ data }: { data: ChannelNodeData }) {
       )}
 
       {/* No target handle: nothing is ever dropped *onto* a channel. */}
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!size-3 !border-2 !bg-background"
-      />
+      <CanvasHandle type="source" position={Position.Right} />
     </div>
   );
 }

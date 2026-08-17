@@ -1,8 +1,9 @@
 "use client";
 
-import { Handle, Position } from "@xyflow/react";
+import { Position } from "@xyflow/react";
 import { Globe, Lock, Link2Off, Upload } from "lucide-react";
 
+import { CanvasHandle } from "@/features/automation/canvas/nodes/canvas-handle";
 import { Badge } from "@/components/ui/badge";
 import type { PublishVisibility } from "@/generated/prisma/enums";
 
@@ -61,11 +62,7 @@ export function PublishNode({ data }: { data: PublishNodeData }) {
           : "border-dashed border-muted-foreground/40 bg-muted/30")
       }
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!size-3 !border-2 !bg-background"
-      />
+      <CanvasHandle type="target" position={Position.Left} />
 
       <div className="flex items-center gap-2.5">
         <div
