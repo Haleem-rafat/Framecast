@@ -58,6 +58,27 @@ export const setAutoPublishSchema = z.object({
   visibility: z.enum(["PUBLIC", "UNLISTED", "PRIVATE"]),
 });
 
+/**
+ * Moving an automation onto another channel.
+ *
+ * `projectId` is required rather than derived, and that is the whole safety of
+ * this operation. A channel can hold several projects, and which one an
+ * automation is filed under decides where its finished videos live; picking one
+ * on the operator's behalf would be guessing about something they can see and
+ * the server cannot. The canvas asks before it sends.
+ *
+ * `channelId` comes along even though it is implied by the project, so the
+ * action can check the two agree rather than trusting either alone — the exact
+ * disagreement `Series.channelWarning` exists to report.
+ */
+export const reparentAutomationSchema = z.object({
+  kind: z.enum(["SERIES", "TOPIC_QUEUE"]),
+  id: z.string().uuid(),
+  channelId: z.string().uuid(),
+  projectId: z.string().uuid(),
+});
+
 export type MoveCanvasNodeInput = z.infer<typeof moveCanvasNodeSchema>;
+export type ReparentAutomationInput = z.infer<typeof reparentAutomationSchema>;
 export type SetAutomationViewInput = z.infer<typeof setAutomationViewSchema>;
 export type SetAutoPublishInput = z.infer<typeof setAutoPublishSchema>;

@@ -46,6 +46,19 @@ export interface CanvasBranch {
    */
   channel: { id: string; title: string } | null;
   automations: AutomationEntry[];
+  /**
+   * The projects filed under this channel, which is what a move onto it would
+   * have to pick from.
+   *
+   * Carried on the branch rather than fetched when a drag starts, because the
+   * answer decides whether the move is possible at all: a channel with no
+   * project cannot receive an automation, and `SeriesService.assertRecipe`
+   * refuses a series whose project belongs to a different channel. Knowing that
+   * up front is what lets the drop explain itself instead of failing after.
+   *
+   * Empty for the unrooted branch, which has no channel to file anything under.
+   */
+  projects: { id: string; name: string }[];
 }
 
 export interface CanvasModel {
@@ -67,13 +80,35 @@ export class CanvasService {
    * a node that no longer exists is simply never looked up.
    */
   async read(userId: string): Promise<CanvasModel> {
-    const [entries, nodes] = await Promise.all([
+    const [entries, nodes, projects] = await Promise.all([
       automationListService.list(userId),
       prisma.canvasNode.findMany({
         where: { userId },
         select: { nodeKey: true, x: true, y: true },
       }),
+      // Every usable project at once rather than per branch. An operator has a
+      // handful, and the alternative is a query per channel for a list the drag
+      // needs before it can say whether a drop is possible.
+      prisma.project.findMany({
+        where: { userId, deletedAt: null, status: "ACTIVE", channelId: { not: null } },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, channelId: true },
+      }),
     ]);
+
+    const projectsOf = new Map<string, { id: string; name: string }[]>();
+
+    for (const project of projects) {
+      // Non-null by the `where` above; the column is nullable and the compiler
+      // is right to insist.
+      if (!project.channelId) continue;
+
+      const existing = projectsOf.get(project.channelId);
+      const entry = { id: project.id, name: project.name };
+
+      if (existing) existing.push(entry);
+      else projectsOf.set(project.channelId, [entry]);
+    }
 
     const byChannel = new Map<string, CanvasBranch>();
 
@@ -88,7 +123,11 @@ export class CanvasService {
         continue;
       }
 
-      byChannel.set(key, { channel: entry.channel, automations: [entry] });
+      byChannel.set(key, {
+        channel: entry.channel,
+        automations: [entry],
+        projects: entry.channel ? (projectsOf.get(entry.channel.id) ?? []) : [],
+      });
     }
 
     const branches = [...byChannel.values()];

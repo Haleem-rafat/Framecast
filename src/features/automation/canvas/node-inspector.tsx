@@ -18,8 +18,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
 import { AUTOMATION_KINDS } from "@/features/automation/kinds";
 import type { PublishVisibility } from "@/generated/prisma/enums";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { countOf, describeHealth } from "@/lib/automation-language";
 import type { AutomationEntry } from "@/services/automation-list.service";
 
@@ -45,7 +52,7 @@ import type { AutomationEntry } from "@/services/automation-list.service";
  * operator most wants to flip while looking at the shape of their channels,
  * which is exactly what this panel is for.
  */
-export function NodeInspector({
+function InspectorBody({
   entry,
   onClose,
 }: {
@@ -78,7 +85,7 @@ export function NodeInspector({
   };
 
   return (
-    <aside className="bg-card absolute top-0 right-0 z-10 flex h-full w-80 flex-col overflow-y-auto border-l p-4 shadow-lg">
+    <>
       <div className="flex items-start gap-2">
         <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
           <Icon className="size-5" />
@@ -173,12 +180,60 @@ export function NodeInspector({
         </div>
       )}
 
-      <Button asChild variant="outline" className="mt-4">
+      {/* Pause, resume, make one now, delete — whichever this kind has.
+          Rendered from the registry rather than rebuilt, so the canvas offers
+          exactly what the table's row does and a fourth kind's controls arrive
+          here by existing. Each carries its own confirmation where it needs
+          one; nothing about being on a canvas makes deleting a show safer. */}
+      <div className="mt-4 border-t pt-4">
+        <meta.Controls entry={entry} />
+      </div>
+
+      <Button asChild variant="outline" className="mt-3">
         <Link href={entry.href}>
           Open {meta.label.toLowerCase()}
           <ArrowUpRight />
         </Link>
       </Button>
+    </>
+  );
+}
+
+/**
+ * A right-hand panel on a desktop, a bottom sheet on a phone.
+ *
+ * The same swap `ResponsiveDialog` makes, for a related reason: a 320px panel
+ * pinned to the right edge of a 390px screen is the screen. A sheet leaves the
+ * canvas visible above it, which matters here more than in a form — the point
+ * of tapping a node is to see it *in* its branch.
+ */
+export function NodeInspector({
+  entry,
+  onClose,
+}: {
+  entry: AutomationEntry;
+  onClose: () => void;
+}) {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <Drawer open onOpenChange={(open) => !open && onClose()}>
+        <DrawerContent className="max-h-[85vh]">
+          <DrawerHeader className="sr-only">
+            <DrawerTitle>{entry.name}</DrawerTitle>
+          </DrawerHeader>
+          <div className="overflow-y-auto px-4 pb-6">
+            <InspectorBody entry={entry} onClose={onClose} />
+          </div>
+        </DrawerContent>
+      </Drawer>
+    );
+  }
+
+  return (
+    <aside className="bg-card absolute top-0 right-0 z-10 flex h-full w-80 flex-col overflow-y-auto border-l p-4 shadow-lg">
+      <InspectorBody entry={entry} onClose={onClose} />
     </aside>
   );
 }

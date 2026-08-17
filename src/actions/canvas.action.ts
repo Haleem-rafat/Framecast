@@ -7,6 +7,7 @@ import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import {
   moveCanvasNodeSchema,
+  reparentAutomationSchema,
   setAutoPublishSchema,
   setAutomationViewSchema,
 } from "@/schemas/canvas.schema";
@@ -113,6 +114,86 @@ export async function setAutoPublishAction(input: unknown): Promise<ActionResult
           ? "That series no longer exists."
           : "That topic queue no longer exists, or it belongs to a series — " +
             "in which case publishing is set on the series itself.",
+      );
+    }
+
+    revalidatePath(AUTOMATION_PATH);
+
+    return null;
+  });
+}
+
+/**
+ * Moves an automation onto another channel.
+ *
+ * The one write in this file that changes where finished videos end up, so it
+ * is the one that checks the most.
+ *
+ * The project must be the operator's, active, and **on the channel they named**
+ * — that last check is the whole point. A series carries its own `channelId`
+ * while `PublishService` uploads to the *project's*, and a pair that disagrees
+ * is the state `AutomationEntry.channelWarning` exists to report and
+ * `SeriesService.assertRecipe` exists to prevent. Writing both from one
+ * verified pair is what stops a move creating it.
+ *
+ * A standalone schedule has no `channelId` of its own — it reads the channel
+ * through its project, exactly as the renderer and the publisher do — so moving
+ * one is only a change of project, and there is nothing that can disagree.
+ *
+ * Videos already made stay where they are. They are filed under the project
+ * they were produced in, and moving them would rewrite history nobody asked to
+ * rewrite; this governs what happens next.
+ */
+export async function reparentAutomationAction(
+  input: unknown,
+): Promise<ActionResult<null>> {
+  return run(async () => {
+    const session = await requireSession();
+    const parsed = reparentAutomationSchema.parse(input);
+    const userId = session.user.id;
+
+    const project = await prisma.project.findFirst({
+      where: {
+        id: parsed.projectId,
+        userId,
+        deletedAt: null,
+        status: "ACTIVE",
+        // Named separately by the caller and checked here rather than derived,
+        // so a payload whose two halves disagree is refused rather than
+        // silently preferring one of them.
+        channelId: parsed.channelId,
+      },
+      select: { id: true },
+    });
+
+    if (!project) {
+      throw new NotFoundError(
+        "That project is not available on the channel you moved this onto. " +
+          "Pick one that belongs to it.",
+      );
+    }
+
+    const { count } =
+      parsed.kind === "SERIES"
+        ? await prisma.series.updateMany({
+            where: { id: parsed.id, userId, deletedAt: null },
+            // Both, together. A series carrying one and not the other is
+            // exactly the mismatch this action exists not to create.
+            data: { channelId: parsed.channelId, projectId: parsed.projectId },
+          })
+        : await prisma.schedule.updateMany({
+            where: { id: parsed.id, userId, deletedAt: null, seriesId: null },
+            // No channelId: a standalone schedule reads its channel through the
+            // project, so the project *is* the move.
+            data: { projectId: parsed.projectId },
+          });
+
+    if (count === 0) {
+      throw new NotFoundError(
+        parsed.kind === "SERIES"
+          ? "That series no longer exists."
+          : "That topic queue no longer exists, or it belongs to a series — " +
+            "move the series instead.",
       );
     }
 
