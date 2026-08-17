@@ -13,6 +13,7 @@ import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import { frameSize } from "@/lib/ffmpeg-command";
+import { insightTransitions } from "@/lib/insight-script";
 import { buildAss } from "@/lib/kinetic-captions";
 import { prisma } from "@/lib/prisma";
 import {
@@ -563,16 +564,47 @@ export class RenderService {
 
       const outputPath = path.join(tempDir, "video.mp4");
 
+      // What happens at each join, when the script itself has an opinion.
+      //
+      // A script written to the single-insight format carries a beat on every
+      // cue, and the format cuts hard everywhere except once — see
+      // `insightTransitions`. Derived from the cues rather than from the
+      // channel's style for the same reason `illustrated` is derived from what
+      // is on disk: this is a property of the words being narrated, and a
+      // channel setting changed after the script was written must not move
+      // where the video takes its breath.
+      //
+      // Undefined for every other script, and undefined means `compose` passes
+      // the channel's own `style.transitions` at every boundary exactly as it
+      // always has. Only the cued path is eligible: a boundary here is a join
+      // between two SECTION clips, and an illustrated video's joins are between
+      // beats covering several sections each, so the indices would not line up.
+      const beatTransitions =
+        cued && !illustrated && anchored.some((cue) => cue.beat !== undefined)
+          ? insightTransitions(anchored.map((cue) => cue.beat))
+          : undefined;
+
+      // The longest join anywhere in this video. For the ordinary path that is
+      // the channel's own transition, which is what this has always been; for a
+      // beat-driven one it is the dip, since every other join is a hard cut.
+      const longestOverlap = beatTransitions
+        ? Math.max(
+            0,
+            ...beatTransitions.map((transition) =>
+              transition?.enabled ? transition.durationSeconds : 0,
+            ),
+          )
+        : style.transitions.enabled
+          ? style.transitions.durationSeconds
+          : 0;
+
       // A slot has to outlast the crossfade it gives its tail to, or the
       // concat entry for it comes out inverted (see planRender's own guard).
       // Derived from the style rather than hard-coded so raising the
       // transition duration cannot quietly invalidate the floor; doubled so
       // the slot is still something a viewer sees rather than one continuous
       // dissolve.
-      const minClipSeconds = Math.max(
-        MIN_CLIP_SECONDS,
-        style.transitions.enabled ? style.transitions.durationSeconds * 2 : 0,
-      );
+      const minClipSeconds = Math.max(MIN_CLIP_SECONDS, longestOverlap * 2);
 
       // Cued: each clip holds the screen for exactly as long as its section is
       // spoken, read off the same alignment the captions come from.
@@ -623,7 +655,16 @@ export class RenderService {
       // narration of a few seconds carved into beats by `planStoryBeats`'s
       // degenerate branch. Nearly unreachable is not unreachable, and the
       // failure it prevents is identical.
-      const overlap = style.transitions.enabled ? style.transitions.durationSeconds : 0;
+      //
+      // Measured against the LONGEST join in the video rather than the one
+      // either side of each clip, which is stricter than `planRender`'s own
+      // per-boundary check by design: with a single 0.2s dip among hard cuts,
+      // a scene short enough to trip this is a scene shorter than six frames,
+      // and the format's own floor is 2.5 seconds. This should never fire for a
+      // well-formed insight script — and a model that emits a 0.15s scene has
+      // to fail here, loudly and before any encoding, rather than produce an
+      // inverted concat entry that plays every later scene early.
+      const overlap = longestOverlap;
       if ((cued || illustrated) && overlap > 0 && clipSeconds.some((seconds) => seconds <= overlap)) {
         const shortest = Math.min(...clipSeconds);
         const unit = illustrated ? "beats" : "sections";
@@ -691,6 +732,9 @@ export class RenderService {
           clipPaths: downloadedClipPaths,
           clipSeconds,
           style,
+          // Undefined for every video whose script has no beats, which keeps
+          // `planRender` receiving the single `TransitionStyle` it always did.
+          transitions: beatTransitions,
           // Undefined rather than "LANDSCAPE" for the landscape case, so the
           // segment argv is byte-for-byte what it was.
           format: vertical ? "VERTICAL" : undefined,
