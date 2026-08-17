@@ -48,8 +48,9 @@ export const TOUR_STEPS: TourStep[] = [
     body:
       "Give it a subject and it writes the script, records the narration, " +
       "finds or draws the footage, burns in captions, renders the file and " +
-      "makes a thumbnail. Then it stops. Nothing reaches YouTube until you " +
-      "press Publish yourself.",
+      "makes a thumbnail. Then it stops, and nothing reaches YouTube until " +
+      "you press Publish — unless you have switched a show over to publishing " +
+      "itself, which is off until you turn it on.",
   },
   {
     target: "tour-first-video",

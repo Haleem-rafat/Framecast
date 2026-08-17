@@ -1,6 +1,7 @@
 "use client";
 
-import { ListChecks, Lightbulb, PlayCircle } from "lucide-react";
+import Link from "next/link";
+import { BookOpen, ListChecks, Lightbulb, PlayCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -39,13 +40,24 @@ export function GuidesCard() {
       <CardHeader>
         <CardTitle>Guides</CardTitle>
         <CardDescription>
-          Everything onboarding shows you can be brought back. What you have
-          read is remembered against your account, so it follows you to another
-          browser — and so does putting it back.
+          Every screen explained in one place, and everything onboarding shows
+          you can be brought back. What you have read is remembered against
+          your account, so it follows you to another browser — and so does
+          putting it back.
         </CardDescription>
       </CardHeader>
 
       <CardContent className="flex flex-wrap gap-2">
+        {/* First, and the only control here that is not a reset. This card
+            offered three ways to see the guidance *again* and no way to simply
+            read it, which is a strange thing for a card called Guides. */}
+        <Button asChild>
+          <Link href="/guides">
+            <BookOpen />
+            Read the guides
+          </Link>
+        </Button>
+
         <Button variant="outline" onClick={requestTour}>
           <PlayCircle />
           Replay the welcome tour

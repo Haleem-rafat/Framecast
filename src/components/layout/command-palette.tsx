@@ -10,6 +10,7 @@ import {
   Monitor,
   Moon,
   MonitorPlay,
+  BookOpen,
   PlayCircle,
   Search,
   Sparkles,
@@ -233,6 +234,27 @@ export function CommandPalette({ isOperator }: { isOperator: boolean }) {
 
     const commands = [
       {
+        // First, because it is the one that answers a question rather than
+        // resetting something. Somebody typing "help" or "how" wants to read
+        // about the product, not to be walked through it again.
+        id: "guides",
+        title: "Read the guides — every screen explained",
+        icon: BookOpen,
+        keywords: [
+          "guide",
+          "guides",
+          "help",
+          "how",
+          "explain",
+          "what is",
+          "docs",
+          "manual",
+          "learn",
+          "screens",
+        ],
+        run: () => router.push("/guides"),
+      },
+      {
         id: "tour",
         title: "Replay the welcome tour",
         icon: PlayCircle,
@@ -276,6 +298,7 @@ export function CommandPalette({ isOperator }: { isOperator: boolean }) {
     requestTour,
     restore,
     restoreHelpHints,
+    router,
     trimmedQuery,
   ]);
 

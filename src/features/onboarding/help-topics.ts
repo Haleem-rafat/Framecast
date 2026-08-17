@@ -45,6 +45,20 @@ export interface HelpTopic {
    * two places instead of one.
    */
   operatorOnly?: boolean;
+  /**
+   * Written for the guides page, never shown as an on-screen note.
+   *
+   * /dashboard is the case this exists for, and the reason is unchanged from
+   * when it had no note at all: the tour and the setup checklist both speak on
+   * that screen, and a hint above them would be a third onboarding surface
+   * stacked on one page. What changed is that "every screen explained" has to
+   * mean every screen — a guide that skips the first screen anybody sees is
+   * not one.
+   *
+   * So the text exists once, `resolveHelpTopic` refuses to render it, and
+   * `buildGuide` lists it. Still one description per screen.
+   */
+  guideOnly?: boolean;
 }
 
 export const HELP_TOPICS: HelpTopic[] = [
@@ -216,6 +230,36 @@ export const HELP_TOPICS: HelpTopic[] = [
       "that may already be live, so clearing it is a deliberate step.",
   },
 
+  // -------------------------------------------------------------------- guides
+  {
+    id: "guides",
+    pattern: "/guides",
+    title: "The whole studio, screen by screen",
+    body:
+      "Every screen has a short note explaining what it is for, shown the " +
+      "first time you open it. This page is all of them at once, in the order " +
+      "the sidebar lists them, so you can read what Framecast does without " +
+      "clicking through twenty screens to find out. Nothing here is written " +
+      "twice — it is the same note you meet on each screen.",
+  },
+
+  // ----------------------------------------------------------------- dashboard
+  {
+    id: "dashboard",
+    pattern: "/dashboard",
+    // Listed in the guide, never shown on the screen — the tour and the
+    // checklist already speak there. See `HelpTopic.guideOnly`.
+    guideOnly: true,
+    title: "What this screen is showing you",
+    body:
+      "The dashboard is the state of the studio right now: what is rendering, " +
+      "what finished, what failed and what is queued behind it. Nothing here " +
+      "starts work — every tile is a link into the screen that does. If you " +
+      "are new, the checklist is the short version of what has to exist " +
+      "before a video can be made at all.",
+    action: { label: "See every screen explained", href: "/guides" },
+  },
+
   // ----------------------------------------------------------------- analytics
   {
     id: "analytics",
@@ -378,6 +422,9 @@ export function resolveHelpTopic(
 
   for (const topic of HELP_TOPICS) {
     if (topic.operatorOnly && !isOperator) continue;
+    // Written for the guides page only. /dashboard is the case: the tour and
+    // the checklist already speak there. See `HelpTopic.guideOnly`.
+    if (topic.guideOnly) continue;
 
     const candidate = score(topic.pattern, pathname);
     if (!candidate) continue;
