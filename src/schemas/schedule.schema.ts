@@ -88,10 +88,29 @@ export const scheduleVariablesSchema = z
   })
   .default({});
 
+/**
+ * Whether the videos this automation makes upload themselves, and as what.
+ *
+ * Exported and shared with `series.schema.ts` rather than restated there,
+ * because the two forms are asking the operator the same question about the
+ * same pair of columns. `recurrenceShape` above is shared for the same reason.
+ *
+ * Both defaults are the cautious end, and deliberately unlike
+ * `releaseVisibilitySchema`, which defaults to PUBLIC. A shorts cadence is
+ * spending clips cut from a video the operator already chose to publish; this
+ * is the first time anything reaches a channel, so the default has to be the
+ * one you can walk back from — this app has no unpublish path.
+ */
+export const autoPublishShape = {
+  autoPublish: z.boolean().default(false),
+  publishVisibility: z.enum(["PUBLIC", "UNLISTED", "PRIVATE"]).default("PRIVATE"),
+} as const;
+
 const baseScheduleSchema = z.object({
   name: z.string().trim().min(1, "Give the schedule a name").max(80),
   projectId: z.string().uuid(),
   ...recurrenceShape,
+  ...autoPublishShape,
   variables: scheduleVariablesSchema,
 });
 

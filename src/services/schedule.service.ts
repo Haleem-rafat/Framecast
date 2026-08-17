@@ -174,6 +174,13 @@ export interface ScheduleSummary {
   cadence: string;
   projectId: string;
   projectName: string;
+  /** Whether the videos this schedule makes upload themselves, and as what.
+   *
+   *  Meaningful only for a standalone schedule. A series-owned row's copy of
+   *  the pair is dead — `resolveAutoPublish` reads the show's — and the series
+   *  form is where that one is edited. */
+  autoPublish: boolean;
+  publishVisibility: PublishVisibility;
   /** Null while paused-and-never-resumed. Meaningless while paused anyway —
    *  the UI says "paused" rather than showing a time that will not happen. */
   nextRunAt: Date | null;
@@ -469,6 +476,8 @@ export class ScheduleService {
     hour: number;
     minute: number;
     timeZone: string;
+    autoPublish: boolean;
+    publishVisibility: PublishVisibility;
     projectId: string;
     project: { name: string };
     series: { id: string; name: string } | null;
@@ -489,6 +498,8 @@ export class ScheduleService {
       hour: row.hour,
       minute: row.minute,
       timeZone: row.timeZone,
+      autoPublish: row.autoPublish,
+      publishVisibility: row.publishVisibility,
       cadence: describeRecurrence(recurrenceOf(row)),
       projectId: row.projectId,
       projectName: row.project.name,
@@ -534,6 +545,17 @@ export class ScheduleService {
         minute: input.minute,
         timeZone: input.timeZone,
         variables: input.variables,
+        // Forced false for a series-owned row rather than passed through.
+        // `resolveAutoPublish` reads the *series* for those, so a value stored
+        // here would be a setting the form displays and the worker ignores —
+        // strictly worse than not storing it, because somebody would believe
+        // it won. Writing false keeps the dead column unambiguously dead.
+        ...(owner.seriesId
+          ? { autoPublish: false }
+          : {
+              autoPublish: input.autoPublish,
+              publishVisibility: input.publishVisibility,
+            }),
         nextRunAt,
         seriesId: owner.seriesId ?? null,
         topics: {
@@ -577,6 +599,13 @@ export class ScheduleService {
         minute: input.minute,
         timeZone: input.timeZone,
         variables: input.variables,
+        // Untouched for a series-owned row — see the same spread in `create`.
+        ...(owner.seriesId
+          ? {}
+          : {
+              autoPublish: input.autoPublish,
+              publishVisibility: input.publishVisibility,
+            }),
         ...(timingChanged && existing.status === "ACTIVE"
           ? { nextRunAt: firstOccurrenceAfter(recurrence, new Date()) }
           : {}),

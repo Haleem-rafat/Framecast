@@ -17,6 +17,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -36,6 +38,7 @@ import type {
   AutomationProject,
   AutomationPromptSummary,
 } from "@/services/automation.service";
+import type { PublishVisibility } from "@/generated/prisma/enums";
 import type { ScheduleDetail } from "@/services/schedule.service";
 
 /** Days of the month a schedule can name. 29–31 are offered and clamp to the
@@ -129,6 +132,12 @@ export function ScheduleForm({
   );
   const [variables, setVariables] = useState<Record<string, string>>(
     schedule?.variables ?? {},
+  );
+  // Off for a new schedule — see `Schedule.autoPublish` in schema.prisma for
+  // why that default is the important half.
+  const [autoPublish, setAutoPublish] = useState(schedule?.autoPublish ?? false);
+  const [publishVisibility, setPublishVisibility] = useState<PublishVisibility>(
+    schedule?.publishVisibility ?? "PRIVATE",
   );
   const [topicText, setTopicText] = useState("");
 
@@ -241,6 +250,8 @@ export function ScheduleForm({
       hour,
       minute,
       timeZone,
+      autoPublish,
+      publishVisibility,
       variables,
     };
 
@@ -436,6 +447,68 @@ export function ScheduleForm({
                 in your browser&apos;s time.
               </span>
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Publishing</CardTitle>
+          <CardDescription>
+            Off means a video waits in your videos list until you publish it
+            yourself, which is how every schedule worked before this setting
+            existed.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="schedule-auto-publish" className="font-medium">
+                Publish each video automatically
+              </Label>
+              <p className="text-muted-foreground text-xs">
+                A video uploads itself to whichever channel this project
+                publishes to, as soon as it has finished rendering, with nobody
+                present.
+              </p>
+            </div>
+            <Switch
+              id="schedule-auto-publish"
+              checked={autoPublish}
+              onCheckedChange={setAutoPublish}
+            />
+          </div>
+
+          {/* Revealed rather than always shown — see the identical card in
+              series-form.tsx. Repeated rather than shared: nine lines of JSX
+              inside two differently-laid-out forms, with wording that
+              deliberately differs (a schedule makes videos, a series makes
+              episodes). Worth extracting if a third caller appears. */}
+          {autoPublish && (
+            <FormField
+              name="publishVisibility"
+              label="Publish as"
+              description="Private is the safe choice while you are getting a schedule right — you can make a video public later, but nothing here can take a published one down."
+            >
+              {(control) => (
+                <Select
+                  value={publishVisibility}
+                  onValueChange={(value) =>
+                    setPublishVisibility(value as PublishVisibility)
+                  }
+                >
+                  <SelectTrigger {...control}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PRIVATE">Private</SelectItem>
+                    <SelectItem value="UNLISTED">Unlisted</SelectItem>
+                    <SelectItem value="PUBLIC">Public</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </FormField>
           )}
         </CardContent>
       </Card>

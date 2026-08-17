@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  autoPublishShape,
   MAX_TOPICS,
   recurrenceShape,
   requireMatchingDay,
@@ -47,6 +48,10 @@ const baseSeriesSchema = z.object({
    *  union so this module stays importable from a client component. */
   format: z.enum(["LANDSCAPE", "VERTICAL"]),
   ...recurrenceShape,
+  // Shared with `schedule.schema.ts` rather than restated, for the reason the
+  // recurrence above is. Note this pair *is* read for a series, and is the pair
+  // `resolveAutoPublish` prefers — the owned schedule's copy is dead data.
+  ...autoPublishShape,
   variables: scheduleVariablesSchema,
 });
 

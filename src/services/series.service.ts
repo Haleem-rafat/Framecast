@@ -1,6 +1,12 @@
 import "server-only";
 
-import type { ScheduleFrequency, ScheduleStatus, VideoFormat, VideoStatus } from "@/generated/prisma/enums";
+import type {
+  PublishVisibility,
+  ScheduleFrequency,
+  ScheduleStatus,
+  VideoFormat,
+  VideoStatus,
+} from "@/generated/prisma/enums";
 import {
   ConflictError,
   isAppError,
@@ -59,9 +65,16 @@ import {
  * ## Two things it must not do
  *
  * It schedules generation, not publishing. `generateNow` and the tick path both
- * end at `automationService.start`, which stops at a queued video. Nothing here
- * creates a `Publication` or moves a video toward PUBLISHED, and nothing here
- * ever will.
+ * end at `automationService.start`, which stops at a queued video, and nothing
+ * in this file creates a `Publication` or moves a video toward PUBLISHED.
+ *
+ * That used to be the end of the sentence, and it is not any more. A show with
+ * `autoPublish` set books each episode at creation and `AutoPublishService`
+ * uploads it once it has rendered — so a series can now end in a publish
+ * nobody was present for. What this file still refuses to do is decide that on
+ * the operator's behalf: the switch is a column they set, off by default and
+ * PRIVATE by default, and the two lines that write it are the whole of this
+ * service's involvement.
  *
  * It does not invent topics. `generateNow` takes the head of the same operator-
  * written queue a scheduled run takes, through the same atomic take, and
@@ -99,6 +112,13 @@ export interface SeriesSummary {
   scheduleId: string;
   status: ScheduleStatus;
   pausedReason: string | null;
+  /** Whether an episode uploads itself once it has rendered, and as what.
+   *
+   *  Read from the series rather than its schedule — this is the pair
+   *  `resolveAutoPublish` prefers, and the schedule's copy is dead for a
+   *  series-owned row. */
+  autoPublish: boolean;
+  publishVisibility: PublishVisibility;
   /** One line of prose, built by the same `describeRecurrence` the schedules
    *  list uses, so the two phrase an identical cadence identically. */
   cadence: string;
@@ -247,6 +267,8 @@ export class SeriesService {
         },
         promptTemplateId: true,
         promptTemplate: { select: { name: true } },
+        autoPublish: true,
+        publishVisibility: true,
         _count: { select: { videos: { where: { deletedAt: null } } } },
         schedule: {
           select: {
@@ -302,6 +324,8 @@ export class SeriesService {
         },
         promptTemplateId: true,
         promptTemplate: { select: { name: true } },
+        autoPublish: true,
+        publishVisibility: true,
         _count: { select: { videos: { where: { deletedAt: null } } } },
         schedule: { select: { id: true } },
       },
@@ -425,6 +449,8 @@ export class SeriesService {
         projectId: input.projectId,
         promptTemplateId: input.promptTemplateId,
         format: input.format,
+        autoPublish: input.autoPublish,
+        publishVisibility: input.publishVisibility,
       },
       select: { id: true },
     });
@@ -436,6 +462,13 @@ export class SeriesService {
           name: input.name,
           projectId: input.projectId,
           ...cadenceOf(input),
+          // Not `input.autoPublish`. The pair lives on the series for a
+          // series-owned schedule — `resolveAutoPublish` reads it there and
+          // `ScheduleService.create` forces this row's copy false anyway. Sent
+          // at their defaults only because the inferred input type requires
+          // them.
+          autoPublish: false,
+          publishVisibility: "PRIVATE",
           variables: input.variables,
           topics: input.topics,
         },
@@ -479,6 +512,10 @@ export class SeriesService {
         name: input.name,
         projectId: input.projectId,
         ...cadenceOf(input),
+        // See the same two lines in `create` — the series owns this pair, and
+        // `ScheduleService.update` leaves a series-owned row's copy alone.
+        autoPublish: false,
+        publishVisibility: "PRIVATE",
         variables: input.variables,
       },
       { seriesId: id, templateId: input.promptTemplateId },
@@ -492,6 +529,8 @@ export class SeriesService {
         projectId: input.projectId,
         promptTemplateId: input.promptTemplateId,
         format: input.format,
+        autoPublish: input.autoPublish,
+        publishVisibility: input.publishVisibility,
       },
     });
   }
@@ -792,6 +831,8 @@ export class SeriesService {
       };
       promptTemplateId: string;
       promptTemplate: { name: string };
+      autoPublish: boolean;
+      publishVisibility: PublishVisibility;
       _count: { videos: number };
     },
     schedule: {
@@ -819,6 +860,8 @@ export class SeriesService {
       projectName: row.project.name,
       scriptStyleId: row.promptTemplateId,
       scriptStyleName: row.promptTemplate.name,
+      autoPublish: row.autoPublish,
+      publishVisibility: row.publishVisibility,
       scheduleId: schedule.id,
       status: schedule.status,
       pausedReason: schedule.pausedReason,

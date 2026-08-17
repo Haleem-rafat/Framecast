@@ -162,6 +162,18 @@ const CADENCE = {
   timeZone: "UTC",
 };
 
+/**
+ * The auto-publish pair at its defaults.
+ *
+ * Restated rather than folded into `CADENCE` above, which is about *when* a
+ * schedule fires and has nothing to say about publishing. Needed at all because
+ * `z.infer` gives the output type, where a defaulted field is required.
+ */
+const NO_AUTO_PUBLISH = {
+  autoPublish: false,
+  publishVisibility: "PRIVATE" as const,
+};
+
 function seriesInput(overrides: Partial<Parameters<SeriesService["create"]>[1]> = {}) {
   return {
     name: `Deep dive ${RUN}`,
@@ -170,6 +182,8 @@ function seriesInput(overrides: Partial<Parameters<SeriesService["create"]>[1]> 
     promptTemplateId: deepDiveStyleId,
     format: "LANDSCAPE" as const,
     ...CADENCE,
+    // A test that wants a show which publishes itself overrides these.
+    ...NO_AUTO_PUBLISH,
     variables: { audience: "curious adults", tone: "measured" },
     topics: ["why ports are always busy"],
     ...overrides,
@@ -570,6 +584,7 @@ describe("seriesService — the schedule's guarantees are the schedule's", () =>
         name: "hijacked",
         projectId,
         ...CADENCE,
+        ...NO_AUTO_PUBLISH,
         variables: {},
       }),
     ).rejects.toBeInstanceOf(ConflictError);
@@ -760,6 +775,7 @@ describe("a deployment with no series behaves exactly as it did before", () => {
       name: `Standalone ${RUN}`,
       projectId,
       ...CADENCE,
+      ...NO_AUTO_PUBLISH,
       variables: { audience: "curious adults" },
       topics: ["a topic nobody made a series for"],
     });
@@ -791,6 +807,7 @@ describe("a deployment with no series behaves exactly as it did before", () => {
       name: `Renamed ${RUN}`,
       projectId,
       ...CADENCE,
+      ...NO_AUTO_PUBLISH,
       variables: { audience: "curious adults" },
     });
     await schedules.remove(userId, schedule.id);

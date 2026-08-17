@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
@@ -28,7 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { VideoFormat } from "@/generated/prisma/enums";
+import type { PublishVisibility, VideoFormat } from "@/generated/prisma/enums";
 import {
   firstOccurrenceAfter,
   ordinal,
@@ -154,6 +155,12 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
       "",
   );
   const [format, setFormat] = useState<VideoFormat>(series?.format ?? "LANDSCAPE");
+  // Off for a new show, and that default is the point — see `Series.autoPublish`
+  // in schema.prisma. An existing show opens on whatever it was set to.
+  const [autoPublish, setAutoPublish] = useState(series?.autoPublish ?? false);
+  const [publishVisibility, setPublishVisibility] = useState<PublishVisibility>(
+    series?.publishVisibility ?? "PRIVATE",
+  );
   const [frequency, setFrequency] = useState<"WEEKLY" | "MONTHLY">(
     series?.frequency ?? "WEEKLY",
   );
@@ -303,6 +310,8 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
       projectId,
       promptTemplateId,
       format,
+      autoPublish,
+      publishVisibility,
       frequency,
       dayOfWeek: recurrence.dayOfWeek,
       dayOfMonth: recurrence.dayOfMonth,
@@ -543,6 +552,66 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
                 />
               ))}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Publishing</CardTitle>
+          <CardDescription>
+            Off means an episode waits in your videos list until you publish it
+            yourself, which is how every show worked before this setting
+            existed.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="series-auto-publish" className="font-medium">
+                Publish each episode automatically
+              </Label>
+              <p className="text-muted-foreground text-xs">
+                An episode uploads itself to {channel?.title ?? "the channel"}{" "}
+                as soon as it has finished rendering, with nobody present.
+              </p>
+            </div>
+            <Switch
+              id="series-auto-publish"
+              checked={autoPublish}
+              onCheckedChange={setAutoPublish}
+            />
+          </div>
+
+          {/* Revealed rather than always shown. A choice about how public
+              something is has no meaning for a show that is not publishing
+              itself, and leaving it on screen invites somebody to set it and
+              believe they have turned the feature on. */}
+          {autoPublish && (
+            <FormField
+              name="publishVisibility"
+              label="Publish as"
+              description="Private is the safe choice while you are getting a new show right — you can make a video public later, but nothing here can take a published one down."
+            >
+              {(control) => (
+                <Select
+                  value={publishVisibility}
+                  onValueChange={(value) =>
+                    setPublishVisibility(value as PublishVisibility)
+                  }
+                >
+                  <SelectTrigger {...control}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PRIVATE">Private</SelectItem>
+                    <SelectItem value="UNLISTED">Unlisted</SelectItem>
+                    <SelectItem value="PUBLIC">Public</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </FormField>
           )}
         </CardContent>
       </Card>
