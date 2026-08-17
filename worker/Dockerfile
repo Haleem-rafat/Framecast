@@ -45,8 +45,21 @@ ENV NODE_ENV=production
 # libass, which resolves a font by name and falls back *silently* when it is
 # missing. Without this the styled captions would render in the default face
 # and look like the styling simply had not been applied.
+#
+# `fonts-inter` is the second reason, and it is here rather than Montserrat or
+# Anton because those two have no Debian package — checked, not assumed. The
+# single-insight short format burns one to three words on screen at a time, and
+# a heavy face is the whole difference between that reading as a designed
+# caption and as a default subtitle. `Inter Black` and `Inter Extra Bold` are
+# real resolvable family names from this package; DejaVu has no weight above
+# Bold and cannot do the job.
+#
+# Any future face has to arrive the same way: an apt package that exists, or a
+# vendored file copied in. Never a download at render time — that is a network
+# call that fails into the silent fallback described above.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg ca-certificates fonts-dejavu-core fonts-inter \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -65,11 +78,17 @@ RUN pnpm prisma generate
 # needs, rather than discovering it when a render dies eight minutes in. The
 # font is checked for the opposite reason: a missing one never fails at all,
 # it just quietly produces captions in the wrong face.
+#
+# One line per caption font, and every font this app can name has to be here.
+# `BRAND_FONTS` and `CAPTION_FONTS` in src/lib/brand-fonts.ts are the list an
+# operator picks from; a face offered there and missing here renders every
+# video in the wrong typeface with nothing anywhere reporting it.
 RUN ffmpeg -hide_banner -encoders | grep -q libx264 \
     && ffmpeg -hide_banner -encoders | grep -q ' aac ' \
     && ffmpeg -hide_banner -filters  | grep -q subtitles \
     && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-    && echo "ffmpeg has libx264, aac, subtitles and the caption font"
+    && fc-list : family | grep -q "Inter Black" \
+    && echo "ffmpeg has libx264, aac, subtitles and every caption font"
 
 # Non-root, matching app/Dockerfile's UID:GID (1001:1001) exactly. This used
 # to run as root on the strength of holding no persistent volume — Task 7

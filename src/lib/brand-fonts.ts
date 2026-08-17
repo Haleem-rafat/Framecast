@@ -75,7 +75,29 @@ export const BRAND_FONTS: readonly BrandFont[] = [
     description:
       "Fixed width. Reads as technical, and eats horizontal room — a long headline shrinks to fit.",
   },
+  {
+    value: "Inter Black",
+    label: "Inter Black",
+    previewStack: '"Inter Black", "Inter", "Helvetica Neue", sans-serif',
+    description:
+      "The heaviest face here. Built for two or three words filling the frame, not for a sentence — a long headline in it is a wall.",
+  },
 ];
+
+/**
+ * The face word-by-word captions are set in.
+ *
+ * A separate constant from `DEFAULT_HEADLINE_FONT` because the two answer
+ * different questions. A headline sits on a thumbnail and can afford a serif or
+ * a mono; a caption burned over moving footage at one to three words a time has
+ * one job, which is to be readable in a quarter of a second on a phone held at
+ * arm's length. DejaVu Sans has no weight above Bold and loses that fight.
+ *
+ * Verified present in the worker image — see the `fc-list` assertion in
+ * worker/Dockerfile, which fails the build rather than letting libass fall back
+ * silently.
+ */
+export const KINETIC_CAPTION_FONT = "Inter Black";
 
 /** The preview stack for a stored value, falling back to the default's rather
  *  than to nothing: a row written before this list existed may name a face
