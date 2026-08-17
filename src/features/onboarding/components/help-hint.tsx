@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { usePathname } from "next/navigation";
 import { ArrowRight, Lightbulb, X } from "lucide-react";
 
@@ -39,6 +40,7 @@ import { useOnboarding } from "@/features/onboarding/components/onboarding-provi
 export function HelpHint({ isOperator }: { isOperator: boolean }) {
   const pathname = usePathname();
   const { isDismissed, dismiss } = useOnboarding();
+  const [expanded, setExpanded] = useState(false);
 
   const topic = resolveHelpTopic(pathname, isOperator);
 
@@ -66,23 +68,61 @@ export function HelpHint({ isOperator }: { isOperator: boolean }) {
         >
           {topic.title}
         </h2>
-        <p className="text-muted-foreground text-sm leading-relaxed text-pretty">
+        <p
+          id={`help-hint-body-${topic.id}`}
+          className={
+            "text-muted-foreground text-sm leading-relaxed text-pretty " +
+            // Clamped on a phone, whole on a laptop.
+            //
+            // These notes run to five or six sentences, which is three lines on
+            // a laptop and eleven on a phone — enough that /automation opened on
+            // a phone showed a paragraph of explanation and not one automation
+            // above the fold. The screen the note is describing has to be
+            // visible beside the note describing it.
+            //
+            // The default is a Tailwind class rather than state from
+            // `useIsMobile`, deliberately: that hook reports false until it has
+            // measured, so a JS-driven default would render the full note and
+            // then collapse it, which is the same shove down the page in the
+            // other direction.
+            (expanded ? "" : "line-clamp-3 sm:line-clamp-none")
+          }
+        >
           {topic.body}
         </p>
 
-        {topic.action && (
+        {/* Both links live in one row with a real gap between them.
+            Left to the parent's `space-y-1` they were two inline-flex buttons
+            flowing into each other, and on a phone they read as a single
+            broken sentence: "Read more Make one video now". */}
+        <div className="flex flex-wrap items-center gap-x-4">
+          {/* Phone only. On a laptop the note is never clamped, so a control to
+              unclamp it would do nothing. */}
           <Button
-            asChild
             variant="link"
             size="sm"
-            className="h-auto px-0 py-1 font-normal"
+            className="h-auto px-0 py-1 font-normal sm:hidden"
+            aria-expanded={expanded}
+            aria-controls={`help-hint-body-${topic.id}`}
+            onClick={() => setExpanded((current) => !current)}
           >
-            <Link href={topic.action.href}>
-              {topic.action.label}
-              <ArrowRight />
-            </Link>
+            {expanded ? "Show less" : "Read more"}
           </Button>
-        )}
+
+          {topic.action && (
+            <Button
+              asChild
+              variant="link"
+              size="sm"
+              className="h-auto px-0 py-1 font-normal"
+            >
+              <Link href={topic.action.href}>
+                {topic.action.label}
+                <ArrowRight />
+              </Link>
+            </Button>
+          )}
+        </div>
       </div>
 
       <Button
