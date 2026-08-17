@@ -30,6 +30,19 @@ describe("recurringCharacterInstruction — when it says nothing at all", () => 
     ).toBeNull();
   });
 
+  it("says nothing for a cinematic channel, even one carrying a brief", () => {
+    // The gate is `needsCharacterSheet`, not `isGeneratedFootage`, and this is
+    // the case that forced them apart. A cinematic channel generates its
+    // pictures too, but the format wants a different unnamed person in every
+    // shot — so pinning the narration to one protagonist would produce exactly
+    // the words-and-pictures mismatch this module exists to prevent, with the
+    // sides swapped. A brief left over from a channel that used to be
+    // illustrated must not resurrect it.
+    expect(
+      recurringCharacterInstruction({ footageStyle: "CINEMATIC", characterBrief: PIP }),
+    ).toBeNull();
+  });
+
   it("says nothing for an illustrated channel whose brief is empty, null, or blank", () => {
     // Three spellings of one state — "nobody has written this down" — and
     // there is nothing to tell the writer about a character nobody described.

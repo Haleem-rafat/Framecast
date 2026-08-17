@@ -27,7 +27,7 @@ import {
 import { findArtStyle } from "@/lib/art-styles";
 import { characterSheetUrl } from "@/lib/character-sheet";
 import type { FootageStyle } from "@/generated/prisma/enums";
-import { isGeneratedFootage } from "@/lib/footage-styles";
+import { needsCharacterSheet } from "@/lib/footage-styles";
 
 /**
  * One generation, stated before the click the way the logo card states its
@@ -76,7 +76,10 @@ export function CharacterStudio({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
 
-  const used = isGeneratedFootage(footageStyle);
+  // Not `isGeneratedFootage`: a cinematic channel generates its pictures and
+  // has no character sheet at all, so this card would tell it to press a
+  // button for something none of its videos will ever read.
+  const used = needsCharacterSheet(footageStyle);
   const hasBrief = Boolean(characterBrief?.trim());
   const style = findArtStyle(artStyle);
   const ready = hasBrief && style !== null;

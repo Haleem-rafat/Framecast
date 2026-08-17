@@ -510,6 +510,20 @@ enum FootageStyle {
   /// and no amount of query tuning fixes the structural problem, which is that
   /// stock cannot give you the same character in scene 1 and scene 40.
   ILLUSTRATED
+  /// Generated photographic stills, one per shot, for the single-insight short
+  /// format (see docs/superpowers/specs/2026-08-17-knowsense-format-design.md).
+  /// Searches no stock provider, exactly as ILLUSTRATED does.
+  ///
+  /// The difference from ILLUSTRATED is what is held constant. An illustrated
+  /// channel holds the CHARACTER — the whole genre rests on the same bear
+  /// appearing in scene 1 and scene 40, which is why it needs a
+  /// `characterSheetPath` before it can collect anything. This format holds only
+  /// the GRADE and the LENS, and explicitly wants a different, unnamed person in
+  /// every shot: the subject is the viewer, and a recurring face would turn a
+  /// second-person script into somebody else's story. So it reads neither
+  /// `characterBrief` nor `characterSheetPath`, and needs nothing generated on
+  /// the branding screen before a video can be made.
+  CINEMATIC
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   ART_STYLES,
   artStyleLabel,
+  CINEMATIC_STYLE_BIBLE,
   composeArtStyle,
+  composeCinematicShot,
   findArtStyle,
 } from "@/lib/art-styles";
 
@@ -95,5 +97,66 @@ describe("the art style catalogue", () => {
         expect(a.prompt).not.toBe(b.prompt);
       }
     }
+  });
+});
+
+describe("the cinematic style bible", () => {
+  it("is not offered in the illustrated picker", () => {
+    // The catalogue is a children's-illustration picker. A photoreal look in
+    // it is two clicks from putting photographs of strangers under a bedtime
+    // story, which is why this is a constant rather than a seventh entry.
+    for (const style of ART_STYLES) {
+      expect(style.prompt).not.toBe(CINEMATIC_STYLE_BIBLE);
+    }
+  });
+
+  it("pins the grade and the lens, which are the only things it holds", () => {
+    // Twelve shots that share a colour response, a focal length and a light
+    // quality read as one film even when every frame shows a different person.
+    // Twelve that share nothing read as a stock reel.
+    expect(CINEMATIC_STYLE_BIBLE).toMatch(/f\/2/);
+    expect(CINEMATIC_STYLE_BIBLE).toMatch(/mm lens/);
+    expect(CINEMATIC_STYLE_BIBLE).toMatch(/grade/);
+  });
+
+  it("bans lettering, which a caption-burning renderer cannot tolerate twice", () => {
+    expect(CINEMATIC_STYLE_BIBLE).toMatch(/[Nn]o text/);
+  });
+});
+
+describe("composeCinematicShot", () => {
+  const shot = "A woman stops halfway up a staircase, looking back down.";
+
+  it("carries the style bible in whole and unaltered", () => {
+    // Diluting the look into the per-scene sentence is the documented reason
+    // generated stills come out looking like twelve different films.
+    expect(composeCinematicShot({ shot, tone: null })).toContain(CINEMATIC_STYLE_BIBLE);
+  });
+
+  it("asks for a feeling rather than a diagram", () => {
+    const prompt = composeCinematicShot({ shot, tone: null });
+
+    // The one genuinely new idea in the format, and most of why it does not
+    // look like every other AI short: memory is not a brain, it is a woman
+    // pausing in a doorway.
+    expect(prompt).toMatch(/brain/);
+    expect(prompt).toMatch(/[Dd]o not illustrate the idea literally/);
+    expect(prompt).toContain(shot);
+  });
+
+  it("says the person is seen once, never a recurring character", () => {
+    const prompt = composeCinematicShot({ shot, tone: null });
+
+    // The opposite instruction to the illustrated prompt's, and deliberately:
+    // the script is second person, so a face that recurs makes it somebody
+    // else's story.
+    expect(prompt).toMatch(/not a recurring character/);
+  });
+
+  it("omits the tone line entirely rather than printing an empty one", () => {
+    expect(composeCinematicShot({ shot, tone: null })).not.toMatch(/Tone:/);
+    expect(composeCinematicShot({ shot, tone: "flat and certain" })).toContain(
+      "Tone: flat and certain.",
+    );
   });
 });

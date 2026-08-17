@@ -4,7 +4,12 @@ import { env } from "@/config/env";
 import type { FootageStyle, VideoFormat } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { composeArtStyle, findArtStyle, type ArtStyle } from "@/lib/art-styles";
+import {
+  composeArtStyle,
+  composeCinematicShot,
+  findArtStyle,
+  type ArtStyle,
+} from "@/lib/art-styles";
 import { beatImagePath, beatPrefix } from "@/lib/beat-storage";
 import { anchorCues, type AnchoredCue, type ScriptCue } from "@/lib/script-cues";
 import { planStoryBeats, type StoryBeat } from "@/lib/story-beats";
@@ -219,12 +224,24 @@ export type FootagePlan =
   | { readonly kind: "STOCK"; readonly providers: readonly FootageProviderKey[] }
   /** Search nobody. Generate one illustration per story beat, every one of
    *  them conditioned on the channel's character sheet. */
-  | { readonly kind: "ILLUSTRATED" };
+  | { readonly kind: "ILLUSTRATED" }
+  /**
+   * Search nobody either, and condition on nothing.
+   *
+   * The same generation machinery as `ILLUSTRATED` — same beats, same
+   * idempotency, same per-beat failure reporting — with the character sheet
+   * removed rather than made optional. The single-insight format wants a
+   * different unnamed person in every shot with only the grade and the lens
+   * held constant, so there is no sheet to pass and no brief to write; see
+   * `CINEMATIC_STYLE_BIBLE`.
+   */
+  | { readonly kind: "CINEMATIC" };
 
 export const FOOTAGE_SEARCH_PLAN: Record<FootageStyle, FootagePlan> = {
   LIVE_ACTION: { kind: "STOCK", providers: ["PEXELS", "PIXABAY"] },
   CARTOON: { kind: "STOCK", providers: ["PIXABAY_CARTOON"] },
   ILLUSTRATED: { kind: "ILLUSTRATED" },
+  CINEMATIC: { kind: "CINEMATIC" },
 };
 
 /**
@@ -528,8 +545,13 @@ export class FootageService {
         ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
         : [];
 
-    if (plan.kind === "ILLUSTRATED") {
-      return this.collectIllustrated({
+    if (plan.kind === "ILLUSTRATED" || plan.kind === "CINEMATIC") {
+      return this.collectGenerated({
+        // Passed rather than re-derived: `collectGenerated` branches on it for
+        // the character sheet and for the prompt, and re-reading the brand row
+        // inside it would be a second chance to disagree with the plan chosen
+        // here.
+        kind: plan.kind,
         videoId,
         anchored,
         durationSeconds: video.voiceOver.durationSeconds,
@@ -686,7 +708,21 @@ export class FootageService {
   }
 
   /**
-   * One generated illustration per STORY BEAT — not per section.
+   * One generated picture per STORY BEAT — not per section.
+   *
+   * Serves both generating styles. `ILLUSTRATED` draws a children's-book scene
+   * conditioned on the channel's character sheet; `CINEMATIC` generates a
+   * photographic still conditioned on nothing but the format's own style bible.
+   * Everything else — the beats, the idempotency, the per-beat failure
+   * reporting, the sizes, the cost accounting — is identical, which is why they
+   * share a method rather than a copy of one.
+   *
+   * The pre-flight refusals are where they differ, and they differ completely:
+   * an illustrated channel is refused without a character brief, an art style
+   * and a generated sheet, because a picture drawn without them shows a
+   * different protagonist every beat. A cinematic channel is refused for none
+   * of those, because a different person every beat is what the format asks
+   * for — see `CINEMATIC_STYLE_BIBLE`.
    *
    * That distinction is the feature. A four-minute script has about
    * twenty-seven sections, and one picture per section would be twenty-seven
@@ -718,7 +754,8 @@ export class FootageService {
    * is a finished-looking render with a hole in it, which is the failure mode
    * nobody notices until it is published.
    */
-  private async collectIllustrated(args: {
+  private async collectGenerated(args: {
+    kind: "ILLUSTRATED" | "CINEMATIC";
     videoId: string;
     anchored: AnchoredCue[];
     durationSeconds: number;
@@ -731,42 +768,49 @@ export class FootageService {
     } | null;
     onProgress: FootageProgress;
   }): Promise<CollectFootageResult> {
-    const { videoId, anchored, durationSeconds, format, brand, onProgress } = args;
+    const { kind, videoId, anchored, durationSeconds, format, brand, onProgress } = args;
+    const illustrated = kind === "ILLUSTRATED";
 
+    // Everything an illustrated channel is refused for, and none of which a
+    // cinematic one has: the brief, the art style and the sheet all exist to
+    // hold ONE character across every picture. A format that wants a different
+    // person in every shot has nothing to refuse — it needs no setup on the
+    // branding screen at all, which is the whole operator-facing difference.
     const brief = brand?.characterBrief?.trim();
-
-    // Refused before anything is spent, and the two refusals are separate
-    // because the actions are separate: one is "write down who the character
-    // is", the other is "press the button that draws them".
-    if (!brief) {
-      throw new ConflictError(
-        "This channel is set to illustrated footage but has no character described. " +
-          "Describe the recurring character on the channel's branding screen — that " +
-          "description is the only thing that keeps the same character in every scene.",
-      );
-    }
-
-    // Refused separately from the brief and from the sheet, because the three
-    // are separate actions the operator takes in order. Never defaulted: a
-    // fallback look would give every channel that skipped this the same one.
     const style = findArtStyle(brand?.artStyle);
+    let sheet: Buffer | undefined;
 
-    if (!style) {
-      throw new ConflictError(
-        brand?.artStyle
-          ? "This channel's art style is no longer one this app offers. Pick another on " +
-            "the channel's branding screen, then generate a new character sheet in it."
-          : "This channel is set to illustrated footage but has no art style. Pick one on " +
-            "the channel's branding screen — it is what every picture is drawn in.",
-      );
-    }
+    if (illustrated) {
+      // Refused before anything is spent, and the three refusals are separate
+      // because the actions are separate: write down who the character is, pick
+      // the look, then press the button that draws them.
+      if (!brief) {
+        throw new ConflictError(
+          "This channel is set to illustrated footage but has no character described. " +
+            "Describe the recurring character on the channel's branding screen — that " +
+            "description is the only thing that keeps the same character in every scene.",
+        );
+      }
 
-    if (!brand?.characterSheetPath) {
-      throw new ConflictError(
-        "This channel is set to illustrated footage but has no character sheet. " +
-          "Generate one on the channel's branding screen first — every scene is drawn " +
-          "from it, and without it each picture would show a different character.",
-      );
+      // Never defaulted: a fallback look would give every channel that skipped
+      // this the same one.
+      if (!style) {
+        throw new ConflictError(
+          brand?.artStyle
+            ? "This channel's art style is no longer one this app offers. Pick another on " +
+              "the channel's branding screen, then generate a new character sheet in it."
+            : "This channel is set to illustrated footage but has no art style. Pick one on " +
+              "the channel's branding screen — it is what every picture is drawn in.",
+        );
+      }
+
+      if (!brand?.characterSheetPath) {
+        throw new ConflictError(
+          "This channel is set to illustrated footage but has no character sheet. " +
+            "Generate one on the channel's branding screen first — every scene is drawn " +
+            "from it, and without it each picture would show a different character.",
+        );
+      }
     }
 
     // A script with no cues has no beats to group, and unlike the stock paths
@@ -775,8 +819,9 @@ export class FootageService {
     // that is what it is.
     if (anchored.length === 0) {
       throw new ConflictError(
-        "Illustrated footage needs a script with section cues to draw from, and this " +
-          "video's script has none. Regenerate the script, then collect again.",
+        `${illustrated ? "Illustrated" : "Cinematic"} footage needs a script with ` +
+          "section cues to draw from, and this video's script has none. Regenerate " +
+          "the script, then collect again.",
       );
     }
 
@@ -785,8 +830,11 @@ export class FootageService {
     // Read once and reused for every beat in this run rather than fetched per
     // generation: it is the same object each time, and a dozen storage round
     // trips for one buffer is a dozen chances for a transient read to cost a
-    // beat its character.
-    const sheet = await getObject(brand.characterSheetPath);
+    // beat its character. Never read at all for a cinematic channel, which
+    // conditions on nothing.
+    if (brand?.characterSheetPath && illustrated) {
+      sheet = await getObject(brand.characterSheetPath);
+    }
 
     const existing = await prisma.asset.findMany({
       where: {
@@ -799,10 +847,13 @@ export class FootageService {
     const existingPaths = new Set(existing.map((asset) => asset.storagePath));
 
     onProgress(
-      `footage style ILLUSTRATED (${style.name}) — ${beats.length} story beat(s) from ` +
-        `${anchored.length} section(s), ${Math.round(durationSeconds / beats.length)}s of ` +
-        `picture each, drawn with ${env.AI_ILLUSTRATION_MODEL} from this channel's ` +
-        "character sheet",
+      `footage style ${kind}${style && illustrated ? ` (${style.name})` : ""} — ` +
+        `${beats.length} story beat(s) from ${anchored.length} section(s), ` +
+        `${Math.round(durationSeconds / beats.length)}s of picture each, drawn with ` +
+        `${env.AI_ILLUSTRATION_MODEL} ` +
+        (illustrated
+          ? "from this channel's character sheet"
+          : "in one fixed grade and lens, a different subject each time"),
     );
 
     const missingBeats: number[] = [];
@@ -823,19 +874,32 @@ export class FootageService {
       let image;
       try {
         image = await this.images.generate({
-          prompt: beatIllustrationPrompt({
-            cues: beat.cues,
-            brief,
-            style,
-            tone: brand.tone,
-            hasSheet: true,
-          }),
+          prompt:
+            illustrated && brief && style
+              ? beatIllustrationPrompt({
+                  cues: beat.cues,
+                  brief,
+                  style,
+                  tone: brand?.tone ?? null,
+                  hasSheet: sheet !== undefined,
+                })
+              : composeCinematicShot({
+                  // Joined and capped exactly as the illustrated prompt joins
+                  // its own: a beat covers more than one section and the
+                  // picture holds the screen across all of them.
+                  shot: beat.cues.join(". ").slice(0, BEAT_CUE_MAX_LENGTH),
+                  tone: brand?.tone ?? null,
+                }),
           // Only read when `size` is absent, which it never is here — stated
           // anyway because the field is required and because it says what the
           // size below means.
           aspectRatio: format === "VERTICAL" ? "9:16" : "16:9",
           size: ILLUSTRATION_SIZE[format],
-          referenceImages: [sheet],
+          // Spread rather than passed as a possibly-undefined array, so a
+          // cinematic generation's request is a plain text-to-image call with
+          // no `referenceImages` key at all — byte-for-byte what logos and
+          // thumbnails have always sent.
+          ...(sheet ? { referenceImages: [sheet] } : {}),
           model: env.AI_ILLUSTRATION_MODEL,
         });
       } catch (error) {

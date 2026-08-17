@@ -61,13 +61,40 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
     description:
       "Generated storybook illustrations, about one every twenty seconds, every one of them drawn from this channel's character sheet so the same character appears throughout. Costs roughly $0.05 a picture — about $0.60 for a four-minute video — and needs a character described and a sheet generated below before any video can collect footage.",
   },
+  {
+    value: "CINEMATIC",
+    label: "Cinematic",
+    description:
+      "Generated photographic stills in one fixed grade and lens, for short second-person videos that name a psychological effect. A different, unnamed person in every shot — nothing is held constant except the look — so unlike the illustrated style it needs no character described and no sheet generated. Costs roughly $0.05 a picture, about $0.60 for a forty-five-second video.",
+  },
 ];
 
-/** Which styles generate pictures rather than searching for them, and
- *  therefore which ones need a character sheet before a video can be made.
- *  A function over the enum rather than a second list, so a style added to
- *  `FootageStyle` has to be classified here to compile. */
+/** Which styles generate pictures rather than searching for them. A function
+ *  over the enum rather than a second list, so a style added to `FootageStyle`
+ *  has to be classified here to compile.
+ *
+ *  Deliberately no longer the same question as "needs a character sheet" — see
+ *  `needsCharacterSheet` below, which was split out of this when a second
+ *  generating style arrived that wants the opposite. */
 export function isGeneratedFootage(style: FootageStyle): boolean {
+  return style === "ILLUSTRATED" || style === "CINEMATIC";
+}
+
+/**
+ * Which styles hold one recurring character across every picture, and
+ * therefore need a sheet generated on the branding screen before a video can
+ * collect anything.
+ *
+ * `ILLUSTRATED` alone, and the split from `isGeneratedFootage` is the one real
+ * code difference `CINEMATIC` introduces. The two questions had the same answer
+ * while only one style generated, and three separate call sites read the
+ * generation predicate when what they meant was the sheet: the script writer's
+ * recurring-character instruction, the branding screen's character card, and the
+ * cost estimate's wording. Keeping them on the generation predicate would tell a
+ * cinematic channel's writer to pin every script to a protagonist the format
+ * deliberately does not have.
+ */
+export function needsCharacterSheet(style: FootageStyle): boolean {
   return style === "ILLUSTRATED";
 }
 
