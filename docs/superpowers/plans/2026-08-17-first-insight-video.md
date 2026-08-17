@@ -52,45 +52,71 @@ The stills dominate. A dry run that stops before footage costs about three cents
 
 **Files:** `src/lib/script-cues.ts`, `src/services/script.service.ts`
 
-- [ ] Add to `ScriptCue`: `beat?: string`, `emphasis?: string[]`. Both optional — every cue written before today has neither, and `cues` is a `Json?` column with no schema migration involved.
-- [ ] Carry them through `anchorCues` into `AnchoredCue`, and through `cueWindows` into `CueWindow`. Today those two drop everything except `cue`; the render needs `beat` to know which join dips and `emphasis` to colour the caption.
-- [ ] Tests: a cue with a beat survives anchoring and windowing; a cue without one still produces exactly what it does today.
+- [x] Add to `ScriptCue`: `beat?: string`, `emphasis?: string[]`. Both optional — every cue written before today has neither, and `cues` is a `Json?` column with no schema migration involved.
+- [x] Carry them through `anchorCues` into `AnchoredCue`, and through `cueWindows` into `CueWindow`. Today those two drop everything except `cue`; the render needs `beat` to know which join dips and `emphasis` to colour the caption.
+- [x] Tests: a cue with a beat survives anchoring and windowing; a cue without one still produces exactly what it does today.
 
 ### Task 2: Teach the generator to emit the format
 
 **Files:** `src/services/script.service.ts`, a new prompt template
 
-- [ ] Seed a SCRIPT-category `PromptTemplate` holding the pack's Stage 1 system prompt, with `claude-sonnet-5` — **not** the `claude-sonnet-4-6` the pack names, which does not exist.
-- [ ] Parse the returned JSON into `{ content, cues }`: `content` is the narrations joined with a space; each cue is `{ anchor: first 8 words of that scene's narration, cue: visual_brief, beat, emphasis }`.
-- [ ] Run `validateInsightScript` before persisting. On failure, retry once with the errors appended — the messages were written to be pasted in verbatim. Two failures, give up and report; do not silently keep a bad script.
-- [ ] Test the parse against the worked example in the spec.
+- [x] Seed a SCRIPT-category `PromptTemplate` holding the pack's Stage 1 system prompt, with `claude-sonnet-5` — **not** the `claude-sonnet-4-6` the pack names, which does not exist.
+- [x] Parse the returned JSON into `{ content, cues }`: `content` is the narrations joined with a space; each cue is `{ anchor: first 8 words of that scene's narration, cue: visual_brief, beat, emphasis }`.
+- [x] Run `validateInsightScript` before persisting. On failure, retry once with the errors appended — the messages were written to be pasted in verbatim. Two failures, give up and report; do not silently keep a bad script.
+- [x] Test the parse against the worked example in the spec.
 
 ### Task 3: Switch the caption format on for this style
 
 **Files:** `src/services/render.service.ts`, `src/lib/video-style.ts`
 
-- [ ] Add `captionMode: "srt" | "kinetic"` to `VideoStyle`, defaulting to `"srt"`. Every existing render keeps calling `buildSrt` and its argv is unchanged.
-- [ ] When kinetic, write `.ass` from `buildAss` instead, with the emphasis words for each cue's window, and hand that path to `buildSubtitleFilter` — which already accepts ASS, since libass reads it natively.
-- [ ] Use `KINETIC_CAPTION_FONT` (`Inter Black`).
-- [ ] Test: a kinetic render writes a `.ass` and an ordinary one still writes a `.srt`.
+- [x] Add `captionMode: "srt" | "kinetic"` to `VideoStyle`, defaulting to `"srt"`. Every existing render keeps calling `buildSrt` and its argv is unchanged.
+- [x] When kinetic, write `.ass` from `buildAss` instead, with the emphasis words for each cue's window, and hand that path to `buildSubtitleFilter` — which already accepts ASS, since libass reads it natively.
+- [x] Use `KINETIC_CAPTION_FONT` (`Inter Black`).
+- [x] Test: a kinetic render writes a `.ass` and an ordinary one still writes a `.srt`.
 
 ### Task 4: Dip through black before the payoff
 
 **Files:** `src/services/render.service.ts`
 
-- [ ] Build the transitions array from the cue beats: hard cut everywhere, `{ enabled: true, durationSeconds: 0.2, kind: "fadeblack" }` at the single boundary whose *next* cue is the first `NAME_IT`.
-- [ ] Guard the case the format can produce and `planRender` refuses: a scene shorter than the dip. The spec's floor is 2.5s and the dip is 0.2s, so this should never fire — but a model that emits a 0.15s scene must fail loudly here, not produce an inverted concat entry.
-- [ ] Test: beats in, array out, dip in exactly one place.
+- [x] Build the transitions array from the cue beats: hard cut everywhere, `{ enabled: true, durationSeconds: 0.2, kind: "fadeblack" }` at the single boundary whose *next* cue is the first `NAME_IT`.
+- [x] Guard the case the format can produce and `planRender` refuses: a scene shorter than the dip. The spec's floor is 2.5s and the dip is 0.2s, so this should never fire — but a model that emits a 0.15s scene must fail loudly here, not produce an inverted concat entry.
+- [x] Test: beats in, array out, dip in exactly one place.
 
 ### Task 5: The cinematic footage style
 
 **Files:** `prisma/schema.prisma` (+ migration), `src/lib/footage-styles.ts`, `src/lib/art-styles.ts`, `src/services/footage.service.ts`
 
-- [ ] Add `FootageStyle.CINEMATIC`. Classify it in `isGeneratedFootage` — it generates, so the enum forces the decision at compile time.
-- [ ] Unlike `ILLUSTRATED`, it needs **no character sheet**: the format explicitly wants a different person per shot, with only the grade and lens held constant. That is the one real code difference.
-- [ ] Add the pack's style bible as the prompt fragment, and its Stage 2 formula as the expander.
+- [x] Add `FootageStyle.CINEMATIC`. Classify it in `isGeneratedFootage` — it generates, so the enum forces the decision at compile time.
+- [x] Unlike `ILLUSTRATED`, it needs **no character sheet**: the format explicitly wants a different person per shot, with only the grade and lens held constant. That is the one real code difference.
+- [x] Add the pack's style bible as the prompt fragment, and its Stage 2 formula as the expander.
 
 ### Task 6: Dry run — spend three cents, not sixty
+
+**Read this before running it.** Tasks 2-5 are wired and committed. One thing
+they did not resolve, found while wiring Task 5 and deliberately not fixed
+without the owner present:
+
+**A cinematic video gets two pictures, not twelve.** `CINEMATIC` reuses the
+illustrated collection path, and that path draws one picture per *story beat*
+— `planStoryBeats` at `BEAT_TARGET_SECONDS = 20`, a number measured on
+four-minute children's stories. A 45-second narration with twelve cues
+therefore comes out as **two** beats of ~22s each, not twelve shots of ~3.5s.
+The cost table above (12 stills, ~$0.60) assumes the second. So does the
+format: "shot changes every 3-5s" is most of what separates it from a
+slideshow.
+
+Fixing it is not a one-line change, which is why it was left. The picture count
+has to be agreed by `footage.service.ts` *and* `render.service.ts` without a
+stored plan — that is what `planStoryBeats` is for — and `render.service.ts`
+deliberately reads what is on disk rather than the channel's `footageStyle`, so
+it cannot simply be told which target to use. The options are a beat plan keyed
+on the style (which means the renderer has to learn the style, and the reason it
+does not know it today is a real one) or a plan derived from what collection
+actually produced. Both are design decisions with the owner's video on the line.
+
+Everything else below is unaffected: the script, the gate, the beats, the
+transitions array and the `.ass` captions do not go through `planStoryBeats` at
+all.
 
 - [ ] Rebuild the worker image so it actually contains `Inter Black`. **The current image predates the Dockerfile change**, so a render today falls back to DejaVu silently.
 - [ ] Generate a script only, against staging. Confirm: valid JSON, passes the gate, six beats present, 95–150 words, cues anchored.
