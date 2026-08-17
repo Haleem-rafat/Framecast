@@ -825,3 +825,39 @@ describe("buildAssembleArgs with a vertical caption style", () => {
     expect(filter).not.toContain("MarginR");
   });
 });
+
+describe("film grain", () => {
+  const base = {
+    concatListPath: "/tmp/segments.txt",
+    audioPath: "/tmp/narration.mp3",
+    srtPath: "/tmp/captions.srt",
+    outputPath: "/tmp/out.mp4",
+    durationSeconds: 45,
+  };
+
+  it("lays grain under the captions, never over them", () => {
+    // Captions are an edit layer over a finished picture. Grain applied after
+    // the subtitles would sand the letter edges the outline exists to keep
+    // crisp.
+    const args = buildAssembleArgs({ ...base, grain: true });
+    const graph = args[args.indexOf("-filter_complex") + 1];
+
+    expect(graph.indexOf("noise=")).toBeLessThan(graph.indexOf("subtitles="));
+  });
+
+  it("moves the grain between frames", () => {
+    // Without the temporal flag the same pattern sits frozen on every frame,
+    // which reads as a dirty lens rather than as film.
+    const args = buildAssembleArgs({ ...base, grain: true });
+
+    expect(args.join(" ")).toContain("noise=alls=6:allf=t+u");
+  });
+
+  it("emits the argv it always did when grain is not asked for", () => {
+    const withoutFlag = buildAssembleArgs(base);
+    const explicitlyOff = buildAssembleArgs({ ...base, grain: false });
+
+    expect(withoutFlag).toEqual(explicitlyOff);
+    expect(withoutFlag.join(" ")).not.toContain("noise=");
+  });
+});

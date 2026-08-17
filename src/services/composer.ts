@@ -271,6 +271,11 @@ export async function compose(input: ComposeInput, deps: ComposeDeps): Promise<v
       sfxPath,
       audio: style.audio,
       captions: input.captions,
+      // Tied to the caption mode rather than given a switch of its own.
+      // Grain and word-by-word captions are two halves of one look, and a
+      // channel that wanted the grain without the captions — or the reverse —
+      // would be asking for a third format nobody has specified.
+      grain: style.captionMode === "kinetic",
     }),
     input.durationSeconds,
     onProgress,

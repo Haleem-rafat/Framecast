@@ -62,6 +62,16 @@ export interface TransitionStyle {
 export interface VoiceStyle {
   stability: number;
   style: number;
+  /**
+   * ElevenLabs' `similarity_boost` — how closely the delivery holds to the
+   * reference voice rather than drifting toward a neutral read.
+   *
+   * Optional, and absent means "send nothing and let ElevenLabs use its own
+   * default", which is exactly what every render before this field did. Adding
+   * it with a value here instead would silently change the sound of every
+   * existing channel's narration on the next render.
+   */
+  similarity?: number;
   speed: number;
   /** Fixed so re-synthesising unchanged text produces the same narration. */
   seed: number;

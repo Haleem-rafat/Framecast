@@ -358,6 +358,9 @@ export interface AssembleInput {
   musicPath?: string;
   sfxPath?: string;
   audio?: AudioStyle;
+  /** Lay light film grain over the picture. Absent — which is every caller
+   *  before the single-insight format — emits the argv it always did. */
+  grain?: boolean;
 }
 
 /** YouTube normalises playback to about this, so it is a platform fact rather
@@ -451,9 +454,32 @@ function buildAudioChain(input: AssembleInput): AudioChain {
  * expensive that used to live in the graph is gone. The audio side mixes at
  * most three streams; see `buildAudioChain`.
  */
+/**
+ * Film grain, as a fraction of FFmpeg's `noise` scale.
+ *
+ * The format asks for "light film grain at 6% opacity", which is a compositing
+ * instruction rather than an FFmpeg one — there is no opacity here, only a
+ * strength from 0 to 100. Six is the reading that matches: visible as texture
+ * on a flat wall or a sky, invisible on a face, and gone entirely once YouTube
+ * has re-encoded it unless it is at least this strong.
+ *
+ * `allf=t+u` is temporal *and* uniform. Without `t` the same grain pattern sits
+ * frozen on every frame, which reads as a dirty lens rather than as film; with
+ * it, the grain moves and the eye stops seeing it as part of the picture.
+ */
+const GRAIN_STRENGTH = 6;
+
 export function buildAssembleArgs(input: AssembleInput): string[] {
   const chain = buildAudioChain(input);
-  const videoFilter = `[0:v]${buildSubtitleFilter(input.srtPath, input.captions)}[vout]`;
+  // Grain first, subtitles second, and the order is the whole point: captions
+  // are an edit layer laid over a finished picture, so grain over the text
+  // would sand the letter edges that the 4px outline exists to keep crisp.
+  //
+  // Absent unless asked for, so every render that has ever run emits the same
+  // single-filter chain it always did.
+  const grain = input.grain ? `noise=alls=${GRAIN_STRENGTH}:allf=t+u,` : "";
+  const videoFilter =
+    `[0:v]${grain}${buildSubtitleFilter(input.srtPath, input.captions)}[vout]`;
 
   return [
     "-y",
