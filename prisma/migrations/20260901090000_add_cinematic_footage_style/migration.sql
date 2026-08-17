@@ -1,0 +1,25 @@
+-- A fourth footage style, for the format that wants a different person in every
+-- shot.
+--
+-- ILLUSTRATED already generates rather than searches, so this is not a new kind
+-- of collection. What it does not share with ILLUSTRATED is the thing that
+-- style exists for: a character sheet. A bedtime story is one character's, and
+-- the entire value of generating its pictures is that scene 1 and scene 40 show
+-- the same bear. The single-insight short is the opposite — it is written in the
+-- second person, the subject is the viewer, and a face that recurs across the
+-- shots turns "you forgot the task you finished this morning" into a story about
+-- somebody else. The pack that decoded the format says so outright: hold the
+-- grade and the lens, hold nothing else, and never name the person on screen.
+--
+-- So a CINEMATIC channel reads neither `characterBrief` nor
+-- `characterSheetPath`, and an operator has nothing to generate on the branding
+-- screen before their first video. That is the one real code difference, and it
+-- is why this is an enum value rather than a flag on ILLUSTRATED.
+--
+-- Adding a value rather than replacing one, exactly as ILLUSTRATED was added.
+-- Every existing brand row keeps what it has, LIVE_ACTION stays the column
+-- default, and no channel's footage changes until an operator picks the new
+-- option. Postgres permits ALTER TYPE ... ADD VALUE inside a transaction
+-- (PG 12+) as long as the new value is not *used* in the same transaction;
+-- nothing below uses it, because there is nothing below.
+ALTER TYPE "FootageStyle" ADD VALUE 'CINEMATIC';

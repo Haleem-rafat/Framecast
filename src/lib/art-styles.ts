@@ -189,3 +189,85 @@ const SHARED_DIRECTION =
 export function composeArtStyle(style: ArtStyle): string {
   return `${SHARED_DIRECTION}\n\n${style.prompt}`;
 }
+
+/**
+ * The look every shot in a `CINEMATIC` video is generated in.
+ *
+ * ── Why this is a constant and not a seventh entry in `ART_STYLES` ──────────
+ * The catalogue above is a CHOICE an illustrated channel makes, stored as a
+ * slug on the brand row, and every entry in it has to hold a character across a
+ * dozen generations. This is neither. It is the single-insight format's own
+ * look, fixed by the format rather than picked per channel, and it is
+ * photographic — offering it in the illustrated picker would let a children's
+ * bedtime channel select photoreal footage of strangers with two clicks.
+ *
+ * ── What it holds constant, and what it deliberately does not ───────────────
+ * The grade and the lens, and nothing else. Twelve shots that share a colour
+ * response, a focal length and a light quality read as one film even when every
+ * frame shows a different person in a different room; twelve shots that share a
+ * subject and nothing else read as a stock reel. The format wants a DIFFERENT,
+ * unnamed person per shot — the script is written in the second person and the
+ * subject is the viewer, so a face that recurs makes it somebody else's story.
+ * That is why this style needs no character sheet and why `needsCharacterSheet`
+ * exists to say so.
+ *
+ * ── No living person, no studio, no film ────────────────────────────────────
+ * Same rule as the catalogue above and for the same two reasons: it is
+ * somebody's IP and somebody's livelihood, and "85mm at f/2, window light from
+ * frame left, muted cyan shadows" is something a model can act on where a proper
+ * noun is something it has to guess at.
+ */
+export const CINEMATIC_STYLE_BIBLE =
+  "Photographic still from a contemporary short film. Shallow depth of field at " +
+  "about f/2 on a 50-85mm lens, so the subject separates from a soft background. " +
+  "Available light only: a large soft source from one side, deep unlit falloff on " +
+  "the other, no on-camera flash and no visible fixtures. Muted desaturated grade " +
+  "with cool shadows, warm skin, and highlights that roll off rather than clip. " +
+  "Fine 35mm grain. Handheld framing, slightly off-centre, with room around the " +
+  "subject. No text, no words, no letters, no logos, no watermark, no caption bar " +
+  "anywhere in the image.";
+
+/**
+ * What one shot's picture should show — the format's Stage 2, as one prompt.
+ *
+ * The style bible goes in whole and identically every time, and the per-shot
+ * brief is kept to what is happening in the frame. That split is the entire
+ * defence against twelve shots that look like twelve different films: a look
+ * diluted into the per-scene sentence gets re-interpreted per scene, and the
+ * documented failure mode of generated stills is exactly that drift.
+ *
+ * The last paragraph is doing real work rather than restating the bible. Handed
+ * a line of narration, a model's most natural reading is to illustrate the
+ * SENTENCE — "your brain keeps an open file" becomes a glowing brain with a
+ * filing cabinet in it, which is the look of every generic AI short there is.
+ * The format's one genuinely new idea is that the picture is an emotional rhyme
+ * of the line rather than a diagram of it, and saying so explicitly is most of
+ * why it does not come out looking like stock slop.
+ *
+ * Refuses nothing: an empty brief would produce a picture of the style bible
+ * alone, which is a real photograph of nothing in particular, and that is the
+ * caller's problem to have refused earlier.
+ */
+export function composeCinematicShot(input: {
+  /** What happens in this frame, from the script's own `visual_brief`. */
+  shot: string;
+  /** The channel's tone, when it has set one. */
+  tone: string | null;
+}): string {
+  return [
+    "One photographic still for a short vertical video. A single moment, filling " +
+      "the whole frame.",
+    "",
+    `The shot: ${input.shot}`,
+    "",
+    CINEMATIC_STYLE_BIBLE,
+    input.tone ? `Tone: ${input.tone}.` : "",
+    "",
+    "If a person appears, they are an ordinary unnamed stranger seen once — not a " +
+      "recurring character, not a model, not looking at the camera.",
+    "Show the feeling, not the explanation. Do not illustrate the idea literally, " +
+      "and never draw a diagram, an infographic, a screen, a chart or a brain.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}

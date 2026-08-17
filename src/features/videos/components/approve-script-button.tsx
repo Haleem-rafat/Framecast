@@ -28,7 +28,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { approveScriptAction } from "@/actions/video.action";
 import type { FootageStyle, VideoFormat } from "@/generated/prisma/enums";
-import { isGeneratedFootage } from "@/lib/footage-styles";
+import { isGeneratedFootage, needsCharacterSheet } from "@/lib/footage-styles";
 import { scriptStylesUnder } from "@/lib/script-styles";
 import { beatCountFor } from "@/lib/story-beats";
 import {
@@ -89,12 +89,20 @@ function costLines(
     // script's length exactly as the runtime above is, and by the same function
     // the collector will use — see `beatCountFor`, which is what actually
     // decides how many pictures get drawn.
+    // Two generating styles now, and only one of them draws from a character
+    // sheet — see `needsCharacterSheet`. The money is the same either way; the
+    // sentence is not, and telling a cinematic channel its pictures come from a
+    // sheet it has never generated is the kind of copy an operator acts on.
     isGeneratedFootage(footageStyle)
       ? `${illustrationCount(wordCount)} generated illustrations at about ${ILLUSTRATION_USD.toFixed(
           2,
         )} each \u2014 roughly $${(illustrationCount(wordCount) * ILLUSTRATION_USD).toFixed(
           2,
-        )} of real money, drawn from this channel's character sheet and held about twenty seconds each.`
+        )} of real money, ${
+          needsCharacterSheet(footageStyle)
+            ? "drawn from this channel's character sheet and held about twenty seconds each"
+            : "in this channel's fixed grade and lens, a different shot each time"
+        }.`
       : format === "VERTICAL"
         ? "One stock clip per section, each framed for a 9:16 frame."
         : "One stock clip per section.",

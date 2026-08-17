@@ -24,7 +24,7 @@
  */
 
 import type { FootageStyle } from "@/generated/prisma/enums";
-import { isGeneratedFootage } from "@/lib/footage-styles";
+import { needsCharacterSheet } from "@/lib/footage-styles";
 
 /**
  * The `ChannelBrand` columns this decision needs, and no others.
@@ -46,11 +46,15 @@ export interface RecurringCharacterBrand {
  *
  * Two conditions, both required:
  *
- *   1. `isGeneratedFootage(footageStyle)` — today, `ILLUSTRATED` alone. That
- *      helper already exists as *the* classifier for "this style draws its
- *      pictures from a character sheet rather than searching for them", and
- *      reusing it means a fourth `FootageStyle` has to be classified in one
- *      place rather than two. `CARTOON` is excluded deliberately and it was
+ *   1. `needsCharacterSheet(footageStyle)` — `ILLUSTRATED` alone. That helper
+ *      is *the* classifier for "this style draws every picture from one
+ *      character sheet", so a new `FootageStyle` has to be classified in one
+ *      place rather than two. It used to be `isGeneratedFootage`, which was the
+ *      same set until `CINEMATIC` arrived: that style generates its pictures
+ *      too, but wants a different, unnamed person in every shot, so pinning its
+ *      scripts to a recurring protagonist would be exactly the mismatch this
+ *      module exists to prevent, in the other direction. `CARTOON` is excluded
+ *      deliberately and it was
  *      checked rather than assumed: `FOOTAGE_SEARCH_PLAN.CARTOON` is a stock
  *      search plan (Pixabay's animation filter), `collectIllustrated` — the
  *      only reader of `characterBrief` or `characterSheetPath` in the footage
@@ -98,7 +102,7 @@ export interface RecurringCharacterBrand {
 export function recurringCharacterInstruction(
   brand: RecurringCharacterBrand | null | undefined,
 ): string | null {
-  if (!brand || !isGeneratedFootage(brand.footageStyle)) {
+  if (!brand || !needsCharacterSheet(brand.footageStyle)) {
     return null;
   }
 
