@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { V3Nav } from "@/features/marketing-v3/components/v3-nav";
+import { MarketingNavBar } from "@/features/marketing-v2/components/v2-nav";
 
 /**
  * v3's shell.
@@ -20,7 +20,7 @@ import { V3Nav } from "@/features/marketing-v3/components/v3-nav";
 export function V3Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="marketing bg-background text-foreground min-h-svh overflow-x-clip">
-      <V3Nav />
+      <MarketingNavBar basePath="/v3" />
 
       <main>{children}</main>
 

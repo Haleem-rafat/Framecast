@@ -7,34 +7,16 @@ import { ArrowRight, Hand } from "lucide-react";
 
 import SplitFlapText from "@/components/react-bits/SplitFlapText";
 import StarBorder from "@/components/react-bits/StarBorder";
-import Threads from "@/components/react-bits/Threads";
 import { Button } from "@/components/ui/button";
-
-/**
- * The brand violet, per theme, as the `[r, g, b]` triple in 0–1 that a shader
- * uniform wants.
- *
- * React Bits' Threads is WebGL: it cannot read `--brand-violet`, which is an
- * `oklch()` custom property. These are that exact token converted to sRGB and
- * normalised. If globals.css changes the hue, change it here too — there is no
- * way for the shader to follow it on its own, and that is the standing cost of
- * a WebGL background inside a design system built on CSS variables.
- */
-const THREAD_COLOR = {
-  // oklch(0.55 0.2 285) → #6b55df
-  light: [0.42, 0.333, 0.875],
-  // oklch(0.68 0.18 285) → #9083ff
-  dark: [0.565, 0.514, 1],
-} as const;
 
 /**
  * The seven things a run produces, in the order it produces them. Every one is
  * a real artefact — nothing here is a feature that has not been built.
  *
  * Uppercase and short because they are going on a split-flap board, which is a
- * fixed grid of character tiles: the board is padded to the longest phrase, so
- * a long one would set the width for all of them and push the line off a
- * 390px screen.
+ * fixed grid of character tiles: the board pads to the longest phrase, so one
+ * long entry would set the width for all of them and push the line off a 390px
+ * screen.
  */
 const STAGES = [
   "SCRIPT",
@@ -47,56 +29,51 @@ const STAGES = [
 ];
 
 /**
- * The woven-line field behind the hero, or nothing.
+ * The hero's ground, drawn entirely in CSS.
  *
- *  1. It is a WebGL loop, so anyone who has asked their OS for reduced motion
- *     gets the flat gradient underneath and no canvas at all.
- *  2. Its colour has to come from the resolved theme, and `next-themes` only
- *     knows that on the client — so it waits for mount rather than guessing
- *     and then flipping.
- *  3. It is decoration. Nothing in the hero's meaning is inside it.
+ * There is no canvas here and that is deliberate. Three WebGL backgrounds were
+ * tried in this slot and all three are gone: React Bits' Aurora, then Threads,
+ * then GradientWaves. The technical objections were real — each one binds hex
+ * colours to shader uniforms, so it cannot read the `oklch()` brand tokens and
+ * needs a hand-maintained sRGB copy of the palette; each one runs an
+ * unstoppable `requestAnimationFrame` loop that has to be gated on
+ * `prefers-reduced-motion` from outside; and Aurora in particular painted a
+ * saturated field across the whole frame, on which the lead paragraph measured
+ * as grey text on teal. But the deciding objection was simpler: the owner did
+ * not want an animated background, and a hero does not need one.
  *
- * Threads rather than the library's Aurora, which was the first thing tried
- * here. Aurora paints a saturated field across the whole frame; measured on
- * the light theme the lead paragraph ended up as grey text on teal. This draws
- * thin lines on a transparent ground, so the type keeps the page's own
- * background behind it and the contrast is unchanged.
+ * What is here instead is three layers of gradient and a ruled field, which
+ * costs one composite, needs no dependency, follows the theme through the
+ * tokens directly, and has nothing to switch off for reduced motion because
+ * nothing moves.
+ *
+ * The rules are on purpose rather than decoration for its own sake: evenly
+ * spaced vertical lines fanning out under the type read as a timeline ruler,
+ * which is the surface this product's whole pipeline is measured against.
  */
-function HeroThreads() {
-  const { resolvedTheme } = useTheme();
-  const [enabled, setEnabled] = useState(false);
-
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const sync = () => setEnabled(!query.matches);
-    sync();
-    query.addEventListener("change", sync);
-    return () => query.removeEventListener("change", sync);
-  }, []);
-
-  if (!enabled) return null;
-
+function HeroGround() {
   return (
-    <div
-      aria-hidden="true"
-      // Sized from this box, never from the viewport, so the canvas cannot be
-      // the thing that puts a horizontal scrollbar on a 390px phone. Masked to
-      // the bottom so the lines gather under the type rather than running
-      // through it.
-      className="absolute inset-x-0 bottom-0 -z-10 h-[70%] opacity-40 [mask-image:linear-gradient(to_top,black_10%,transparent_85%)] dark:opacity-60"
-    >
-      <Threads
-        color={
-          [...THREAD_COLOR[resolvedTheme === "dark" ? "dark" : "light"]] as [
-            number,
-            number,
-            number,
-          ]
-        }
-        amplitude={1.6}
-        distance={0.3}
-        enableMouseInteraction={false}
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10">
+      {/* The wash the whole section stands on. */}
+      <div className="from-brand-violet/12 via-brand-blue/5 absolute inset-0 bg-gradient-to-b to-transparent" />
+
+      {/* A soft pool of light behind the headline, so the type has something
+          to sit in rather than floating on a flat field. */}
+      <div className="bg-[radial-gradient(60%_45%_at_50%_28%,var(--brand-violet)_0%,transparent_70%)] absolute inset-0 opacity-[0.10] dark:opacity-[0.18]" />
+
+      {/* The ruler. `--border` rather than a brand hue, so it reads as
+          structure rather than as more colour, and masked to a band across the
+          lower half so it never runs behind the headline. */}
+      <div
+        className="absolute inset-x-0 bottom-0 h-[55%] [mask-image:linear-gradient(to_top,transparent_0%,black_35%,transparent_100%)]"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px 4.5rem)",
+        }}
       />
+
+      {/* And a horizon under it, so the ruled band has a floor. */}
+      <div className="via-brand-cyan/25 absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent to-transparent" />
     </div>
   );
 }
@@ -104,15 +81,20 @@ function HeroThreads() {
 /**
  * The production board.
  *
- * A split-flap departure board, clacking through the seven artefacts a run
- * produces in the order it produces them. It is the one piece of motion in the
- * hero that is also information: the same list v1 states as a seven-clause
+ * A split-flap departure board clacking through the seven artefacts a run
+ * produces, in the order it produces them. It is the one piece of motion in
+ * the hero that is also information: the same list v1 states as a seven-clause
  * sentence, read out one stage at a time.
  *
- * The tile and text colours are passed as hex per theme because the component
- * puts them into `color-mix()` and gradients rather than into a class, so it
- * cannot take a `var()`. `useTheme` again, and again it renders nothing until
- * mounted so the server and the first client render agree.
+ * React Bits' SplitFlapText is the best-behaved component in the library —
+ * it checks `prefers-reduced-motion` itself, takes its tile and text colours
+ * as props instead of hard-coding a dark palette, and pads every phrase to the
+ * width of the longest, so the board cannot reflow the line under it.
+ *
+ * Those colours are passed as hex per theme because the component puts them
+ * into `color-mix()` and gradients rather than into a class, so it cannot take
+ * a `var()`. It renders nothing until mounted, so the server render and the
+ * first client render agree.
  */
 function ProductionBoard() {
   const { resolvedTheme } = useTheme();
@@ -138,8 +120,8 @@ function ProductionBoard() {
             gap={4}
             tileRadius={6}
             // A string, not a number: the board is a fixed grid of `0.78em`
-            // tiles, so its width is set by the font size, and nine tiles at
-            // the desktop size are wider than a 390px phone.
+            // tiles, so its width follows the font size, and nine tiles at the
+            // desktop size are wider than a 390px phone.
             fontSize="clamp(1.5rem, 7vw, 2.5rem)"
             charset="alpha"
             cycleDelay={2200}
@@ -153,13 +135,7 @@ function ProductionBoard() {
 }
 
 /**
- * v2's hero.
- *
- * v1 opens with a centred masthead inside a bordered section — badge,
- * headline, a five-line paragraph, a bordered box, two buttons — and reads
- * like the top of a document. This is a full-height opening frame with a woven
- * light field gathering at its foot and a departure board naming what the
- * machine is about to make.
+ * The hero.
  *
  * Two things it is not allowed to lose, both carried over from v1 and both
  * documented there:
@@ -173,13 +149,16 @@ function ProductionBoard() {
  *    sentence rather than v1's five-line one; the full pipeline sentence is
  *    further down, in the band that is about the pipeline.
  *
- * The gradient on "finished video" is the `-ink` triple, not the decorative
+ * The gradient on "finished video" is the `-ink` triple, never the decorative
  * one. `bg-clip-text` makes the gradient the text's actual colour, and the
  * decorative cyan measures 2.18:1 on the light ground — under even the 3:1
- * floor that large text gets. It is also plain static text rather than a
- * per-word animation: React Bits' BlurText was tried here first, and a
- * `bg-clip-text` gradient across a line of individually transformed
- * `inline-block` words clips to glyphs that are mid-flight and ghosts badly.
+ * floor that large text gets. It is also static text rather than a per-word
+ * animation: React Bits' BlurText was tried here, and a `bg-clip-text`
+ * gradient across a line of individually transformed `inline-block` words
+ * clips to glyphs that are mid-flight and ghosts badly. ParticleText was tried
+ * after it and was worse — it draws the words into a canvas, so the most
+ * important sentence on the page became a field of dots that could not be
+ * selected, searched or read aloud, and did not survive being looked at.
  *
  * Named brands are plain text. No mark, no logo, no borrowed brand colour —
  * this domain is under a Safe Browsing review and that is exactly the signal
@@ -187,14 +166,8 @@ function ProductionBoard() {
  */
 export function V2Hero() {
   return (
-    <section className="relative isolate flex min-h-svh flex-col justify-center overflow-hidden">
-      <HeroThreads />
-      {/* Always painted, threads or not: this is the ground the hero stands on
-          and it is what a reduced-motion visitor sees instead. */}
-      <div
-        aria-hidden="true"
-        className="from-brand-violet/12 via-brand-blue/5 absolute inset-0 -z-20 bg-gradient-to-b to-transparent"
-      />
+    <section className="relative isolate flex min-h-svh flex-col justify-center overflow-hidden border-b">
+      <HeroGround />
 
       <div className="mx-auto flex w-full max-w-4xl flex-col items-center px-6 pt-24 pb-16 text-center sm:pt-32 sm:pb-24">
         <p className="text-muted-foreground bg-background/60 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs backdrop-blur-sm">

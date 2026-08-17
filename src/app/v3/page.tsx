@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 
 import { V2Cta, V2Faq } from "@/features/marketing-v2/components/v2-faq";
 import { V2Features } from "@/features/marketing-v2/components/v2-features";
+import { V2Hero } from "@/features/marketing-v2/components/v2-hero";
 import { V2Marquee } from "@/features/marketing-v2/components/v2-marquee";
 import { V2Pipeline } from "@/features/marketing-v2/components/v2-pipeline";
 import { V2Pricing } from "@/features/marketing-v2/components/v2-pricing";
 import { V2Studio } from "@/features/marketing-v2/components/v2-studio";
 import { V3Expand } from "@/features/marketing-v3/components/v3-expand";
-import { V3Hero } from "@/features/marketing-v3/components/v3-hero";
 import { V3Shell } from "@/features/marketing-v3/components/v3-shell";
 
 /**
@@ -51,7 +51,7 @@ export const metadata: Metadata = {
 export default function V3Page() {
   return (
     <V3Shell>
-      <V3Hero />
+      <V2Hero />
       <V2Marquee />
       <V2Pipeline />
       <V3Expand />

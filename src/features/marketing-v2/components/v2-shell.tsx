@@ -1,10 +1,7 @@
 import Link from "next/link";
 
-import { LogoMark } from "@/components/brand/logo-mark";
-import { Button } from "@/components/ui/button";
-import { MarketingNavSheet } from "@/features/marketing/components/marketing-nav";
-import { MarketingThemeToggle } from "@/features/marketing/components/marketing-theme-toggle";
 import { V2Lead } from "@/features/marketing-v2/components/v2-lead";
+import { MarketingNavBar } from "@/features/marketing-v2/components/v2-nav";
 
 /**
  * v2's chrome, and it is not v1's.
@@ -26,12 +23,6 @@ import { V2Lead } from "@/features/marketing-v2/components/v2-lead";
  * neither file is modified.
  */
 
-const V2_NAV_LINKS = [
-  { href: "/v2#the-run", label: "The run" },
-  { href: "/v2#features", label: "Features" },
-  { href: "/v2#pricing", label: "Pricing" },
-  { href: "/v2#faq", label: "FAQ" },
-] as const;
 
 export function V2Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -41,42 +32,7 @@ export function V2Shell({ children }: { children: React.ReactNode }) {
     // element a scroll container, which would break the `position: sticky`
     // used further down the page.
     <div className="marketing bg-background text-foreground min-h-svh overflow-x-clip">
-      <header className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 sm:pt-4">
-        <div className="bg-background/70 pointer-events-auto flex w-full max-w-3xl items-center gap-2 rounded-full border px-2 py-1.5 shadow-sm backdrop-blur-md sm:gap-3 sm:px-3">
-          <Link
-            href="/v2"
-            className="flex shrink-0 items-center gap-2 pl-1 text-sm font-semibold"
-          >
-            <span className="bg-primary text-primary-foreground flex size-6 items-center justify-center rounded-md">
-              <LogoMark className="size-3.5" />
-            </span>
-            <span>Framecast</span>
-          </Link>
-
-          <nav
-            aria-label="Sections"
-            className="text-muted-foreground mx-auto hidden items-center gap-0.5 text-sm md:flex"
-          >
-            {V2_NAV_LINKS.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="hover:text-foreground hover:bg-accent rounded-full px-3 py-1.5 whitespace-nowrap transition-colors"
-              >
-                {link.label}
-              </Link>
-            ))}
-          </nav>
-
-          <div className="ml-auto flex items-center gap-1 md:ml-0">
-            <MarketingThemeToggle />
-            <Button asChild size="sm" className="hidden rounded-full sm:inline-flex">
-              <Link href="/sign-up">Create an account</Link>
-            </Button>
-            <MarketingNavSheet />
-          </div>
-        </div>
-      </header>
+      <MarketingNavBar basePath="/v2" />
 
       <main>{children}</main>
 
