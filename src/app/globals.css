@@ -342,3 +342,34 @@
     @apply font-sans;
   }
 }
+
+/**
+ * The automation canvas, wearing the studio's colours.
+ *
+ * React Flow ships its own palette of fixed greys. Left alone it is the one
+ * surface in this app that ignores the operator's accent and stays light in
+ * dark mode — which on a screen whose whole job is "see the state of your
+ * channels at a glance" reads as a broken page rather than a styling choice.
+ *
+ * These are React Flow's own documented custom properties pointed at the same
+ * tokens every other component reads, so the canvas follows the theme and the
+ * accent for free and there is nothing to keep in sync.
+ */
+.react-flow {
+  --xy-background-color: var(--background);
+  --xy-background-pattern-dots-color: var(--border);
+  --xy-edge-stroke: var(--border);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-connectionline-stroke: var(--primary);
+  --xy-handle-background-color: var(--background);
+  --xy-handle-border-color: var(--primary);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--accent-foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(in oklch, var(--background) 70%, transparent);
+  --xy-node-boxshadow-selected: 0 0 0 2px var(--primary);
+  --xy-attribution-background-color: transparent;
+}
