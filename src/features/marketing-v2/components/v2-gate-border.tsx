@@ -33,14 +33,27 @@ export function V2GateBorder({
   children: React.ReactNode;
 }) {
   const { resolvedTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
+  const [enabled, setEnabled] = useState(false);
 
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    // Two conditions, resolved together. The theme has to be known before
+    // there is a correct colour to draw, and reduced motion has to be checked
+    // because ElectricBorder puts a `<canvas>` in the markup whether or not it
+    // is animating it — skipping only the frame loop would leave an inert
+    // canvas on the page and a wrapper element with its own stacking context,
+    // for no benefit. Not mounting it is the honest version.
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setEnabled(!query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
 
-  // Until the theme resolves there is no correct colour to draw, and the card
-  // underneath is already complete — so the server render and the first client
-  // render are both just the card.
-  if (!gated || !mounted) return <>{children}</>;
+  // The card underneath is already complete and already marked — solid amber
+  // rule, "Stops here" chip, "waits for you" line — so this is a plain
+  // passthrough on the server render, on the first client render, on the four
+  // ungated stages, and for anyone who asked for less movement.
+  if (!gated || !enabled) return <>{children}</>;
 
   return (
     <ElectricBorder
