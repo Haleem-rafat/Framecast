@@ -15,16 +15,16 @@ import { cn } from "@/lib/utils";
 /**
  * The public site's header, behaving the way reactbits.dev's own does.
  *
- * Two behaviours, one scroll listener:
+ * It contracts, and that is all it does. At the top of the page it is a
+ * full-width transparent bar — there is nothing underneath it to separate
+ * from, so it needs no ground and no edge. Once content is running under it,
+ * it gathers into a centred pill with a background, a border and a shadow,
+ * which is the honest shape for something floating over text.
  *
- *  1. **It contracts.** At the top of the page it is a full-width transparent
- *     bar — there is nothing underneath it to separate from, so it needs no
- *     ground and no edge. Once content is running under it, it gathers into a
- *     centred pill with a background, a border and a shadow, which is the
- *     honest shape for something floating over text.
- *  2. **It gets out of the way.** It slides up when you scroll down and comes
- *     back the instant you scroll up. On a page five screens long, a bar that
- *     follows you down is a bar covering the thing you scrolled to read.
+ * It does not hide. An earlier version slid up on scroll down and returned on
+ * scroll up, the way a phone app's chrome does; the owner did not want it, and
+ * on a page whose whole job is to get one button pressed, a header that takes
+ * the sign-up button off screen while you read is working against the page.
  *
  * The nav is hand-built rather than taken from React Bits, and that is a
  * decision rather than laziness. The library has five navigation components
@@ -44,53 +44,30 @@ import { cn } from "@/lib/utils";
  * What is left is one `passive` listener and a CSS transition.
  */
 
-/** The top of the page, where the header is always shown. */
-const REVEAL_ZONE = 80;
-
 /** Past this, the bar contracts. Not 0, so an iOS rubber-band cannot flicker it. */
 const CONTRACT_AT = 24;
 
-/** How far the page must move before a direction counts. See the hook below. */
-const DEADBAND = 4;
-
 /**
- * `contracted` and `hidden`, read from one listener.
+ * Whether the page has moved far enough for the bar to gather itself up.
  *
- * The ±4px deadband is what makes the hide/reveal usable with a finger. Touch
- * scrolling arrives as a stream of small, noisy deltas with momentum wobble at
- * the end of a fling, and comparing raw `y` against `lastY` without a deadband
- * makes the header strobe on every one of them.
- *
- * The work is deferred to a frame: `scroll` can fire many times between paints
- * and there is no reason to set state more often than the screen updates.
- * Nothing here measures layout, so nothing here can force a synchronous
- * reflow.
+ * One `passive` listener reading one number, with the work deferred to a
+ * frame: `scroll` can fire many times between paints and there is no reason to
+ * set state more often than the screen updates. Nothing here measures layout,
+ * so nothing here can force a synchronous reflow.
  *
  * It listens to `scroll` rather than to `wheel` or `touchmove`, so it is
  * indifferent to what did the scrolling — a wheel, a finger, a trackpad fling,
  * a keyboard PageDown and a fragment link all arrive the same way.
  */
-function useHeaderScroll() {
+function useContracted() {
   const [contracted, setContracted] = useState(false);
-  const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
-    let lastY = Math.max(0, window.scrollY);
     let queued = false;
 
     const update = () => {
       queued = false;
-      // Clamped: iOS reports a negative `scrollY` while rubber-banding at the
-      // top, which would otherwise read as a large scroll up and then back.
-      const y = Math.max(0, window.scrollY);
-
-      setContracted(y > CONTRACT_AT);
-
-      if (y <= REVEAL_ZONE) setHidden(false);
-      else if (y > lastY + DEADBAND) setHidden(true);
-      else if (y < lastY - DEADBAND) setHidden(false);
-
-      lastY = y;
+      setContracted(window.scrollY > CONTRACT_AT);
     };
 
     const onScroll = () => {
@@ -104,29 +81,16 @@ function useHeaderScroll() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  return { contracted, hidden };
+  return contracted;
 }
 
 export function MarketingHeader() {
-  const { contracted, hidden } = useHeaderScroll();
+  const contracted = useContracted();
 
   return (
-    <div
-      className={cn(
-        // `pointer-events-none` on the full-width wrapper so the half of it
-        // that is not the bar does not eat clicks on the page behind it.
-        "pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 sm:pt-4",
-        "transition-transform duration-300 ease-out motion-reduce:transition-none",
-        // `translateY`, not `display` or `height`: the wrapper is `fixed`, so
-        // the page never reflows either way, and a transform is the only one
-        // of the three the compositor can do without touching layout at all.
-        //
-        // `focus-within` overrides the hidden state. Tabbing into a bar that
-        // has slid off the top of the screen is the classic way this pattern
-        // strands a keyboard user on a control they cannot see.
-        hidden ? "-translate-y-[130%] focus-within:translate-y-0" : "translate-y-0",
-      )}
-    >
+    // `pointer-events-none` on the full-width wrapper so the half of it that is
+    // not the bar does not eat clicks on the page behind it.
+    <div className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center px-3 pt-3 sm:pt-4">
       <header
         className={cn(
           "pointer-events-auto flex w-full items-center gap-2 rounded-full border transition-all duration-300 ease-out motion-reduce:transition-none sm:gap-3",
