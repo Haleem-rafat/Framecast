@@ -91,6 +91,7 @@ model User {
   schedules           Schedule[]
   series              Series[]
   releaseCadences     ReleaseCadence[]
+  autoPublishJobs     AutoPublishJob[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
   @@index([approval, createdAt])
@@ -661,6 +662,9 @@ model Video {
   statusEvents VideoStatusEvent[]
   shorts       Short[]
   scheduleRuns ScheduleRun[]
+  /// Set only when an automation that publishes itself made this video. Absent
+  /// for every video made by hand, which is what it has always been.
+  autoPublishJob AutoPublishJob?
 
   @@index([userId, status, deletedAt])
   @@index([projectId, deletedAt])
@@ -1404,6 +1408,22 @@ model Series {
   /// the shape by hand on every single video.
   format VideoFormat @default(LANDSCAPE)
 
+  /// Whether an episode of this show uploads itself once it has rendered.
+  ///
+  /// Off by default, and that default is the important half: a show that
+  /// publishes itself spends the operator's channel reputation without asking,
+  /// and the failure mode of the other default is not a wasted render but a
+  /// video on a real channel that nobody chose to put there.
+  ///
+  /// Read by `resolveAutoPublish` in schedule.service.ts, which prefers this
+  /// over the owned `Schedule`'s copy — the same precedence `promptTemplateId`
+  /// and `format` above already follow.
+  autoPublish       Boolean           @default(false)
+  /// What an auto-published episode goes up as. PRIVATE for the same reason as
+  /// the switch above — the safe end of the range is the one you can walk back
+  /// from, since this app has no unpublish path.
+  publishVisibility PublishVisibility @default(PRIVATE)
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -1510,6 +1530,19 @@ enum ScheduleStatus {
   PAUSED
 }
 
+/// Where one auto-publish job is in its life.
+///
+/// `CLAIMED` is a lease rather than a state the operator cares about — it
+/// exists so a second worker does not start an upload whose first attempt is
+/// still in flight, and a claim whose lease has lapsed goes back to `WAITING`
+/// without counting as a failure. A dead worker is not a failed publish.
+enum AutoPublishStatus {
+  WAITING
+  CLAIMED
+  DONE
+  FAILED
+}
+
 /// What happened at one occurrence.
 ///
 /// SKIPPED and MISSED are different things and the distinction is the point.
@@ -1563,6 +1596,18 @@ model Schedule {
   /// can edit at any moment, so a schema that enumerated them would need a
   /// migration every time somebody renamed a variable.
   variables Json @default("{}")
+
+  /// As `Series.autoPublish`, and read only for a **standalone** schedule.
+  ///
+  /// A series-owned schedule ignores both of these and reads the show's — the
+  /// same precedence `promptTemplateId` and `format` already follow through
+  /// `ScheduleClaim.series`. A series is the thing the operator configures, and
+  /// two places to set one fact is one place to set it wrongly. So for a row
+  /// with a `seriesId`, these two columns are deliberately dead: nothing reads
+  /// them and no form writes them. See `resolveAutoPublish` in
+  /// schedule.service.ts, which is the only place the rule lives.
+  autoPublish       Boolean           @default(false)
+  publishVisibility PublishVisibility @default(PRIVATE)
 
   /// The next instant this schedule is due, derived from the fields above. Null
   /// only while paused with no future occurrence computed. This column is the
@@ -1692,6 +1737,58 @@ model ScheduleRun {
   @@unique([scheduleId, scheduledFor])
   @@index([scheduleId, createdAt])
   @@map("schedule_run")
+}
+
+/// One row per video made by an automation that was set to publish itself.
+///
+/// A table rather than four more columns on `Video`, for three reasons. It
+/// keeps scheduler bookkeeping — attempts, backoff, lease — out of a model that
+/// is about a video rather than about a queue. It mirrors `RenderJob`, which is
+/// the same shape for the same reason one stage earlier. And it gives a caller
+/// a countable "waiting to publish" without scanning videos.
+model AutoPublishJob {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// `@unique`, and that is the backstop rather than the mechanism —
+  /// `AutoPublishService.claimDue`'s conditional update is what prevents a
+  /// double upload. This makes a second enqueue of the same video impossible
+  /// even if a caller is written wrongly later.
+  videoId String @unique @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Frozen at enqueue, which is the whole reason this row is written when the
+  /// video is created rather than when it is ready. An operator may turn a
+  /// series' auto-publish off, or move it from PUBLIC to PRIVATE, while three
+  /// of its episodes are mid-render. Those three go out as what they were made
+  /// under. Reading the series at publish time instead would let a setting
+  /// changed on Tuesday silently rewrite what Monday's video does — a decision
+  /// the operator never made, about a video they had stopped thinking about.
+  visibility PublishVisibility
+
+  status   AutoPublishStatus @default(WAITING)
+  attempts Int               @default(0)
+
+  /// Not before this. Moved forward by backoff after an ordinary failure, and
+  /// to the next quota reset after a spent allowance.
+  runAfter DateTime @default(now())
+
+  /// Set while a worker holds this job, sized like `ReleaseCadence.claimExpiresAt`
+  /// because the work is the same work: one file off disk and one
+  /// `videos.insert`.
+  leaseExpiresAt DateTime?
+
+  /// Why the last attempt failed, in a sentence safe to show verbatim.
+  error String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// The claim query's index: due jobs, oldest first.
+  @@index([status, runAfter])
+  @@map("auto_publish_job")
 }
 
 // ---------------------------------------------------------------------------
