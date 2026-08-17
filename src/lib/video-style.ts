@@ -67,12 +67,36 @@ export interface VoiceStyle {
   seed: number;
 }
 
+/**
+ * Which subtitle file the render burns in.
+ *
+ * `srt` is what every render this app has ever produced uses: a cue appears
+ * whole, disappears whole, and everything about how it looks is said once,
+ * globally, through libass's `force_style`.
+ *
+ * `kinetic` writes ASS instead — one to three words at a time, each landing on
+ * the moment it is spoken, with the stressed word in a different colour. Those
+ * are per-word facts inside one cue and SRT has nowhere to put them, so it is a
+ * different file rather than a flag on the same one (see `kinetic-captions.ts`).
+ *
+ * A whole-video choice rather than a per-cue one because a video that switched
+ * caption styles halfway would read as a fault.
+ */
+export type CaptionMode = "srt" | "kinetic";
+
 export interface VideoStyle {
   motion: MotionStyle;
   captions: CaptionStyle;
   audio: AudioStyle;
   transitions: TransitionStyle;
   voice: VoiceStyle;
+  /**
+   * A scalar rather than a section, and the only one on this interface.
+   * `brand.service.ts`'s merge treats the two differently — a section is merged
+   * field by field, a scalar is replaced outright — because there is nothing
+   * inside a string to merge.
+   */
+  captionMode: CaptionMode;
 }
 
 export const DEFAULT_STYLE: VideoStyle = {
@@ -96,4 +120,9 @@ export const DEFAULT_STYLE: VideoStyle = {
   },
   transitions: { enabled: true, durationSeconds: 0.5 },
   voice: { stability: 0.5, style: 0.3, speed: 1.0, seed: 20260811 },
+  // The default is the format every existing channel already renders in, so a
+  // channel that has never been styled — and every channel styled before this
+  // field existed — keeps calling `buildSrt` and producing the argv it always
+  // did. Kinetic is opted into per channel.
+  captionMode: "srt",
 };

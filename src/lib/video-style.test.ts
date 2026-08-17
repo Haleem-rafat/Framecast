@@ -24,4 +24,12 @@ describe("DEFAULT_STYLE", () => {
   it("pins a voice seed so an unchanged video re-renders identically", () => {
     expect(Number.isInteger(DEFAULT_STYLE.voice.seed)).toBe(true);
   });
+
+  it("captions with SRT, so an unstyled channel renders as it always has", () => {
+    // The default is the whole of the promise that kinetic captions are
+    // additive: a channel with no brand row, and every channel styled before
+    // this field existed, resolves to this and takes the `buildSrt` branch in
+    // render.service.ts.
+    expect(DEFAULT_STYLE.captionMode).toBe("srt");
+  });
 });

@@ -12,9 +12,11 @@ import {
   SHORT_MAX_CHARS_PER_LINE,
   SHORT_MAX_WORDS_PER_LINE,
   sliceAlignment,
+  kineticCaptionStyle,
   verticalCaptionStyle,
   windowsOverlap,
 } from "@/lib/shorts-plan";
+import { KINETIC_CAPTION_FONT } from "@/lib/brand-fonts";
 import { DEFAULT_STYLE } from "@/lib/video-style";
 
 /**
@@ -467,5 +469,72 @@ describe("planShortSlots", () => {
 
   it("returns nothing for a window no section reaches", () => {
     expect(planShortSlots([], { startSeconds: 0, endSeconds: 20 }, 1)).toEqual([]);
+  });
+});
+
+describe("kineticCaptionStyle", () => {
+  // The frame `buildAss` writes into its own header, and therefore the canvas
+  // one style unit is measured against — unlike the SRT path, where FFmpeg's
+  // synthesised 384x288 is the canvas.
+  const WIDTH = 1080;
+  const HEIGHT = 1920;
+
+  it("sets the font in real pixels, not in force_style units", () => {
+    const kinetic = kineticCaptionStyle(DEFAULT_STYLE.captions, WIDTH, HEIGHT);
+
+    // 22 units at PlayResY 288 over a 1080-high reference frame is 82.5px,
+    // and the boost makes it 90.75. Getting this wrong in the other direction
+    // — reusing verticalCaptionStyle's 13.6 — would render 13.6px captions on
+    // a 1920px-tall frame, which is legible in no sense.
+    expect(kinetic.fontSize).toBeCloseTo(90.8, 1);
+    expect(kinetic.fontSize).toBeGreaterThan(
+      verticalCaptionStyle(DEFAULT_STYLE.captions).fontSize * 5,
+    );
+  });
+
+  it("scales outline and shadow onto the same canvas as the glyphs", () => {
+    const kinetic = kineticCaptionStyle(DEFAULT_STYLE.captions, WIDTH, HEIGHT);
+
+    expect(kinetic.outline).toBeCloseTo(8.3, 1);
+    expect(kinetic.shadow).toBeCloseTo(4.1, 1);
+  });
+
+  it("clears YouTube's action rail and its bottom chrome, in pixels", () => {
+    const kinetic = kineticCaptionStyle(DEFAULT_STYLE.captions, WIDTH, HEIGHT);
+
+    // 15.6% of 1080 either side, 23.6% of 1920 at the bottom — the same safe
+    // area the SRT path asks for, expressed in the units this file uses.
+    expect(kinetic.marginL).toBe(168);
+    expect(kinetic.marginR).toBe(168);
+    expect(kinetic.marginV).toBe(453);
+  });
+
+  it("keeps a channel that asked for higher captions above the floor", () => {
+    const raised = { ...DEFAULT_STYLE.captions, marginV: 200 };
+    const kinetic = kineticCaptionStyle(raised, WIDTH, HEIGHT);
+
+    // 200 units is 750px, well above the 453px chrome floor.
+    expect(kinetic.marginV).toBe(750);
+  });
+
+  it("uses the caption face rather than the channel's headline one", () => {
+    const branded = { ...DEFAULT_STYLE.captions, fontName: "DejaVu Serif" };
+
+    // libass falls back silently on a face it cannot resolve, so this is the
+    // one field that is not the channel's to choose: a word-by-word caption in
+    // a serif is not the format, and DejaVu has no weight above Bold.
+    expect(kineticCaptionStyle(branded, WIDTH, HEIGHT).fontName).toBe(
+      KINETIC_CAPTION_FONT,
+    );
+  });
+
+  it("leaves the SRT geometry exactly as it was", () => {
+    // The regression that matters: kinetic captions are a second function, and
+    // an existing vertical render must still get the numbers it always did.
+    const vertical = verticalCaptionStyle(DEFAULT_STYLE.captions);
+
+    expect(vertical.fontSize).toBeCloseTo(13.6, 5);
+    expect(vertical.marginL).toBe(60);
+    expect(vertical.marginV).toBe(68);
   });
 });
