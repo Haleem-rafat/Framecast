@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Prisma } from "@/generated/prisma/client";
 import type {
+  PublishVisibility,
   ScheduleFrequency,
   ScheduleRunOutcome,
   ScheduleStatus,
@@ -232,7 +233,51 @@ interface ScheduleClaim {
    * did — and a null here means `runTopic` calls `automationService.start`
    * with no options at all, which is the call it has always made.
    */
-  series: { id: string; promptTemplateId: string; format: VideoFormat } | null;
+  series: {
+    id: string;
+    promptTemplateId: string;
+    format: VideoFormat;
+    autoPublish: boolean;
+    publishVisibility: PublishVisibility;
+  } | null;
+  /**
+   * What the produced video should publish itself as, or null for an automation
+   * that does not.
+   *
+   * Resolved in the same query that won the claim, for the same reason `series`
+   * is: a run must not be configured from a row that changed underneath it. A
+   * flat field rather than a second lookup at `runTopic` because the precedence
+   * between the two rows is decided once, in `resolveAutoPublish`.
+   */
+  autoPublish: PublishVisibility | null;
+}
+
+/** The two rows that can carry the auto-publish setting, in the shape the
+ *  precedence rule below reads them in. */
+interface AutoPublishSetting {
+  autoPublish: boolean;
+  publishVisibility: PublishVisibility;
+}
+
+/**
+ * Which visibility a run's video should be booked to publish at, or null for
+ * "do not book one".
+ *
+ * The series wins whenever there is one — the same precedence
+ * `promptTemplateId` and `format` already follow through this file. A series is
+ * the thing the operator configures; the schedule underneath it is an
+ * implementation detail this app has spent real effort not leaking, and two
+ * places to set one fact is one place to set it wrongly.
+ *
+ * Exported for its test. Nothing outside this file calls it.
+ */
+export function resolveAutoPublish(
+  series: AutoPublishSetting | null,
+  schedule: AutoPublishSetting,
+): PublishVisibility | null {
+  const source = series ?? schedule;
+
+  return source.autoPublish ? source.publishVisibility : null;
 }
 
 /** The recurrence columns, in the shape src/lib/schedule-time.ts works in. */
@@ -744,12 +789,24 @@ export class ScheduleService {
         timeZone: true,
         variables: true,
         nextRunAt: true,
+        // Read for `resolveAutoPublish`, and ignored by it whenever the series
+        // below is non-null — see that function and the column's own comment.
+        autoPublish: true,
+        publishVisibility: true,
         // Read here, with the candidate, rather than looked up after the claim
         // is won: the recipe a run uses has to be the one this row pointed at
         // when it came due, and a second query could see a series edited in
         // between. Costs nothing — it is a join on a unique key that is null
         // for every schedule that belongs to no series.
-        series: { select: { id: true, promptTemplateId: true, format: true } },
+        series: {
+          select: {
+            id: true,
+            promptTemplateId: true,
+            format: true,
+            autoPublish: true,
+            publishVisibility: true,
+          },
+        },
       },
     });
 
@@ -805,6 +862,7 @@ export class ScheduleService {
           skipped: advanced.skipped,
           skippedTotal: advanced.skippedTotal,
           series: candidate.series,
+          autoPublish: resolveAutoPublish(candidate.series, candidate),
         };
       }
     }
@@ -909,13 +967,21 @@ export class ScheduleService {
           topic: topic.topic,
           variables: claim.variables,
         },
-        claim.series
-          ? {
-              templateId: claim.series.promptTemplateId,
-              format: claim.series.format,
-              seriesId: claim.series.id,
-            }
-          : {},
+        {
+          ...(claim.series
+            ? {
+                templateId: claim.series.promptTemplateId,
+                format: claim.series.format,
+                seriesId: claim.series.id,
+              }
+            : {}),
+          // Spread separately from the series recipe because a *standalone*
+          // schedule can carry it too — this is the one setting on this path
+          // that is not the show's alone. Null spreads to nothing, so a
+          // schedule that does not publish itself makes the identical call it
+          // always made.
+          ...(claim.autoPublish ? { autoPublish: claim.autoPublish } : {}),
+        },
       );
 
       return await this.finishRun(claim, runId, {

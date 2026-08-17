@@ -1,10 +1,11 @@
 import "server-only";
 
-import type { VideoFormat } from "@/generated/prisma/enums";
+import type { PublishVisibility, VideoFormat } from "@/generated/prisma/enums";
 import { ConflictError, ValidationError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { extractVariables } from "@/lib/prompt-template";
 import type { StartAutomationInput } from "@/schemas/automation.schema";
+import { autoPublishService } from "@/services/auto-publish.service";
 import { onboardingService } from "@/services/onboarding.service";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { scriptService, type ScriptService } from "@/services/script.service";
@@ -196,6 +197,19 @@ export interface AutomationOptions {
   format?: VideoFormat;
   /** The show this video belongs to, recorded on the row. Absent means none. */
   seriesId?: string;
+  /**
+   * Book the produced video to publish itself, at this visibility.
+   *
+   * Absent means no booking, which is every caller that existed before this and
+   * is still what the Generate button passes — a one-off video belongs to no
+   * automation, so there is no setting to read, and inventing a default would
+   * be publishing something nobody asked to publish.
+   *
+   * Resolved by the caller rather than looked up here, because the precedence
+   * between a series and the schedule underneath it is `ScheduleService`'s
+   * business: see `resolveAutoPublish`.
+   */
+  autoPublish?: PublishVisibility;
 }
 
 export interface AutomationResult {
@@ -460,6 +474,18 @@ export class AutomationService {
     );
 
     await this.guardDuplicateSubmission(userId, video.id, input);
+
+    // Booked here rather than when the render finishes, so the visibility is
+    // the one this video was made under — see `AutoPublishJob.visibility`. The
+    // job is not *due* until the video reaches READY, which `claimDue` joins
+    // on, so booking it this early cannot publish a half-rendered file.
+    //
+    // Deliberately after the duplicate guard: a submission that turns out to be
+    // a repeat is refused above, and booking first would leave a job pointing
+    // at a video the operator never meant to make.
+    if (options.autoPublish) {
+      await autoPublishService.enqueue(userId, video.id, options.autoPublish);
+    }
 
     // From here on real money is at stake, and the video row already exists.
     let version: Awaited<ReturnType<ScriptService["generate"]>>;

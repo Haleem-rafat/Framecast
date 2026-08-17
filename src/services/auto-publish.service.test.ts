@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { AutoPublishService } from "@/services/auto-publish.service";
+import { resolveAutoPublish } from "@/services/schedule.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 /**
@@ -84,5 +85,51 @@ describe("enqueue", () => {
     const jobs = await prisma.autoPublishJob.findMany({ where: { videoId } });
     expect(jobs).toHaveLength(1);
     expect(jobs[0].visibility).toBe("PUBLIC");
+  });
+
+  it("books nothing for a video no automation asked for", async () => {
+    // The Generate button passes no options at all. A one-off video belongs to
+    // no automation, so there is no setting to read and no default to invent.
+    const videoId = await makeVideo();
+
+    const jobs = await prisma.autoPublishJob.findMany({ where: { videoId } });
+    expect(jobs).toHaveLength(0);
+  });
+});
+
+describe("resolveAutoPublish", () => {
+  it("prefers the series over the schedule underneath it", async () => {
+    // The precedence, asserted at the only place it is decided. A series is
+    // what the operator configures; the schedule's own copy is dead data for
+    // that kind of row.
+    expect(
+      resolveAutoPublish(
+        { autoPublish: true, publishVisibility: "PUBLIC" },
+        { autoPublish: false, publishVisibility: "PRIVATE" },
+      ),
+    ).toBe("PUBLIC");
+  });
+
+  it("lets a series switched off win over a schedule switched on", async () => {
+    // The same rule in the direction that would otherwise publish something
+    // nobody asked to publish.
+    expect(
+      resolveAutoPublish(
+        { autoPublish: false, publishVisibility: "PUBLIC" },
+        { autoPublish: true, publishVisibility: "PUBLIC" },
+      ),
+    ).toBeNull();
+  });
+
+  it("reads a standalone schedule's own visibility when there is no series", async () => {
+    expect(
+      resolveAutoPublish(null, { autoPublish: true, publishVisibility: "UNLISTED" }),
+    ).toBe("UNLISTED");
+  });
+
+  it("returns null when the automation is switched off", async () => {
+    expect(
+      resolveAutoPublish(null, { autoPublish: false, publishVisibility: "PUBLIC" }),
+    ).toBeNull();
   });
 });
