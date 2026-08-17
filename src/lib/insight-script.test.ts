@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   BANNED_PHRASES,
   insightScriptToScript,
+  insightTransitions,
   MAX_WORDS_PER_SCENE,
+  PAYOFF_DIP_SECONDS,
   validateInsightScript,
   type InsightScene,
   type InsightScript,
@@ -279,5 +281,66 @@ describe("insightScriptToScript", () => {
     for (const cue of cues) {
       expect(cue.anchor.split(" ").length).toBeLessThanOrEqual(8);
     }
+  });
+});
+
+describe("insightTransitions", () => {
+  const beatsOf = (script: InsightScript) => script.scenes.map((scene) => scene.beat);
+
+  it("cuts hard everywhere and dips exactly once", () => {
+    const transitions = insightTransitions(beatsOf(validScript()));
+
+    // One entry per join, which is one fewer than there are scenes.
+    expect(transitions).toHaveLength(11);
+    expect(transitions.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("dips through black immediately before the payoff", () => {
+    const beats = beatsOf(validScript());
+    const transitions = insightTransitions(beats);
+
+    // Scene 8 (index 7) is the NAME_IT line, so the join that dips is the one
+    // before it — boundary 6, between scenes 7 and 8.
+    expect(beats[7]).toBe("NAME_IT");
+    expect(transitions[6]).toEqual({
+      enabled: true,
+      durationSeconds: PAYOFF_DIP_SECONDS,
+      kind: "fadeblack",
+    });
+    expect(transitions[7]).toBeNull();
+  });
+
+  it("dips for six frames, not for a dissolve", () => {
+    // Half a second — this app's default crossfade — reads as a scene change.
+    // The dip has to read as a held breath.
+    expect(PAYOFF_DIP_SECONDS).toBeLessThan(0.3);
+    expect(PAYOFF_DIP_SECONDS).toBeGreaterThan(0);
+  });
+
+  it("cuts throughout when there is no payoff beat to set up", () => {
+    const beats = beatsOf(validScript()).map((beat) =>
+      beat === "NAME_IT" ? "MECHANISM" : beat,
+    );
+
+    expect(insightTransitions(beats).every((entry) => entry === null)).toBe(true);
+  });
+
+  it("cuts throughout when the payoff is the very first scene", () => {
+    // There is no boundary before scene one, and dipping after it instead
+    // would put the beat on the wrong side of the line it exists to set up.
+    const transitions = insightTransitions(["NAME_IT", "TURN", "LOOP"]);
+
+    expect(transitions).toEqual([null, null]);
+  });
+
+  it("answers nothing at all for a single-scene script", () => {
+    expect(insightTransitions(["HOOK"])).toEqual([]);
+    expect(insightTransitions([])).toEqual([]);
+  });
+
+  it("ignores cues with no beat, which is every script written before this", () => {
+    const transitions = insightTransitions([undefined, undefined, undefined]);
+
+    expect(transitions).toEqual([null, null]);
   });
 });

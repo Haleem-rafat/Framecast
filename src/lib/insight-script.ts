@@ -27,6 +27,7 @@
  */
 
 import { extractAnchor, normalise, type ScriptCue } from "@/lib/script-cues";
+import type { TransitionStyle } from "@/lib/video-style";
 
 /** How fast the narration is assumed to be read, in words per second.
  *
@@ -226,6 +227,59 @@ export function validateInsightScript(script: InsightScript): ValidationResult {
   }
 
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * The beat the whole video is built to arrive at, and the one join that is
+ * allowed to be anything other than a cut.
+ */
+export const PAYOFF_BEAT = "NAME_IT";
+
+/**
+ * Six frames at 30fps.
+ *
+ * Long enough to register as a held breath and short enough that it is not a
+ * transition. Anything approaching half a second — this app's default
+ * crossfade — reads as a scene change in a slideshow, which is the opposite of
+ * the point: the picture is supposed to stop, not to blend.
+ */
+export const PAYOFF_DIP_SECONDS = 0.2;
+
+/**
+ * What happens at each join in a single-insight video: nothing, everywhere,
+ * except once.
+ *
+ * The format cuts hard. A dissolve between two shots says "time passed"; this
+ * format's shots are consecutive sentences and there is no time between them.
+ * The single exception is the join immediately BEFORE the payoff — the first
+ * scene that names the effect — which dips through black. That is the whole
+ * grammar: twelve cuts and one beat of silence in the picture, landing exactly
+ * where the narration lands its point.
+ *
+ * Returns one entry per boundary, so `boundary i` sits between cue `i` and cue
+ * `i + 1` — the indexing `planRender` uses. `null` is a hard cut, and a hard cut
+ * costs nothing at all: no stub encoded, no tail donated, no trim.
+ *
+ * A script with no `NAME_IT` at all gets cuts throughout rather than an
+ * arbitrary dip. So does one whose very first scene is the payoff: there is no
+ * boundary before scene one, and dipping *after* it instead would put the beat
+ * on the wrong side of the line it exists to set up. `validateInsightScript` is
+ * what refuses a script missing the beat; this function's job is only to place
+ * the dip, and placing it wrongly is worse than not placing it.
+ */
+export function insightTransitions(
+  beats: readonly (string | undefined)[],
+): (TransitionStyle | null)[] {
+  const boundaries = Math.max(0, beats.length - 1);
+  const payoff = beats.indexOf(PAYOFF_BEAT);
+  // The join before the payoff scene, which is the boundary one index lower.
+  const dipAt = payoff > 0 ? payoff - 1 : -1;
+
+  return Array.from({ length: boundaries }, (_, boundary) =>
+    boundary === dipAt
+      ? { enabled: true, durationSeconds: PAYOFF_DIP_SECONDS, kind: "fadeblack" as const }
+      : null,
+  );
 }
 
 /** A script in the shape `ScriptVersion` actually stores: the narration as one

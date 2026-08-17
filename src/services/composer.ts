@@ -13,7 +13,7 @@ import {
   planRender,
 } from "@/lib/ffmpeg-command";
 import { buildSfxTrackArgs, planSfxCues } from "@/lib/sfx-track";
-import type { VideoStyle } from "@/lib/video-style";
+import type { TransitionStyle, VideoStyle } from "@/lib/video-style";
 
 /**
  * Turning a list of clips, a narration and a caption file into one MP4.
@@ -53,6 +53,16 @@ export interface ComposeInput {
   /** Index-aligned with `clipPaths`: how long each holds the screen. */
   clipSeconds: number[];
   style: VideoStyle;
+  /**
+   * What happens at each join, one entry per boundary (`clips - 1` of them),
+   * `null` for a hard cut.
+   *
+   * Absent means "the channel's own `style.transitions` at every join", which
+   * is what every composition before this passed and is byte-for-byte the plan
+   * `planRender` has always built. Set only by a format that needs one join to
+   * read differently from the rest — see `insightTransitions`.
+   */
+  transitions?: readonly (TransitionStyle | null)[];
   /** Absent means landscape, which keeps every argv identical to what the
    *  landscape render has always emitted. */
   format?: VideoFormat;
@@ -118,7 +128,16 @@ export async function compose(input: ComposeInput, deps: ComposeDeps): Promise<v
   // cannot do this inside the worker's memory. Pass one normalises each
   // distinct clip on its own; pass two joins the sequence with the concat
   // demuxer, which reads one file at a time.
-  const plan = planRender(input.clipPaths, tempDir, input.clipSeconds, style.transitions);
+  // `input.transitions ?? style.transitions` and not a merge of the two: a
+  // caller that states the joins has stated all of them, and falling back per
+  // boundary would put the channel's half-second dissolve at every join the
+  // format meant to cut.
+  const plan = planRender(
+    input.clipPaths,
+    tempDir,
+    input.clipSeconds,
+    input.transitions ?? style.transitions,
+  );
 
   for (const [index, segment] of plan.segments.entries()) {
     onProgress(`normalising clip ${index + 1} of ${plan.segments.length}`);
