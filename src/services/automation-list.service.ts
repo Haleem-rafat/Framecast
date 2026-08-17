@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { ScheduleStatus } from "@/generated/prisma/enums";
+import type { PublishVisibility, ScheduleStatus } from "@/generated/prisma/enums";
 import { describeCadence, describeHealth } from "@/lib/automation-language";
 import { prisma } from "@/lib/prisma";
 import { describeSlots } from "@/lib/release-time";
@@ -119,6 +119,27 @@ export interface AutomationEntry {
   backlog: number | null;
   /** How many videos this has produced so far. */
   produced: number;
+  /**
+   * How many of `produced` actually reached YouTube.
+   *
+   * The pair is the point. "Made 34, published 30" is a different and far more
+   * useful fact than either half alone — it is the difference between a show
+   * that is working and a show that is quietly filling a folder. Counting only
+   * `PUBLISHED` publications rather than every `Publication` row is what keeps
+   * it honest: a row exists from the moment an upload starts.
+   */
+  published: number;
+  /**
+   * Whether this automation publishes its own output, or null for a kind that
+   * cannot.
+   *
+   * Present-and-disabled is a different state from absent, and the canvas draws
+   * both: a series with the switch off gets a publish node it can turn on, and
+   * a shorts drip gets none at all, because publishing *is* what a drip does
+   * and offering to switch it off would be offering to switch the drip off
+   * twice.
+   */
+  autoPublish: { enabled: boolean; visibility: PublishVisibility } | null;
   /** Where it publishes. Null only for a standalone schedule whose project has
    *  no channel — the one case where nothing can be said truthfully. */
   channel: { id: string; title: string } | null;
@@ -164,6 +185,8 @@ const loadSeries: AutomationSource = async (userId) => {
       channelId: true,
       channel: { select: { title: true } },
       projectId: true,
+      autoPublish: true,
+      publishVisibility: true,
       // The project's own channel joins its name so this row can tell whether
       // the channel it is about to print is the one an upload would use. See
       // `AutomationEntry.channelWarning`.
@@ -197,6 +220,29 @@ const loadSeries: AutomationSource = async (userId) => {
     },
   });
 
+  // One grouped count for every series at once rather than a query per row —
+  // the same shape `loadReleaseCadences` already uses for its bank, and for the
+  // same reason: an operator with a show on every channel would otherwise pay a
+  // round trip per row for a number that is only a badge.
+  //
+  // `status: "PUBLISHED"` is what makes this the honest half of "made 34,
+  // published 30". A `Publication` row exists from the moment an upload starts,
+  // so counting rows rather than successes would report a video that failed to
+  // upload as having gone out.
+  const publishedGroups = await prisma.video.groupBy({
+    by: ["seriesId"],
+    where: {
+      userId,
+      deletedAt: null,
+      seriesId: { in: rows.map((row) => row.id) },
+      publication: { is: { status: "PUBLISHED" } },
+    },
+    _count: { _all: true },
+  });
+  const publishedOf = new Map(
+    publishedGroups.map((group) => [group.seriesId, group._count._all]),
+  );
+
   // A series with no schedule cannot happen — the pair is written together and
   // retired together — but the foreign key lives on `Schedule`, so the relation
   // is optional and the compiler is right to insist. Skipped rather than shown
@@ -222,6 +268,11 @@ const loadSeries: AutomationSource = async (userId) => {
         nextUp: schedule.topics[0]?.topic ?? null,
         backlog: schedule._count.topics,
         produced: row._count.videos,
+        published: publishedOf.get(row.id) ?? 0,
+        autoPublish: {
+          enabled: row.autoPublish,
+          visibility: row.publishVisibility,
+        },
         channel: { id: row.channelId, title: row.channel.title },
         project: { id: row.projectId, name: row.project.name },
         channelWarning:
@@ -265,6 +316,8 @@ const loadTopicQueues: AutomationSource = async (userId) => {
       timeZone: true,
       nextRunAt: true,
       projectId: true,
+      autoPublish: true,
+      publishVisibility: true,
       project: {
         select: {
           name: true,
@@ -290,6 +343,21 @@ const loadTopicQueues: AutomationSource = async (userId) => {
     },
   });
 
+  // A standalone schedule tags no videos of its own, so "what went out" is
+  // reached through the runs that produced one — the same route `produced`
+  // above already takes, narrowed to the runs whose video actually published.
+  const publishedGroups = await prisma.scheduleRun.groupBy({
+    by: ["scheduleId"],
+    where: {
+      scheduleId: { in: rows.map((row) => row.id) },
+      video: { is: { publication: { is: { status: "PUBLISHED" } } } },
+    },
+    _count: { _all: true },
+  });
+  const publishedOf = new Map(
+    publishedGroups.map((group) => [group.scheduleId, group._count._all]),
+  );
+
   return rows.map((row) => ({
     rowId: `schedule:${row.id}`,
     id: row.id,
@@ -305,6 +373,8 @@ const loadTopicQueues: AutomationSource = async (userId) => {
     nextUp: row.topics[0]?.topic ?? null,
     backlog: row._count.topics,
     produced: row._count.runs,
+    published: publishedOf.get(row.id) ?? 0,
+    autoPublish: { enabled: row.autoPublish, visibility: row.publishVisibility },
     channel:
       row.project.channelId && row.project.channel
         ? { id: row.project.channelId, title: row.project.channel.title }
@@ -419,6 +489,14 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
     nextUp: null,
     backlog: bankByChannel.get(row.channelId) ?? 0,
     produced: row._count.runs,
+    // Identical to `produced` by construction: that count already filters on
+    // `youtubeVideoId: { not: null }`, which is the same question asked once.
+    // Stated rather than left implied, because a reader comparing the three
+    // loaders will otherwise wonder which of them is wrong.
+    published: row._count.runs,
+    // A cadence has no switch. Publishing is the entirety of what it does, and
+    // offering to turn it off would be offering to turn the cadence off twice.
+    autoPublish: null,
     channel: { id: row.channelId, title: row.channel.title },
     // Not project-scoped: a cadence spends every project's shorts for its
     // channel, so naming one project would be picking a favourite.
