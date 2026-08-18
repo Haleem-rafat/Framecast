@@ -9,12 +9,14 @@ import { z } from "zod";
 
 import { env } from "@/config/env";
 import type { ShortStatus, VideoStatus } from "@/generated/prisma/enums";
+import { beatAssetPath, beatPrefix } from "@/lib/beat-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import {
   anchorCues,
+  type AnchoredCue,
   cueWindows,
   type CueWindow,
   type ScriptCue,
@@ -23,6 +25,7 @@ import {
   describeSections,
   MAX_SHORT_SECONDS,
   MIN_SHORT_SECONDS,
+  planShortBeatSlots,
   planShortSlots,
   planShortWindow,
   SHORT_MAX_CHARS_PER_LINE,
@@ -34,6 +37,7 @@ import {
 } from "@/lib/shorts-plan";
 import { deleteShortFile, writeShortFile } from "@/lib/shorts-storage";
 import { getObject } from "@/lib/storage";
+import { planStoryBeats, type StoryBeat } from "@/lib/story-beats";
 import {
   describeProviderFailure,
   isRetryableProviderFailure,
@@ -79,6 +83,23 @@ import {
  * no shorts costs exactly what it always did — the landscape render's argv and
  * its output are unchanged — and only a video that actually gets a short pays,
  * once, for that short.
+ *
+ * ## Not every video's footage is a section clip
+ *
+ * A generated video — `ILLUSTRATED`, `CINEMATIC` or `MIXED` — has no
+ * `clips/section-NNN.mp4` at all. Its pictures are one per story *beat*, filed
+ * under `beats/` as a drawn `.png` or, for a beat its script tagged `motion`, a
+ * downloaded `.mp4`; a beat covers one or more consecutive sections. Asking for
+ * section clips on one of those found nothing and refused every short on every
+ * generated video with a message about reclaimed storage, which described a
+ * state the video was never in. So the two questions this file asks about
+ * footage — which files, and which of them fills each slot — are both asked per
+ * *picture unit* now, and a picture unit is a section or a beat depending on
+ * what collection actually put on disk (`requireFootage`).
+ *
+ * Nothing about composing changes with it. `planRender` opens a `.png` with
+ * `-loop 1` and an `.mp4` with `-stream_loop -1` from the extension alone, so a
+ * short cut from stills goes through the identical two passes a stock one does.
  *
  * ## Two halves that never run at the same time
  *
@@ -311,6 +332,10 @@ export const gatewayMomentSelector: MomentSelector = async (input) => {
 /** Everything needed to turn a section number into a second, gathered once. */
 interface VideoTimeline {
   windows: CueWindow[];
+  /** The same cues `windows` was built from, index-aligned with it. Carried
+   *  alongside because `planStoryBeats` groups *cues*, not windows, and a
+   *  beat-collected video's picture plan is that grouping. */
+  anchored: AnchoredCue[];
   sections: string;
   alignment: Alignment;
   narrationSeconds: number;
@@ -321,6 +346,25 @@ interface VideoTimeline {
   /** Only so missing footage can say *why* it is missing. A PUBLISHED video's
    *  clips were reclaimed on purpose; any other video's went missing. */
   videoStatus: VideoStatus;
+}
+
+/**
+ * The pictures a short plays, and what one of them counts as.
+ *
+ * Two shapes behind one type, because everything downstream of the guard treats
+ * them identically: `paths[slot.sectionIndex]` is the file to fetch either way,
+ * and `planRender` decides whether to open it with `-loop 1` or `-stream_loop`
+ * from its extension alone. The only thing the caller has to branch on is which
+ * planner turns its window into slots.
+ */
+interface ShortFootage {
+  /** One storage path per picture unit, in play order — a section clip per
+   *  section, or a beat's still-or-clip per beat. */
+  paths: string[];
+  /** The beats those paths belong to, or null for a section-collected video.
+   *  Non-null is the signal to plan slots over beats rather than sections; it
+   *  is not merely informational. */
+  beats: StoryBeat[] | null;
 }
 
 export class ShortsService {
@@ -438,6 +482,7 @@ export class ShortsService {
 
     return {
       windows,
+      anchored,
       sections: describeSections(anchored, windows, content),
       alignment,
       narrationSeconds,
@@ -448,8 +493,8 @@ export class ShortsService {
   }
 
   /**
-   * The section clips a short is composed out of, or a `ConflictError` naming
-   * why they are not there.
+   * The pictures a short is composed out of, or a `ConflictError` naming why
+   * they are not there.
    *
    * This replaces the old `statRenderFile` check, and it is the same guard
    * moved one step upstream: what a short needs on disk is no longer the
@@ -458,6 +503,100 @@ export class ShortsService {
    * before it deletes the operator's existing set — the sequence that once
    * destroyed three good shorts to arrive at a message we could have given
    * first.
+   *
+   * Which of the two shapes a video has is decided by what is on disk, exactly
+   * as `RenderService.render` decides it and for the same reason: a channel's
+   * `footageStyle` can be changed at any time, including after this video's
+   * footage was collected, and what a short must be composed from is the
+   * footage this video actually has rather than the footage the channel would
+   * collect today. Anything under `beats/` means beats; nothing there means
+   * sections, which is every stock video ever rendered.
+   */
+  private async requireFootage(
+    videoId: string,
+    timeline: VideoTimeline,
+  ): Promise<ShortFootage> {
+    // Both kinds, because a MIXED video's motion slots are `.mp4` filed under
+    // the same prefix as its stills (see `beatClipPath`). The prefix is what
+    // makes this answerable at all: `kind: "IMAGE"` under `videos/{id}/` would
+    // also match every thumbnail the video has ever had.
+    const beatAssets = await prisma.asset.findMany({
+      where: {
+        kind: { in: ["IMAGE", "VIDEO"] },
+        deletedAt: null,
+        storagePath: { startsWith: beatPrefix(videoId) },
+      },
+      select: { storagePath: true },
+    });
+
+    if (beatAssets.length === 0) {
+      const paths = await this.requireSectionClips(
+        videoId,
+        timeline.windows.length,
+        timeline.videoStatus,
+      );
+
+      return { paths, beats: null };
+    }
+
+    const present = new Set(beatAssets.map((asset) => asset.storagePath));
+
+    return this.requireBeatPictures(videoId, timeline, present);
+  }
+
+  /**
+   * The beat pictures a generated video's short is composed out of.
+   *
+   * Re-derived here rather than read from a stored plan, exactly as
+   * `RenderService.render` re-derives it: `planStoryBeats` is pure over the
+   * anchored cues and the narration's length, both of which collection also
+   * had, so the beats a short cuts across are the beats collection drew. A
+   * stored grouping is the one thing that could drift from the script and put
+   * a picture under words it was not drawn for.
+   *
+   * Every beat is required, not merely some — the same rule the section half
+   * applies, for the same reason. A hole would compose fine and play the wrong
+   * picture under the wrong words from that beat onward.
+   *
+   * Note what this deliberately does NOT say when a beat is missing.
+   * Publishing cannot be the cause: `reclaimClipStorage` filters on the
+   * `videos/{id}/clips/` prefix as well as on `kind: "VIDEO"`, so it never
+   * reaches `beats/` — not even a MIXED video's stock beats, which match the
+   * kind but not the prefix. The prefix is the only thing sparing them, which
+   * is one edit away from being false, so it is written down here rather than
+   * left to be rediscovered. A missing beat means collection never drew it,
+   * and collecting again is a real remedy — unlike a reclaimed clip, which is
+   * gone for good and whose message must not be borrowed for this.
+   */
+  private async requireBeatPictures(
+    videoId: string,
+    timeline: VideoTimeline,
+    present: ReadonlySet<string>,
+  ): Promise<ShortFootage> {
+    const beats = planStoryBeats(timeline.anchored, timeline.narrationSeconds);
+    const paths = beats.map((_beat, index) => beatAssetPath(present, videoId, index));
+    const missing = paths
+      .map((assetPath, index) => ({ assetPath, index }))
+      .filter((entry) => entry.assetPath === null)
+      .map((entry) => entry.index + 1);
+
+    if (missing.length > 0) {
+      throw new ConflictError(
+        `No picture for beat(s) ${missing.join(", ")} of ${paths.length}, so no ` +
+          "short can be composed from this video. Collect footage again — it " +
+          "redraws only the beats that have none — and generate the shorts " +
+          "after that.",
+      );
+    }
+
+    return {
+      paths: paths.filter((assetPath): assetPath is string => assetPath !== null),
+      beats,
+    };
+  }
+
+  /**
+   * The section clips a stock-footage video's short is composed out of.
    *
    * Every section is required, not merely some. A short is a contiguous run of
    * sections, and a run with a hole in it would compose fine and play the
@@ -578,11 +717,7 @@ export class ShortsService {
     //
     // Checked here rather than only in `renderShort`, which also checks: by the
     // time the worker gets there the deletion has already happened.
-    await this.requireSectionClips(
-      videoId,
-      timeline.windows.length,
-      timeline.videoStatus,
-    );
+    await this.requireFootage(videoId, timeline);
 
     const brand = await brandService.resolve(timeline.channelId);
     const apiKey =
@@ -869,10 +1004,9 @@ export class ShortsService {
         endSeconds: true,
         status: true,
         videoId: true,
-        // `status` is read only to explain missing footage: a PUBLISHED video
-        // had its clips reclaimed on purpose, which is a different message from
-        // footage that vanished for any other reason.
-        video: { select: { userId: true, status: true } },
+        // The owner alone: `loadTimeline` below re-reads the video anyway, and
+        // it is what carries the status the footage guard explains itself with.
+        video: { select: { userId: true } },
       },
     });
 
@@ -891,11 +1025,7 @@ export class ShortsService {
     // Checked before a temp directory is created and an encoder is spawned, so
     // the failure names the real cause rather than surfacing as "ffmpeg exited
     // with code 1" against a clip path that does not exist.
-    const sectionPaths = await this.requireSectionClips(
-      short.videoId,
-      timeline.windows.length,
-      short.video.status,
-    );
+    const footage = await this.requireFootage(short.videoId, timeline);
 
     const window: ShortWindow = {
       startSeconds: short.startSeconds,
@@ -913,7 +1043,13 @@ export class ShortsService {
       MIN_SLOT_SECONDS,
       style.transitions.enabled ? style.transitions.durationSeconds * 2 : 0,
     );
-    const slots = planShortSlots(timeline.windows, window, minClipSeconds);
+    // One slot per picture unit the window covers — sections for a stock video,
+    // beats for a generated one. The merge logic is the same either way (see
+    // `planShortBeatSlots`); only what a slot counts differs, and `footage`
+    // already decided that by looking at what is on disk.
+    const slots = footage.beats
+      ? planShortBeatSlots(timeline.windows, footage.beats, window, minClipSeconds)
+      : planShortSlots(timeline.windows, window, minClipSeconds);
 
     if (slots.length === 0) {
       // Not reachable from a window `planShortWindow` produced — it only ever
@@ -932,8 +1068,9 @@ export class ShortsService {
 
     try {
       onProgress(
-        `composing ${durationSeconds.toFixed(1)}s from ${slots.length} section(s) ` +
-          `starting at ${window.startSeconds.toFixed(1)}s`,
+        `composing ${durationSeconds.toFixed(1)}s from ${slots.length} ` +
+          `${footage.beats ? "beat(s)" : "section(s)"} starting at ` +
+          `${window.startSeconds.toFixed(1)}s`,
       );
 
       // Captions for this clip alone, rebased to start at zero. `buildSrt` does
@@ -960,8 +1097,19 @@ export class ShortsService {
 
       const clipPaths: string[] = [];
       for (const [index, slot] of slots.entries()) {
-        const clipPath = path.join(tempDir, `clip-${index}.mp4`);
-        await writeFile(clipPath, await getObject(sectionPaths[slot.sectionIndex]));
+        const sourcePath = footage.paths[slot.sectionIndex];
+        // The source's own extension, not a hard-coded `.mp4`, and it is
+        // load-bearing rather than tidiness: `planRender` asks
+        // `isStillImagePath` of every path it is given and opens a `.png` with
+        // `-loop 1` instead of `-stream_loop -1`. A beat's still copied to
+        // `clip-0.mp4` would be opened as video and produce a single frame
+        // holding a twenty-second slot — a short that is one still frame and
+        // then black.
+        const clipPath = path.join(
+          tempDir,
+          `clip-${index}${path.extname(sourcePath) || ".mp4"}`,
+        );
+        await writeFile(clipPath, await getObject(sourcePath));
         clipPaths.push(clipPath);
       }
 

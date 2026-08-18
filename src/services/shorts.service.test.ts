@@ -5,14 +5,16 @@ import { readFile, writeFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { beatClipPath, beatImagePath } from "@/lib/beat-storage";
 import type { Alignment } from "@/lib/captions";
 import { ConflictError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { deleteRenderFile, renderPath, writeRenderFile } from "@/lib/render-storage";
-import { extractAnchor, type ScriptCue } from "@/lib/script-cues";
+import { anchorCues, extractAnchor, type ScriptCue } from "@/lib/script-cues";
 import { MIN_SHORT_SECONDS } from "@/lib/shorts-plan";
 import { deleteShortFile, shortPath } from "@/lib/shorts-storage";
 import { putObject, storagePath } from "@/lib/storage";
+import { planStoryBeats } from "@/lib/story-beats";
 import { projectService } from "@/services/project.service";
 import { type ProcessSpawner, sectionClipPath } from "@/services/render.service";
 import {
@@ -83,6 +85,29 @@ function fixtureCues(): ScriptCue[] {
     anchor: extractAnchor(text),
     cue: `clip ${index + 1}`,
   }));
+}
+
+/** The same cues with every section tagged, which is what the long-form list
+ *  writer produces — and what makes `planStoryBeats` give one beat per section
+ *  instead of grouping them by seconds. */
+function shotScriptedCues(): ScriptCue[] {
+  return fixtureCues().map((cue) => ({ ...cue, shot: "still" as const }));
+}
+
+/**
+ * The beats collection would have drawn for a script, derived exactly the way
+ * `FootageService` and `RenderService` derive them — through the real
+ * `planStoryBeats`, over the real anchored cues and the same integer narration
+ * length the fixture stores.
+ *
+ * Not a hand-written count, deliberately: the whole correctness argument for
+ * this path is that three services reach the same grouping from the same pure
+ * function, and a fixture that hard-coded its own grouping would keep passing
+ * on the day one of them stopped agreeing.
+ */
+function fixtureBeatCount(cues: ScriptCue[]): number {
+  const { anchored } = anchorCues(cues, CONTENT);
+  return planStoryBeats(anchored, Math.floor(NARRATION_SECONDS)).length;
 }
 
 class FakeChildProcess extends EventEmitter {
@@ -253,6 +278,18 @@ async function makeClippableVideo(
     /** Skips writing the section clips, which is the state publishing leaves a
      *  video in — the row still says it rendered, the footage is gone. */
     withoutClips?: boolean;
+    /**
+     * Files this video's pictures under `beats/` instead of `clips/`, which is
+     * what an ILLUSTRATED, CINEMATIC or MIXED collection actually produces. A
+     * generated video has no section clips at all, so this replaces them
+     * rather than adding to them.
+     *
+     * `"mixed"` makes the LAST beat a stock `.mp4` under the same prefix — the
+     * shape a script that tagged a shot `motion` collects into.
+     */
+    beats?: "stills" | "mixed";
+    /** Beat indices (0-based) to leave undrawn, for the "collect again" path. */
+    withoutBeats?: number[];
   } = {},
 ): Promise<string> {
   const project = await projectService.create(userId, {
@@ -312,10 +349,45 @@ async function makeClippableVideo(
     data: { kind: "SUBTITLE", storagePath: alignmentPath, provider: "ELEVENLABS" },
   });
 
+  // One picture per beat, at the exact paths `collectGenerated` stores them at.
+  // A generated video has no section clips, so this branch is exclusive with
+  // the one below rather than additional to it.
+  if (opts.beats) {
+    const cues = opts.cues ?? fixtureCues();
+    const beatCount = fixtureBeatCount(cues);
+    const undrawn = new Set(opts.withoutBeats ?? []);
+
+    for (let index = 0; index < beatCount; index += 1) {
+      if (undrawn.has(index)) {
+        continue;
+      }
+
+      // The last beat of a MIXED video is the downloaded clip, filed under the
+      // same `beats/` prefix as the stills — one prefix, extension decides.
+      const motion = opts.beats === "mixed" && index === beatCount - 1;
+      const assetPath = motion
+        ? beatClipPath(video.id, index)
+        : beatImagePath(video.id, index);
+
+      await putObject(
+        assetPath,
+        Buffer.from(`fake-beat-${index}-${RUN}`),
+        motion ? "video/mp4" : "image/png",
+      );
+      await prisma.asset.create({
+        data: {
+          kind: motion ? "VIDEO" : "IMAGE",
+          storagePath: assetPath,
+          provider: motion ? "PIXABAY" : "OPENAI",
+        },
+      });
+    }
+  }
+
   // One clip per section, at the exact paths FootageService stores them at —
   // this is the footage a short is composed from now, in place of the finished
   // render it used to be cut out of.
-  if (!opts.withoutClips) {
+  if (!opts.beats && !opts.withoutClips) {
     for (let index = 0; index < SECTIONS.length; index += 1) {
       const clipPath = sectionClipPath(video.id, index);
       await putObject(clipPath, Buffer.from(`fake-clip-${index}-${RUN}`), "video/mp4");
@@ -462,6 +534,54 @@ describe("generate — the states it refuses", () => {
     // — it is the one an operator most wants shorts from.
     const videoId = await makeClippableVideo({ status: "PUBLISHED" });
     const service = new ShortsService(fakeSelector([moment(1, 3)]));
+
+    await expect(service.generate(userId, videoId)).resolves.toHaveLength(1);
+  });
+
+  it("cuts a short from a generated video, whose pictures are beats", async () => {
+    // The bug this path exists for. `requireSectionClips` asked for
+    // `clips/section-NNN.mp4` and `kind: "VIDEO"`; an ILLUSTRATED, CINEMATIC or
+    // MIXED video's pictures are `beats/beat-NNN.png` and `kind: "IMAGE"`, so
+    // the membership check could never pass and EVERY short on EVERY generated
+    // video was refused — with a message about storage that had been reclaimed,
+    // for footage that was sitting on disk the whole time.
+    const videoId = await makeClippableVideo({ beats: "stills" });
+    const service = new ShortsService(fakeSelector([moment(2, 4)]));
+
+    await expect(service.generate(userId, videoId)).resolves.toHaveLength(1);
+  });
+
+  it("cuts a short from a mixed video, whose beats are stills and clips", async () => {
+    const videoId = await makeClippableVideo({ beats: "mixed" });
+    const service = new ShortsService(fakeSelector([moment(2, 4)]));
+
+    await expect(service.generate(userId, videoId)).resolves.toHaveLength(1);
+  });
+
+  it("names collection, not publishing, when a beat was never drawn", async () => {
+    const videoId = await makeClippableVideo({ beats: "stills", withoutBeats: [0] });
+    const selector = fakeSelector([moment(2, 4)]);
+    const service = new ShortsService(selector);
+
+    const error = await service.generate(userId, videoId).catch((thrown) => thrown);
+
+    // `reclaimClipStorage` filters on the `clips/` prefix, so publishing has
+    // never deleted a beat and cannot be what is wrong here. Borrowing the
+    // reclaim message would tell the operator their footage is unrecoverable
+    // when collecting again would redraw the one picture that is missing.
+    expect(error).toBeInstanceOf(ConflictError);
+    expect((error as ConflictError).message).toMatch(/collect footage again/i);
+    expect((error as ConflictError).message).not.toMatch(/publish/i);
+    expect((error as ConflictError).message).toContain("beat(s) 1");
+    expect(selector).not.toHaveBeenCalled();
+  });
+
+  it("keeps a published generated video clippable, because reclaim spares beats/", async () => {
+    // Publishing deletes `videos/{id}/clips/` and nothing else, so a generated
+    // video's pictures survive it — which makes a live video the one an
+    // operator most wants shorts from, and now the one they can have them from.
+    const videoId = await makeClippableVideo({ beats: "stills", status: "PUBLISHED" });
+    const service = new ShortsService(fakeSelector([moment(2, 4)]));
 
     await expect(service.generate(userId, videoId)).resolves.toHaveLength(1);
   });
@@ -791,6 +911,119 @@ describe("renderShort", () => {
     const shortId = await claimOne(service, videoId);
 
     await expect(service.renderShort(shortId)).rejects.toThrow(/Invalid data found/);
+  });
+});
+
+describe("renderShort — over beats rather than sections", () => {
+  /** The segment call's input path: the token after the `-i` that names the
+   *  clip, which is the one this file cares about telling apart. */
+  function inputPathOf(args: string[]): string {
+    return args[args.lastIndexOf("-i") + 1];
+  }
+
+  it("holds one picture for a window that never leaves its beat", async () => {
+    // Sections 2-4 is 5s-20s of narration. In the fixture's untagged script
+    // that is three section clips (the assertion copied below), and the same
+    // fifteen seconds of a generated video is ONE beat's still — because
+    // `planStoryBeats` groups the eight sections into two twenty-second
+    // pictures and the whole window sits inside the first of them.
+    const videoId = await makeClippableVideo({ beats: "stills" });
+    const { spawner, calls } = createSucceedingSpawner();
+    const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    const segments = segmentCallsOf(calls);
+    expect(segments).toHaveLength(1);
+    // Opened with `-loop 1`, not `-stream_loop -1`. A still opened as video is
+    // one frame long whatever `-t` says, which would be a short that shows its
+    // picture for a frame and then nothing.
+    expect(segments[0]).toContain("-loop");
+    expect(inputPathOf(segments[0])).toMatch(/\.png$/);
+  });
+
+  it("leaves a stock video's slot plan exactly as it was", async () => {
+    // The regression the beat path must not cause, asserted beside it: the
+    // same moment over the same narration still normalises one clip per
+    // section, out of `clips/`, opened as video.
+    const videoId = await makeClippableVideo();
+    const { spawner, calls } = createSucceedingSpawner();
+    const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    const segments = segmentCallsOf(calls);
+    expect(segments).toHaveLength(3);
+    for (const args of segments) {
+      expect(args).toContain("-stream_loop");
+      expect(args).not.toContain("-loop");
+      expect(inputPathOf(args)).toMatch(/\.mp4$/);
+    }
+  });
+
+  it("plays the right subset of a shot-scripted video's beats", async () => {
+    // The long-form list format: the writer tags every section, so a beat IS a
+    // section and the beat path is the identity. Sections 2-4 must therefore
+    // come back as three pictures — beats 2, 3 and 4 of eight — and not as
+    // beats 1, 2 and 3, which is what an off-by-one between the beat index and
+    // the section index would silently produce.
+    const cues = shotScriptedCues();
+    expect(fixtureBeatCount(cues)).toBe(SECTIONS.length);
+
+    const videoId = await makeClippableVideo({ cues, beats: "stills" });
+    // The temp copies are named by slot, not by source, so the bytes are the
+    // only thing that says which beat each segment actually got — and each
+    // beat's fixture bytes carry its own index.
+    const fetched: string[] = [];
+    const { spawner, calls } = createSpawner(async (child, args) => {
+      if (args.includes("-vf") && !args.includes("-filter_complex")) {
+        fetched.push(await readFile(args[args.lastIndexOf("-i") + 1], "utf-8"));
+      }
+      child.stdout.emit("data", "out_time_ms=1000000\nprogress=continue\n");
+      await writeFile(args[args.length - 1], `fake-short-bytes-${RUN}`);
+      child.emit("close", 0);
+    });
+    const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    expect(segmentCallsOf(calls)).toHaveLength(3);
+    expect(fetched).toEqual([
+      `fake-beat-1-${RUN}`,
+      `fake-beat-2-${RUN}`,
+      `fake-beat-3-${RUN}`,
+    ]);
+  });
+
+  it("opens a mixed video's motion beat as video, not as a still", async () => {
+    // Sections 6-8 land in the second beat, which `beats: "mixed"` files as an
+    // `.mp4` under the same prefix as the stills. Getting this from the
+    // extension is the whole reason one prefix carries both kinds.
+    const videoId = await makeClippableVideo({ beats: "mixed" });
+    const { spawner, calls } = createSucceedingSpawner();
+    const service = new ShortsService(fakeSelector([moment(6, 8)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    const segments = segmentCallsOf(calls);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toContain("-stream_loop");
+    expect(inputPathOf(segments[0])).toMatch(/\.mp4$/);
+  });
+
+  it("still burns exactly one set of captions over beats", async () => {
+    const videoId = await makeClippableVideo({ beats: "stills" });
+    const { spawner, calls } = createSucceedingSpawner();
+    const service = new ShortsService(fakeSelector([moment(2, 4)]), spawner);
+    const shortId = await claimOne(service, videoId);
+
+    await service.renderShort(shortId);
+
+    expect(captionBurnCount(calls)).toBe(1);
   });
 });
 
