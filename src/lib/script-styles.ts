@@ -455,6 +455,84 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
   },
 
   {
+    id: "longform-list",
+    name: "Long-form list",
+    description:
+      "The countdown at full length, with each section saying whether its picture should be drawn or filmed. Suits a list you want eight minutes and forty shots of.",
+    category: "SCRIPT",
+    // A sibling of `countdown`, not a replacement, and mostly the same prompt
+    // — which is the point rather than an oversight. The two differ in exactly
+    // two things: this one is eight minutes instead of six, and every section
+    // says what kind of picture it wants.
+    //
+    // That second difference is the whole format. `planStoryBeats` cuts one
+    // picture per cue when every cue carries a shot tag, so the writer's
+    // section count IS the video's picture count: about forty at twelve
+    // seconds each, rather than the twenty-four at twenty seconds
+    // `BEAT_TARGET_SECONDS` produces from a constant measured on four-minute
+    // bedtime stories. Nothing here asks for that arithmetic; asking for forty
+    // sections is what performs it.
+    //
+    // Countdown keeps its own six minutes and its untagged cues. An operator
+    // who wants a list without forty generated pictures still has one.
+    targetLength: "About 8 minutes",
+    targetSeconds: 480,
+    content: [
+      "Write a {{duration}}-minute narration script counting down {{count}} things: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words. Write about 40 sections of around 30 words each — no section under 20 words and none over 40. Divide the body evenly: each of the {{count}} entries gets a comparable share. An entry that runs three times longer than its neighbours tells the viewer the rest were filler.",
+      "",
+      "STRUCTURE.",
+      "- Open on the most surprising detail from anywhere in the list, without saying which entry it belongs to. Then say what is being counted down and how many there are.",
+      "- Count down from {{count}} to one. Say each number out loud as you reach it — the pipeline renders footage and captions only, so a number that is not spoken is a number nobody receives.",
+      "- Each entry: name it, say the one specific fact that earns its place, then the detail nobody expects. At this length that is several sections per entry, not one.",
+      "- Do not compare entries to each other. Each has to stand alone, because a viewer who joined halfway is the normal case for this format.",
+      "- The ranking must be defensible and stated. Say near the start what the order is by — size, age, cost, speed, whatever it is — and keep to it. An unexplained ranking is the thing this format is most often accused of.",
+      "- Number one gets the strongest fact of the whole script. If the best fact belongs to number four, the ranking is wrong.",
+      "- Close in two lines. No recap of the list; the viewer just heard it.",
+      "",
+      "SHOTS — this format decides its own pictures, so every cue carries one more thing than usual.",
+      "- Tag every single section. Put [still] or [motion] at the end of its cue: 'crowd crossing a street [motion]', 'antique map on a desk [still]'. The tag is removed before anything is searched for, so it never reaches the stock library.",
+      "- A section left untagged costs the whole video. One picture per section only happens when every section is tagged; a single missing tag drops the video back to one picture every twenty seconds, which is a slideshow.",
+      "- [motion] means the thing you are describing genuinely moves and a camera could have filmed it: a crowd, traffic, water, a machine running, hands working, weather. It will be filled from a stock library.",
+      "- [still] is everything else, and it is the default. It will be drawn.",
+      "- Keep [motion] to about one section in five, and spread them out. Two motion shots in a row read as a different video spliced in.",
+      "- Never tag a section [motion] for a thing no camera has filmed — a historical event, an abstraction, a diagram. There is no such footage, and the section will end up drawn anyway.",
+      "",
+      VOICE_RULES,
+      "- Never write '5.' or '#5'. Write 'number five', because the voice reads what is typed.",
+      "",
+      SOURCING_RULES,
+      "",
+      CUE_RULES,
+      "- Cue the entry itself, not the counting. Each entry is a different subject, so this format gets more visual variety than any other — use it.",
+      "- The subject sits in the middle of the frame, with the sides carrying context rather than content. Vertical Shorts are cut from this video by keeping the centre 9:16 of each picture, so anything important near an edge is lost.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "8" },
+      { key: "count", label: "How many entries", defaultValue: "7" },
+      {
+        key: "audience",
+        label: "Audience",
+        defaultValue: "curious general viewers",
+      },
+      { key: "tone", label: "Tone", defaultValue: "brisk and confident" },
+    ],
+    starterSubjects: [
+      "The engineering projects that were abandoned after the money ran out",
+      "Materials that changed what buildings could look like",
+      "The shipwrecks that rewrote what we knew about a century",
+      "Machines that were built once and never repeated",
+      "The rivers that were moved on purpose, and what happened after",
+    ],
+  },
+
+  {
     id: "myths-and-facts",
     name: "Myths and facts",
     description:

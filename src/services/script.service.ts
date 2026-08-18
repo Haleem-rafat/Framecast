@@ -3,6 +3,7 @@ import "server-only";
 import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import { insightScriptToScript, validateInsightScript } from "@/lib/insight-script";
+import { checkLongformScript, longformCues } from "@/lib/longform-script";
 import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
 import { recurringCharacterInstruction } from "@/lib/recurring-character";
@@ -36,6 +37,16 @@ function isUniqueConstraintViolation(
  * split into sections, each with a b-roll cue. `insight` is the single-insight
  * short (see docs/superpowers/specs/2026-08-17-knowsense-format-design.md) — six
  * named narrative beats, one sentence a scene, and a per-scene visual brief.
+ * `longform` is the eight-minute list (see
+ * docs/superpowers/specs/2026-08-18-long-form-hybrid-design.md): the same
+ * sections `prose` asks for, in the same schema, with a shot tag on the end of
+ * every cue and a gate that refuses the answer if any of them is missing.
+ *
+ * `longform` is deliberately not a third *schema*. It sends `withSections`
+ * exactly as `prose` does, because a section is already narration plus a visual
+ * field and that is all the format needs; the difference is entirely in what is
+ * asked for in the prompt and what is checked afterwards. `insight` earned its
+ * own schema because a scene is a genuinely different object.
  *
  * A parameter rather than something derived from the chosen `PromptTemplate`,
  * and that was a choice worth making explicitly. `PromptTemplate` has no column
@@ -49,7 +60,7 @@ function isUniqueConstraintViolation(
  * Absent means `prose`, so every existing caller — the script panel, the
  * pipeline, the schedule — sends exactly the request it always did.
  */
-export type ScriptFormat = "prose" | "insight";
+export type ScriptFormat = "prose" | "insight" | "longform";
 
 export interface GenerateScriptInput {
   templateId?: string;
@@ -63,14 +74,24 @@ export interface GenerateScriptInput {
  *  now twice ignored rules stated twice. */
 const INSIGHT_ATTEMPTS = 2;
 
+/** The same two, for the long-form list, and for the same arithmetic — except
+ *  that here the second bill is the cheap half: a script that reaches footage
+ *  with one section untagged spends about $2 of generated stills on a video
+ *  that is a quarter shorter of pictures than it was written for. */
+const LONGFORM_ATTEMPTS = 2;
+
 /**
  * What the model is told before the validator's own sentences.
  *
  * Short, and it says "return the whole script again" rather than "fix scene 4":
  * a partial answer would have to be merged with the previous one, and a merge
  * of two scripts is a script nobody wrote.
+ *
+ * Shared by both gated formats, and worded so it can be: neither the preface
+ * nor the errors under it name a format, so the only thing it commits to is
+ * "same shape, whole thing, nothing else changed".
  */
-const INSIGHT_RETRY_PREFACE =
+const RETRY_PREFACE =
   "Your previous answer was rejected. Fix every problem listed below and " +
   "return the complete script again in the same shape. Change nothing else.";
 
@@ -208,17 +229,23 @@ export class ScriptService {
     };
 
     try {
+      // Both gated formats record their own attempts as they resolve, since
+      // a draft the gate threw away was still billed. The prose path has
+      // exactly one attempt and records it below.
+      const gated = input.format === "insight" || input.format === "longform";
       const generated =
         input.format === "insight"
           ? await this.generateInsight({ prompt, system, apiKey }, record)
-          : await this.provider.generateScript({
-              prompt,
-              system,
-              apiKey,
-              withSections: true,
-            });
+          : input.format === "longform"
+            ? await this.generateLongform({ prompt, system, apiKey }, record)
+            : await this.provider.generateScript({
+                prompt,
+                system,
+                apiKey,
+                withSections: true,
+              });
 
-      if (input.format !== "insight") {
+      if (!gated) {
         record(generated);
       }
 
@@ -228,6 +255,16 @@ export class ScriptService {
       const parsedInsight = generated.insight
         ? insightScriptToScript(generated.insight)
         : null;
+
+      // The long-form list's cues, with the stock share already capped — see
+      // `longformCues`. Null for every other format, including a prose
+      // generation that happens to have produced sections, because the cap and
+      // the tag-stripping are this format's rules and applying them to an
+      // ordinary explainer's cues would silently rewrite them.
+      const parsedLongform =
+        input.format === "longform" && generated.sections
+          ? longformCues(generated.sections)
+          : null;
 
       return await prisma.$transaction(async (tx) => {
         const script = await tx.script.upsert({
@@ -264,6 +301,11 @@ export class ScriptService {
                 cue: cue.cue,
                 beat: cue.beat,
                 emphasis: cue.emphasis,
+              })) ??
+              parsedLongform?.map((cue) => ({
+                anchor: cue.anchor,
+                cue: cue.cue,
+                shot: cue.shot,
               })) ??
               generated.sections?.map((section) => ({
                 anchor: extractAnchor(section.text),
@@ -435,7 +477,7 @@ export class ScriptService {
         prompt:
           errors.length === 0
             ? request.prompt
-            : `${request.prompt}\n\n${INSIGHT_RETRY_PREFACE}\n\n` +
+            : `${request.prompt}\n\n${RETRY_PREFACE}\n\n` +
               errors.map((error) => `- ${error}`).join("\n"),
         system: request.system,
         apiKey: request.apiKey,
@@ -467,6 +509,78 @@ export class ScriptService {
     throw new ConflictError(
       `The script did not meet the single-insight format after ` +
         `${INSIGHT_ATTEMPTS} attempts, so nothing was saved. What was wrong ` +
+        `with the last one:\n` +
+        errors.map((error) => `- ${error}`).join("\n"),
+    );
+  }
+
+  /**
+   * Asks for an eight-minute list script and refuses to hand back one whose
+   * shot plan is not what it claims to be.
+   *
+   * The same loop as `generateInsight` above, deliberately not factored into a
+   * shared helper: the two differ in the request they make (`withSections`
+   * against `withInsightScenes`), the field they read back, the validator they
+   * run and the sentence they give up with, which between them is the whole
+   * body. What they share is a shape, and a shape is what a comment is for.
+   *
+   * ## Why this format needs a gate at all
+   *
+   * `planStoryBeats` cuts one picture per cue only when **every** cue carries a
+   * shot tag. One section that came back untagged silently drops the video from
+   * about forty slots to the twenty-four `BEAT_TARGET_SECONDS` produces: it
+   * renders, it costs less, and it looks like a slideshow — and by then the
+   * narration has been billed and the stills have been drawn. The tag is a
+   * convention stated in a prompt, so the only place it can be checked is on
+   * the model's own answer, which is here.
+   *
+   * The stock-share cap is **not** checked. It is applied by `longformCues`
+   * instead, where a script that over-tagged motion is corrected for free
+   * rather than re-asked for at four cents.
+   */
+  private async generateLongform(
+    request: { prompt: string; system?: string; apiKey?: string },
+    onAttempt: (result: ScriptGenerationResult) => void,
+  ): Promise<ScriptGenerationResult> {
+    let errors: string[] = [];
+
+    for (let attempt = 0; attempt < LONGFORM_ATTEMPTS; attempt += 1) {
+      const generated = await this.provider.generateScript({
+        prompt:
+          errors.length === 0
+            ? request.prompt
+            : `${request.prompt}\n\n${RETRY_PREFACE}\n\n` +
+              errors.map((error) => `- ${error}`).join("\n"),
+        system: request.system,
+        apiKey: request.apiKey,
+        withSections: true,
+      });
+
+      onAttempt(generated);
+
+      // Asked for sections and given prose. A wiring fault rather than a bad
+      // script — there is nothing for the gate to complain about and nothing a
+      // retry would phrase differently — so it is named as ours, exactly as the
+      // insight path names its own.
+      if (!generated.sections) {
+        throw new InternalError(
+          "The model provider was asked for a sectioned long-form script and " +
+            "returned prose.",
+        );
+      }
+
+      const check = checkLongformScript(generated.sections);
+
+      if (check.ok) {
+        return generated;
+      }
+
+      errors = check.errors;
+    }
+
+    throw new ConflictError(
+      `The script did not meet the long-form list format after ` +
+        `${LONGFORM_ATTEMPTS} attempts, so nothing was saved. What was wrong ` +
         `with the last one:\n` +
         errors.map((error) => `- ${error}`).join("\n"),
     );
