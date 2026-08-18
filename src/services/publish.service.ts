@@ -1165,7 +1165,7 @@ export class PublishService {
     });
 
     // Deliberately outside the transaction above and after it has already
-    // committed, for the same reason `reclaimClipStorage` below is: YouTube
+    // committed, for the same reason `reclaimFootageStorage` below is: YouTube
     // has accepted the upload and the video is genuinely PUBLISHED at this
     // point, and `thumbnails.set` is a separate endpoint from `videos.insert`
     // — it can only be called once the video exists on YouTube to attach to,
@@ -1212,11 +1212,11 @@ export class PublishService {
     // Deliberately outside the transaction above and after it has already
     // committed. YouTube has accepted the upload and the video is genuinely
     // PUBLISHED at this point; a storage hiccup while reclaiming clips must
-    // never unwind that. See reclaimClipStorage's own doc comment for what
+    // never unwind that. See reclaimFootageStorage's own doc comment for what
     // happens if this fails.
-    await this.reclaimClipStorage(userId, videoId);
+    await this.reclaimFootageStorage(userId, videoId);
 
-    // Same placement and the same reasoning as reclaimClipStorage above: the
+    // Same placement and the same reasoning as reclaimFootageStorage above: the
     // transaction has committed, the video is genuinely PUBLISHED, and a
     // failure here must never unwind that. See reclaimRenderStorage's own
     // doc comment for why this runs here and nowhere else.
@@ -1554,7 +1554,7 @@ export class PublishService {
     // one moment a publish record disappeared, and a page that simply stopped
     // mentioning it would be indistinguishable from a bug. The ActivityLog row
     // is the account-wide trail every other irreversible-adjacent step here
-    // writes to (see `reclaimClipStorage`).
+    // writes to (see `reclaimFootageStorage`).
     //
     // Both best-effort and after the delete, never inside a transaction with
     // it: the clear has succeeded, and a bookkeeping write that fails must not
@@ -2023,7 +2023,7 @@ export class PublishService {
    * video that published with a YouTube-chosen frame reported that fact to
    * nobody. The Activity list on the video page is this codebase's existing
    * channel for "something happened to your video that you should know about"
-   * (see `reclaimClipStorage`'s `ActivityLog` write for the same reasoning
+   * (see `reclaimFootageStorage`'s `ActivityLog` write for the same reasoning
    * applied to a different failure), and PUBLISHED -> PUBLISHED is the honest
    * pair for it: the video's status did not change, because the publish
    * genuinely succeeded. Only the thumbnail did not.
@@ -2076,7 +2076,7 @@ export class PublishService {
    * video FAILED. By the time this is called the video is already on
    * YouTube: rolling that back is impossible, and failing a publish that
    * already succeeded over a thumbnail would be the wrong trade — the same
-   * reasoning `reclaimClipStorage` below is built on.
+   * reasoning `reclaimFootageStorage` below is built on.
    *
    * Failing softly is right; failing *silently* was the bug. This used to
    * return a bare `false` and write the reason to `console.error`, which on
@@ -2657,10 +2657,25 @@ export class PublishService {
    * incident that number comes from), which would make storage the binding
    * constraint at only a couple hundred published videos.
    *
-   * Deliberately narrower than a video-wide prefix: only the `clips/`
-   * sub-prefix is touched, so narration, alignment data, music and the
-   * finished render — every one of which shares the same `videos/{videoId}/`
-   * prefix — are left exactly alone.
+   * Deliberately narrower than a video-wide prefix: only the `clips/` and
+   * `beats/` sub-prefixes are touched, so narration, alignment data, music,
+   * thumbnails and the finished render — every one of which shares the same
+   * `videos/{videoId}/` prefix — are left exactly alone.
+   *
+   * `beats/` was added after a 38GB disk reached 100% and killed a render
+   * mid-write with ENOSPC. It holds the pictures a generated video is composed
+   * from, and it used to be spared for a reason that has since expired: when
+   * only stock channels existed, `kind: "VIDEO"` under `clips/` described all
+   * the footage there was. A generated video's pictures are `kind: "IMAGE"`
+   * under `beats/` (and, for MIXED, `kind: "VIDEO"` there too), so they
+   * matched neither half of the old filter and were kept forever. Measured on
+   * this box: 41MB across 690 old videos, but 205MB across 15 long-form ones —
+   * ~14MB a video and growing with the format, not with time.
+   *
+   * The cost of this is real and is not hidden: a published generated video can
+   * no longer have Shorts cut from it, exactly as a published stock video
+   * cannot. `ShortsService.requireBeatPictures` says so in those words rather
+   * than telling the operator to collect footage again.
    *
    * READY and FAILED are excluded on purpose. Both are still "this video may
    * render again" states — a FAILED publish can be retried once the operator
@@ -2685,25 +2700,29 @@ export class PublishService {
    * That write is itself best-effort: this method's only hard promise is
    * that it never throws back into `publish()`.
    */
-  private async reclaimClipStorage(userId: string, videoId: string): Promise<void> {
+  private async reclaimFootageStorage(userId: string, videoId: string): Promise<void> {
     try {
-      // kind: "VIDEO" *and* the `clips/` sub-prefix, not just one or the
-      // other — narrower than either alone is what keeps this from ever
-      // reaching narration (AUDIO), music (MUSIC) or alignment (SUBTITLE)
-      // data that happens to share the same `videos/{videoId}/` prefix.
-      // Losing any of those to a widened query here would be unrecoverable,
-      // which is exactly what the "clips only" test in
-      // publish.service.test.ts exists to catch.
-      const clips = await prisma.asset.findMany({
+      // The picture kinds *and* the two picture prefixes, not either alone —
+      // narrower than either is what keeps this from ever reaching narration
+      // (AUDIO), music (MUSIC) or alignment (SUBTITLE) data that happens to
+      // share the same `videos/{videoId}/` prefix. The prefixes carry the
+      // weight here: `kind: "IMAGE"` alone would match every thumbnail this
+      // app has ever made (see `beat-storage.ts`), and losing those to a
+      // widened query would be unrecoverable. That is what the "footage only"
+      // test in publish.service.test.ts exists to catch.
+      const footage = await prisma.asset.findMany({
         where: {
-          kind: "VIDEO",
+          kind: { in: ["VIDEO", "IMAGE"] },
           deletedAt: null,
-          storagePath: { startsWith: `videos/${videoId}/clips/` },
+          OR: [
+            { storagePath: { startsWith: `videos/${videoId}/clips/` } },
+            { storagePath: { startsWith: `videos/${videoId}/beats/` } },
+          ],
         },
         select: { id: true, storagePath: true },
       });
 
-      if (clips.length === 0) {
+      if (footage.length === 0) {
         return;
       }
 
@@ -2718,10 +2737,10 @@ export class PublishService {
       // failure lands in the catch below with every row still `deletedAt:
       // null` — never the "some objects gone, all rows marked deleted"
       // combination that ordering exists to prevent.
-      await removeObjects(clips.map((clip) => clip.storagePath));
+      await removeObjects(footage.map((asset) => asset.storagePath));
 
       await prisma.asset.updateMany({
-        where: { id: { in: clips.map((clip) => clip.id) } },
+        where: { id: { in: footage.map((asset) => asset.id) } },
         data: { deletedAt: new Date() },
       });
     } catch (error) {
@@ -2735,7 +2754,7 @@ export class PublishService {
           data: {
             userId,
             level: "WARN",
-            action: "publish.reclaimClipStorage",
+            action: "publish.reclaimFootageStorage",
             entityType: "Video",
             entityId: videoId,
             message: `Could not reclaim clip storage after publish: ${message}`,
@@ -2756,17 +2775,17 @@ export class PublishService {
    * each on a 40GB machine, keeping every published one is the difference
    * between a disk that stabilises and one that fills at roughly 140 videos.
    *
-   * Best-effort, and mirrors `reclaimClipStorage` above in full — not just
+   * Best-effort, and mirrors `reclaimFootageStorage` above in full — not just
    * its placement, but its failure handling too: this runs after the publish
    * has already succeeded, so nothing here is permitted to turn a live video
    * into a failed one. A render that is already gone — what a retried
    * publish meets — is not an error. But a *persistent* failure here (a
    * permissions problem on the render volume, say) is worse for this method
-   * than for `reclaimClipStorage`: this is the one path that exists
+   * than for `reclaimFootageStorage`: this is the one path that exists
    * specifically to keep the 40GB disk from filling, one 170MB render at a
    * time, and a `console.error` nobody reads until the disk is already full
    * is not a signal the operator will ever see in time. So this also writes
-   * a `WARN` `ActivityLog` row, same as `reclaimClipStorage` does — best
+   * a `WARN` `ActivityLog` row, same as `reclaimFootageStorage` does — best
    * effort itself, per that method's own doc comment on why a failed log
    * write isn't worth a second failure path here.
    */

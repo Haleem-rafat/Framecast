@@ -558,15 +558,20 @@ export class ShortsService {
    * applies, for the same reason. A hole would compose fine and play the wrong
    * picture under the wrong words from that beat onward.
    *
-   * Note what this deliberately does NOT say when a beat is missing.
-   * Publishing cannot be the cause: `reclaimClipStorage` filters on the
-   * `videos/{id}/clips/` prefix as well as on `kind: "VIDEO"`, so it never
-   * reaches `beats/` — not even a MIXED video's stock beats, which match the
-   * kind but not the prefix. The prefix is the only thing sparing them, which
-   * is one edit away from being false, so it is written down here rather than
-   * left to be rediscovered. A missing beat means collection never drew it,
-   * and collecting again is a real remedy — unlike a reclaimed clip, which is
-   * gone for good and whose message must not be borrowed for this.
+   * A missing beat has two causes now, and they need different sentences.
+   *
+   * This comment used to say publishing could never be one of them, because
+   * `reclaimFootageStorage` filtered on the `videos/{id}/clips/` prefix and so
+   * never reached `beats/`. It noted that the prefix was the only thing
+   * sparing them and that this was one edit away from being false. That edit
+   * has since been made: a 38GB disk reached 100% and killed a render
+   * mid-write, and beats now reclaim on publish exactly as clips do.
+   *
+   * So: a PUBLISHED video's pictures are gone deliberately, and telling its
+   * operator to "collect footage again" would be telling them to pay to redraw
+   * forty stills for a video already on YouTube. Every other status means
+   * collection genuinely never drew that beat, and collecting again really is
+   * the remedy — it redraws only the beats that have none.
    */
   private async requireBeatPictures(
     videoId: string,
@@ -582,10 +587,14 @@ export class ShortsService {
 
     if (missing.length > 0) {
       throw new ConflictError(
-        `No picture for beat(s) ${missing.join(", ")} of ${paths.length}, so no ` +
-          "short can be composed from this video. Collect footage again — it " +
-          "redraws only the beats that have none — and generate the shorts " +
-          "after that.",
+        timeline.videoStatus === "PUBLISHED"
+          ? "This video was published, and publishing reclaims the pictures it " +
+            "was composed from — so there is nothing left to build a short out " +
+            "of. Shorts have to be generated before a video is published."
+          : `No picture for beat(s) ${missing.join(", ")} of ${paths.length}, so no ` +
+            "short can be composed from this video. Collect footage again — it " +
+            "redraws only the beats that have none — and generate the shorts " +
+            "after that.",
       );
     }
 

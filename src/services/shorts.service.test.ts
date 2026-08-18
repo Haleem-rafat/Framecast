@@ -652,10 +652,11 @@ describe("generate — the states it refuses", () => {
 
     const error = await service.generate(userId, videoId).catch((thrown) => thrown);
 
-    // `reclaimClipStorage` filters on the `clips/` prefix, so publishing has
-    // never deleted a beat and cannot be what is wrong here. Borrowing the
-    // reclaim message would tell the operator their footage is unrecoverable
-    // when collecting again would redraw the one picture that is missing.
+    // This video is READY, not PUBLISHED, so reclaim cannot be what is wrong
+    // here — collection simply never drew beat 1. Borrowing the reclaim
+    // message would tell the operator their footage is unrecoverable when
+    // collecting again would redraw the one picture that is missing. The
+    // published case is the test below, and the two must not converge.
     expect(error).toBeInstanceOf(ConflictError);
     expect((error as ConflictError).message).toMatch(/collect footage again/i);
     expect((error as ConflictError).message).not.toMatch(/publish/i);
@@ -663,14 +664,30 @@ describe("generate — the states it refuses", () => {
     expect(selector).not.toHaveBeenCalled();
   });
 
-  it("keeps a published generated video clippable, because reclaim spares beats/", async () => {
-    // Publishing deletes `videos/{id}/clips/` and nothing else, so a generated
-    // video's pictures survive it — which makes a live video the one an
-    // operator most wants shorts from, and now the one they can have them from.
-    const videoId = await makeClippableVideo({ beats: "stills", status: "PUBLISHED" });
-    const service = new ShortsService(fakeSelector([moment(2, 4)]));
+  it("names publishing, not collection, when a published video's beats were reclaimed", async () => {
+    // This test used to assert the opposite — that a published generated video
+    // stayed clippable, because reclaim spared `beats/`. That changed when a
+    // 38GB disk hit 100% and killed a render mid-write: beats now reclaim on
+    // publish exactly as clips do, so a generated video is subject to the same
+    // "generate shorts before you publish" rule a stock one always was.
+    //
+    // The message is the point. Telling this operator to collect footage again
+    // would be telling them to pay to redraw forty stills for a video already
+    // on YouTube.
+    const videoId = await makeClippableVideo({
+      beats: "stills",
+      status: "PUBLISHED",
+      withoutBeats: [0],
+    });
+    const selector = fakeSelector([moment(2, 4)]);
+    const service = new ShortsService(selector);
 
-    await expect(service.generate(userId, videoId)).resolves.toHaveLength(1);
+    const error = await service.generate(userId, videoId).catch((thrown) => thrown);
+
+    expect(error).toBeInstanceOf(ConflictError);
+    expect((error as ConflictError).message).toMatch(/publish/i);
+    expect((error as ConflictError).message).not.toMatch(/collect footage again/i);
+    expect(selector).not.toHaveBeenCalled();
   });
 
   it("names publishing when the footage it reclaimed is what is missing", async () => {

@@ -138,7 +138,7 @@ export interface VideoTimeline {
    *  no section at all. */
   orphanedCueCount: number;
   /** True once publishing has deleted this video's clips (see
-   *  `reclaimClipStorage` in publish.service.ts). */
+   *  `reclaimFootageStorage` in publish.service.ts). */
   clipsReclaimed: boolean;
   /** Cues exist and some — but not all — sections have a clip. render.service
    *  refuses this outright rather than shipping a mistimed video. */
@@ -583,7 +583,7 @@ export class TimelineService {
 
     const clips = await this.loadClips(videoId);
     // Publishing deletes the objects and soft-deletes the rows together (see
-    // `reclaimClipStorage`), so "published and no live clip rows" is the one
+    // `reclaimFootageStorage`), so "published and no live clip rows" is the one
     // reliable reading of that state — there is nothing left to look at.
     const clipsReclaimed = video.status === "PUBLISHED" && clips.all.length === 0;
 
@@ -874,7 +874,7 @@ export class TimelineService {
    * Every clip this video still has, keyed by the section it plays under.
    *
    * Scoped by storage prefix because `Asset` carries no `videoId` — the same
-   * `videos/{videoId}/clips/` narrowing `reclaimClipStorage` uses, which is
+   * `videos/{videoId}/clips/` narrowing `reclaimFootageStorage` uses, which is
    * tighter than render.service.ts's `videos/{videoId}/` and cannot reach
    * narration, music or alignment rows sharing the prefix. Ordered by path,
    * not `createdAt`: play order for an uncued video is lexicographic by path,

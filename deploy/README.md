@@ -298,3 +298,40 @@ docker compose up -d
 
 Brings up `caddy`, `postgres`, `app-prod`, `worker-prod`, and `app-staging`.
 `worker-staging` is started separately, on purpose — see above.
+
+## Reclaiming Docker disk
+
+The disk is 38GB and holds postgres, both environments' storage, and every
+rendered video. Docker will fill it quietly: each `docker pull` of a moved tag
+leaves the previous image dangling, and every image build leaves layer cache.
+An evening of deploys once left **6.9GB of build cache and 8.2GB of dangling
+images**, taking the disk to 100% — which killed a render mid-write with
+`ENOSPC` and would have taken postgres with it had it lasted.
+
+So this is not a tidiness chore, and it is not left to whoever remembers after
+a deploy:
+
+```bash
+sudo cp deploy/framecast-prune.service deploy/framecast-prune.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now framecast-prune.timer
+systemctl list-timers framecast-prune.timer
+```
+
+It runs Sundays at 04:00 UTC, an hour after the backup, and reclaims build
+cache plus dangling images. Neither can be in use: build cache belongs to no
+container, and a running container holds a reference to its own image, so
+production survives the prune even while `:latest` has moved past it.
+
+To reclaim immediately after a deploy rather than waiting for Sunday:
+
+```bash
+sudo systemctl start framecast-prune.service
+```
+
+**Never use `docker system prune -a` here.** It deletes every image not
+currently running, which includes the previous release a rollback needs and
+the `:staging` tag between deploys.
+
+`df -h /` is the number to watch. Below ~5GB free, a long-form render — 40
+generated stills plus two ffmpeg passes — can exhaust it.

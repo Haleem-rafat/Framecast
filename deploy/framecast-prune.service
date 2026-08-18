@@ -1,0 +1,32 @@
+# deploy/framecast-prune.service
+[Unit]
+Description=Framecast weekly Docker reclaim (build cache and dangling images)
+
+[Service]
+Type=oneshot
+
+# Two prunes, and neither one can touch anything the box is serving.
+#
+# `builder prune` frees the layer cache from image builds. No container
+# references it, so it is always safe; it is also the larger of the two — a
+# single evening of deploys left 6.9GB of it on this box.
+#
+# `image prune` (without -a) removes only DANGLING images: untagged, and not
+# referenced by any container. A deploy leaves one behind per pull, because
+# pulling a moved tag untags whatever it pointed at before. Running containers
+# hold a reference to their own image, so prod's image survives this even
+# while `:latest` has moved on — which is exactly the state the staging
+# deploy procedure deliberately creates (see deploy/README.md).
+#
+# `-a` is deliberately NOT used. It would delete every image not currently
+# running, including the previous release that a rollback needs and the
+# `:staging` tag between deploys.
+ExecStart=/usr/bin/docker builder prune -f
+ExecStart=/usr/bin/docker image prune -f
+
+# The disk this protects is 38GB and holds postgres, every rendered video and
+# both environments' storage. It reached 100% once, which killed a render
+# mid-write with ENOSPC and would have taken postgres with it had it lasted;
+# `SuccessExitStatus` is not widened for that reason — a prune that fails
+# should be visible in `systemctl status`, not swallowed.
+TimeoutStartSec=900

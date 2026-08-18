@@ -1,0 +1,13 @@
+# deploy/framecast-prune.timer
+[Unit]
+Description=Reclaim Docker disk weekly
+
+[Timer]
+# Sunday 04:00 UTC — an hour after the nightly backup at 03:00, so the two
+# never contend for the same 2 vCPUs, and after it rather than before so a
+# prune can never be blamed for a failed backup.
+OnCalendar=Sun *-*-* 04:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

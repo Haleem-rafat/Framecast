@@ -369,7 +369,7 @@ export class PipelineService {
     //
     // Deliberately no `deletedAt: null` filter. `Asset.deletedAt` has
     // exactly one writer in this codebase: publish.service.ts's
-    // reclaimClipStorage, which soft-deletes a video's clip rows once it's
+    // reclaimFootageStorage, which soft-deletes a video's clip rows once it's
     // PUBLISHED (their bucket objects are gone by then, but the rows — and
     // their `provider`/`sizeBytes` — are left as-is). Excluding those rows
     // here would make a published video's footage stage regress from "done"

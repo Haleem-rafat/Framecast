@@ -767,6 +767,27 @@ describe("publishService.publish — concurrency", () => {
  * which is exactly what let a first clip's real object go untracked if a
  * later one's `putObject` rejected.
  */
+/**
+ * A generated video's picture: `kind: "IMAGE"` under `beats/`, which is what a
+ * CINEMATIC, ILLUSTRATED or MIXED channel produces instead of stock clips.
+ */
+async function createBeatAsset(videoId: string, index: number): Promise<string> {
+  const path = storagePath(videoId, "beats", `beat-${String(index).padStart(3, "0")}.png`);
+  await putObject(path, Buffer.from(`fake-beat-${RUN}-${index}`), "image/png");
+  clipStoragePaths.push(path);
+  await prisma.asset.create({
+    data: {
+      kind: "IMAGE",
+      storagePath: path,
+      mimeType: "image/png",
+      sizeBytes: BigInt(16),
+      provider: "OPENAI",
+    },
+  });
+
+  return path;
+}
+
 async function createClipAsset(
   videoId: string,
   index: number,
@@ -847,7 +868,7 @@ describe("publishService.publish — clip storage reclaim", () => {
     await expect(getObject(path)).resolves.toBeInstanceOf(Buffer);
   });
 
-  it("never touches sibling assets outside clips/ — narration, captions or music", async () => {
+  it("never touches sibling assets outside clips/ and beats/ — narration, captions, music or the thumbnail", async () => {
     const { videoId } = await makePublishableVideo();
 
     await createClipAsset(videoId, 0);
@@ -864,6 +885,10 @@ describe("publishService.publish — clip storage reclaim", () => {
     const narrationPath = storagePath(videoId, "audio", "narration.mp3");
     const captionsPath = storagePath(videoId, "captions", "alignment.json");
     const musicPath = storagePath(videoId, "music", "track.mp3");
+    // The thumbnail is the sibling that only became dangerous when reclaim
+    // widened to `kind: "IMAGE"` for beats: it shares the video prefix AND the
+    // kind, and the sub-prefix is now the only thing between it and deletion.
+    const thumbnailPath = storagePath(videoId, "thumbnails", "cover.jpg");
 
     await putObject(narrationPath, Buffer.from(`fake-narration-${RUN}`), "audio/mpeg");
     clipStoragePaths.push(narrationPath);
@@ -871,12 +896,17 @@ describe("publishService.publish — clip storage reclaim", () => {
     clipStoragePaths.push(captionsPath);
     await putObject(musicPath, Buffer.from(`fake-music-${RUN}`), "audio/mpeg");
     clipStoragePaths.push(musicPath);
+    await putObject(thumbnailPath, Buffer.from(`fake-thumb-${RUN}`), "image/jpeg");
+    clipStoragePaths.push(thumbnailPath);
 
     const narrationAsset = await prisma.asset.create({
       data: { kind: "AUDIO", storagePath: narrationPath, mimeType: "audio/mpeg", provider: "ELEVENLABS" },
     });
     const captionsAsset = await prisma.asset.create({
       data: { kind: "SUBTITLE", storagePath: captionsPath, mimeType: "application/json", provider: "ELEVENLABS" },
+    });
+    const thumbnailAsset = await prisma.asset.create({
+      data: { kind: "IMAGE", storagePath: thumbnailPath, mimeType: "image/jpeg", provider: "OPENAI" },
     });
     const musicAsset = await prisma.asset.create({
       data: {
@@ -893,9 +923,9 @@ describe("publishService.publish — clip storage reclaim", () => {
 
     // The sibling rows are untouched — not deleted, not soft-deleted.
     const survivors = await prisma.asset.findMany({
-      where: { id: { in: [narrationAsset.id, captionsAsset.id, musicAsset.id] } },
+      where: { id: { in: [narrationAsset.id, captionsAsset.id, musicAsset.id, thumbnailAsset.id] } },
     });
-    expect(survivors).toHaveLength(3);
+    expect(survivors).toHaveLength(4);
     for (const asset of survivors) {
       expect(asset.deletedAt).toBeNull();
     }
@@ -904,6 +934,7 @@ describe("publishService.publish — clip storage reclaim", () => {
     await expect(getObject(narrationPath)).resolves.toBeInstanceOf(Buffer);
     await expect(getObject(captionsPath)).resolves.toBeInstanceOf(Buffer);
     await expect(getObject(musicPath)).resolves.toBeInstanceOf(Buffer);
+    await expect(getObject(thumbnailPath)).resolves.toBeInstanceOf(Buffer);
 
     // And the clip itself was still reclaimed — this isn't just testing
     // that reclaim silently does nothing.
@@ -915,6 +946,33 @@ describe("publishService.publish — clip storage reclaim", () => {
       },
     });
     expect(clips).toHaveLength(0);
+  });
+
+  it("deletes a generated video's beat pictures too, not only stock clips", async () => {
+    // Beats used to be spared, because reclaim filtered on `kind: "VIDEO"` and
+    // the `clips/` prefix while a generated video's pictures are `kind:
+    // "IMAGE"` under `beats/` — so they matched neither half and were kept
+    // forever. That is what took a 38GB disk to 100% and killed a render
+    // mid-write with ENOSPC. A long-form video is 40 of these.
+    const { videoId } = await makePublishableVideo();
+
+    const beatPath = await createBeatAsset(videoId, 0);
+
+    const service = new PublishService(createUploadFetch().fetchImpl);
+    await service.publish(userId, videoId);
+
+    const beats = await prisma.asset.findMany({
+      where: {
+        deletedAt: null,
+        storagePath: { startsWith: `videos/${videoId}/beats/` },
+      },
+    });
+    expect(beats).toHaveLength(0);
+
+    // The row is soft-deleted AND the object is gone — the bytes are the whole
+    // point of this, so asserting only the row would pass while the disk kept
+    // filling.
+    await expect(getObject(beatPath)).rejects.toThrow();
   });
 });
 
