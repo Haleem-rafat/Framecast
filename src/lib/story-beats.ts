@@ -190,6 +190,23 @@ function isBeatScripted(anchored: readonly AnchoredCue[]): boolean {
   return anchored.length > 0 && anchored.every((cue) => Boolean(cue.beat));
 }
 
+/**
+ * True when this script's writer chose where every shot changes.
+ *
+ * The same signal `isBeatScripted` reads, one format later and for the same
+ * reason: `footage.service.ts` and `render.service.ts` must reach an identical
+ * grouping without either of them being able to see the channel's
+ * `footageStyle`, and the cues are the only thing both of them have.
+ *
+ * `every`, not `some`. A script where half the cues carry a shot tag is a parse
+ * that went wrong, and grouping half of it one way and half the other produces
+ * a video whose cutting rhythm changes in the middle for no reason a viewer
+ * could name.
+ */
+function isShotScripted(anchored: readonly AnchoredCue[]): boolean {
+  return anchored.length > 0 && anchored.every((cue) => Boolean(cue.shot));
+}
+
 export function planStoryBeats(
   anchored: readonly AnchoredCue[],
   durationSeconds: number,
@@ -208,7 +225,24 @@ export function planStoryBeats(
   // So this is not a tuned constant but a different plan. `BEAT_MIN_SECONDS`
   // does not apply and must not: it is a floor written for the genre above, and
   // the format below deliberately lives beneath it.
-  if (isBeatScripted(anchored)) {
+  //
+  // The long-form list format arrives at the same place from the other end. It
+  // is eight minutes rather than forty-five seconds, but its writer is asked
+  // for about forty sections rather than the fifty-odd an ordinary explainer
+  // produces, and it tags each one `still` or `motion` — so the shot count IS
+  // the section count, and grouping it again by seconds would undo the
+  // decision the writer was asked to make. Left to the arithmetic below, forty
+  // tagged cues across 480 seconds come out as twenty pictures of twenty-four
+  // seconds; the format wants forty of twelve, which is again beneath
+  // `BEAT_MIN_SECONDS` and again on purpose.
+  //
+  // `MAX_BEATS` is deliberately not applied on this path. It is a money
+  // ceiling for the plan below, where the count is derived from a duration and
+  // a four-hour input can ask for 720 generations off its own bat. Here the
+  // writer's count is the count, it arrived with the script, and capping it
+  // would drop shot forty-one silently — leaving the last minute of narration
+  // with no picture over it to save five cents.
+  if (isBeatScripted(anchored) || isShotScripted(anchored)) {
     return anchored.map((cue, index) => ({
       sectionIndices: [index],
       cues: [cue.cue],

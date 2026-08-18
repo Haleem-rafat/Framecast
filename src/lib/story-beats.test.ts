@@ -255,3 +255,93 @@ describe("a beat-scripted narration gets one picture per cue", () => {
     expect(planStoryBeats(plain, 45).length).toBeLessThan(12);
   });
 });
+
+describe("a shot-scripted narration gets one picture per cue", () => {
+  /** Cues as the long-form list format produces them: every section tagged
+   *  with the kind of picture it wants, one in five asking for real motion. */
+  function shotCues(count: number): AnchoredCue[] {
+    return Array.from({ length: count }, (_, index) => ({
+      cue: `shot ${index + 1}`,
+      startChar: index * 130,
+      endChar: (index + 1) * 130,
+      shot: (index % 5 === 4 ? "motion" : "still") as "still" | "motion",
+    }));
+  }
+
+  it("gives an eight-minute list forty pictures, not twenty", () => {
+    // The number this task exists for. Left to the seconds grouping, forty
+    // sections across 480s ask for round(480/20) = 24 beats and then lose four
+    // more to the BEAT_MIN_SECONDS floor, landing at 20 pictures of 24 seconds
+    // each — a slideshow over seven list entries. The writer was asked for
+    // forty shots, so forty is what it gets.
+    const beats = planStoryBeats(shotCues(40), 480);
+
+    expect(beats).toHaveLength(40);
+    expect(beats.every((beat) => beat.sectionIndices.length === 1)).toBe(true);
+    expect(beats.map((beat) => beat.cues[0])).toEqual(
+      Array.from({ length: 40 }, (_, index) => `shot ${index + 1}`),
+    );
+  });
+
+  it("ignores the fifteen-second floor, at twelve seconds a shot", () => {
+    // 480s over 40 shots is 12s a picture, under BEAT_MIN_SECONDS by three.
+    // That floor was measured on four-minute bedtime stories; this format is
+    // beneath it deliberately, exactly as the single-insight one is.
+    const anchored = shotCues(40);
+    const starts = anchored.map((_cue, index) => (index * 480) / 40);
+    const durations = sectionDurations(starts, 480, 1);
+
+    for (const held of beatSeconds(planStoryBeats(anchored, 480), durations)) {
+      expect(held).toBeLessThan(BEAT_MIN_SECONDS);
+    }
+  });
+
+  it("does not cap at MAX_BEATS, because the writer's count is the count", () => {
+    // MAX_BEATS is a money ceiling for the seconds plan, where a four-hour
+    // input can ask for 720 generations off its own bat. Applying it here
+    // would drop shot 41 and leave the last minute of narration with no
+    // picture over it.
+    expect(planStoryBeats(shotCues(MAX_BEATS + 4), 480)).toHaveLength(MAX_BEATS + 4);
+  });
+
+  it("falls back to grouping when only some cues carry a shot tag", () => {
+    // Half-tagged cues are a parse that went wrong, and the failure this
+    // prevents is a video that cuts every twelve seconds for half its length
+    // and every twenty-four for the rest.
+    const mixed = shotCues(40);
+    delete mixed[17].shot;
+
+    expect(planStoryBeats(mixed, 480)).toHaveLength(20);
+  });
+
+  it("leaves an untagged narration grouped exactly as it is today", () => {
+    // The pin the Global Constraints ask for: an existing video's picture plan
+    // must not move. These are the beats `planStoryBeats` has always returned
+    // for the canonical case — 27 sections of a four-minute story — written
+    // out rather than recomputed, so a change to the grouping has to be typed
+    // here by hand before it can ship.
+    const beats = planStoryBeats(evenCues(27), 240);
+
+    expect(beats.map((beat) => beat.sectionIndices)).toEqual([
+      [0, 1],
+      [2, 3],
+      [4, 5],
+      [6, 7],
+      [8, 9],
+      [10, 11],
+      [12, 13],
+      [14, 15, 16],
+      [17, 18],
+      [19, 20, 21],
+      [22, 23],
+      [24, 25, 26],
+    ]);
+  });
+
+  it("leaves an untagged eight-minute narration on the seconds plan", () => {
+    // The same forty cues as the first test with the tags taken off. Twenty
+    // pictures, which is what a video collected before this branch existed
+    // already has on disk — re-planning one must not ask for twenty more.
+    expect(planStoryBeats(evenCues(40), 480)).toHaveLength(20);
+  });
+});
