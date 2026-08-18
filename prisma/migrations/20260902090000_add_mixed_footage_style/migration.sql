@@ -1,0 +1,27 @@
+-- A fifth footage style, and the first whose pictures come from two sources in
+-- one video.
+--
+-- The four before it each answer "where does this channel's footage come from"
+-- with one answer for the whole video: Pexels and Pixabay, Pixabay's animation
+-- library, or the image model. The long-form list format cannot. Its writer
+-- tags every section `still` or `motion` — a generated still carries the look
+-- and costs real money, a stock clip carries the fifth of the shots that are
+-- actually about something moving and costs nothing — and the video wants both,
+-- interleaved, in the order the script asked for them.
+--
+-- Nothing in the renderer changes to play that. `planRender` already sets
+-- `still` from the clip path's extension and `buildSegmentArgs` already opens a
+-- `.png` with `-loop 1` and an `.mp4` with `-stream_loop -1`, so a timeline
+-- mixing the two has always composed. What did not exist is a collector that
+-- files both kinds under `videos/{id}/beats/` and a query that looks for both;
+-- this value is what selects that collector.
+--
+-- Adding a value rather than replacing one, exactly as ILLUSTRATED and
+-- CINEMATIC were added. Every existing brand row keeps the value it has,
+-- LIVE_ACTION stays the column default, and no channel's footage changes until
+-- an operator picks the new option — so this is safe against every row already
+-- in the table and there is nothing to backfill. Postgres permits
+-- ALTER TYPE ... ADD VALUE inside a transaction (PG 12+) as long as the new
+-- value is not *used* in the same transaction; nothing below uses it, because
+-- there is nothing below.
+ALTER TYPE "FootageStyle" ADD VALUE 'MIXED';

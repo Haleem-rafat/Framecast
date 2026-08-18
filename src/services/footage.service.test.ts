@@ -71,6 +71,45 @@ function makeDownloader(): ClipDownloader {
   );
 }
 
+/** An image provider that never touches the network, records what it was
+ *  asked for, and can be told to refuse specific calls.
+ *
+ *  At module scope rather than inside the illustrated block because the mixed
+ *  block generates pictures too, and a second copy of it is a second place for
+ *  the fake token counts to drift from the ones the spend assertions use. */
+function fakeImages(options: { failOn?: number[] } = {}): ImageProvider & {
+  calls: ImageGenerationInput[];
+} {
+  const calls: ImageGenerationInput[] = [];
+  const failOn = new Set(options.failOn ?? []);
+
+  return {
+    calls,
+    generate: vi.fn(async (input: ImageGenerationInput) => {
+      const index = calls.length;
+      calls.push(input);
+
+      if (failOn.has(index)) {
+        // The shape a real refusal arrives in — see `GatewayImageProvider`.
+        throw new ProviderError("GATEWAY", "Your request was rejected.", false);
+      }
+
+      return {
+        data: Buffer.from(`fake-illustration-${index}`),
+        model: FAKE_IMAGE_MODEL,
+        // The counts a real 1024x1536 illustration reports, and the price
+        // they come to at gpt-image-2's listed $5/M in, $30/M out. Stated as
+        // the measurement rather than the rounded figure so a test that
+        // asserts the spend is asserting the same arithmetic the provider
+        // does.
+        inputTokens: 1150,
+        outputTokens: 1372,
+        costUsd: (1150 * 5 + 1372 * 30) / 1_000_000,
+      };
+    }),
+  };
+}
+
 let userId: string;
 let projectId: string;
 let videoId: string;
@@ -957,41 +996,6 @@ describe("footageService.collect for an illustrated channel", () => {
 
   const SHEET_BYTES = Buffer.from("fake-character-sheet-png");
 
-  /** An image provider that never touches the network, records what it was
-   *  asked for, and can be told to refuse specific calls. */
-  function fakeImages(options: { failOn?: number[] } = {}): ImageProvider & {
-    calls: ImageGenerationInput[];
-  } {
-    const calls: ImageGenerationInput[] = [];
-    const failOn = new Set(options.failOn ?? []);
-
-    return {
-      calls,
-      generate: vi.fn(async (input: ImageGenerationInput) => {
-        const index = calls.length;
-        calls.push(input);
-
-        if (failOn.has(index)) {
-          // The shape a real refusal arrives in — see `GatewayImageProvider`.
-          throw new ProviderError("GATEWAY", "Your request was rejected.", false);
-        }
-
-        return {
-          data: Buffer.from(`fake-illustration-${index}`),
-          model: FAKE_IMAGE_MODEL,
-          // The counts a real 1024x1536 illustration reports, and the price
-          // they come to at gpt-image-2's listed $5/M in, $30/M out. Stated as
-          // the measurement rather than the rounded figure so a test that
-          // asserts the spend is asserting the same arithmetic the provider
-          // does.
-          inputTokens: 1150,
-          outputTokens: 1372,
-          costUsd: (1150 * 5 + 1372 * 30) / 1_000_000,
-        };
-      }),
-    };
-  }
-
   /**
    * A video on a channel branded ILLUSTRATED, with `cueCount` sections and a
    * narration of `durationSeconds`.
@@ -1400,5 +1404,324 @@ describe("footageService.collect for an illustrated channel", () => {
     ).rejects.toBeInstanceOf(ConflictError);
 
     expect(images.calls).toHaveLength(0);
+  });
+});
+
+/**
+ * The one style whose pictures come from two sources inside a single video.
+ *
+ * Every test here turns on the same thing: the split is per beat and it comes
+ * from the SCRIPT, not from the channel. A `shot: "motion"` cue is searched for
+ * and downloaded, everything else is drawn, and both land under `beats/`
+ * differing only by extension — which is the only question the renderer ever
+ * asks about them.
+ */
+describe("footageService.collect for a mixed channel", () => {
+  let mixedVideoIds: string[];
+
+  beforeEach(() => {
+    mixedVideoIds = [];
+  });
+
+  afterEach(async () => {
+    // Asset carries no FK back to Video, so the user cascade cannot reach these
+    // rows — same reason every block above cleans up by prefix.
+    for (const id of mixedVideoIds) {
+      await prisma.asset.deleteMany({ where: { storagePath: { startsWith: `videos/${id}/` } } });
+    }
+  });
+
+  /**
+   * A video on a channel branded MIXED, whose script tags every section
+   * `still` except the indices in `motionAt`.
+   *
+   * Every cue carries a tag, and that is load-bearing rather than tidy: one
+   * picture per cue is only reached when `isShotScripted` holds, and a beat
+   * covering several cues has no single answer to "what did the writer ask
+   * for" — see `wantsMotion`.
+   */
+  async function makeMixedVideo(options: {
+    cueCount: number;
+    motionAt?: number[];
+    /** Leave every cue untagged, as a script written before the shot
+     *  vocabulary existed is. */
+    untagged?: boolean;
+    durationSeconds?: number;
+  }): Promise<{ videoId: string }> {
+    const channel = await prisma.channel.create({
+      data: {
+        userId,
+        youtubeChannelId: `UC-mixed-${randomUUID()}`,
+        title: "Test mixed channel",
+        accessToken: "fake-access-token",
+        refreshToken: "fake-refresh-token",
+        tokenExpiresAt: new Date(Date.now() + 3600_000),
+      },
+    });
+
+    await prisma.channelBrand.create({
+      data: {
+        channelId: channel.id,
+        footageStyle: "MIXED",
+        tone: "brisk and concrete",
+      },
+    });
+
+    const project = await projectService.create(userId, {
+      name: `test-mixed-${randomUUID().slice(0, 8)}`,
+    });
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { channelId: channel.id },
+    });
+
+    const video = await videoService.create(userId, {
+      projectId: project.id,
+      title: "Seven bridges that should not stand up",
+      topic: "improbable bridges",
+    });
+    mixedVideoIds.push(video.id);
+
+    const motion = new Set(options.motionAt ?? []);
+    const cues = Array.from({ length: options.cueCount }, (_, index) => ({
+      anchor: `Section number ${index} opens here`,
+      cue: `shot ${index}`,
+      ...(options.untagged
+        ? {}
+        : { shot: motion.has(index) ? ("motion" as const) : ("still" as const) }),
+    }));
+    const content = cues
+      .map((c) => `${c.anchor} — the rest of this section's narration follows here.`)
+      .join(" ");
+
+    const script = await prisma.script.create({ data: { videoId: video.id } });
+    const version = await prisma.scriptVersion.create({
+      data: { scriptId: script.id, version: 1, content, cues },
+    });
+    await prisma.script.update({
+      where: { id: script.id },
+      data: { activeVersionId: version.id },
+    });
+
+    await prisma.voiceOver.create({
+      data: {
+        videoId: video.id,
+        provider: "ELEVENLABS",
+        voiceId: "test-voice",
+        durationSeconds: options.durationSeconds ?? 480,
+      },
+    });
+
+    return { videoId: video.id };
+  }
+
+  /** Every picture this video ended up with, of either kind, in play order. */
+  async function beatPaths(videoId: string): Promise<string[]> {
+    const assets = await prisma.asset.findMany({
+      where: {
+        kind: { in: ["IMAGE", "VIDEO"] },
+        storagePath: { startsWith: `videos/${videoId}/beats/` },
+      },
+      orderBy: { storagePath: "asc" },
+    });
+
+    return assets.map((asset) => asset.storagePath);
+  }
+
+  it("draws the still shots and downloads the ones the script tagged motion", async () => {
+    // The whole feature, in one run. Ten shots, two of them about something
+    // actually moving: eight generations at real money and two free downloads,
+    // and every one of the ten filed under the same prefix so the renderer's
+    // single question — what is under `beats/` — still has one answer.
+    const images = fakeImages();
+    const downloader = makeDownloader();
+    const { videoId } = await makeMixedVideo({ cueCount: 10, motionAt: [2, 5] });
+
+    const result = await new FootageService(
+      { PEXELS: fakeProvider([makeClip("PEXELS", "pex-a"), makeClip("PEXELS", "pex-b")]) },
+      downloader,
+      images,
+    ).collect(userId, videoId);
+
+    expect(images.calls).toHaveLength(8);
+    expect(downloader).toHaveBeenCalledTimes(2);
+    expect(result.clipCount).toBe(10);
+    expect(result.missingBeats).toEqual([]);
+
+    expect(await beatPaths(videoId)).toEqual([
+      `videos/${videoId}/beats/beat-000.png`,
+      `videos/${videoId}/beats/beat-001.png`,
+      `videos/${videoId}/beats/beat-002.mp4`,
+      `videos/${videoId}/beats/beat-003.png`,
+      `videos/${videoId}/beats/beat-004.png`,
+      `videos/${videoId}/beats/beat-005.mp4`,
+      `videos/${videoId}/beats/beat-006.png`,
+      `videos/${videoId}/beats/beat-007.png`,
+      `videos/${videoId}/beats/beat-008.png`,
+      `videos/${videoId}/beats/beat-009.png`,
+    ]);
+
+    // The eight drawn ones are what was billed; the two downloads are free.
+    expect(result.costUsd).toBeCloseTo((8 * (1150 * 5 + 1372 * 30)) / 1_000_000, 6);
+    expect(result.bySource.OPENAI).toBe(8);
+    expect(result.bySource.PEXELS).toBe(2);
+  });
+
+  it("searches with the motion shot's own cue, not the video's topic", async () => {
+    // A list video's shots are about different things; searching the topic
+    // would give every motion slot the same generic clip of the subject.
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-a")]);
+    const { videoId } = await makeMixedVideo({ cueCount: 6, motionAt: [3] });
+
+    await new FootageService({ PEXELS: pexels }, makeDownloader(), fakeImages()).collect(
+      userId,
+      videoId,
+    );
+
+    expect(pexels.search).toHaveBeenCalledTimes(1);
+    expect(pexels.search).toHaveBeenCalledWith("shot 3", expect.any(Number));
+  });
+
+  it("never gives two motion shots the same clip", async () => {
+    // Both searches surface the same top result, and playing it twice in one
+    // video is the repetition `firstUnused` exists to prevent on the
+    // per-section path.
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-a"), makeClip("PEXELS", "pex-b")]);
+    const { videoId } = await makeMixedVideo({ cueCount: 6, motionAt: [1, 4] });
+
+    await new FootageService({ PEXELS: pexels }, makeDownloader(), fakeImages()).collect(
+      userId,
+      videoId,
+    );
+
+    const clips = await prisma.asset.findMany({
+      where: { kind: "VIDEO", storagePath: { startsWith: `videos/${videoId}/beats/` } },
+    });
+
+    expect(clips).toHaveLength(2);
+    expect(new Set(clips.map((clip) => clip.externalId)).size).toBe(2);
+  });
+
+  it("draws a motion shot the stock libraries have nothing for, rather than leaving a gap", async () => {
+    // The fallback direction, and it only goes one way. A thinner stock library
+    // makes the video slightly more expensive; it must never leave a hole. The
+    // opposite substitution — stock into a shot the writer wanted drawn — is
+    // deliberately not offered, because the drawn shots are the channel's look.
+    const images = fakeImages();
+    const downloader = makeDownloader();
+    const { videoId } = await makeMixedVideo({ cueCount: 6, motionAt: [2] });
+
+    const lines: string[] = [];
+    const result = await new FootageService(
+      { PEXELS: fakeProvider([]), PIXABAY: fakeProvider([]) },
+      downloader,
+      images,
+    ).collect(userId, videoId, (line) => lines.push(line));
+
+    expect(images.calls).toHaveLength(6);
+    expect(downloader).not.toHaveBeenCalled();
+    expect(result.missingBeats).toEqual([]);
+    expect(await beatPaths(videoId)).toEqual(
+      Array.from(
+        { length: 6 },
+        (_asset, index) => `videos/${videoId}/beats/beat-${String(index).padStart(3, "0")}.png`,
+      ),
+    );
+
+    // Said out loud, because an operator reading the cost afterwards otherwise
+    // has no way to tell a drawn fallback from a shot they asked to be drawn.
+    expect(
+      lines.some((line) => line.includes("beat 3/6") && line.includes("no stock clip")),
+    ).toBe(true);
+  });
+
+  it("falls back to the second provider when the first has nothing", async () => {
+    const pexels = fakeProvider([]);
+    const pixabay = fakeProvider([makeClip("PIXABAY", "pix-a")]);
+    const { videoId } = await makeMixedVideo({ cueCount: 4, motionAt: [1] });
+
+    await new FootageService(
+      { PEXELS: pexels, PIXABAY: pixabay },
+      makeDownloader(),
+      fakeImages(),
+    ).collect(userId, videoId);
+
+    expect(pexels.search).toHaveBeenCalledTimes(1);
+    expect(pixabay.search).toHaveBeenCalledTimes(1);
+    expect(await beatPaths(videoId)).toContain(`videos/${videoId}/beats/beat-001.mp4`);
+  });
+
+  it("collects again only what is missing, whichever kind the rest are", async () => {
+    // Per-beat idempotency, extended to the other extension. A re-run that
+    // re-downloaded the motion shots would be free but wrong — it would replace
+    // a clip whose length the renderer has already planned around — and one
+    // that redrew the stills would be neither free nor right.
+    const first = fakeImages({ failOn: [4] });
+    const { videoId } = await makeMixedVideo({ cueCount: 10, motionAt: [2, 5] });
+
+    const firstResult = await new FootageService(
+      { PEXELS: fakeProvider([makeClip("PEXELS", "pex-a"), makeClip("PEXELS", "pex-b")]) },
+      makeDownloader(),
+      first,
+    ).collect(userId, videoId);
+
+    // Eight drawn, one of them refused; two downloaded.
+    expect(first.calls).toHaveLength(8);
+    expect(firstResult.missingBeats).toHaveLength(1);
+    expect(await beatPaths(videoId)).toHaveLength(9);
+
+    const second = fakeImages();
+    const downloader = makeDownloader();
+    const result = await new FootageService(
+      { PEXELS: fakeProvider([makeClip("PEXELS", "pex-c")]) },
+      downloader,
+      second,
+    ).collect(userId, videoId);
+
+    // Only the beat that had nothing. The two motion slots already on disk are
+    // not searched for again, which is what the widened existing-asset query
+    // buys.
+    expect(second.calls).toHaveLength(1);
+    expect(downloader).not.toHaveBeenCalled();
+    expect(result.missingBeats).toEqual([]);
+    expect(result.clipCount).toBe(10);
+    expect(await beatPaths(videoId)).toHaveLength(10);
+  });
+
+  it("draws every shot of a script written before the shot tags existed", async () => {
+    // A MIXED channel whose script is untagged is not an error state — it is
+    // every script that predates the vocabulary. `planStoryBeats` groups those
+    // by seconds, so a beat covers several cues and has no single answer to
+    // what the writer wanted; the collector must then behave exactly as a
+    // CINEMATIC one and search nobody.
+    const pexels = fakeProvider([makeClip("PEXELS", "pex-a")]);
+    const images = fakeImages();
+    const { videoId } = await makeMixedVideo({
+      cueCount: 10,
+      motionAt: [2, 5],
+      untagged: true,
+      durationSeconds: 240,
+    });
+
+    const result = await new FootageService({ PEXELS: pexels }, makeDownloader(), images).collect(
+      userId,
+      videoId,
+    );
+
+    expect(pexels.search).not.toHaveBeenCalled();
+    expect(result.clipCount).toBeLessThan(10);
+    expect((await beatPaths(videoId)).every((path) => path.endsWith(".png"))).toBe(true);
+  });
+
+  it("needs no character sheet, so a mixed channel can collect on its first video", async () => {
+    // The brand row this fixture writes has no `characterBrief`, no `artStyle`
+    // and no sheet — the three things an ILLUSTRATED channel is refused for. A
+    // list video has no recurring protagonist to hold, so none of them apply.
+    const images = fakeImages();
+    const { videoId } = await makeMixedVideo({ cueCount: 4, motionAt: [] });
+
+    await expect(
+      new FootageService({}, makeDownloader(), images).collect(userId, videoId),
+    ).resolves.toMatchObject({ clipCount: 4 });
   });
 });

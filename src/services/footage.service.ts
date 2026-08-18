@@ -10,7 +10,7 @@ import {
   findArtStyle,
   type ArtStyle,
 } from "@/lib/art-styles";
-import { beatImagePath, beatPrefix } from "@/lib/beat-storage";
+import { beatAssetPath, beatClipPath, beatImagePath, beatPrefix } from "@/lib/beat-storage";
 import { anchorCues, type AnchoredCue, type ScriptCue } from "@/lib/script-cues";
 import { planStoryBeats, type StoryBeat } from "@/lib/story-beats";
 import { getObject, putObject, storagePath } from "@/lib/storage";
@@ -235,13 +235,49 @@ export type FootagePlan =
    * held constant, so there is no sheet to pass and no brief to write; see
    * `CINEMATIC_STYLE_BIBLE`.
    */
-  | { readonly kind: "CINEMATIC" };
+  | { readonly kind: "CINEMATIC" }
+  /**
+   * Generate most of the shots and search for the rest, inside one video.
+   *
+   * The first plan whose sources are not a property of the channel at all: the
+   * split is per beat and it comes from the script, because the writer of the
+   * long-form list format tags every section `still` or `motion` (see
+   * `CueMeta.shot`). That is why this arm carries no provider list of its own
+   * to sit beside `STOCK`'s — there is no per-channel choice here to record.
+   * Which providers a motion shot searches is `MIXED_STOCK_PROVIDERS` below,
+   * and it is a constant for the reason stated there.
+   */
+  | { readonly kind: "MIXED" };
 
 export const FOOTAGE_SEARCH_PLAN: Record<FootageStyle, FootagePlan> = {
   LIVE_ACTION: { kind: "STOCK", providers: ["PEXELS", "PIXABAY"] },
   CARTOON: { kind: "STOCK", providers: ["PIXABAY_CARTOON"] },
   ILLUSTRATED: { kind: "ILLUSTRATED" },
   CINEMATIC: { kind: "CINEMATIC" },
+  MIXED: { kind: "MIXED" },
+};
+
+/**
+ * Where a MIXED video's `motion` shots are searched for.
+ *
+ * The live-action pair, and a constant rather than a field on the plan because
+ * there is nothing here for an operator to decide. A motion shot exists because
+ * the writer judged that these particular words are about something *moving* —
+ * a wave breaking, a crowd crossing, a machine running — and filmed footage is
+ * the only kind of stock that answers that. Pixabay's animation library is
+ * absent for the same reason it is absent from LIVE_ACTION's plan: it means
+ * "rendered rather than filmed", and a motion-graphics loop dropped between two
+ * generated stills is the one substitution this style must never make.
+ */
+const MIXED_STOCK_PROVIDERS: readonly FootageProviderKey[] = ["PEXELS", "PIXABAY"];
+
+/** How each generating style names itself in a refusal an operator reads. A
+ *  map rather than a ternary because there are three of them now, and the
+ *  third one's word is neither of the other two's. */
+const GENERATED_STYLE_NOUN: Record<"ILLUSTRATED" | "CINEMATIC" | "MIXED", string> = {
+  ILLUSTRATED: "Illustrated",
+  CINEMATIC: "Cinematic",
+  MIXED: "Mixed",
 };
 
 /**
@@ -412,7 +448,12 @@ function extensionFromUrl(url: string): string {
  *
  * The third searches nobody. An ILLUSTRATED channel's pictures are generated,
  * one per story beat, every one of them conditioned on the channel's character
- * sheet — see `collectIllustrated`.
+ * sheet — see `collectGenerated`.
+ *
+ * The fifth is the only one that does both inside a single video. A MIXED
+ * channel generates every beat except the ones its script tagged `motion`, and
+ * searches stock for those — filing both under one prefix, because the
+ * renderer's only question about a picture is what its file extension is.
  */
 export class FootageService {
   private readonly providers: FootageProviders;
@@ -545,7 +586,7 @@ export class FootageService {
         ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
         : [];
 
-    if (plan.kind === "ILLUSTRATED" || plan.kind === "CINEMATIC") {
+    if (plan.kind === "ILLUSTRATED" || plan.kind === "CINEMATIC" || plan.kind === "MIXED") {
       return this.collectGenerated({
         // Passed rather than re-derived: `collectGenerated` branches on it for
         // the character sheet and for the prompt, and re-reading the brand row
@@ -566,6 +607,16 @@ export class FootageService {
     // so the storage prefix is the scoping key. Matches render.service.ts's
     // (Task 6) own clip lookup, the one convention for scoping an Asset to
     // its video.
+    //
+    // Since MIXED, this prefix can also match a beat's stock clip under
+    // `beats/` — reachable only by collecting a mixed video and then switching
+    // its channel to a stock style and collecting again. Deliberately not
+    // filtered out: the two or three clips it over-counts only make this run
+    // download that many fewer, and the render would play the beats anyway
+    // (see render.service.ts, which asks what collection produced rather than
+    // what the channel is set to). A `NOT: { startsWith: beatPrefix }` here
+    // would be a second place that has to know how beats are filed, for a
+    // state nothing downstream is harmed by.
     const existing = await prisma.asset.findMany({
       where: {
         kind: "VIDEO",
@@ -710,12 +761,20 @@ export class FootageService {
   /**
    * One generated picture per STORY BEAT — not per section.
    *
-   * Serves both generating styles. `ILLUSTRATED` draws a children's-book scene
-   * conditioned on the channel's character sheet; `CINEMATIC` generates a
-   * photographic still conditioned on nothing but the format's own style bible.
-   * Everything else — the beats, the idempotency, the per-beat failure
-   * reporting, the sizes, the cost accounting — is identical, which is why they
-   * share a method rather than a copy of one.
+   * Serves all three generating styles. `ILLUSTRATED` draws a children's-book
+   * scene conditioned on the channel's character sheet; `CINEMATIC` generates a
+   * photographic still conditioned on nothing but the format's own style bible;
+   * `MIXED` generates the same still for every beat except the ones the script
+   * tagged `motion`, which it downloads instead. Everything else — the beats,
+   * the idempotency, the per-beat failure reporting, the sizes, the cost
+   * accounting — is identical, which is why they share a method rather than a
+   * copy of one.
+   *
+   * The mixed path is one branch at the top of each beat and nothing more, and
+   * that is the measure of how little the feature costs: both kinds are filed
+   * under `beats/` and differ only by extension, so no caller and no later
+   * stage has to be told which slot got which. `render.service.ts` reads the
+   * prefix and `planRender` reads the extension, exactly as they already did.
    *
    * The pre-flight refusals are where they differ, and they differ completely:
    * an illustrated channel is refused without a character brief, an art style
@@ -755,7 +814,7 @@ export class FootageService {
    * nobody notices until it is published.
    */
   private async collectGenerated(args: {
-    kind: "ILLUSTRATED" | "CINEMATIC";
+    kind: "ILLUSTRATED" | "CINEMATIC" | "MIXED";
     videoId: string;
     anchored: AnchoredCue[];
     durationSeconds: number;
@@ -770,6 +829,10 @@ export class FootageService {
   }): Promise<CollectFootageResult> {
     const { kind, videoId, anchored, durationSeconds, format, brand, onProgress } = args;
     const illustrated = kind === "ILLUSTRATED";
+    // Whether any beat of this video may end up as a downloaded clip rather
+    // than a drawn still. Only MIXED, and it gates every stock query below —
+    // an illustrated or cinematic run must go on searching nobody at all.
+    const mixed = kind === "MIXED";
 
     // Everything an illustrated channel is refused for, and none of which a
     // cinematic one has: the brief, the art style and the sheet all exist to
@@ -819,7 +882,7 @@ export class FootageService {
     // that is what it is.
     if (anchored.length === 0) {
       throw new ConflictError(
-        `${illustrated ? "Illustrated" : "Cinematic"} footage needs a script with ` +
+        `${GENERATED_STYLE_NOUN[kind]} footage needs a script with ` +
           "section cues to draw from, and this video's script has none. Regenerate " +
           "the script, then collect again.",
       );
@@ -836,15 +899,67 @@ export class FootageService {
       sheet = await getObject(brand.characterSheetPath);
     }
 
+    // Both kinds, because a MIXED run's slots are stills and clips under one
+    // prefix (see `beatClipPath`). Widened for every style rather than only for
+    // MIXED: nothing but a mixed collection has ever written a VIDEO asset
+    // under `beats/`, so an illustrated or cinematic run's result set is
+    // byte-for-byte what it was — and a style-dependent query here would be a
+    // second place for the two to disagree about what a beat already has.
     const existing = await prisma.asset.findMany({
       where: {
-        kind: "IMAGE",
+        kind: { in: ["IMAGE", "VIDEO"] },
         deletedAt: null,
         storagePath: { startsWith: beatPrefix(videoId) },
       },
-      select: { storagePath: true },
+      // `provider` and `externalId` come along for the mixed path's sake: the
+      // first is what a re-run's `bySource` is rebuilt from, and the second is
+      // how a clip a previous run already spent on this video is kept from
+      // being downloaded again into a second beat.
+      select: { storagePath: true, provider: true, externalId: true },
     });
     const existingPaths = new Set(existing.map((asset) => asset.storagePath));
+
+    /**
+     * Whether this beat is one the script asked for real movement in.
+     *
+     * A beat covers exactly one cue on this path (see `isShotScripted`), so
+     * "what did the writer ask for" has a single answer per beat. A beat
+     * covering several cues cannot, which is why the mixed plan is only
+     * reachable from a shot-scripted script — and why this returns false for a
+     * multi-cue beat rather than picking one of its cues' answers. A MIXED
+     * channel whose script predates the shot tags therefore collects exactly
+     * what a CINEMATIC one would: every beat drawn, nothing searched for.
+     */
+    const wantsMotion = (index: number): boolean =>
+      mixed &&
+      beats[index].sectionIndices.length === 1 &&
+      anchored[beats[index].sectionIndices[0]].shot === "motion";
+
+    // Rebuilt from what is already on disk rather than started at zero, so a
+    // re-run's totals describe the video rather than the run — the same thing
+    // `clipCount` has always meant here. An illustrated or cinematic video's
+    // beat assets are all `provider: "OPENAI"`, so this reproduces the old
+    // `{ OPENAI: existingPaths.size }` exactly; a mixed one's motion slots
+    // land under PEXELS or PIXABAY instead.
+    const bySource: Record<string, number> = { OPENAI: 0 };
+    for (const asset of existing) {
+      const source = asset.provider ?? "OPENAI";
+      bySource[source] = (bySource[source] ?? 0) + 1;
+    }
+
+    // Every stock clip this video has already spent a slot on, so two motion
+    // shots whose searches both surface the same top result do not play the
+    // same footage twice — the same guarantee `firstUnused` gives the
+    // per-section collector, held across re-runs by seeding it from disk.
+    // A drawn beat's `externalId` is its image model rather than a clip id and
+    // is swept in here too; harmless, because no stock clip's id can collide
+    // with `openai/gpt-image-2`, and filtering it out would mean teaching this
+    // set which kind each asset is for no gain.
+    const usedExternalIds = new Set(
+      existing
+        .map((asset) => asset.externalId)
+        .filter((externalId): externalId is string => externalId !== null),
+    );
 
     onProgress(
       `footage style ${kind}${style && illustrated ? ` (${style.name})` : ""} — ` +
@@ -853,23 +968,69 @@ export class FootageService {
         `${env.AI_ILLUSTRATION_MODEL} ` +
         (illustrated
           ? "from this channel's character sheet"
-          : "in one fixed grade and lens, a different subject each time"),
+          : "in one fixed grade and lens, a different subject each time") +
+        (mixed
+          ? `, and stock footage for the ${
+              beats.filter((_beat, index) => wantsMotion(index)).length
+            } shot(s) the script tagged motion`
+          : ""),
     );
 
     const missingBeats: number[] = [];
     let bytesDownloaded = 0;
     let costUsd = 0;
     let generated = 0;
+    let downloaded = 0;
 
     for (const [index, beat] of beats.entries()) {
-      const path = beatImagePath(videoId, index);
       const label = `beat ${index + 1}/${beats.length}`;
 
-      if (existingPaths.has(path)) {
+      // Whichever kind this beat already got, if it got one. Both are checked
+      // rather than only the still, so a re-run does not re-download a motion
+      // shot the last one stored — the same per-beat idempotency the drawn
+      // path has always had, extended to cover the other file extension.
+      if (beatAssetPath(existingPaths, videoId, index) !== null) {
         continue;
       }
 
       const stepStartedAt = Date.now();
+
+      // A motion shot: search for real footage before drawing anything.
+      //
+      // Falls through to the generation below when the search comes back with
+      // nothing, and that direction is deliberate — see `collectMotionBeat`.
+      if (wantsMotion(index)) {
+        const clip = await this.collectMotionBeat({
+          videoId,
+          index,
+          label,
+          cue: beat.cues.join(". "),
+          usedExternalIds,
+          onProgress,
+        });
+
+        if (clip) {
+          bySource[clip.source] = (bySource[clip.source] ?? 0) + 1;
+          bytesDownloaded += clip.bytes;
+          downloaded += 1;
+          continue;
+        }
+
+        // A motion shot with no clip becomes a drawn one rather than a gap.
+        //
+        // Same stance `collectPerCue` already takes when a section's own search
+        // comes back empty: a thinner stock library should make the video
+        // slightly more expensive, never leave a hole in it. The opposite
+        // fallback — a still shot filled with stock — is deliberately NOT
+        // offered: the stills carry the video's look, and substituting stock
+        // into one is how a channel starts looking like every other channel.
+        onProgress(
+          `[${label}] no stock clip for a motion shot — drawing it instead, ` +
+            "which costs a picture but never leaves a gap.",
+        );
+      }
+
+      const path = beatImagePath(videoId, index);
 
       let image;
       try {
@@ -983,13 +1144,89 @@ export class FootageService {
       );
     }
 
+    bySource.OPENAI += generated;
+
     return {
-      clipCount: existingPaths.size + generated,
-      bySource: { OPENAI: existingPaths.size + generated },
+      clipCount: existingPaths.size + generated + downloaded,
+      bySource,
       bytesDownloaded,
       missingBeats,
       costUsd,
     };
+  }
+
+  /**
+   * One beat's stock clip, downloaded and filed beside the stills.
+   *
+   * Returns undefined when nothing usable came back, and the caller draws the
+   * shot instead. That direction — search first, draw on failure — is the one
+   * that can be got wrong cheaply and only in one place: drawing first and
+   * searching on failure would spend real money on every motion shot before
+   * discovering that the free option was there all along.
+   *
+   * Searches in plan order and stops at the first provider with something
+   * unused, exactly as `collectPerCue` does per section, and for the same
+   * reason: Pexels' 200-searches-an-hour quota is spent by querying every
+   * source for every shot whether or not the first one answered. A failure from
+   * a provider is treated as "no results" rather than aborting the run — one
+   * transient 503 must not cost a video the eight pictures it has already paid
+   * for.
+   */
+  private async collectMotionBeat(args: {
+    videoId: string;
+    index: number;
+    label: string;
+    cue: string;
+    usedExternalIds: Set<string>;
+    onProgress: FootageProgress;
+  }): Promise<{ path: string; source: StockFootageSource; bytes: number } | undefined> {
+    const { videoId, index, label, cue, usedExternalIds, onProgress } = args;
+    const stepStartedAt = Date.now();
+
+    let clip: StockClip | undefined;
+    for (const key of MIXED_STOCK_PROVIDERS) {
+      const clips = await searchOrEmpty(
+        `${PROVIDER_LABEL[key]} "${cue}" (${label}, motion)`,
+        this.providers[key].search(cue, CUE_CANDIDATE_COUNT),
+        onProgress,
+      );
+      clip = firstUnused(clips, usedExternalIds);
+      if (clip) {
+        break;
+      }
+    }
+
+    if (!clip) {
+      return undefined;
+    }
+
+    const buffer = await this.downloadClip(clip);
+    // `.mp4` under the same prefix as the stills, which is the whole mixed
+    // design — see `beatClipPath`. Nothing downstream is told which slots are
+    // which; the renderer asks the extension.
+    const path = beatClipPath(videoId, index);
+    await putObject(path, buffer, "video/mp4");
+
+    await prisma.asset.create({
+      data: {
+        kind: "VIDEO",
+        storagePath: path,
+        mimeType: "video/mp4",
+        sizeBytes: BigInt(buffer.byteLength),
+        provider: clip.source,
+        externalId: clip.externalId,
+      },
+    });
+
+    usedExternalIds.add(clip.externalId);
+
+    onProgress(
+      `[${label}] motion — ${clip.source.toLowerCase()}-${clip.externalId}  ` +
+        `${clip.width}x${clip.height}  ${Math.round(clip.durationSeconds)}s  ` +
+        `${formatBytes(buffer.byteLength)} … stored (${formatElapsed(Date.now() - stepStartedAt)})`,
+    );
+
+    return { path, source: clip.source, bytes: buffer.byteLength };
   }
 
   /**
