@@ -1700,7 +1700,12 @@ describe("footageService.collect for a mixed channel", () => {
       cueCount: 10,
       motionAt: [2, 5],
       untagged: true,
-      durationSeconds: 240,
+      // 120s, not 240s: `beatCountFor` targets 20s a beat, so ten cues across
+      // 240s asks for twelve beats and is capped back to the ten cues — the
+      // grouping this test exists to prove would be a no-op, and the assertion
+      // below would fail against correct behaviour. At 120s it genuinely
+      // groups, to five.
+      durationSeconds: 120,
     });
 
     const result = await new FootageService({ PEXELS: pexels }, makeDownloader(), images).collect(
