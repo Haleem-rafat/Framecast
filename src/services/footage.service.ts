@@ -937,13 +937,41 @@ export class FootageService {
         },
       });
 
+      // The one table the spend dashboards read. Until now the money spent on
+      // pictures — the largest line in a render by an order of magnitude — was
+      // computed here, summed into a progress line and discarded, so
+      // /providers and the daily cost chart have never shown it. Best-effort
+      // and never awaited into the collection's failure path: a usage row that
+      // could not be written must not lose the operator a picture they have
+      // already paid for.
+      await prisma.providerUsage
+        .create({
+          data: {
+            provider: "OPENAI",
+            operation: "footage.collect",
+            model: image.model,
+            inputTokens: image.inputTokens ?? 0,
+            outputTokens: image.outputTokens ?? 0,
+            costUsd: image.costUsd,
+            succeeded: true,
+            latencyMs: Date.now() - stepStartedAt,
+          },
+        })
+        .catch(() => {});
+
       generated += 1;
       bytesDownloaded += image.data.byteLength;
       costUsd += image.costUsd;
 
       onProgress(
         `[${label}] ${beat.sectionIndices.length} section(s), ` +
-          `${formatBytes(image.data.byteLength)}, $${image.costUsd.toFixed(3)} … ` +
+          `${formatBytes(image.data.byteLength)}, ` +
+          // The raw counts beside the price, because the price alone cannot be
+          // audited: "$0.006" is what a 1,150-in picture costs when the
+          // provider reported no output tokens, and it is not distinguishable
+          // from a cheap model without seeing "1150 in / ? out" next to it.
+          `${image.inputTokens ?? "?"} in / ${image.outputTokens ?? "?"} out, ` +
+          `$${image.costUsd.toFixed(3)} … ` +
           `drawn (${formatElapsed(Date.now() - stepStartedAt)})`,
       );
     }
