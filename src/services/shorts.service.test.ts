@@ -65,7 +65,35 @@ const SECTIONS = [
   "Print more claims and each one is worth much less",
 ];
 const CONTENT = SECTIONS.join(" ");
-const NARRATION_SECONDS = CONTENT.length * 0.1;
+
+/**
+ * The narration a *long* video has: 24 sections of exactly 199 characters,
+ * which at 0.1s per character is 19.9s of speech each and 479.9s in total.
+ *
+ * It exists because the eight-section fixture above physically cannot answer
+ * the question a count is asked for. 39.9s of narration holds three shorts at
+ * the `MIN_SHORT_SECONDS` floor and no more, so a test asking for seven over it
+ * would pass by returning three and prove nothing about the count at all.
+ *
+ * 199 characters rather than 49, so eight minutes is 24 sections instead of 96:
+ * every section needs its own clip on disk and its own Asset row before
+ * `generate` will touch the video, and a fixture writing 96 of each would spend
+ * most of this file's runtime on rows no assertion reads. One section is
+ * already a legal window on its own — 19.9s sits between MIN_SHORT_SECONDS and
+ * MAX_SHORT_SECONDS — so seven separated single sections are seven shorts.
+ *
+ * Each is sliced and padded to the same length so the arithmetic stays
+ * countable (section n starts at exactly 20n seconds) and each carries its own
+ * number, so the eight-word anchors `anchorCues` matches on stay unique.
+ */
+const LONG_SECTION_CHARS = 199;
+const LONG_FILLER = "It keeps talking so the section is long enough to clip. ";
+
+const LONG_SECTIONS = Array.from({ length: 24 }, (_, index) =>
+  `Section ${index + 1} of the long-form fixture. ${LONG_FILLER.repeat(4)}`
+    .slice(0, LONG_SECTION_CHARS)
+    .padEnd(LONG_SECTION_CHARS, "."),
+);
 
 function evenAlignment(text: string): Alignment {
   const characters = [...text];
@@ -80,8 +108,8 @@ function evenAlignment(text: string): Alignment {
  *  derived with the real `extractAnchor`, so a change to how anchors are cut
  *  breaks this file rather than silently producing a script whose cues no
  *  longer match its own text. */
-function fixtureCues(): ScriptCue[] {
-  return SECTIONS.map((text, index) => ({
+function fixtureCues(sections: string[] = SECTIONS): ScriptCue[] {
+  return sections.map((text, index) => ({
     anchor: extractAnchor(text),
     cue: `clip ${index + 1}`,
   }));
@@ -105,9 +133,9 @@ function shotScriptedCues(): ScriptCue[] {
  * function, and a fixture that hard-coded its own grouping would keep passing
  * on the day one of them stopped agreeing.
  */
-function fixtureBeatCount(cues: ScriptCue[]): number {
-  const { anchored } = anchorCues(cues, CONTENT);
-  return planStoryBeats(anchored, Math.floor(NARRATION_SECONDS)).length;
+function fixtureBeatCount(cues: ScriptCue[], content: string = CONTENT): number {
+  const { anchored } = anchorCues(cues, content);
+  return planStoryBeats(anchored, Math.floor(content.length * 0.1)).length;
 }
 
 class FakeChildProcess extends EventEmitter {
@@ -272,6 +300,10 @@ afterEach(async () => {
  */
 async function makeClippableVideo(
   opts: {
+    /** The narration this video speaks, section by section. `LONG_SECTIONS` is
+     *  the eight-minute one; everything else in this file wants the eight-line
+     *  fixture whose seconds are countable by hand. */
+    sections?: string[];
     cues?: ScriptCue[];
     status?: "READY" | "PUBLISHED" | "DRAFT";
     format?: "LANDSCAPE" | "VERTICAL";
@@ -292,6 +324,10 @@ async function makeClippableVideo(
     withoutBeats?: number[];
   } = {},
 ): Promise<string> {
+  const sections = opts.sections ?? SECTIONS;
+  const content = sections.join(" ");
+  const narrationSeconds = content.length * 0.1;
+
   const project = await projectService.create(userId, {
     name: `${PROJECT_NAME}-${randomUUID().slice(0, 8)}`,
   });
@@ -312,9 +348,9 @@ async function makeClippableVideo(
     data: {
       scriptId: script.id,
       version: 1,
-      content: CONTENT,
-      wordCount: CONTENT.split(" ").length,
-      cues: (opts.cues ?? fixtureCues()) as never,
+      content,
+      wordCount: content.split(" ").length,
+      cues: (opts.cues ?? fixtureCues(sections)) as never,
     },
   });
   await prisma.script.update({
@@ -335,14 +371,14 @@ async function makeClippableVideo(
       audioUrl: narrationPath,
       // Stored as an integer, exactly as VoiceOverService stores it — so this
       // fixture exercises the same rounding the real pipeline produces.
-      durationSeconds: Math.floor(NARRATION_SECONDS),
+      durationSeconds: Math.floor(narrationSeconds),
     },
   });
 
   const alignmentPath = storagePath(video.id, "captions", "alignment.json");
   await putObject(
     alignmentPath,
-    Buffer.from(JSON.stringify(evenAlignment(CONTENT))),
+    Buffer.from(JSON.stringify(evenAlignment(content))),
     "application/json",
   );
   await prisma.asset.create({
@@ -353,8 +389,8 @@ async function makeClippableVideo(
   // A generated video has no section clips, so this branch is exclusive with
   // the one below rather than additional to it.
   if (opts.beats) {
-    const cues = opts.cues ?? fixtureCues();
-    const beatCount = fixtureBeatCount(cues);
+    const cues = opts.cues ?? fixtureCues(sections);
+    const beatCount = fixtureBeatCount(cues, content);
     const undrawn = new Set(opts.withoutBeats ?? []);
 
     for (let index = 0; index < beatCount; index += 1) {
@@ -388,7 +424,7 @@ async function makeClippableVideo(
   // this is the footage a short is composed from now, in place of the finished
   // render it used to be cut out of.
   if (!opts.beats && !opts.withoutClips) {
-    for (let index = 0; index < SECTIONS.length; index += 1) {
+    for (let index = 0; index < sections.length; index += 1) {
       const clipPath = sectionClipPath(video.id, index);
       await putObject(clipPath, Buffer.from(`fake-clip-${index}-${RUN}`), "video/mp4");
       await prisma.asset.create({
@@ -498,6 +534,57 @@ describe("generate — mapping chosen sections onto the video's timeline", () =>
     // Silently returning zero shorts would leave the operator staring at an
     // empty panel with no idea whether anything happened.
     await expect(service.generate(userId, videoId)).rejects.toBeInstanceOf(ConflictError);
+  });
+});
+
+describe("generate — how many", () => {
+  /**
+   * Ten separated single-section moments over the eight-minute fixture.
+   *
+   * Separated rather than consecutive so that nothing here is decided by
+   * `windowsOverlap`: sections 1, 3, 5 … are 20s apart and 19.9s long, so every
+   * one of these is a legal window that collides with none of the others. What
+   * is left deciding how many shorts come back is the count, which is the only
+   * thing these two tests are about — and ten of them means "the model offered
+   * more than was asked for", which is the case a count has to survive.
+   */
+  const TEN_SEPARATED = Array.from({ length: 10 }, (_, i) =>
+    moment(1 + i * 2, 1 + i * 2),
+  );
+
+  it("queues seven shorts from an eight-minute video when seven are asked for", async () => {
+    const videoId = await makeClippableVideo({ sections: LONG_SECTIONS });
+    const service = new ShortsService(fakeSelector(TEN_SEPARATED));
+
+    const shorts = await service.generate(userId, videoId, 7);
+
+    expect(shorts).toHaveLength(7);
+
+    // The point of seven rather than three is seven *different* clips. Asserted
+    // over the returned windows rather than trusted from the fixture, because a
+    // count that queued seven overlapping cuts would be seven near-identical
+    // uploads — exactly what `windowsOverlap` exists to prevent, and exactly
+    // what raising the count is most likely to break.
+    for (let i = 1; i < shorts.length; i += 1) {
+      expect(shorts[i].startSeconds).toBeGreaterThanOrEqual(shorts[i - 1].endSeconds);
+      expect(shorts[i].endSeconds - shorts[i].startSeconds).toBeGreaterThanOrEqual(
+        MIN_SHORT_SECONDS,
+      );
+    }
+  });
+
+  it("still queues three when no count is given", async () => {
+    const videoId = await makeClippableVideo({ sections: LONG_SECTIONS });
+    const service = new ShortsService(fakeSelector(TEN_SEPARATED));
+
+    // Same video and same ten usable moments as above, so nothing but the
+    // missing argument can account for the difference. This is the guarantee
+    // Task 9 is chiefly about: an operator who has been pressing Generate for
+    // months gets what they have always got, and the larger set is something
+    // they have to ask for.
+    const shorts = await service.generate(userId, videoId);
+
+    expect(shorts).toHaveLength(3);
   });
 });
 

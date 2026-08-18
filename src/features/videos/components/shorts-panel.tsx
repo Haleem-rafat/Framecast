@@ -9,18 +9,50 @@ import { MediaPlayer } from "@/components/shared/media-player";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   generateShortsAction,
   listShortsAction,
 } from "@/actions/shorts.action";
 import { VideoSection } from "@/features/videos/components/video-section";
 import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import { cn } from "@/lib/utils";
+import { MAX_SHORT_COUNT } from "@/schemas/video.schema";
 import type { ShortSummary } from "@/services/shorts.service";
 import { formatDuration } from "@/utils/format";
 
 /** Matches the pipeline panel's active cadence: a short encodes in seconds, so
  *  a slower poll would show "rendering" long after it finished. */
 const POLL_INTERVAL_MS = 2000;
+
+/**
+ * What the count picker offers: every count the server will accept, derived
+ * from the same constant that bounds it. Written out rather than typed into a
+ * list, so the picker cannot come to offer a number the action rejects.
+ */
+const COUNT_OPTIONS = Array.from({ length: MAX_SHORT_COUNT }, (_, i) => i + 1);
+
+/**
+ * What the picker starts on, and it stays three.
+ *
+ * Seven is what an eight-minute video is worth; four minutes of narration is
+ * three good clips and four near-identical ones that `windowsOverlap` would
+ * throw away anyway. Changing this would change what every operator who has
+ * been pressing Generate for months gets on their next press, without them
+ * asking for it — so the longer set is offered, not applied.
+ *
+ * A literal rather than an import, the same way `approveScriptSchema` restates
+ * `VideoFormat`: the number it mirrors is `DEFAULT_SHORT_COUNT` in
+ * shorts.service.ts, which is a `server-only` module this component cannot
+ * import at all. They agree by this comment and by the test that asserts a
+ * count-less call still queues three; nothing makes them agree by construction.
+ */
+const DEFAULT_COUNT = 3;
 
 const STATUS_LABEL: Record<ShortSummary["status"], string> = {
   QUEUED: "Queued",
@@ -225,6 +257,7 @@ export function ShortsPanel({
   initialShorts: ShortSummary[];
 }) {
   const [isGenerating, setIsGenerating] = useState(false);
+  const [count, setCount] = useState(DEFAULT_COUNT);
 
   const { data: shorts = initialShorts, refetch } = useShortsList(
     videoId,
@@ -247,7 +280,7 @@ export function ShortsPanel({
   async function onGenerate() {
     setIsGenerating(true);
 
-    const result = await generateShortsAction(videoId);
+    const result = await generateShortsAction(videoId, count);
 
     setIsGenerating(false);
 
@@ -294,15 +327,45 @@ export function ShortsPanel({
             greyed-out Generate invites the operator to work out what would
             re-enable it, and nothing would. */}
         {!isVertical && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onGenerate}
-            disabled={!canGenerate || isGenerating}
-          >
-            {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-            {shorts.length > 0 ? "Regenerate" : "Generate"}
-          </Button>
+          // The count and the button are one control, so they wrap as one: a
+          // picker that ended up on the line above the button it belongs to
+          // reads as a filter over the list below, which is what the only other
+          // select on a video page (the status filter) actually is.
+          <div className="flex shrink-0 items-center gap-2">
+            <Select
+              value={String(count)}
+              onValueChange={(value) => setCount(Number(value))}
+              disabled={!canGenerate || isGenerating}
+            >
+              {/* Its own label, because the trigger reads "3" and nothing
+                  beside it says three of what. Narrow enough that the row still
+                  fits at 375px next to a "Regenerate" button. */}
+              <SelectTrigger
+                size="sm"
+                className="w-16"
+                aria-label="How many shorts to generate"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {COUNT_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onGenerate}
+              disabled={!canGenerate || isGenerating}
+            >
+              {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+              {shorts.length > 0 ? "Regenerate" : "Generate"}
+            </Button>
+          </div>
         )}
       </div>
 
