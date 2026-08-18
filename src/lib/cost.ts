@@ -19,6 +19,14 @@ const RATES: Record<string, { input: number; output: number }> = {
   // $0.047. A twelve-beat four-minute story is therefore about $0.57 plus a
   // one-off $0.05 for the sheet.
   "openai/gpt-image-2": { input: 5, output: 30 },
+  // Same gateway listing, re-read on 18 Aug 2026, where `openai/gpt-image-1`
+  // lists `input: 0.000005` and `output: 0.00004` per token (gpt-image-2's own
+  // pair re-confirmed unchanged at the same time). Present so a thumbnail stops
+  // pricing at exactly $0.00 — which is what an unlisted model does, and which
+  // is indistinguishable from a thumbnail that was never generated. This is
+  // AI_IMAGE_MODEL's default and therefore every thumbnail and every channel
+  // logo this app has ever drawn.
+  "openai/gpt-image-1": { input: 5, output: 40 },
 };
 
 const PER_MILLION = 1_000_000;

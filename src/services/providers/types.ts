@@ -265,6 +265,19 @@ export interface GeneratedImage {
    * optional — a number nobody has to check for undefined.
    */
   costUsd: number;
+  /**
+   * What the provider said it billed, unpriced.
+   *
+   * Both optional, and that is the point rather than laziness:
+   * `ImageModelV4Usage` types them `number | undefined`, and the whole reason
+   * this pair exists is that a MISSING `outputTokens` is indistinguishable from
+   * a free one once `costUsd` has been computed. An image priced at $0.006 and
+   * an image priced at $0.047 are the same generation with and without this
+   * field, so the honest thing is to record what arrived rather than only what
+   * it came to.
+   */
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface ImageGenerationInput {

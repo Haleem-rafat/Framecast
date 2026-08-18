@@ -28,6 +28,12 @@ import { createTestUser, deleteTestUser } from "@/test/fixtures";
 // task report.
 const RUN = randomUUID().slice(0, 8);
 const PROJECT_NAME = `test-footage-${RUN}`;
+// The illustrator's fake answers under a name no real render uses. A
+// ProviderUsage row carries no FK back to a user (see analytics.service.ts), so
+// the only safe way to sweep the rows this file now writes is by model — and
+// sweeping by a real id like `openai/gpt-image-2` would delete the operator's
+// own spend history out of the shared database.
+const FAKE_IMAGE_MODEL = `test-image-model-${RUN}`;
 
 // Several tests in this file upload small fake clips to the real bucket and
 // round-trip through a live, shared remote Postgres instance — comfortably
@@ -109,6 +115,10 @@ afterEach(async () => {
   await prisma.asset.deleteMany({
     where: { storagePath: { startsWith: `videos/${videoId}/` } },
   });
+  // Nor can it reach the image-spend rows collect() now writes: ProviderUsage
+  // joins back only to a ProviderCredential, and footage.collect writes none.
+  // This run's FAKE_IMAGE_MODEL is the only handle on them.
+  await prisma.providerUsage.deleteMany({ where: { model: FAKE_IMAGE_MODEL } });
   await deleteTestUser(userId);
 });
 
@@ -968,8 +978,15 @@ describe("footageService.collect for an illustrated channel", () => {
 
         return {
           data: Buffer.from(`fake-illustration-${index}`),
-          model: "openai/gpt-image-2",
-          costUsd: 0.047,
+          model: FAKE_IMAGE_MODEL,
+          // The counts a real 1024x1536 illustration reports, and the price
+          // they come to at gpt-image-2's listed $5/M in, $30/M out. Stated as
+          // the measurement rather than the rounded figure so a test that
+          // asserts the spend is asserting the same arithmetic the provider
+          // does.
+          inputTokens: 1150,
+          outputTokens: 1372,
+          costUsd: (1150 * 5 + 1372 * 30) / 1_000_000,
         };
       }),
     };
@@ -1216,7 +1233,54 @@ describe("footageService.collect for an illustrated channel", () => {
       videoId,
     );
 
-    expect(result.costUsd).toBeCloseTo(6 * 0.047, 6);
+    expect(result.costUsd).toBeCloseTo((6 * (1150 * 5 + 1372 * 30)) / 1_000_000, 6);
+  });
+
+  it("writes one ProviderUsage row per picture, with the counts the price came from", async () => {
+    // The spend dashboards read this table and nothing else. Before this, a
+    // twelve-beat render's worth of image spend — the largest line in the
+    // whole video — was summed into a progress line and thrown away, so
+    // /providers and the daily cost chart showed a render as if its pictures
+    // had been free.
+    const images = fakeImages();
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    const result = await new FootageService({}, makeDownloader(), images).collect(
+      userId,
+      videoId,
+    );
+
+    const usage = await prisma.providerUsage.findMany({
+      where: { model: FAKE_IMAGE_MODEL },
+    });
+
+    expect(usage).toHaveLength(result.clipCount);
+    expect(usage.every((row) => row.operation === "footage.collect")).toBe(true);
+    expect(usage.every((row) => row.provider === "OPENAI")).toBe(true);
+    expect(usage.every((row) => row.succeeded)).toBe(true);
+    // The raw counts, not only what they came to — the point of the whole
+    // task. A row with 1150 in and 0 out would be the reporting gap that made
+    // a $0.047 picture look like a $0.006 one, and it would be visible here.
+    expect(usage.every((row) => row.inputTokens === 1150)).toBe(true);
+    expect(usage.every((row) => row.outputTokens === 1372)).toBe(true);
+    expect(
+      usage.reduce((sum, row) => sum + Number(row.costUsd), 0),
+    ).toBeCloseTo(result.costUsd, 6);
+  });
+
+  it("records no usage row for a beat the model refused, since nothing was billed", async () => {
+    const images = fakeImages({ failOn: [0, 2] });
+    const { videoId } = await makeIllustratedVideo({ cueCount: 12, durationSeconds: 120 });
+
+    const result = await new FootageService({}, makeDownloader(), images).collect(
+      userId,
+      videoId,
+    );
+
+    const usage = await prisma.providerUsage.count({ where: { model: FAKE_IMAGE_MODEL } });
+
+    expect(result.missingBeats).toEqual([1, 3]);
+    expect(usage).toBe(images.calls.length - 2);
   });
 
   it("asks for a portrait picture for a vertical video and a landscape one otherwise", async () => {

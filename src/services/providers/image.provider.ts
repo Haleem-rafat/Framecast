@@ -88,6 +88,22 @@ export class GatewayImageProvider implements ImageProvider {
           result.usage?.inputTokens ?? 0,
           result.usage?.outputTokens ?? 0,
         ),
+        // Spread rather than always-present, so a provider that reports no
+        // usage at all produces an object without the keys instead of two
+        // zeroes that read as a measurement.
+        //
+        // These exist because the `?? 0` above is lossy in a way that cannot be
+        // detected after the fact: a response missing `outputTokens` prices a
+        // 1,150-in/1,372-out picture at $0.00575 rather than $0.047, and
+        // `.toFixed(3)` renders that as "$0.006" — a number indistinguishable
+        // from a genuinely cheap model. Recording the raw counts is what lets
+        // anybody tell the two apart.
+        ...(result.usage?.inputTokens !== undefined
+          ? { inputTokens: result.usage.inputTokens }
+          : {}),
+        ...(result.usage?.outputTokens !== undefined
+          ? { outputTokens: result.usage.outputTokens }
+          : {}),
       };
     } catch (cause) {
       throw new ProviderError(

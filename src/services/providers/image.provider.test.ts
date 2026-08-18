@@ -111,6 +111,77 @@ describe("GatewayImageProvider", () => {
 
     // $5/M in, $30/M out — the gateway's own listed rate for this model.
     expect(result.costUsd).toBeCloseTo((1150 * 5 + 1372 * 30) / 1_000_000, 8);
+    // Rounded, this is the $0.047 every cost table in the spec is written
+    // against.
+    expect(Number(result.costUsd.toFixed(3))).toBe(0.047);
+    // And the counts it was derived from, so the figure above can be checked
+    // against a gateway invoice rather than taken on trust.
+    expect(result.inputTokens).toBe(1150);
+    expect(result.outputTokens).toBe(1372);
+  });
+
+  it("keeps the input count when the provider omits the output one, which is where $0.006 comes from", async () => {
+    // This is the whole reason `inputTokens`/`outputTokens` exist.
+    // `ImageModelV4Usage` types both as `number | undefined`, and a response
+    // that omits `outputTokens` prices the very same picture at $0.00575 —
+    // which `.toFixed(3)` renders as exactly "$0.006", the figure the operator
+    // reported and assumed was a price. With only `costUsd` recorded, a broken
+    // meter and a cheap model are the same row; with the raw counts recorded,
+    // a missing `out` is visible on its face.
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+      responses: [{ modelId: "openai/gpt-image-2", timestamp: new Date() }],
+      usage: { inputTokens: 1150 },
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a scene",
+      aspectRatio: "9:16",
+      model: "openai/gpt-image-2",
+    });
+
+    expect(result.costUsd).toBeCloseTo(0.00575, 8);
+    expect(result.costUsd.toFixed(3)).toBe("0.006");
+    expect(result.inputTokens).toBe(1150);
+    expect(result.outputTokens).toBeUndefined();
+  });
+
+  it("omits both counts entirely when the provider reports no usage at all", async () => {
+    // Absent keys rather than two zeroes: a zero is a measurement, and "the
+    // provider told us nothing" is not one.
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a logo",
+      aspectRatio: "1:1",
+    });
+
+    expect(result).not.toHaveProperty("inputTokens");
+    expect(result).not.toHaveProperty("outputTokens");
+  });
+
+  it("prices a thumbnail rather than recording it as free", async () => {
+    // `openai/gpt-image-1` is AI_IMAGE_MODEL's default, so this is every
+    // thumbnail and every channel logo. It had no entry in `cost.ts`'s rate
+    // table, and an unlisted model prices at exactly $0.00 — which reads as a
+    // thumbnail that was never generated.
+    const generate = vi.fn().mockResolvedValue({
+      image: { uint8Array: new Uint8Array([1]) },
+      responses: [{ modelId: "openai/gpt-image-1", timestamp: new Date() }],
+      usage: { inputTokens: 200, outputTokens: 1056 },
+    });
+
+    const result = await new GatewayImageProvider(generate).generate({
+      prompt: "a thumbnail",
+      aspectRatio: "16:9",
+      model: "openai/gpt-image-1",
+    });
+
+    // $5/M in, $40/M out, read off the gateway's model list.
+    expect(result.costUsd).toBeCloseTo((200 * 5 + 1056 * 40) / 1_000_000, 8);
+    expect(result.costUsd).toBeGreaterThan(0);
   });
 
   it("prices an unlisted model or a usage-less response at zero, not at a guess", async () => {
