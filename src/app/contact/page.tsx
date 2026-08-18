@@ -90,7 +90,7 @@ export default function ContactPage() {
                 <p className="text-muted-foreground mt-1.5 text-sm text-pretty">
                   {route.body}
                 </p>
-                <p className="text-brand-blue mt-3 inline-flex items-center gap-1.5 text-sm group-hover:underline">
+                <p className="text-brand-blue-ink mt-3 inline-flex items-center gap-1.5 text-sm group-hover:underline">
                   <Mail className="size-3.5" />
                   {OPERATOR_EMAIL}
                 </p>

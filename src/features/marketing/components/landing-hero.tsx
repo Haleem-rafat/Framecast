@@ -246,7 +246,19 @@ function toCanvasColor(color: string): string {
   ctx.fillStyle = color;
   ctx.fillRect(0, 0, 1, 1);
   const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-  return `rgb(${r}, ${g}, ${b})`;
+
+  // Hex, not `rgb()`, and the difference is the whole hero.
+  //
+  // Both consumers take this string, but they do not parse alike. `WarpText`
+  // hands it to a 2D context's `fillStyle`, which understands either. The
+  // shader does not: `LightTunnel`'s `hexToRgb` matches an anchored hex-only
+  // pattern and returns [1, 1, 1] — pure WHITE — for anything else, without
+  // throwing. An `rgb()` string therefore painted white cables on both themes:
+  // invisible on light at `opacity-40`, and a hot desaturated wash on dark.
+  //
+  // Two failure modes that cannot report themselves, on either side of one
+  // function, so the safe output is the narrower syntax that both accept.
+  return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**

@@ -112,7 +112,14 @@ function buildGraph(model: CanvasModel): BuiltGraph {
     // edge in it. Computed in the builder rather than in each node so a card
     // and the edge reaching it can never disagree about which branch they are.
     const colour = branchColour(branch.channel?.id ?? null);
-    const tint = colour.light;
+    // `branchColour` solves a PAIR because one value cannot sit legibly on
+    // both grounds (see branch-colour.ts). Reading only `.light` left the
+    // node's icon chip at 2.55-2.67:1 on the dark theme, under the 3:1
+    // floor for non-text, and edges at 3.5-4.2:1 where 7.6-8.2:1 was
+    // intended. `light-dark()` needs `color-scheme` to be declared, which
+    // `appearance.tsx` already does, and unlike `useTheme` it cannot
+    // mismatch between server and client.
+    const tint = `light-dark(${colour.light}, ${colour.dark})`;
 
     nodes.push({
       id: chKey,

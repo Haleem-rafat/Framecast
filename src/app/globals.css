@@ -401,6 +401,12 @@
   --xy-controls-button-border-color: var(--border);
   --xy-minimap-background-color: var(--card);
   --xy-minimap-mask-background-color: color-mix(in oklch, var(--background) 70%, transparent);
+  /* Not inherited from anything: <ReactFlow> is mounted without `colorMode`,
+     so xyflow's own `.react-flow.dark` block never applies and this falls
+     through to its `#e2e2e2` default in BOTH themes — near-white blocks on
+     a dark minimap. Every other --xy-* here is mapped; this was the only
+     live fall-through. */
+  --xy-minimap-node-background-color: var(--muted-foreground);
   --xy-node-boxshadow-selected: 0 0 0 2px var(--primary);
   --xy-attribution-background-color: transparent;
 }
