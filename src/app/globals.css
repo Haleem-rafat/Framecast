@@ -410,3 +410,46 @@
   --xy-node-boxshadow-selected: 0 0 0 2px var(--primary);
   --xy-attribution-background-color: transparent;
 }
+/*
+ * The hero headline's moving gradient.
+ *
+ * Two states on purpose, because the request was for both: it drifts on its
+ * own so the headline is alive before anyone touches it, and it quickens under
+ * the pointer so hovering is answered. A hover-only effect looks broken to
+ * every visitor who never happens to cross the words, and most never do.
+ *
+ * `background-size` above 100% is what makes the drift possible at all —
+ * `background-position` has nothing to travel across on a gradient sized to its
+ * own box, so the animation would run and paint nothing.
+ *
+ * This replaces a WebGL canvas that rasterised the same words and hid the real
+ * `<h1>` behind it. The canvas could fail to a blank hero; a gradient that
+ * fails to animate is still a legible headline in the brand ramp, which is the
+ * whole reason the effect moved into CSS.
+ */
+@keyframes hero-sheen-drift {
+  from {
+    background-position: 0% center;
+  }
+  to {
+    background-position: 220% center;
+  }
+}
+
+.hero-sheen {
+  background-size: 220% auto;
+  animation: hero-sheen-drift 9s linear infinite;
+}
+
+.hero-sheen:hover {
+  animation-duration: 2.2s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Static, not slower. The gradient itself is the design; the movement is the
+     decoration, and this is the visitor who asked for none. */
+  .hero-sheen {
+    background-size: auto;
+    animation: none;
+  }
+}

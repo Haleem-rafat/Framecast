@@ -10,8 +10,6 @@ import StarBorder from "@/components/react-bits/StarBorder";
 import TextCursor from "@/components/react-bits/TextCursor";
 import { Button } from "@/components/ui/button";
 import { useAmbientEffectsAllowed } from "@/hooks/use-ambient-effects-allowed";
-import { useMediaQuery } from "@/hooks/use-media-query";
-import { cn } from "@/lib/utils";
 
 /**
  * Both WebGL pieces are loaded on demand rather than imported outright,
@@ -23,10 +21,6 @@ const LightTunnel = dynamic(
   () => import("@/components/react-bits/LightTunnel"),
   { ssr: false },
 );
-
-const WarpText = dynamic(() => import("@/components/react-bits/WarpText"), {
-  ssr: false,
-});
 
 /**
  * React Bits' TextCursor, over the hero's title area.
@@ -262,105 +256,40 @@ function toCanvasColor(color: string): string {
 }
 
 /**
- * The hero's headline, and — on a big enough screen — React Bits' WarpText
- * drawn over it.
+ * The hero's headline.
  *
- * The `<h1>` is always here, always a real `<h1>`, always containing the real
- * sentence, and it is always what defines the height of this block. That last
- * point is the whole trick: the canvas is laid over the heading rather than
- * put in place of it, so it cannot change the box, and the buttons below
- * cannot move. There is no state in which this component reflows.
+ * One real `<h1>`, always rendered, never hidden. That is the whole design, and
+ * it is a correction rather than a preference.
  *
- * WarpText rasterises text into a canvas, and this repo has been here before —
- * ParticleText was pulled from this exact line because it turned the most
- * important sentence on the page into pixels that could not be selected,
- * searched or read aloud. So the canvas is a *skin*, not a replacement:
+ * This slot used to hide the real heading with `opacity-0` above `lg` and
+ * redraw the same words on a WebGL canvas. It looked good when it worked, and
+ * when it did not the page had no headline at all — the failure was invisible
+ * text on a white ground, which is the worst shape a bug can take on a landing
+ * page: the visitor sees a blank hero and nothing in the console. It reached
+ * production twice.
  *
- *  - The heading keeps its text. It goes to `opacity-0` under the canvas,
- *    which hides it from the eye and from nothing else — it stays in the
- *    accessible tree, stays selectable, stays in the HTML a crawler sees.
- *    (`visibility: hidden` or `display: none` would have taken it out of the
- *    accessible tree, which is why neither is used.)
- *  - The canvas is `aria-hidden`, so the sentence is announced once.
- *  - Server-rendered HTML never has the canvas in it. Both gates below are
- *    false until hydration, so the first paint, every crawler and every
- *    reader-mode pass get the plain gradient heading.
+ * The colour was the specific trap. The canvas was handed the heading's
+ * computed `color`, so the text could only be as correct as a three-step
+ * conversion between a token, a canvas round-trip and a shader parser — and
+ * every one of those steps failed silently rather than throwing.
  *
- * Two gates, and both have to open:
- *
- *  - `useAmbientEffectsAllowed` — no canvas under reduced motion, none on a
- *    touchscreen. WarpText freezes its own clock under reduced motion, which
- *    is not enough: a frozen canvas is still a WebGL context and still a
- *    download.
- *  - `lg` and up. This one is not taste. WarpText does not wrap text — it
- *    splits on `\n` and scales whatever it gets down to fit the box — so a
- *    narrow window would shrink the whole headline to a strip. Above `lg` the
- *    heading sets in two lines, so the canvas is given those two lines
- *    explicitly and matches.
- *
- * What this costs, and it is a real cost: the `-ink` gradient on "finished
- * video" cannot survive the trip. The canvas rasterises with a single
- * `fillStyle`, so a `bg-clip-text` gradient has nowhere to go. Above `lg` with
- * motion on, the headline is one flat foreground colour. Everywhere else —
- * every phone, every reduced-motion visitor, every narrow window, and the
- * server HTML — the gradient is exactly as it was.
- *
- * The colour is read off the live heading rather than hard-coded, so it
- * follows the theme through the tokens instead of through a second
- * hand-maintained copy of the palette. `getComputedStyle().color` resolves the
- * `oklch()` token to an `rgb()` string, which is something a 2D canvas
- * `fillStyle` understands.
+ * The gradient is now what it appears to be: `background-clip: text` over the
+ * brand ramp, animated by `.hero-sheen` in `globals.css`. The sheen drifts on
+ * its own and quickens under the pointer, so the effect plays whether or not
+ * anyone is hovering, and it degrades to a static gradient under
+ * `prefers-reduced-motion`. Text that a screen reader, a search engine and a
+ * visitor all see the same way, and that cannot become invisible.
  */
 function HeroHeadline() {
-  const ambient = useAmbientEffectsAllowed();
-  const roomToSet = useMediaQuery("(min-width: 64rem)");
-  const warped = ambient && roomToSet;
-
-  const headingRef = useRef<HTMLHeadingElement>(null);
-  const { resolvedTheme } = useTheme();
-  const [ink, setInk] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!warped || !headingRef.current) return;
-    setInk(toCanvasColor(window.getComputedStyle(headingRef.current).color));
-  }, [warped, resolvedTheme]);
-
   return (
     <div className="relative">
-      <h1
-        ref={headingRef}
-        className={cn(
-          "text-[2.25rem] leading-[1.06] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl",
-          warped && ink && "opacity-0",
-        )}
-      >
+      <h1 className="text-[2.25rem] leading-[1.06] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl">
         Type a topic. Get a{" "}
-        <span className="from-brand-violet-ink via-brand-blue-ink to-brand-cyan-ink bg-gradient-to-r bg-clip-text text-transparent">
+        <span className="hero-sheen from-brand-violet-ink via-brand-blue-ink to-brand-cyan-ink bg-gradient-to-r bg-clip-text text-transparent">
           finished video
         </span>
         .
       </h1>
-
-      {warped && ink ? (
-        <div aria-hidden="true" className="absolute inset-0">
-          <WarpText
-            text={"Type a topic.\nGet a finished video."}
-            color={ink}
-            fontSize="4.5rem"
-            fontWeight={600}
-            letterSpacing="-0.025em"
-            lineHeight={1.06}
-            warpStrength={0.08}
-            warpScale={1.7}
-            speed={0.55}
-            pointerInfluence={0.42}
-            pointerStrength={0.38}
-            refraction={0.018}
-            ripple
-            className="h-full"
-          />
-        </div>
-      ) : null}
     </div>
   );
 }
