@@ -743,7 +743,7 @@ collector will agree about without either of them re-deciding.
 
 **Files:**
 - Modify: `prisma/schema.prisma`, `src/lib/footage-styles.ts`, `src/lib/beat-storage.ts`, `src/services/footage.service.ts`, `src/services/render.service.ts`
-- Create: `prisma/migrations/20260818090000_add_mixed_footage_style/migration.sql`
+- Create: `prisma/migrations/20260903090000_add_mixed_footage_style/migration.sql` (NOT the real date — see File Structure)
 
 **Interfaces:**
 - Consumes: `CueMeta.shot`, `planStoryBeats`.
