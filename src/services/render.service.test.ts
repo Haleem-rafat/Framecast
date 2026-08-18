@@ -317,8 +317,11 @@ async function makeRenderableVideoWithCues(
     leadingWhitespace?: string;
     /** Store generated beat illustrations instead of per-section clips, as an
      *  ILLUSTRATED channel's collection run leaves behind. `skipBeats` omits
-     *  one, which is what a refused generation looks like on disk. */
-    illustrated?: { skipBeats?: number[] };
+     *  one, which is what a refused generation looks like on disk.
+     *  `motionBeats` stores an MP4 for those beats instead of a PNG, which is
+     *  what a MIXED collection leaves behind for the shots its script tagged
+     *  `motion` — same prefix, same numbering, different extension. */
+    illustrated?: { skipBeats?: number[]; motionBeats?: number[] };
   } = {},
 ): Promise<CuedVideo> {
   const project = await projectService.create(userId, {
@@ -399,10 +402,28 @@ async function makeRenderableVideoWithCues(
       durationSeconds,
     );
     const skip = new Set(options.illustrated.skipBeats ?? []);
+    const motion = new Set(options.illustrated.motionBeats ?? []);
 
     for (let index = 0; index < beats.length; index += 1) {
       if (skip.has(index)) continue;
-      const beatPath = storagePath(video.id, "beats", `beat-${String(index).padStart(3, "0")}.png`);
+
+      const padded = String(index).padStart(3, "0");
+
+      if (motion.has(index)) {
+        const clipPath = storagePath(video.id, "beats", `beat-${padded}.mp4`);
+        await putObject(clipPath, Buffer.from(`fake-motion-beat-${index}-${RUN}`), "video/mp4");
+        await prisma.asset.create({
+          data: {
+            kind: "VIDEO",
+            storagePath: clipPath,
+            provider: "PEXELS",
+            externalId: `m${index}`,
+          },
+        });
+        continue;
+      }
+
+      const beatPath = storagePath(video.id, "beats", `beat-${padded}.png`);
       await putObject(beatPath, Buffer.from(`fake-beat-${index}-${RUN}`), "image/png");
       await prisma.asset.create({
         data: {
@@ -1266,6 +1287,107 @@ describe("renderService.render — illustrated videos", () => {
       expect(segment.args).not.toContain("-framerate");
       expect(segment.args.some((arg) => arg.endsWith(".png"))).toBe(false);
     }
+  });
+});
+
+/**
+ * A MIXED collection's timeline: generated stills for most beats, stock clips
+ * for the shots its script tagged `motion`, all under one `beats/` prefix.
+ *
+ * The point of these is how little there is to test. The renderer was never
+ * told which slots are which — `planRender` sets `still` from each path's
+ * extension and `buildSegmentArgs` spreads `-loop 1` or `-stream_loop -1` from
+ * that — so a mixed timeline has always composed. What these check is that the
+ * two things which did *not* exist now do: a query that can see both kinds, and
+ * a resolver that maps a beat to whichever one it got.
+ */
+describe("renderService.render — mixed videos", () => {
+  const CUES = Array.from({ length: 12 }, (_cue, index) => ({
+    anchor: `Section number ${index} opens`,
+    cue: `scene ${index}`,
+  }));
+
+  /** Which input file each segment pass actually opened, in play order. */
+  function segmentInputs(calls: SpawnCall[]): string[] {
+    return calls
+      .filter((call) => call.args.includes("-vf"))
+      .map((call) => call.args[call.args.lastIndexOf("-i") + 1]);
+  }
+
+  it("opens a beat's still with -loop 1 and its stock clip with -stream_loop", async () => {
+    // The whole mixed economy, and it is entirely inherited: a PNG has no
+    // stream to rewind, an MP4 opened with `-loop 1` is a frozen frame, and the
+    // renderer picks between them from the extension alone.
+    const { videoId } = await makeRenderableVideoWithCues(CUES, {
+      illustrated: { motionBeats: [1, 3] },
+    });
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    const segments = calls.filter((call) => call.args.includes("-vf"));
+    expect(segments.length).toBeGreaterThan(3);
+
+    segments.forEach((segment, index) => {
+      const motion = index === 1 || index === 3;
+      expect(segment.args).toContain(motion ? "-stream_loop" : "-loop");
+      expect(segment.args).not.toContain(motion ? "-loop" : "-stream_loop");
+    });
+
+    // And each slot opened the file the beat actually has, in beat order — the
+    // resolver's job, and the one thing a widened query alone would not give.
+    const inputs = segmentInputs(calls);
+    expect(inputs[0].endsWith(".png")).toBe(true);
+    expect(inputs[1].endsWith(".mp4")).toBe(true);
+    expect(inputs[2].endsWith(".png")).toBe(true);
+    expect(inputs[3].endsWith(".mp4")).toBe(true);
+  });
+
+  it("times a mixed timeline exactly as it times an all-still one", async () => {
+    // The timing comes from `beatSeconds` over the alignment, and a beat is a
+    // beat whichever file fills it. If mixing changed a single slot length,
+    // every picture after it would play against the wrong words.
+    const allStill = await makeRenderableVideoWithCues(CUES, { illustrated: {} });
+    const stillRun = createSucceedingSpawner();
+    await new RenderService(stillRun.spawner).render(userId, allStill.videoId);
+
+    const mixed = await makeRenderableVideoWithCues(CUES, {
+      illustrated: { motionBeats: [1, 3] },
+    });
+    const mixedRun = createSucceedingSpawner();
+    await new RenderService(mixedRun.spawner).render(userId, mixed.videoId);
+
+    expect(segmentSeconds(mixedRun.calls)).toEqual(segmentSeconds(stillRun.calls));
+  });
+
+  it("refuses a beat that has neither a still nor a clip, with the message it always used", async () => {
+    // The guard now asks "did this beat resolve to anything" rather than "is
+    // the PNG on disk", and the answer has to be the same for a beat that got
+    // nothing — this is the one hole the whole beat path exists to refuse.
+    const { videoId } = await makeRenderableVideoWithCues(CUES, {
+      illustrated: { motionBeats: [3], skipBeats: [1] },
+    });
+
+    await expect(
+      new RenderService(createSucceedingSpawner().spawner).render(userId, videoId),
+    ).rejects.toThrow(/No picture for beat\(s\) 2 of/);
+
+    const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
+    expect(video.status).toBe("GENERATING");
+  });
+
+  it("still refuses a video whose only beat asset is a clip for a beat that does not exist", async () => {
+    // A stock video must not be mistaken for a beat-collected one now that the
+    // beat query accepts `kind: "VIDEO"`. The `beats/` prefix is the only thing
+    // separating them, and a section clip lives under `clips/`.
+    const { videoId } = await makeRenderableVideoWithCues(CUES);
+
+    const { spawner, calls } = createSucceedingSpawner();
+    await new RenderService(spawner).render(userId, videoId);
+
+    // One segment per section, not per beat — the widened query saw none of
+    // this video's clips, because none of them are under `beats/`.
+    expect(calls.filter((call) => call.args.includes("-vf"))).toHaveLength(CUES.length);
   });
 });
 

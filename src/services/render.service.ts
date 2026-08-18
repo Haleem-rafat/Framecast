@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { beatImagePath, beatPrefix } from "@/lib/beat-storage";
+import { beatAssetPath, beatPrefix } from "@/lib/beat-storage";
 import { writeRenderFile } from "@/lib/render-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
@@ -294,7 +294,7 @@ export class RenderService {
       select: { storagePath: true },
     });
 
-    // An illustrated video's pictures, if it has any.
+    // A beat-collected video's pictures, if it has any.
     //
     // Recognised by what is on disk rather than by reading the channel's
     // `footageStyle`, and deliberately. The style can be changed on the channel
@@ -308,7 +308,12 @@ export class RenderService {
     // all: `kind: "IMAGE"` under `videos/{id}/` would also match thumbnails.
     const beatAssets = await prisma.asset.findMany({
       where: {
-        kind: "IMAGE",
+        // Both kinds, because a mixed video's slots are stills and clips under
+        // one prefix (see `beatClipPath`). `illustrated` below stays a single
+        // boolean and means what it always meant — "this video's pictures are
+        // beats, not sections" — and everything after it is unchanged, because
+        // `planRender` asks the path's extension how to open each one.
+        kind: { in: ["IMAGE", "VIDEO"] },
         deletedAt: null,
         storagePath: { startsWith: beatPrefix(videoId) },
       },
@@ -320,10 +325,14 @@ export class RenderService {
       throw new ConflictError("Stock footage must be collected before rendering.");
     }
 
-    // One picture per story beat instead of one clip per section, and every
-    // picture a still. Decided by what collection actually produced — see the
-    // query above for why that is not the same question as what the channel is
-    // set to today.
+    // One picture per story beat instead of one clip per section. Decided by
+    // what collection actually produced — see the query above for why that is
+    // not the same question as what the channel is set to today.
+    //
+    // Not "and every picture a still" any more: a MIXED collection fills the
+    // beats its script tagged `motion` with stock clips, under this same
+    // prefix. Nothing below has to know which is which, because `planRender`
+    // reads `isStillImagePath(clipPath)` per slot.
     const illustrated = beatAssets.length > 0;
 
     // A cue whose anchor no longer occurs in the current script is dropped
@@ -353,19 +362,24 @@ export class RenderService {
     // the script. Empty for a video with no cues, which is every video that is
     // not illustrated.
     const beats = illustrated ? planStoryBeats(anchored, durationSeconds) : [];
-    const beatPaths = beats.map((_beat, index) => beatImagePath(videoId, index));
     const drawnPaths = new Set(beatAssets.map((asset) => asset.storagePath));
+    // Whichever file each beat actually got — the drawn `.png` or, for a beat
+    // the script tagged `motion`, the downloaded `.mp4`. Resolved from what is
+    // on disk rather than assumed, because the choice was collection's and is
+    // recorded nowhere else; null for a beat with neither, which the guard
+    // below refuses on.
+    const beatPaths = beats.map((_beat, index) => beatAssetPath(drawnPaths, videoId, index));
 
     // Same guard as the section one below, for the same reason and with a
     // different remedy. A missing beat cannot be filled by copying a
     // neighbour — the neighbour's picture is a different scene, and putting it
     // under these words is exactly the "hard to follow" defect this genre is
     // judged on — so the only way out is to generate it, which collecting again
-    // does for that beat alone (`collectIllustrated` is idempotent per beat).
+    // does for that beat alone (`collectGenerated` is idempotent per beat).
     if (illustrated) {
       const missing = beatPaths
         .map((beatPath, index) => ({ beatPath, index }))
-        .filter((entry) => !drawnPaths.has(entry.beatPath))
+        .filter((entry) => entry.beatPath === null)
         .map((entry) => entry.index + 1);
 
       if (missing.length > 0) {
@@ -437,7 +451,12 @@ export class RenderService {
     // last minutes with no picture. `planStoryBeats` bounds the count already,
     // in money rather than memory (see MAX_BEATS).
     const clipAssets = illustrated
-      ? beatPaths.map((beatPath) => ({ storagePath: beatPath }))
+      ? // Every entry is non-null by the time this runs — the guard above threw
+        // otherwise — and the filter is how that is said to the type checker
+        // without an assertion that would survive the guard being removed.
+        beatPaths
+          .filter((beatPath): beatPath is string => beatPath !== null)
+          .map((beatPath) => ({ storagePath: beatPath }))
       : cued
         ? sectionPaths.map((sectionPath) => ({ storagePath: sectionPath }))
         : allClipAssets.slice(0, MAX_RENDER_CLIPS);

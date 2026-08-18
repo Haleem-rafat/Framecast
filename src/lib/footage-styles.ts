@@ -67,6 +67,12 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
     description:
       "Generated photographic stills in one fixed grade and lens, for short second-person videos that name a psychological effect. A different, unnamed person in every shot — nothing is held constant except the look — so unlike the illustrated style it needs no character described and no sheet generated. Costs roughly $0.05 a picture, about $0.60 for a forty-five-second video.",
   },
+  {
+    value: "MIXED",
+    label: "Mixed",
+    description:
+      "Generated stills for most shots and real stock footage for the ones the script marks as movement, for long-form list videos. The script decides the split, not this setting — so a video whose writer asked for no movement costs the same as the cinematic style, and one that asked for a lot costs less. A movement shot with nothing in the stock libraries is drawn instead of left blank; a still shot is never filled with stock, because the drawn shots are what makes the channel look like itself.",
+  },
 ];
 
 /** Which styles generate pictures rather than searching for them. A function
@@ -75,9 +81,17 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
  *
  *  Deliberately no longer the same question as "needs a character sheet" — see
  *  `needsCharacterSheet` below, which was split out of this when a second
- *  generating style arrived that wants the opposite. */
+ *  generating style arrived that wants the opposite.
+ *
+ *  `MIXED` answers true even though some of its slots are downloaded rather
+ *  than drawn, and the callers are why: every one of them is asking "will
+ *  approving this script start spending money on pictures", and a mixed video
+ *  spends on every shot its writer did not tag `motion` — which is most of
+ *  them. False would warn nobody about a real invoice. The honest reading of
+ *  this predicate is "generates at least some of its pictures", and no caller
+ *  wants the other one. */
 export function isGeneratedFootage(style: FootageStyle): boolean {
-  return style === "ILLUSTRATED" || style === "CINEMATIC";
+  return style === "ILLUSTRATED" || style === "CINEMATIC" || style === "MIXED";
 }
 
 /**
@@ -93,6 +107,11 @@ export function isGeneratedFootage(style: FootageStyle): boolean {
  * cost estimate's wording. Keeping them on the generation predicate would tell a
  * cinematic channel's writer to pin every script to a protagonist the format
  * deliberately does not have.
+ *
+ * `MIXED` is false for the same reason `CINEMATIC` is, and then some: a list
+ * video's shots are thirty different subjects, and the ones its script tagged
+ * `motion` are stock clips that could not hold a recurring character even if
+ * the format wanted one.
  */
 export function needsCharacterSheet(style: FootageStyle): boolean {
   return style === "ILLUSTRATED";

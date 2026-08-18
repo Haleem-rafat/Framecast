@@ -524,6 +524,21 @@ enum FootageStyle {
   /// `characterBrief` nor `characterSheetPath`, and needs nothing generated on
   /// the branding screen before a video can be made.
   CINEMATIC
+  /// Generated stills for most shots and stock clips for the ones the script
+  /// tagged `motion`. The only style whose pictures come from more than one
+  /// source in one video.
+  ///
+  /// Both kinds are filed under the same `beats/` prefix and differ only by
+  /// extension, because that is the one question the renderer already asks:
+  /// `planRender` sets `still` from the path and `buildSegmentArgs` opens a
+  /// `.png` with `-loop 1` and an `.mp4` with `-stream_loop -1`. A mixed
+  /// timeline therefore needs no renderer change at all — only a collector that
+  /// produces one, which is what this value selects.
+  ///
+  /// Reads no character sheet, exactly as CINEMATIC does: a list video's shots
+  /// have no recurring protagonist to hold, and a stock clip could not hold one
+  /// anyway.
+  MIXED
 }
 
 // ---------------------------------------------------------------------------
