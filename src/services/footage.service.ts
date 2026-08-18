@@ -977,6 +977,9 @@ export class FootageService {
     );
 
     const missingBeats: number[] = [];
+    /** The first beat failure's message, kept so a run that drew nothing can
+     *  name why rather than leaving the render to guess. */
+    let firstFailure: string | undefined;
     let bytesDownloaded = 0;
     let costUsd = 0;
     let generated = 0;
@@ -1068,6 +1071,11 @@ export class FootageService {
         // does not throw away the eleven pictures already paid for. Named
         // loudly, and counted — see `missingBeats`.
         missingBeats.push(index + 1);
+        // Kept, because the guard after this loop needs a cause to name. The
+        // first failure is the useful one: when a run fails on every beat it
+        // is one external condition failing repeatedly (a 402 on the gateway's
+        // budget, an expired key), not forty unrelated refusals.
+        firstFailure ??= error instanceof Error ? error.message : String(error);
         onProgress(
           `[${label}] NO PICTURE — the model failed or refused: ` +
             (error instanceof Error ? error.message : String(error)) +
@@ -1145,6 +1153,33 @@ export class FootageService {
     }
 
     bySource.OPENAI += generated;
+
+    // A run that drew nothing at all is a failure, and it has to say so HERE.
+    //
+    // Without this, `collect` resolves with `clipCount: 0`, the pipeline marks
+    // the footage stage done, and the first thing to notice is `render()` —
+    // which refuses with "Stock footage must be collected before rendering."
+    // on a channel that searches no stock provider at all. The operator is
+    // told the wrong stage failed, in the vocabulary of the wrong footage
+    // style, with no mention of the model error that actually caused it; the
+    // reasonable response is to press Retry, which spends the pipeline again
+    // and fails identically.
+    //
+    // Partial runs deliberately still resolve: `missingBeats` already carries
+    // them, collecting again redraws only the beats that have none, and the
+    // pictures already paid for are worth keeping.
+    if (
+      beats.length > 0 &&
+      missingBeats.length === beats.length &&
+      existingPaths.size === 0
+    ) {
+      throw new ConflictError(
+        `No picture could be generated for any of the ${beats.length} beats in ` +
+          `this video, so there is no footage to render. The image model failed ` +
+          `every time: ${firstFailure ?? "no reason was reported"}. ` +
+          `Fix that and collect footage again — nothing was kept, so nothing is wasted.`,
+      );
+    }
 
     return {
       clipCount: existingPaths.size + generated + downloaded,

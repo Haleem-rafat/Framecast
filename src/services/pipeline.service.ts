@@ -1,5 +1,6 @@
 import "server-only";
 
+import { beatPrefix } from "@/lib/beat-storage";
 import { NotFoundError } from "@/lib/errors";
 import type { LogLevel, PublishStatus, RenderStatus, VideoStatus } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/prisma";
@@ -379,15 +380,41 @@ export class PipelineService {
     // surfacing a reclaimed clip's kind/provider/sizeBytes here — the same
     // "N clips · Pexels 4 · 312MB" line it would have shown before
     // reclaim — leaks nothing; it's just history the row still remembers.
+    // Two branches, because "the footage" is two different shapes and only one
+    // of them can be matched video-wide.
+    //
+    // A stock channel's footage is `kind: "VIDEO"` anywhere under the video —
+    // which also covers a MIXED video's motion beats, since those are VIDEO
+    // too. A generated channel's footage is `kind: "IMAGE"` under `beats/`,
+    // and that half MUST carry the prefix: `kind: "IMAGE"` video-wide would
+    // also match every thumbnail this app has made (see `beat-storage.ts`),
+    // and the panel would report Footage done for a video that has only a
+    // cover image.
+    //
+    // Counting only VIDEO is what this used to do, and on a generated video it
+    // meant Footage read "pending" forever with forty drawn stills sitting on
+    // disk. An operator watching that panel has no way to tell a stalled stage
+    // from a finished one, and the reasonable response — press Retry — spends
+    // the whole pipeline again.
     const assets = await prisma.asset.findMany({
       where: {
-        storagePath: { startsWith: `videos/${videoId}/` },
-        kind: { in: ["VIDEO", "SUBTITLE"] },
+        OR: [
+          {
+            storagePath: { startsWith: `videos/${videoId}/` },
+            kind: { in: ["VIDEO", "SUBTITLE"] },
+          },
+          {
+            storagePath: { startsWith: beatPrefix(videoId) },
+            kind: "IMAGE",
+          },
+        ],
       },
       select: { kind: true, provider: true, sizeBytes: true },
     });
 
-    const clips = assets.filter((asset) => asset.kind === "VIDEO");
+    const clips = assets.filter(
+      (asset) => asset.kind === "VIDEO" || asset.kind === "IMAGE",
+    );
     const hasCaptions = assets.some((asset) => asset.kind === "SUBTITLE");
     const renderJob = video.renderJobs[0] ?? null;
 
