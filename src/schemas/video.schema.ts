@@ -70,3 +70,39 @@ export type RenarrateVideoInput = z.infer<typeof renarrateVideoSchema>;
 export const deleteVideosSchema = z.array(z.string().uuid()).min(1).max(500);
 
 export type DeleteVideosInput = z.infer<typeof deleteVideosSchema>;
+
+/**
+ * The most shorts one Generate click may queue.
+ *
+ * There has to be a ceiling because nothing between the action and the worker
+ * rate-limits this: the count decides how many `generateObject` moments the
+ * model is asked to tell apart in a single call, and then how many rows the
+ * worker must encode before anything else on the box renders. An unbounded
+ * count is an unbounded queue, from a number the browser chose.
+ *
+ * Ten rather than seven, which is what an eight-minute video actually yields at
+ * 12–60 seconds a clip: the ceiling is a guard, not the recommendation, and
+ * pinning it to today's longest script would mean editing a schema the next
+ * time someone writes a longer one. Ten is still a set an operator can review
+ * in a sitting, which is the other half of what makes this number a cost.
+ *
+ * Over-asking is not an error, though — `generate` drops every moment that
+ * overlaps one it already took, so a count larger than the narration can hold
+ * simply returns fewer shorts.
+ */
+export const MAX_SHORT_COUNT = 10;
+
+/**
+ * How many moments one `generateShortsAction` asks for.
+ *
+ * No `.default()` here on purpose. The default lives in one place —
+ * `shortsService.generate`'s own `count` parameter — and the action passes
+ * `undefined` straight through to it rather than restating the number, so the
+ * two cannot drift. A literal here would be a second answer to "how many
+ * shorts is a Generate click", and the panel would then be a third.
+ */
+export const shortCountSchema = z
+  .number()
+  .int("Ask for a whole number of shorts.")
+  .min(1, "Generate at least one short.")
+  .max(MAX_SHORT_COUNT, `One click can queue at most ${MAX_SHORT_COUNT} shorts.`);
