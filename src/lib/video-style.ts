@@ -21,6 +21,38 @@ export interface MotionStyle {
    * The pannable margin is (scale - 1) of the frame.
    */
   scale: number;
+  /**
+   * Which move. `pan` translates a fixed-size crop window and is what every
+   * render before this produced; `kenburns` pushes in *and* drifts, which needs
+   * `zoompan` because a `crop` filter's output size cannot change.
+   *
+   * Optional, and absent means `pan` — so a channel that has never been styled,
+   * and every channel styled before this field existed, emits byte-for-byte the
+   * filter string it always has.
+   */
+  kind?: "pan" | "kenburns";
+  /**
+   * How far past the output the still is upscaled before `zoompan` sees it.
+   *
+   * `zoompan` computes its crop origin in integer source pixels, so the
+   * smoothness of the move is decided entirely by how small one output pixel is
+   * in source terms. Measured on a 1536x1024 still into a 1920x1080 frame:
+   * no pre-upscale leaves 54.8% of adjacent frames identical, 2x leaves 18.5%,
+   * 3x leaves 4.4%, and 4x leaves none. Four is therefore the number, not a
+   * round guess — it is where a step becomes a quarter of an output pixel and
+   * drops below what the eye resolves at 30fps.
+   *
+   * The cost is +31MB peak RSS and 2.9x the segment pass. Those two figures are
+   * from the worker's own image — FFmpeg 5.1.9 on Debian 12 — where a 20-second
+   * segment ran 260MB/15s as a pan against 291MB/44s as this. The design spec
+   * quotes 1.7x for the wall time; that was darwin/FFmpeg 9.0 on a machine with
+   * far more CPU, and it is not the number to plan against. The frozen-frame
+   * fractions above did reproduce exactly. The 640MB the worker is given
+   * (deploy/docker-compose.yml) has room for it *because a still is one decode
+   * of one file* — see the guard in `buildVideoFilter`, which is the
+   * load-bearing half of this field.
+   */
+  preScale?: number;
 }
 
 export interface CaptionStyle {
