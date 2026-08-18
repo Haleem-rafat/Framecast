@@ -101,10 +101,20 @@ function HeroGround() {
  *  - **It is not mounted at all on a phone or under reduced motion.** Not
  *    paused — absent, along with its WebGL context and, because of the
  *    `dynamic()` above, its download. See `useAmbientEffectsAllowed`.
- *  - **It cannot read the brand tokens.** The shader binds sRGB hex to
- *    uniforms, so the two colours below are a hand-maintained copy of the
- *    ramp and will drift if `globals.css` changes: `#9083FF` is
- *    `--brand-violet` on the dark theme and `#44D4E2` is `--brand-cyan` there.
+ *  - **It reads the brand tokens off its own host, not off `:root`.** The
+ *    shader binds sRGB to uniforms and cannot resolve a CSS variable itself, so
+ *    the ramp is read here and handed over. It used to be a hand-maintained
+ *    copy of the *dark* theme's hexes, dimmed on light — which is why the light
+ *    theme looked wrong: violet tuned for near-black was being laid on white.
+ *
+ *    The token lookup has one trap, and it is the reason the copy existed.
+ *    These tokens are scoped to `.marketing` (`globals.css`), not to `:root` —
+ *    `.marketing` carries the light ramp and `.dark .marketing` the lighter
+ *    one. Reading them from `document.documentElement` returns the empty
+ *    string, so the read MUST happen on an element inside the marketing scope;
+ *    the host div below is one, which is why it renders before the canvas does.
+ *    Custom properties inherit, so any descendant would do.
+ *
  *    Violet cables carrying cyan pulses is the headline's own gradient, moving.
  *    (`tunnelColor` is inert while `tunnelOpacity` is 0 — the shader multiplies
  *    the two — but it is passed for the day someone raises the opacity.)
@@ -137,36 +147,78 @@ function HeroGround() {
  * everything, so it only ever sees the pointer where no content is — the
  * headline stays selectable and the buttons stay clickable.
  */
+/**
+ * The ramp the shader is given, resolved from the marketing scope's tokens.
+ *
+ * Falls back to the dark theme's hexes only if a token is missing entirely —
+ * `toCanvasColor` cannot report failure (an unparseable `fillStyle` is silently
+ * ignored, leaving opaque black), so an empty token has to be caught before it
+ * gets there rather than after.
+ */
+interface TunnelRamp {
+  cable: string;
+  pulse: string;
+  tunnel: string;
+}
+
+const TUNNEL_FALLBACK: TunnelRamp = {
+  cable: "#9083FF",
+  pulse: "#44D4E2",
+  tunnel: "#6B55DF",
+};
+
 function HeroTunnel() {
   const enabled = useAmbientEffectsAllowed();
+  const hostRef = useRef<HTMLDivElement>(null);
+  const { resolvedTheme } = useTheme();
+  const [ramp, setRamp] = useState<TunnelRamp | null>(null);
+
+  useEffect(() => {
+    if (!enabled || !hostRef.current) return;
+
+    const styles = window.getComputedStyle(hostRef.current);
+    const read = (token: string, fallback: string) => {
+      const raw = styles.getPropertyValue(token).trim();
+      return raw ? toCanvasColor(raw) : fallback;
+    };
+
+    setRamp({
+      cable: read("--brand-violet", TUNNEL_FALLBACK.cable),
+      pulse: read("--brand-cyan", TUNNEL_FALLBACK.pulse),
+      tunnel: read("--brand-blue", TUNNEL_FALLBACK.tunnel),
+    });
+  }, [enabled, resolvedTheme]);
 
   if (!enabled) return null;
 
   return (
     <div
+      ref={hostRef}
       aria-hidden="true"
       className="absolute inset-0 -z-10 opacity-40 [mask-image:radial-gradient(48rem_60%_at_50%_45%,transparent_0%,transparent_45%,black_100%)] dark:opacity-75"
     >
-      <LightTunnel
-        cableColor="#9083FF"
-        pulseColor="#44D4E2"
-        tunnelColor="#6B55DF"
-        tunnelOpacity={0}
-        speed={0.1}
-        flowDirection="outward"
-        pulseSpeed={2}
-        pulseLength={0.28}
-        cableCount={20}
-        thickness={0.35}
-        rimWidth={0.15}
-        waviness={0.3}
-        sway={0.5}
-        glow={1}
-        grain
-        grainIntensity={0.03}
-        mouseInteraction
-        mouseStrength={0.1}
-      />
+      {ramp ? (
+        <LightTunnel
+          cableColor={ramp.cable}
+          pulseColor={ramp.pulse}
+          tunnelColor={ramp.tunnel}
+          tunnelOpacity={0}
+          speed={0.1}
+          flowDirection="outward"
+          pulseSpeed={2}
+          pulseLength={0.28}
+          cableCount={20}
+          thickness={0.35}
+          rimWidth={0.15}
+          waviness={0.3}
+          sway={0.5}
+          glow={1}
+          grain
+          grainIntensity={0.03}
+          mouseInteraction
+          mouseStrength={0.1}
+        />
+      ) : null}
     </div>
   );
 }
