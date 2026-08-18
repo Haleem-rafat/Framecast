@@ -7,6 +7,7 @@ import {
   describeSections,
   MAX_SHORT_SECONDS,
   MIN_SHORT_SECONDS,
+  planShortBeatSlots,
   planShortSlots,
   planShortWindow,
   SHORT_MAX_CHARS_PER_LINE,
@@ -469,6 +470,85 @@ describe("planShortSlots", () => {
 
   it("returns nothing for a window no section reaches", () => {
     expect(planShortSlots([], { startSeconds: 0, endSeconds: 20 }, 1)).toEqual([]);
+  });
+});
+
+describe("planShortBeatSlots", () => {
+  /** The same four five-second sections the section tests above use, so the
+   *  two can be compared number for number. */
+  const windows = [0, 5, 10, 15].map((startSeconds) => ({
+    cue: `cue ${startSeconds}`,
+    startSeconds,
+    endSeconds: startSeconds + 4.9,
+  }));
+
+  /** Two pictures over four sections — the illustrated shape, where a beat
+   *  covers more than the sentence it opens on. */
+  const paired = [{ sectionIndices: [0, 1], cues: [] }, { sectionIndices: [2, 3], cues: [] }];
+
+  it("plays one picture per beat, not one per section", () => {
+    const slots = planShortBeatSlots(windows, paired, { startSeconds: 0, endSeconds: 20 }, 1);
+
+    // Two slots of ten seconds, where the section planner gives four of five.
+    // Anything else means a beat's still would be fetched by a section index
+    // and every picture after the first would be the wrong one.
+    expect(slots).toEqual([
+      { sectionIndex: 0, seconds: 10 },
+      { sectionIndex: 1, seconds: 10 },
+    ]);
+  });
+
+  it("composes a window inside one beat as a single slot", () => {
+    // The case the whole path exists for: a twelve-second short over a
+    // four-minute story whose pictures are twenty seconds each never leaves the
+    // beat it started in, and one still holds the entire clip.
+    const slots = planShortBeatSlots(windows, paired, { startSeconds: 1, endSeconds: 9 }, 1);
+
+    expect(slots).toEqual([{ sectionIndex: 0, seconds: 8 }]);
+  });
+
+  it("sums to exactly the window, exactly as the section planner does", () => {
+    const window = { startSeconds: 7, endSeconds: 19.5 };
+    const slots = planShortBeatSlots(windows, paired, window, 1);
+    const total = slots.reduce((sum, slot) => sum + slot.seconds, 0);
+
+    expect(total).toBeCloseTo(window.endSeconds - window.startSeconds, 6);
+  });
+
+  it("is the identity for a shot-scripted video, where a beat is a section", () => {
+    // `planStoryBeats` gives one beat per cue when the writer tagged every
+    // shot, so the long-form list video's slots must come out byte-identical
+    // to what the section planner produces — otherwise this path would quietly
+    // re-time the format it was mostly written for.
+    const perSection = windows.map((_window, index) => ({
+      sectionIndices: [index],
+      cues: [],
+    }));
+    const window = { startSeconds: 2, endSeconds: 12 };
+
+    expect(planShortBeatSlots(windows, perSection, window, 1)).toEqual(
+      planShortSlots(windows, window, 1),
+    );
+  });
+
+  it("merges a sliver of a beat into the picture already on screen", () => {
+    // Same floor, same absorption — the merge logic is reused untouched, and
+    // this is the assertion that says so at the beat scale.
+    const slots = planShortBeatSlots(
+      windows,
+      paired,
+      { startSeconds: 0, endSeconds: 10.2 },
+      1,
+    );
+
+    expect(slots.map((slot) => slot.sectionIndex)).toEqual([0]);
+    expect(slots[0].seconds).toBeCloseTo(10.2, 6);
+  });
+
+  it("returns nothing for a video with no beats at all", () => {
+    expect(planShortBeatSlots(windows, [], { startSeconds: 0, endSeconds: 20 }, 1)).toEqual(
+      [],
+    );
   });
 });
 

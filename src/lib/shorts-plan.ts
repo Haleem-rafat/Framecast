@@ -3,6 +3,7 @@ import type { Alignment } from "@/lib/captions";
 import type { KineticCaptionStyle } from "@/lib/kinetic-captions";
 import type { CaptionStyle } from "@/lib/video-style";
 import type { AnchoredCue, CueWindow } from "@/lib/script-cues";
+import type { StoryBeat } from "@/lib/story-beats";
 
 /**
  * Turning "the AI liked this bit of the script" into "cut the video here".
@@ -159,6 +160,13 @@ export function planShortWindow(
  * which is index-aligned with the anchored cues — and therefore with the clip
  * `FootageService` stored for that section. `seconds` is that clip's slot in
  * the short, not in the parent video.
+ *
+ * Out of `planShortBeatSlots` it indexes that function's `beats` instead, for
+ * the reason given there: a beat-collected video has no per-section picture to
+ * point at. The field keeps its name because the caller's use of it is
+ * identical either way — it subscripts the array of picture paths it was
+ * handed — and renaming it would churn every existing stock assertion to say
+ * the same thing.
  */
 export interface ShortSlot {
   sectionIndex: number;
@@ -245,6 +253,66 @@ export function planShortSlots(
   }
 
   return merged;
+}
+
+/**
+ * The same plan for a video whose picture unit is a beat rather than a section.
+ *
+ * A beat-collected video — `ILLUSTRATED`, `CINEMATIC` or `MIXED` — has one
+ * picture per *beat*, and a beat covers one or more consecutive sections (see
+ * `planStoryBeats`). Its slots therefore cannot be indexed by section: section
+ * 5 of a four-minute bedtime story has no picture of its own, it shares beat
+ * 2's with sections 4 and 6.
+ *
+ * The reduction below is the whole of it. Each beat becomes one window running
+ * from the start of its first section to the end of its last, and the merge
+ * logic above then runs over those windows completely unchanged — same clipping
+ * to the short's edges, same floor, same guarantee that the slots sum to
+ * exactly the window. Nothing about how a short is composed differs; only what
+ * a slot counts.
+ *
+ * For a shot-scripted long-form video this path is the identity — the writer
+ * tagged every section, so `planStoryBeats` gives one beat per section and the
+ * beat windows come back equal to the section windows. Worth saying out loud,
+ * because it means the case that actually exercises this code is the other one:
+ * the four-minute illustrated story where a beat spans three sections and a
+ * twelve-second short can sit entirely inside one beat, composing as a single
+ * slot holding one still.
+ *
+ * The returned slots' `sectionIndex` is a BEAT index — an index into `beats`,
+ * which is the same index `beatAssetPath` files each picture under. A section
+ * index would be meaningless here, since several of them share the one picture.
+ */
+export function planShortBeatSlots(
+  windows: CueWindow[],
+  beats: readonly StoryBeat[],
+  window: ShortWindow,
+  minSeconds: number,
+): ShortSlot[] {
+  const collapsed: CueWindow[] = [];
+
+  for (const beat of beats) {
+    const first = windows[beat.sectionIndices[0]];
+    const last = windows[beat.sectionIndices[beat.sectionIndices.length - 1]];
+
+    // A beat whose sections are not in `windows` at all cannot be timed, and is
+    // dropped rather than guessed at. Unreachable while both sides derive from
+    // the same anchored cues — which is the only way either is ever called —
+    // but a beat placed at a made-up second would put a picture under words it
+    // was not drawn for, and that is not a failure worth risking to save a
+    // conditional.
+    if (!first || !last) {
+      continue;
+    }
+
+    // The beat's opening section's window, re-ended at its closing one. Spread
+    // rather than rebuilt so the cue text and any `beat`/`shot` metadata travel
+    // with it, and so a field added to `CueWindow` later does not silently
+    // vanish on this path alone.
+    collapsed.push({ ...first, endSeconds: last.endSeconds });
+  }
+
+  return planShortSlots(collapsed, window, minSeconds);
 }
 
 /**
