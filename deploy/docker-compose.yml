@@ -151,7 +151,19 @@ services:
     cpu_shares: 512
 
   app-staging:
-    image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-app:${IMAGE_TAG:-latest}
+    # `STAGING_IMAGE_TAG`, not `IMAGE_TAG`, and this is a safety property rather
+    # than a convenience.
+    #
+    # Both environments used to resolve the same `:latest`. That meant
+    # `docker compose pull app-staging` — an ordinary staging deploy — moved the
+    # tag production resolves, so the next time a prod container restarted for
+    # ANY reason (a deploy, a reboot, the OOM killer) it silently came back up
+    # on whatever was last built for staging. Nothing announced it; prod simply
+    # became a different version of the app.
+    #
+    # Defaulting to `IMAGE_TAG` keeps a box that has not set it behaving exactly
+    # as it did, so this is safe to roll out before anyone edits their `.env`.
+    image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-app:${STAGING_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     restart: unless-stopped
     logging: *logging
     # Same process as app-prod, and the staging proof in the runbook publishes
@@ -174,7 +186,8 @@ services:
   #   docker compose --profile staging-worker up -d worker-staging
   #   docker compose stop worker-staging
   worker-staging:
-    image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-worker:${IMAGE_TAG:-latest}
+    # See `app-staging` above for why this is not `IMAGE_TAG`.
+    image: ghcr.io/${GITHUB_OWNER:?see deploy/compose.env.example}/framecast-worker:${STAGING_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     restart: unless-stopped
     logging: *logging
     # Matches worker-prod rather than undercutting it: it runs the identical
