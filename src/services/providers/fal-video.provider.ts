@@ -54,10 +54,29 @@ import type {
 /** Documented, stable, and the same host for all three calls. */
 const FAL_QUEUE_BASE = "https://queue.fal.run";
 
-/** The rate at which `wan-t2v` actually delivers frames, from the one measured
- *  generation: 81 frames across 5.07 seconds. Used only to turn the manifest's
- *  seconds into the model's own `num_frames`. */
-const WAN_NATIVE_FPS = 16;
+/**
+ * The frame rate this adapter ASKS `wan-t2v` for, and the ceiling it may ask.
+ *
+ * Both measured against the live API, and neither is in the model's OpenAPI
+ * schema — which advertises `frames_per_second` and `num_frames` with no
+ * bounds at all. Submitting 30fps/151 frames is accepted at the queue and then
+ * refused ~146 seconds later with `frames_per_second <= 24` and
+ * `num_frames <= 100`. That is the expensive direction to discover a limit in,
+ * so both are enforced here instead.
+ *
+ * 24 rather than the model's own 16 default because the clip is resampled to
+ * the pipeline's 30fps either way, and the source rate decides how much of that
+ * resample is duplicated frames. Measured on the same prompt and seed, conformed
+ * through `buildConformArgs`: a 16fps source lands at 13.1% pixel-identical
+ * adjacent frames, a 24fps source at 6.1%. Same billed generation, half the
+ * judder.
+ *
+ * The cost is reach: 100 frames at 24fps is 4.16 seconds, so this model can no
+ * longer fill the top of the format's 4-5s band. `wanFrameCount` clamps rather
+ * than overshooting into a 422.
+ */
+const WAN_REQUEST_FPS = 24;
+const WAN_MAX_FRAMES = 100;
 
 /**
  * The models this adapter will submit to, and how each expresses a length.
@@ -109,18 +128,21 @@ function isRetryable(status: number): boolean {
 }
 
 /**
- * The frame count for a `num_frames` model.
+ * The frame count for a `num_frames` model, at `WAN_REQUEST_FPS`.
  *
- * `4n+1` because the one measured value was 81, and 81 is 16x5+1 — video models
- * in this family count a first frame plus n whole steps. Clamped to the band the
- * format itself cuts at (`MIN_CLIP_SECONDS` 4s to `MAX_CLIP_SECONDS` 5s at this
- * model's own 16fps) rather than left open, so a manifest that somehow reached
- * here with a 40-second clip is refused by arithmetic instead of being bought.
+ * Clamped at both ends rather than left open. The ceiling is the API's real,
+ * undocumented `num_frames <= 100`; the floor is `MIN_CLIP_SECONDS` worth of
+ * frames, so a manifest that somehow arrived here asking for half a second is
+ * refused by arithmetic rather than bought and thrown away. A 40-second clip is
+ * likewise clamped instead of 422-ing after the job row is already written.
+ *
+ * Note the ceiling binds before the format's own `MAX_CLIP_SECONDS` does:
+ * 5 x 24 = 120 frames, and the model stops at 100. See `WAN_REQUEST_FPS`.
  */
 export function wanFrameCount(durationSeconds: number): number {
-  const frames = Math.round(durationSeconds * WAN_NATIVE_FPS) + 1;
+  const frames = Math.round(durationSeconds * WAN_REQUEST_FPS);
 
-  return Math.min(Math.max(frames, 4 * WAN_NATIVE_FPS + 1), 5 * WAN_NATIVE_FPS + 1);
+  return Math.min(Math.max(frames, 4 * WAN_REQUEST_FPS), WAN_MAX_FRAMES);
 }
 
 /** The nearest length the model actually offers, never the requested one
@@ -176,6 +198,9 @@ export function buildFalRequestBody(
 
   if (model.durationEncoding === "num_frames") {
     body.num_frames = wanFrameCount(request.durationSeconds);
+    // Sent explicitly rather than left to the model's 16 default — see
+    // `WAN_REQUEST_FPS` for the measurement that made this worth a field.
+    body.frames_per_second = WAN_REQUEST_FPS;
   } else {
     body.duration = nearestDurationChoice(
       request.durationSeconds,

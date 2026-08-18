@@ -75,7 +75,8 @@ describe("buildFalRequestBody", () => {
     // The two models disagree about this field, and sending the wrong one is a
     // 422 after the job row exists rather than a bad clip.
     expect(buildFalRequestBody(request({ durationSeconds: 5 }))).toMatchObject({
-      num_frames: 81,
+      num_frames: 100,
+      frames_per_second: 24,
     });
     expect(
       buildFalRequestBody(request({ model: "fal-ai/veo3", durationSeconds: 4.5 })),
@@ -108,15 +109,26 @@ describe("buildFalRequestBody", () => {
 });
 
 describe("wanFrameCount", () => {
-  it("matches the one frame count actually measured", () => {
-    expect(wanFrameCount(5)).toBe(81);
+  it("stops at the API's real, undocumented ceiling", () => {
+    // 100 is not a round number somebody liked: submitting 151 frames is
+    // accepted at the queue and refused ~146s later with `num_frames <= 100`.
+    // The model's OpenAPI schema advertises no bound at all.
+    expect(wanFrameCount(5)).toBe(100);
+    expect(wanFrameCount(40)).toBe(100);
   });
 
-  it("stays inside the band the format cuts at, whatever it is handed", () => {
-    // MIN_CLIP_SECONDS 4 to MAX_CLIP_SECONDS 5, at this model's own 16fps.
-    expect(wanFrameCount(4)).toBe(65);
-    expect(wanFrameCount(0.5)).toBe(65);
-    expect(wanFrameCount(40)).toBe(81);
+  it("asks for a whole MIN_CLIP_SECONDS even when handed less", () => {
+    // A clip shorter than the format cuts at is refused by arithmetic here
+    // rather than bought and thrown away.
+    expect(wanFrameCount(4)).toBe(96);
+    expect(wanFrameCount(0.5)).toBe(96);
+  });
+
+  it("cannot reach the top of the format's band, and that is the trade", () => {
+    // 5s x 24fps is 120 frames and the model stops at 100, so the longest clip
+    // this model can make is 4.16s. Pinned so the day somebody raises
+    // MAX_CLIP_SECONDS they find out here instead of in a 422.
+    expect(wanFrameCount(5) / 24).toBeCloseTo(4.16, 1);
   });
 });
 
