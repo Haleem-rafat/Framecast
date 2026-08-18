@@ -92,6 +92,7 @@ model User {
   series              Series[]
   releaseCadences     ReleaseCadence[]
   autoPublishJobs     AutoPublishJob[]
+  motionClipJobs      MotionClipJob[]
   canvasNodes         CanvasNode[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
@@ -683,18 +684,22 @@ model Video {
   seriesId String? @db.Uuid
   series   Series? @relation(fields: [seriesId], references: [id], onDelete: SetNull)
 
-  script       Script?
-  voiceOver    VoiceOver?
-  thumbnail    Thumbnail?
-  scenes       Scene[]
-  renderJobs   RenderJob[]
-  publication  Publication?
-  statusEvents VideoStatusEvent[]
-  shorts       Short[]
-  scheduleRuns ScheduleRun[]
+  script         Script?
+  voiceOver      VoiceOver?
+  thumbnail      Thumbnail?
+  scenes         Scene[]
+  renderJobs     RenderJob[]
+  publication    Publication?
+  statusEvents   VideoStatusEvent[]
+  shorts         Short[]
+  scheduleRuns   ScheduleRun[]
   /// Set only when an automation that publishes itself made this video. Absent
   /// for every video made by hand, which is what it has always been.
   autoPublishJob AutoPublishJob?
+  /// Empty for every video in this app but one made by the motion tier, which
+  /// is the only stage that generates video rather than downloading or drawing
+  /// a picture. See motion.service.ts.
+  motionClipJobs MotionClipJob[]
 
   @@index([userId, status, deletedAt])
   @@index([projectId, deletedAt])
@@ -880,8 +885,8 @@ model Scene {
   /// anything, which is every scene that exists today.
   emphasis String[]
 
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   videoId String @db.Uuid
   video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
@@ -1364,6 +1369,12 @@ enum AiProviderType {
   REPLICATE
   PIKA
   LUMA
+  /// The one video model in this enum with an adapter behind it (see
+  /// fal-video.provider.ts). The six above are names alone — no adapter, no
+  /// call site — because the AI SDK gateway every other generation in this app
+  /// goes through does not carry a video model, so each of them is a whole
+  /// integration rather than a model id. This is that integration, done once.
+  FAL
   /// Stock footage. Platform-level keys (see env.ts), never a per-operator
   /// ProviderCredential row — used only to tag Asset.provider.
   PEXELS
@@ -1857,6 +1868,127 @@ model AutoPublishJob {
   /// The claim query's index: due jobs, oldest first.
   @@index([status, runAfter])
   @@map("auto_publish_job")
+}
+
+// ---------------------------------------------------------------------------
+// The motion tier — generated video, one clip at a time
+// ---------------------------------------------------------------------------
+
+/// WAITING and SUBMITTED are both "not finished", and the difference between
+/// them is whether money has been spent yet.
+///
+/// A WAITING row has never been sent anywhere; deleting it costs nothing. A
+/// SUBMITTED row is a generation the provider is already running and already
+/// billing, identified by `requestId` — the tick polls it rather than starting
+/// it again. CLAIMED is held only while a worker is mid-call, and its lease is
+/// what lets a dead worker's job be retaken.
+enum MotionClipStatus {
+  WAITING
+  CLAIMED
+  SUBMITTED
+  DONE
+  FAILED
+}
+
+/// One generated clip, from before it is submitted to after it is stored.
+///
+/// A table rather than an `await` inside a request, and the reason is measured:
+/// one 5-second clip took **217 seconds** to come back from fal.ai. Nothing in
+/// this app holds an HTTP request open for three and a half minutes, and a
+/// twelve-clip manifest is three quarters of an hour of wall time — so the shape
+/// has to be the one `auto_publish_job` already uses, a row plus a worker tick,
+/// rather than the one every other provider here uses.
+///
+/// Rows are written only after `checkManifest` has passed and the spend ceiling
+/// has been cleared (see motion-spend.ts). By the time a row exists, the whole
+/// video's cost is already known and already accepted.
+model MotionClipJob {
+  id String @id @default(uuid()) @db.Uuid
+
+  videoId String @db.Uuid
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// `ManifestClip.id`, carried through unchanged so an operator looking at a
+  /// bad clip in the finished video can name the row that made it. Unique with
+  /// `videoId`, which is what makes enqueueing a manifest twice a no-op rather
+  /// than a second bill.
+  clipId Int
+
+  /// Where in `beats/` this clip is stored, zero-based — its position in
+  /// `Manifest.clips`. Separate from `clipId` because the manifest numbers its
+  /// clips from one and the beat prefix numbers its slots from zero, and
+  /// conflating them would file every clip one slot late.
+  slotIndex Int
+
+  /// The fal.ai model path, e.g. `fal-ai/wan-t2v`. Stored per row rather than
+  /// read from a constant at poll time: a job submitted to one model must be
+  /// polled on that same model's queue, whatever the default has since become.
+  model String
+
+  /// Exactly what was sent, style lock already appended — see `clipPrompt`.
+  /// Recorded rather than recomputed so what the clip was asked for survives a
+  /// later edit to the style lock.
+  prompt          String
+  negativePrompt  String?
+  aspectRatio     String
+  durationSeconds Float
+
+  /// The whole reason a manifest carries seeds at all: with one stored, a bad
+  /// clip is re-rolled alone and the other eleven stay byte-identical. Without
+  /// it the only fix for one bad clip is to buy all twelve again.
+  seed Int
+
+  /// What this clip is expected to cost, in seconds the provider bills — not in
+  /// dollars, because fal.ai publishes no price API and any dollar figure this
+  /// app stored would be a guess wearing a decimal point. Summed across a
+  /// video's rows this is the number the ceiling is enforced against.
+  billedSeconds Int
+
+  status   MotionClipStatus @default(WAITING)
+  attempts Int              @default(0)
+
+  /// The provider's queue id, set the instant a submit returns and cleared when
+  /// a generation is abandoned. Its presence is what tells the tick to poll
+  /// instead of submit, so it is the single most important field here: a row
+  /// that lost it would be paid for twice.
+  requestId String?
+
+  /// When the generation now in flight was submitted. The deadline is measured
+  /// from here, because a queue that never answers is otherwise indistinguishable
+  /// from one that is merely slow — and slow is 217 seconds.
+  submittedAt DateTime?
+
+  /// Where the conformed clip landed, once there is one.
+  storagePath String?
+
+  /// Not before this. A poll interval while a generation is in flight, a
+  /// backoff after one failed.
+  runAfter DateTime @default(now())
+
+  /// Held while a worker is mid-call. Sized for the submit and the poll, not
+  /// for the generation — the generation happens on fal's side and this row is
+  /// not claimed while it runs.
+  leaseExpiresAt DateTime?
+
+  /// Why the last attempt failed, in a sentence safe to show verbatim.
+  error String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// A second submit of the same manifest clip must be impossible, and this is
+  /// the constraint that makes it so — the claim's conditional update guards
+  /// the race, this guards the caller.
+  @@unique([videoId, clipId])
+  /// The claim query: due jobs, oldest first.
+  @@index([status, runAfter])
+  /// "What did this video's motion tier cost, and is it finished" — the query
+  /// the operator-facing summary runs.
+  @@index([videoId, status])
+  @@map("motion_clip_job")
 }
 
 /// Where one node sits on this operator's automation canvas.

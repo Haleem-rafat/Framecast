@@ -319,3 +319,89 @@ export interface ImageGenerationInput {
 export interface ImageProvider {
   generate(input: ImageGenerationInput): Promise<GeneratedImage>;
 }
+
+/**
+ * A text-to-video model, which is the one provider shape in this codebase that
+ * cannot be an `await`.
+ *
+ * Every other provider here answers in under a minute: the gateway returns a
+ * script, ElevenLabs returns audio, Pexels returns JSON. A measured fal.ai
+ * generation of ONE five-second clip took **217 seconds**, so a twelve-clip
+ * manifest is something like an hour and a quarter of wall time. No HTTP
+ * request in this app is held open for that, so the interface is split into the
+ * three round trips the queue actually has — submit, poll, collect — and a job
+ * row (motion.service.ts) carries the state between them.
+ *
+ * Splitting it this way is also what makes the money auditable. `submit` is the
+ * exact moment a bill starts; it returns an id and nothing else, so the caller
+ * has one thing to persist, and one thing to persist it before.
+ */
+export interface VideoGenerationRequest {
+  /** Never a constant, never an env var — the operator's own stored
+   *  credential, resolved through `providerCredentialService.resolveKey`. */
+  apiKey: string;
+  /** The provider's model path, e.g. `fal-ai/wan-t2v`. Passed per request
+   *  rather than fixed, so a job polls the same model it was submitted to. */
+  model: string;
+  /** The full prompt, style lock already appended — see `clipPrompt`. */
+  prompt: string;
+  negativePrompt?: string;
+  aspectRatio: string;
+  durationSeconds: number;
+  /** Required, not optional. `render-manifest.ts` refuses a manifest whose
+   *  clips carry no integer seed, because without one a bad clip cannot be
+   *  re-rolled alone — so by the time a request is built there is always one. */
+  seed: number;
+}
+
+/**
+ * PENDING covers both "queued" and "running", because nothing downstream treats
+ * them differently: both mean poll again, neither counts an attempt, and only
+ * the deadline distinguishes a slow queue from a dead one.
+ */
+export type VideoGenerationState = "PENDING" | "COMPLETED" | "FAILED";
+
+export interface VideoGenerationStatus {
+  state: VideoGenerationState;
+  /** The provider's own words, kept for the job row's `error`. Null when it
+   *  offered none. */
+  detail: string | null;
+}
+
+export interface GeneratedClip {
+  data: Buffer;
+  contentType: string;
+  /**
+   * The seed the provider says it actually used, when it says so at all.
+   * Compared against the requested one by the caller: a provider that silently
+   * ignored the seed makes "re-roll one clip" impossible, and learning that
+   * from one mismatched integer is far cheaper than learning it from twelve
+   * clips that all changed.
+   */
+  seed: number | null;
+}
+
+export interface VideoGenerationProvider {
+  /** Which credential this adapter spends. Tags the `ProviderUsage` rows. */
+  readonly provider: AiProviderType;
+  /** Starts a generation and returns the queue id. **This is the call that
+   *  spends money**; everything before it is free, and everything after it is
+   *  bookkeeping. */
+  submit(request: VideoGenerationRequest): Promise<string>;
+  /** Cheap enough to run every few seconds; returns no media. */
+  checkStatus(
+    model: string,
+    requestId: string,
+    apiKey: string,
+  ): Promise<VideoGenerationStatus>;
+  /** Collects a COMPLETED generation and downloads it. Throws rather than
+   *  returning an empty clip when the provider reports success without media —
+   *  see the fal adapter for why that case is not hypothetical. */
+  fetchResult(
+    model: string,
+    requestId: string,
+    apiKey: string,
+  ): Promise<GeneratedClip>;
+  /** True when the provider accepts the key. Spends nothing. */
+  verifyKey(apiKey: string): Promise<boolean>;
+}

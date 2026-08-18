@@ -6,6 +6,7 @@ import { ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { UpsertCredentialInput } from "@/schemas/provider.schema";
 import { ELEVENLABS_API_BASE } from "@/services/providers/elevenlabs.provider";
+import { FalVideoProvider } from "@/services/providers/fal-video.provider";
 import { gatewayProvider } from "@/services/providers/gateway.provider";
 
 /**
@@ -116,6 +117,34 @@ async function testElevenLabsKey(
   };
 }
 
+/**
+ * The video tier's key check, and it spends nothing.
+ *
+ * The obvious check for a text-to-video provider — submit something small — is
+ * the one check this provider must not make: fal.ai bills by the generated
+ * second, so an operator pressing "test" would be charged for pressing it.
+ * Instead the adapter asks the queue about a request id that cannot exist.
+ * Unauthenticated, every fal endpoint answers 401; authenticated, it answers at
+ * all. That is the whole signal, and it is free.
+ */
+async function testFalKey(
+  apiKey: string | null,
+  fetchClient: FetchLike,
+): Promise<CredentialTestResult> {
+  if (!apiKey) {
+    return {
+      ok: false,
+      reason: "No API key configured. Add one on the Providers page.",
+    };
+  }
+
+  const accepted = await new FalVideoProvider(fetchClient).verifyKey(apiKey);
+
+  return accepted
+    ? { ok: true, reason: "fal.ai accepted the key. No generation was started." }
+    : { ok: false, reason: "fal.ai rejected the key." };
+}
+
 export class ProviderCredentialService {
   async list(userId: string): Promise<CredentialSummary[]> {
     return prisma.providerCredential.findMany({
@@ -221,6 +250,9 @@ export class ProviderCredentialService {
     switch (provider) {
       case "ELEVENLABS":
         return testElevenLabsKey(apiKey, fetchClient);
+
+      case "FAL":
+        return testFalKey(apiKey, fetchClient);
 
       case "ANTHROPIC":
         await gatewayProvider.generateScript({

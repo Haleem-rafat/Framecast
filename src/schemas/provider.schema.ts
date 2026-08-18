@@ -11,6 +11,7 @@ export const aiProviderTypes = [
   "REPLICATE",
   "PIKA",
   "LUMA",
+  "FAL",
 ] as const;
 
 export const upsertCredentialSchema = z.object({
