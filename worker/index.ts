@@ -75,6 +75,25 @@ const AUTO_PUBLISH_TICK_INTERVAL_MS = 30_000;
  * Note where the tick is actually *called* — the idle branch at the bottom of
  * the loop, not up here beside the other two. See the comment at the call site.
  */
+/**
+ * How often to advance the motion tier by one step.
+ *
+ * Ten seconds, and it is the finest tick in this file for a reason none of the
+ * others have: `motionService.tick()` claims exactly ONE job, and a manifest is
+ * up to twelve of them. At the thirty seconds the ticks above use, simply
+ * getting twelve clips submitted would take six minutes of a worker doing
+ * nothing else — against a generation that takes three and a half. Ten seconds
+ * puts that at two minutes, which is noise beside the generation itself.
+ *
+ * The query is the same single indexed lookup as the others and almost always
+ * returns nothing. What is NOT free is the branch that finds a finished clip:
+ * it downloads a few megabytes and runs an FFmpeg conform, seconds of held loop
+ * with an encoder beside whatever render is already running. That is accepted
+ * on the same grounds as the release and auto-publish uploads above, and it is
+ * bounded — one clip per tick, and the clip is five seconds long.
+ */
+const MOTION_TICK_INTERVAL_MS = 10_000;
+
 const ANALYTICS_TICK_INTERVAL_MS = 120_000;
 
 /** Display names for `PipelineStageName`, same list as scripts/render.ts —
@@ -104,6 +123,7 @@ async function main(): Promise<void> {
   const { scheduleService } = await import("@/services/schedule.service");
   const { releaseService } = await import("@/services/release.service");
   const { autoPublishService } = await import("@/services/auto-publish.service");
+  const { motionService } = await import("@/services/motion.service");
   const { shortsService } = await import("@/services/shorts.service");
   const { channelAnalyticsService } = await import(
     "@/services/channel-analytics.service"
@@ -315,6 +335,11 @@ async function main(): Promise<void> {
    *  finished video is most likely to have been waiting to go out. */
   let nextAutoPublishTickAt = 0;
 
+  /** When the motion tier may next take a step. Zero because a worker that has
+   *  just come back up may be holding generations that fal.ai finished while it
+   *  was down — and those are already paid for. */
+  let nextMotionTickAt = 0;
+
   /** When the analytics collector may next look. Zero so a freshly deployed
    *  worker collects on its first idle moment rather than two minutes later —
    *  which matters exactly once, on the deploy that first creates any
@@ -449,6 +474,33 @@ async function main(): Promise<void> {
             `auto-publish "${published.videoTitle}" → ${published.outcome}` +
               `${published.youtubeVideoId ? ` (youtube ${published.youtubeVideoId})` : ""}` +
               `${published.reason ? ` — ${published.reason}` : ""}`,
+          );
+        }
+      }
+
+      // The motion tier, ahead of the video claim for a reason the two above
+      // do not have: **these jobs are already paid for.** A generation sits in
+      // fal.ai's queue whether or not this worker is looking, so a tick stuck
+      // behind a render backlog is not work deferred, it is money spent and not
+      // collected — and a result url does not stay fetchable forever.
+      //
+      // One job per tick, deliberately. That is also what stops a twelve-clip
+      // manifest from firing twelve submits into the same second and turning a
+      // ceiling that was checked once into a burst nobody watched.
+      //
+      // Every line it logs is a step in something expensive, so every step is
+      // logged, including the polls that found nothing — the ONLY record of
+      // what this tier did with an afternoon is this log.
+      if (Date.now() >= nextMotionTickAt) {
+        nextMotionTickAt = Date.now() + MOTION_TICK_INTERVAL_MS;
+
+        const motion = await motionService.tick();
+
+        if (motion) {
+          log(
+            `motion clip ${motion.clipId} of video ${motion.videoId} → ` +
+              `${motion.outcome}${motion.storagePath ? ` (${motion.storagePath})` : ""}` +
+              `${motion.reason ? ` — ${motion.reason}` : ""}`,
           );
         }
       }

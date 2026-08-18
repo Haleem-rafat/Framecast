@@ -12,6 +12,7 @@ export const PROVIDER_LABELS: Record<AiProviderType, string> = {
   REPLICATE: "Replicate",
   PIKA: "Pika",
   LUMA: "Luma",
+  FAL: "fal.ai",
   JAMENDO: "Jamendo",
   PEXELS: "Pexels",
   PIXABAY: "Pixabay",

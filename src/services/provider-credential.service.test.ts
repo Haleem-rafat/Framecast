@@ -220,6 +220,49 @@ describe("providerCredentialService", () => {
     });
   });
 
+  describe("test() — FAL", () => {
+    it("checks the key without starting a generation, because a generation is billed", async () => {
+      await providerCredentialService.upsert(userId, {
+        provider: "FAL",
+        apiKey: "fal-good00000",
+        label: RUN,
+      });
+
+      const fetchClient = vi.fn(
+        async () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }),
+      ) as unknown as typeof fetch;
+
+      const result = await providerCredentialService.test(userId, "FAL", fetchClient);
+
+      expect(result.ok).toBe(true);
+      // A GET against a request id that cannot exist. The obvious check —
+      // submit something small — would charge the operator for pressing
+      // "test", which is the one thing a connection check must never do.
+      const [url, init] = vi.mocked(fetchClient).mock.calls[0];
+      expect(String(url)).toContain("/requests/00000000-0000-0000-0000-000000000000/status");
+      expect(init?.method).toBeUndefined();
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        "Key fal-good00000",
+      );
+    });
+
+    it("reports a rejected key as not-ok", async () => {
+      await providerCredentialService.upsert(userId, {
+        provider: "FAL",
+        apiKey: "fal-bad000000",
+        label: RUN,
+      });
+
+      const fetchClient = vi.fn(
+        async () => new Response("{}", { status: 401 }),
+      ) as unknown as typeof fetch;
+
+      expect((await providerCredentialService.test(userId, "FAL", fetchClient)).ok).toBe(
+        false,
+      );
+    });
+  });
+
   it("reports a provider with no implemented check as not-ok and untestable, rather than defaulting to ok", async () => {
     // OPENAI is a real, storable provider (see aiProviderTypes) with no
     // upstream check wired up yet — exactly the "no implemented check" case.

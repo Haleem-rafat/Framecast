@@ -290,6 +290,15 @@ export function clipPrompt(manifest: Manifest, clip: ManifestClip): string {
 }
 
 /**
+ * Renders per accepted clip. `billedSeconds`' default, named and exported so
+ * the spend ceiling in motion-spend.ts is *derived* from it rather than
+ * repeating the number — a ceiling that drifted out of step with the multiplier
+ * it was sized against would refuse manifests this file accepts, and the two
+ * gates would then disagree about the same manifest.
+ */
+export const DEFAULT_REJECT_RATE = 1.6;
+
+/**
  * What one manifest will cost to render, in billed seconds.
  *
  * Models bill whole seconds and round up, so a 4.5s clip is charged as 5. The
@@ -297,7 +306,10 @@ export function clipPrompt(manifest: Manifest, clip: ManifestClip): string {
  * time, and a cost model that assumes it does is wrong by more than the
  * difference between any two providers.
  */
-export function billedSeconds(manifest: Manifest, rejectRate = 1.6): number {
+export function billedSeconds(
+  manifest: Manifest,
+  rejectRate = DEFAULT_REJECT_RATE,
+): number {
   const seconds = manifest.clips.reduce(
     (sum, clip) => sum + Math.ceil(clip.duration),
     0,

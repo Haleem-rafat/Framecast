@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildAssembleArgs,
+  buildConformArgs,
   buildSegmentArgs,
   buildTransitionArgs,
   concatListLine,
@@ -975,5 +976,65 @@ describe("film grain", () => {
 
     expect(withoutFlag).toEqual(explicitlyOff);
     expect(withoutFlag.join(" ")).not.toContain("noise=");
+  });
+});
+
+describe("buildConformArgs", () => {
+  const base = { sourcePath: "/tmp/fal-in.mp4", outputPath: "/tmp/conformed.mp4" };
+
+  it("puts a generated clip at the pipeline's own frame rate and frame size", () => {
+    // The measured fal.ai clip was 720x1280 at about 16fps. Filed as it
+    // arrives, it is a timeline entry moving at a different rate from every
+    // other entry — visible in the finished video and nowhere earlier.
+    const vertical = buildConformArgs({ ...base, format: "VERTICAL" }).join(" ");
+
+    expect(vertical).toContain("scale=1080:1920:force_original_aspect_ratio=increase");
+    expect(vertical).toContain("crop=1080:1920");
+    expect(vertical).toContain("fps=30");
+  });
+
+  it("defaults to landscape, like every other frame-size decision here", () => {
+    expect(buildConformArgs(base).join(" ")).toContain("crop=1920:1080");
+  });
+
+  it("emits the exact filter the segment pass would apply, so nothing is resampled twice", () => {
+    // Not a coincidence worth tidying: the segment pass runs the same scale,
+    // crop and rate over this clip later. Matching it means that pass is a
+    // no-op rather than a second resample deciding what the picture looks like.
+    const conformFilter = valueOf(buildConformArgs({ ...base, format: "VERTICAL" }), "-vf");
+    const segmentFilter = valueOf(
+      buildSegmentArgs({
+        clipPath: "/tmp/a.mp4",
+        outputPath: "/tmp/segment-0.mp4",
+        clipSeconds: 5,
+        format: "VERTICAL",
+      }),
+      "-vf",
+    );
+
+    expect(conformFilter).toBe(segmentFilter);
+  });
+
+  it("drops audio, because narration is the only sound in a Framecast video", () => {
+    expect(buildConformArgs(base)).toContain("-an");
+  });
+
+  it("changes no existing video's argv", () => {
+    // This function is new and nothing that renders today calls it. The proof
+    // that matters is one line up: the filter it emits is the one the segment
+    // pass already emitted, unchanged.
+    const before = buildSegmentArgs({
+      clipPath: "/tmp/a.mp4",
+      outputPath: "/tmp/segment-0.mp4",
+      clipSeconds: 12,
+    });
+
+    expect(before).toEqual(
+      buildSegmentArgs({
+        clipPath: "/tmp/a.mp4",
+        outputPath: "/tmp/segment-0.mp4",
+        clipSeconds: 12,
+      }),
+    );
   });
 });

@@ -34,7 +34,11 @@ export function frameSize(format?: VideoFormat): FrameSize {
   return FRAME_SIZES[format ?? "LANDSCAPE"];
 }
 
-const FPS = 30;
+/** The frame rate every segment leaves the first pass at, and therefore the
+ *  one the concat demuxer in pass two can join without re-encoding. Exported
+ *  for `buildConformArgs`, which has to normalise a *generated* clip to it
+ *  before the clip is ever filed as an Asset — see that function. */
+export const FPS = 30;
 
 /**
  * Rendering happens in two passes, and the reason is memory.
@@ -357,6 +361,65 @@ export function buildSegmentArgs(input: SegmentInput): string[] {
     "-an",
     "-vf",
     buildVideoFilter(input, clipSeconds),
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", SEGMENT_CRF,
+    "-pix_fmt", "yuv420p",
+    "-threads", THREADS,
+    input.outputPath,
+  ];
+}
+
+/** Where a generated clip is read from and written to. Nothing else about it
+ *  is configurable: the whole point is that every clip leaves in the one shape
+ *  the timeline plays. */
+export interface ConformInput {
+  sourcePath: string;
+  outputPath: string;
+  /** `undefined` means landscape, the same default `frameSize` already has. */
+  format?: VideoFormat;
+}
+
+/**
+ * Normalises a clip that came from a video model into the pipeline's own format.
+ *
+ * ## Why a generated clip cannot be stored as it arrives
+ *
+ * Measured, on one real `fal-ai/wan-t2v` generation: 720x1280, 81 frames,
+ * 5.07 seconds — about **16fps**, against this pipeline's 30. It is also 720p
+ * where the frame is 1080p. Filed straight into `beats/` that becomes a
+ * timeline entry whose motion runs at a different rate from every other entry,
+ * and the place that discrepancy surfaces is the finished video.
+ *
+ * ## Why the filter string is deliberately identical to `buildVideoFilter`'s
+ *
+ * It is byte-for-byte the non-motion branch of the segment filter. That is the
+ * property worth having rather than a coincidence to tidy away: the segment
+ * pass will apply the same scale, crop and rate to this clip again later, and a
+ * clip that already satisfies them passes through as a no-op instead of being
+ * resampled a second time. Conforming to anything else would mean two
+ * resamples, and the second one would be the one that decided what the picture
+ * looked like.
+ *
+ * Audio is dropped for the reason `buildSegmentArgs` drops it: the narration is
+ * the only sound in a Framecast video, and a generated clip's audio track — if
+ * the model produced one at all — is a stream pass two would only have to
+ * ignore.
+ *
+ * This adds no argv to any existing video. Nothing that renders today calls it;
+ * it runs once per generated clip, before the clip becomes an Asset.
+ */
+export function buildConformArgs(input: ConformInput): string[] {
+  const { width, height } = frameSize(input.format);
+
+  return [
+    "-y",
+    "-threads", DECODER_THREADS,
+    "-i", input.sourcePath,
+    "-an",
+    "-vf",
+    `scale=${width}:${height}:force_original_aspect_ratio=increase,` +
+      `crop=${width}:${height},fps=${FPS},setsar=1`,
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", SEGMENT_CRF,
