@@ -567,8 +567,11 @@ one these functions have always returned.
 - Produces: `planStoryBeats` returning one beat per cue for a shot-scripted
   narration.
 
-**Why:** `beatCountFor(480, n)` with `BEAT_TARGET_SECONDS = 20` gives 24
-pictures at 20 seconds each. That constant was measured on four-minute
+**Why:** `beatCountFor(480, n)` with `BEAT_TARGET_SECONDS = 20` returns 24, but
+the `BEAT_MIN_SECONDS` reduction loop then strips four more — 40 even sections
+into 24 beats leaves singleton beats of 12s, under the 15s floor — so what
+actually ships is **20 pictures of 24 seconds each**, measured. The slideshow is
+worse than this plan first claimed. That constant was measured on four-minute
 children's bedtime stories and `story-beats.ts` says so. An eight-minute list
 explainer has seven segments of ~68 seconds; one picture across a segment is a
 slideshow. The target is ~40 shots at ~12s — and 40 is exactly `MAX_BEATS`,
