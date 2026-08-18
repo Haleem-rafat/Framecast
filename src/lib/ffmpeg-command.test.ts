@@ -530,6 +530,122 @@ describe("buildSegmentArgs with motion", () => {
   });
 });
 
+describe("buildSegmentArgs with a Ken Burns move", () => {
+  const base = {
+    clipPath: "/tmp/beat-000.png",
+    outputPath: "/tmp/segment-0.mp4",
+    clipSeconds: 20,
+    index: 0,
+    still: true,
+  };
+  const kenburns = { enabled: true, scale: 1.15, kind: "kenburns" } as const;
+
+  it("emits the pan it always did when no kind is asked for", () => {
+    // The test that matters most in this file. `MotionStyle.kind` is optional
+    // so that every channel styled before it existed keeps rendering the same
+    // pictures — not "an equivalent filter", the same string. Written out in
+    // full rather than as a set of `toContain`s, because a regression here
+    // would be a byte that moved, and `toContain` is exactly what would miss
+    // it.
+    const filter = valueOf(
+      buildSegmentArgs({ ...base, motion: { enabled: true, scale: 1.15 } }),
+      "-vf",
+    );
+
+    expect(filter).toBe(
+      "scale=2208:1242:force_original_aspect_ratio=increase,crop=2208:1242,fps=30," +
+        "crop=w=1920:h=1080:x='(in_w-out_w)*t/20':y='(in_h-out_h)/2',setsar=1",
+    );
+  });
+
+  it("pushes in and drifts at once off a 4x pre-upscale", () => {
+    const filter = valueOf(buildSegmentArgs({ ...base, motion: kenburns }), "-vf");
+
+    // 1536x1024 is what the image model returns for a landscape beat, and 4x of
+    // it is where `zoompan`'s integer crop origin stops quantising the move
+    // into held frames. Both halves of the move are asserted because either
+    // alone is a different, worse effect: no pre-upscale is a judder, and no
+    // drift is a plain zoom.
+    expect(filter).toBe(
+      "scale=6144:4096:force_original_aspect_ratio=increase," +
+        "zoompan=z='min(1+0.150*on/600,1.15)':d=1:" +
+        "x='(iw-iw/zoom)*on/600':y='(ih-ih/zoom)/2':s=1920x1080:fps=30,setsar=1",
+    );
+  });
+
+  it("never pre-upscales a video clip, whatever the channel asked for", () => {
+    // The OOM guard, and the reason it is a hard condition rather than a
+    // preference. A 2560x1440 stock clip upscaled 4x is ~88MB a frame beside a
+    // live h264 decoder in a 640MB container — the exact shape that SIGKILLed a
+    // render before. A channel set to kenburns still gets the pan on its stock
+    // footage, silently and on purpose.
+    const filter =
+      valueOf(
+        buildSegmentArgs({ ...base, clipPath: "/tmp/a.mp4", still: false, motion: kenburns }),
+        "-vf",
+      ) ?? "";
+
+    expect(filter).not.toContain("zoompan");
+    expect(filter).toBe(
+      valueOf(
+        buildSegmentArgs({
+          ...base,
+          clipPath: "/tmp/a.mp4",
+          still: false,
+          motion: { enabled: true, scale: 1.15 },
+        }),
+        "-vf",
+      ),
+    );
+  });
+
+  it("upscales a vertical still in its own shape, not a landscape one", () => {
+    const filter = valueOf(
+      buildSegmentArgs({ ...base, format: "VERTICAL", motion: kenburns }),
+      "-vf",
+    );
+
+    // A vertical beat comes back 1024x1536. Asking for the landscape target
+    // instead would make `increase` resolve it to 6144x9216 — 85MB a frame,
+    // which is the footprint the still-only gate exists to avoid.
+    expect(filter).toContain("scale=4096:6144:");
+    expect(filter).toContain("s=1080x1920");
+  });
+
+  it("stops the push-in at the margin the style allowed", () => {
+    const filter =
+      valueOf(buildSegmentArgs({ ...base, motion: { ...kenburns, scale: 1.3 } }), "-vf") ?? "";
+
+    // `z` is clamped to `motion.scale` rather than left to run: the crop window
+    // is `iw/zoom`, so a zoom past the margin would be cropping into pixels the
+    // pre-upscale invented.
+    expect(filter).toContain("z='min(1+0.300*on/600,1.3)'");
+  });
+
+  it("honours a pre-scale the style overrides", () => {
+    // 3x is the documented fallback — 4.4% frozen pairs instead of none — and
+    // it exists so a memory surprise on the worker is a style change rather
+    // than a code change.
+    const filter =
+      valueOf(buildSegmentArgs({ ...base, motion: { ...kenburns, preScale: 3 } }), "-vf") ?? "";
+
+    expect(filter).toContain("scale=4608:3072:");
+  });
+
+  it("cycles the same four directions the pan does", () => {
+    const filters = [0, 1, 2, 3, 4].map(
+      (index) => valueOf(buildSegmentArgs({ ...base, index, motion: kenburns }), "-vf") ?? "",
+    );
+
+    expect(filters[0]).not.toBe(filters[1]);
+    expect(filters[1]).not.toBe(filters[2]);
+    expect(filters[2]).not.toBe(filters[3]);
+    // Same cycle as `PAN_EXPRESSIONS`, and it has to be: a channel that
+    // switches to kenburns must not have neighbouring beats move alike either.
+    expect(filters[4]).toBe(filters[0]);
+  });
+});
+
 describe("buildAssembleArgs", () => {
   it("joins with the concat demuxer, not the concat filter", () => {
     const args = buildAssembleArgs(assembleBase);

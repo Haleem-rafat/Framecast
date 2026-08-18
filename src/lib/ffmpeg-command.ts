@@ -171,24 +171,88 @@ export function isStillImagePath(clipPath: string): boolean {
   return STILL_IMAGE_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
+interface PanExpression {
+  x: string;
+  y: string;
+}
+
 /**
  * Four directions, cycled by segment index.
  *
- * These are pans, not zooms. A `crop` filter's output size must be constant, so
- * an animated crop can translate its window but cannot resize it — zoom needs
- * `zoompan`, which computes per-frame scaling against integer pixel positions
- * and judders visibly unless the input is pre-upscaled far past the output.
- * That is memory this worker does not have (see the two-pass rationale above).
+ * These are pans, not zooms: a `crop` filter's output size must be constant, so
+ * an animated crop can translate its window but cannot resize it.
+ *
+ * This comment used to add that `zoompan` was rejected because the pre-upscale
+ * it needs was memory the worker did not have. That was measured in Aug 2026
+ * and it is wrong twice over. A 4x pre-upscale of a STILL costs 291MB against a
+ * 640MB limit — measured in the worker's own image, not on a laptop — because
+ * the two-pass design directly above guarantees exactly one clip is open at a
+ * time, the very change that made the objection obsolete. And the pan it was
+ * defending is worse than the thing it rejected: at scale 1.15 the crop window
+ * travels 0.48px a frame, `x` quantises to an integer, and the picture is
+ * frozen for 75.7% of adjacent frame pairs.
+ *
+ * So the pans stay because they are what a *video clip* gets — a 2560x1440
+ * stock clip pre-upscaled 4x is 88MB a frame beside a live h264 decoder, which
+ * is the shape that SIGKILLed a render once already. See `buildVideoFilter`.
  *
  * `T` is substituted with `t/<seconds>`, which runs 0 to 1 across the segment,
  * so each expression traverses exactly the margin the upscale created.
  */
-const PAN_EXPRESSIONS = [
+const PAN_EXPRESSIONS: PanExpression[] = [
   { x: "(in_w-out_w)*T", y: "(in_h-out_h)/2" },
   { x: "(in_w-out_w)*(1-T)", y: "(in_h-out_h)/2" },
   { x: "(in_w-out_w)/2", y: "(in_h-out_h)*T" },
   { x: "(in_w-out_w)/2", y: "(in_h-out_h)*(1-T)" },
 ];
+
+/**
+ * The same four directions, restated in `zoompan`'s coordinate space.
+ *
+ * `crop` measures against a fixed input and a fixed output, so `in_w-out_w` is
+ * the whole travel. `zoompan` has no fixed output inside the source: its window
+ * is `iw/zoom` wide and narrows as the push-in progresses, so the travel has to
+ * be recomputed every frame from `zoom` itself.
+ *
+ * Written as a substitution over `PAN_EXPRESSIONS` rather than as a second
+ * table, so the two modes cannot drift apart — the same segment index has to
+ * pick the same direction whichever move it gets.
+ */
+function zoomPanX(pan: PanExpression, progress: string): string {
+  return pan.x.replaceAll("in_w", "iw").replaceAll("out_w", "iw/zoom").replaceAll("T", progress);
+}
+
+function zoomPanY(pan: PanExpression, progress: string): string {
+  return pan.y.replaceAll("in_h", "ih").replaceAll("out_h", "ih/zoom").replaceAll("T", progress);
+}
+
+/** See `MotionStyle.preScale`. Four is where the frozen-frame fraction reaches
+ *  zero; three leaves 4.4% and was the fallback held in reserve in case the
+ *  worker's own FFmpeg came back tighter than the laptop's. It did not — 291MB
+ *  peak against a 450MB gate — so four is what ships. */
+const DEFAULT_PRE_SCALE = 4;
+
+/**
+ * What the image model actually hands back for each format, and the base the
+ * pre-upscale multiplies.
+ *
+ * It mirrors `ILLUSTRATION_SIZE` in `footage.service.ts` rather than importing
+ * it, because this module deliberately depends on nothing but types. Drifting
+ * out of sync is cheap in one direction only, which is why these are used as a
+ * `scale` target with `force_original_aspect_ratio=increase`: a still that
+ * arrives at some other size is still covered, it just gets a slightly
+ * different multiple.
+ *
+ * Orienting it by format is the part that is not optional. The measured 4x is
+ * 6144x4096, which is exactly 4x a landscape still; asking for that same target
+ * on a 1024x1536 vertical still would make `increase` resolve it to 6144x9216 —
+ * 85MB a frame, the precise footprint the still-only gate below exists to
+ * avoid.
+ */
+const STILL_SOURCE_SIZES: Record<VideoFormat, FrameSize> = {
+  LANDSCAPE: { width: 1536, height: 1024 },
+  VERTICAL: { width: 1024, height: 1536 },
+};
 
 function buildVideoFilter(input: SegmentInput, clipSeconds: number): string {
   const motion = input.motion;
@@ -205,6 +269,34 @@ function buildVideoFilter(input: SegmentInput, clipSeconds: number): string {
     return (
       `scale=${width}:${height}:force_original_aspect_ratio=increase,` +
       `crop=${width}:${height},fps=${FPS},setsar=1`
+    );
+  }
+
+  // Stills only, and it is a hard gate rather than a preference. `zoompan`'s
+  // smoothness comes from pre-upscaling its input far past the output, and a
+  // stock clip arrives at up to 2560x1440 — 4x of that is 10240x5760, about
+  // 88MB a frame in yuv420p, held alongside a live h264 decoder inside a 640MB
+  // container. A still is one decode of one file and costs 291MB measured. The
+  // flag is already here: `planRender` derives it from the path's extension.
+  if (motion.kind === "kenburns" && input.still) {
+    const preScale = motion.preScale ?? DEFAULT_PRE_SCALE;
+    const source = STILL_SOURCE_SIZES[input.format ?? "LANDSCAPE"];
+    const frames = Math.round(clipSeconds * FPS);
+    const zoom = motion.scale;
+    // A push-in and a drift at once, which is what Ken Burns is — a zoom alone
+    // reads as a slow zoom and a drift alone is the pan we already had.
+    // `on` is the output frame number, so `on/frames` runs 0 to 1 exactly as
+    // `T` does for the pans, and the two moves share one clock.
+    const progress = `on/${frames}`;
+    const drift = PAN_EXPRESSIONS[(input.index ?? 0) % PAN_EXPRESSIONS.length];
+
+    return (
+      `scale=${Math.round(source.width * preScale)}:` +
+      `${Math.round(source.height * preScale)}:` +
+      `force_original_aspect_ratio=increase,` +
+      `zoompan=z='min(1+${(zoom - 1).toFixed(3)}*${progress},${zoom})':d=1:` +
+      `x='${zoomPanX(drift, progress)}':y='${zoomPanY(drift, progress)}':` +
+      `s=${width}x${height}:fps=${FPS},setsar=1`
     );
   }
 
