@@ -8,11 +8,11 @@ const ANCHOR_WORDS = 8;
 /**
  * What a formatted script says about one section, beyond what to show.
  *
- * Both optional, and absent on every cue written before the single-insight
- * format existed — which is every cue in the database today. They ride on the
- * cue rather than on the `Scene` table because `Scene` is not read by anything:
- * `ScriptVersion.cues` is the live per-section record, and this is the one
- * place a section's facts are already kept together.
+ * All optional, and absent on every cue written before the format that
+ * introduced each one — which is every cue in the database today. They ride on
+ * the cue rather than on the `Scene` table because `Scene` is not read by
+ * anything: `ScriptVersion.cues` is the live per-section record, and this is
+ * the one place a section's facts are already kept together.
  */
 export interface CueMeta {
   /**
@@ -26,6 +26,22 @@ export interface CueMeta {
   /** Words the voice should stress and the captions should colour. Matched
    *  case-insensitively and through punctuation — see `kinetic-captions.ts`. */
   emphasis?: string[];
+  /**
+   * What kind of picture this section wants: a generated still, or a stock clip
+   * of something actually moving.
+   *
+   * Written by the long-form list format's writer, which is already making this
+   * judgement — `CUE_RULES` tells it to "prefer motion and people over static
+   * objects", and the cue it emits is already a stock search query. It just had
+   * nowhere to record the answer.
+   *
+   * Absent on every cue written before today, and absent is what makes this
+   * safe: a script with no shot tags groups by `BEAT_TARGET_SECONDS` exactly as
+   * it always has. Presence on EVERY cue is what switches the plan — see
+   * `isShotScripted`, and see `isBeatScripted` beside it, which took the same
+   * shape for the same reason.
+   */
+  shot?: "still" | "motion";
 }
 
 export interface ScriptCue extends CueMeta {
@@ -104,17 +120,18 @@ export function anchorCues(
       continue;
     }
 
-    // The beat and the emphasis travel with the cue rather than being looked
-    // up again later: by the time the renderer needs them the anchor is gone,
-    // and re-matching a section to its cue is the orphaning problem all over
-    // again. Spread conditionally so a cue without them produces an object
-    // byte-identical to the one this has always pushed.
+    // The beat, the emphasis and the shot travel with the cue rather than
+    // being looked up again later: by the time the renderer needs them the
+    // anchor is gone, and re-matching a section to its cue is the orphaning
+    // problem all over again. Spread conditionally so a cue without them
+    // produces an object byte-identical to the one this has always pushed.
     anchored.push({
       cue: cue.cue,
       startChar: at,
       endChar: content.length,
       ...(cue.beat !== undefined ? { beat: cue.beat } : {}),
       ...(cue.emphasis !== undefined ? { emphasis: cue.emphasis } : {}),
+      ...(cue.shot !== undefined ? { shot: cue.shot } : {}),
     });
     searchFrom = at + cue.anchor.length;
   }
@@ -143,7 +160,7 @@ export function cueWindows(
 ): CueWindow[] {
   const lastIndex = alignment.characters.length - 1;
 
-  return anchored.map(({ cue, startChar, endChar, beat, emphasis }) => {
+  return anchored.map(({ cue, startChar, endChar, beat, emphasis, shot }) => {
     const start = Math.min(Math.max(0, startChar), lastIndex);
     // endChar is exclusive, so the last spoken character is endChar - 1 —
     // except when the range is zero-width (endChar === startChar, which
@@ -162,6 +179,7 @@ export function cueWindows(
       endSeconds: alignment.characterEndTimesSeconds[end],
       ...(beat !== undefined ? { beat } : {}),
       ...(emphasis !== undefined ? { emphasis } : {}),
+      ...(shot !== undefined ? { shot } : {}),
     };
   });
 }

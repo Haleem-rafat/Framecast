@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Alignment } from "@/lib/captions";
+import type { ScriptCue } from "@/lib/script-cues";
 import {
   anchorCues,
   cueWindows,
@@ -272,10 +273,31 @@ describe("cue metadata", () => {
     expect(windows[1].emphasis).toEqual([]);
   });
 
+  it("carries a shot tag from cue to window", () => {
+    // The long-form plan is computed twice — once by footage.service.ts when it
+    // collects, once by render.service.ts when it composes — and neither can
+    // see the channel's footageStyle. The tag on the cue is the only thing both
+    // of them hold, so it has to survive both hops or the two halves disagree
+    // about how many pictures the video has.
+    const cues: ScriptCue[] = [
+      { anchor: "One two three four five.", cue: "a doorway", shot: "motion" },
+      { anchor: "Six seven eight nine ten.", cue: "a staircase", shot: "still" },
+    ];
+
+    const { anchored } = anchorCues(cues, content);
+    const windows = cueWindows(anchored, evenAlignment(content));
+
+    expect(anchored.map((entry) => entry.shot)).toEqual(["motion", "still"]);
+    expect(windows.map((entry) => entry.shot)).toEqual(["motion", "still"]);
+  });
+
   it("leaves a cue without metadata exactly as it was", () => {
-    // Every cue written before this format existed has neither field, and its
-    // anchored form must not grow an undefined key — the objects are persisted
-    // as JSON and a new null in them is a diff in every stored script.
+    // Every cue written before these formats existed has none of the fields,
+    // and its anchored form must not grow an undefined key — the objects are
+    // persisted as JSON and a new null in them is a diff in every stored
+    // script. Asserted on the key list rather than with toBeUndefined(), which
+    // passes just as happily for a key that is present and set to undefined —
+    // and it is the presence, not the value, that writes the diff.
     const { anchored } = anchorCues(
       [{ anchor: "One two three four five.", cue: "a doorway" }],
       content,
