@@ -74,7 +74,12 @@ docker compose run --rm --no-deps -e DATABASE_URL="$TEST_URL" -e NODE_ENV=test \
 **Create:**
 - `src/lib/longform-script.ts` — the shot-tag vocabulary and the pre-spend gate
 - `src/lib/longform-script.test.ts`
-- `prisma/migrations/20260818090000_add_mixed_footage_style/migration.sql`
+- `prisma/migrations/20260903090000_add_mixed_footage_style/migration.sql`
+  — **not** today's real date. This repo's migration timestamps run ahead of the
+  calendar; applied history ends at `20260901090000`, and Task 4 takes
+  `20260902090000`. A migration stamped with the real date sorts into the
+  *middle* of applied history, which fails a fresh deploy and can trigger a
+  destructive reset. This has already gone wrong once on this project.
 
 **Modify:**
 - `src/services/providers/image.provider.ts` — surface raw token counts
@@ -245,7 +250,7 @@ between 5.x and 9.x and wall time certainly differs. Task 3 changes a filter
 graph on the strength of these numbers; measuring them on the target first is
 the cheap half of the work.
 
-- [ ] **Step 1: Run the comparison inside the worker image**
+- [x] **Step 1: Run the comparison inside the worker image**
 
 ```bash
 ssh framecast 'cd /srv/framecast
@@ -265,18 +270,33 @@ run kb4 \"scale=6144:4096,zoompan=z=min(1+0.12*on/600\\,1.12):d=1:x=(iw-iw/zoom)
 "'
 ```
 
-- [ ] **Step 2: Record**
+- [x] **Step 2: Record**
+
+Measured 2026-08-18 in `framecast-worker-staging-1`, **FFmpeg 5.1.9-0+deb12u1**
+on Debian 12. The image has no GNU `time`, so peak RSS is the high-water mark of
+`/proc/<pid>/status` `VmHWM`, sampled at 5 Hz.
 
 | | Peak RSS | Wall | Frozen frame pairs |
 |---|---|---|---|
-| `pan` (ships today) | | | |
-| `kb4` (proposed) | | | |
+| `pan` (ships today) | 260 MB | 15 s | **75.7%** (446 of 589) |
+| `kb4` (proposed) | 291 MB | 44 s | **0.0%** (0 of 589) |
 
 Reference numbers from darwin/FFmpeg 9.0: pan 226 MB / 6.1 s / **75.7%**
 frozen; kb4 267 MB / 10.4 s / **0.0%** frozen. The worker's `mem_limit` is
 **640m**.
 
-- [ ] **Step 3: Decide the gate**
+The frozen-frame fractions reproduced **exactly** — which is the half of the
+measurement the whole task rests on, and it transfers across two FFmpeg majors
+because it follows from integer quantisation of the crop origin, not from any
+version's implementation.
+
+Memory transferred too: +31 MB for the pre-upscale against a 640 MB limit.
+
+Wall time did **not**. The pre-upscale costs **2.9×** the segment pass here, not
+the 1.7× darwin showed. Anything downstream that budgets render time should
+plan against 2.9×; a 40-slot long-form video pays it forty times.
+
+- [x] **Step 3: Decide the gate**
 
 - If `kb4` peak RSS is under **450 MB**, proceed to Task 3 as written.
 - If it is between 450 and 600 MB, drop the pre-upscale to 3× (`4608:3072`) and
@@ -285,7 +305,7 @@ frozen; kb4 267 MB / 10.4 s / **0.0%** frozen. The worker's `mem_limit` is
   render one large still away from the OOM killer; `render-oom-report.md`
   documents what that costs.
 
-- [ ] **Step 4: Reproduce the frozen-pair measurement**
+- [x] **Step 4: Reproduce the frozen-pair measurement**
 
 The number that justifies the whole task is the fraction of adjacent frames that
 do not move. Pull both MP4s back and count it:
@@ -328,7 +348,7 @@ travel across 600 frames of a 20-second slot — 0.48 pixels a frame — and
 third frame and is otherwise frozen. The teardown's benchmark channel is 52%
 pixel-identical; this app is at 76%.
 
-- [ ] **Step 1: Extend `MotionStyle`**
+- [x] **Step 1: Extend `MotionStyle`**
 
 `src/lib/video-style.ts`:
 
@@ -373,7 +393,7 @@ export interface MotionStyle {
 `DEFAULT_STYLE.motion` is **not** changed. Ken Burns is opted into per channel,
 exactly as `captionMode: "kinetic"` is, so no existing render moves.
 
-- [ ] **Step 2: Emit the filter**
+- [x] **Step 2: Emit the filter**
 
 `src/lib/ffmpeg-command.ts`. Replace the comment above `PAN_EXPRESSIONS` — it
 currently states a conclusion that measurement has overturned, and leaving it
@@ -451,7 +471,7 @@ constant. They are two small pure functions and belong beside
 `PAN_EXPRESSIONS`, sharing its cycle so the same segment index picks the same
 direction in either mode.
 
-- [ ] **Step 3: Tests in `ffmpeg-command.test.ts`**
+- [x] **Step 3: Tests in `ffmpeg-command.test.ts`**
 
 - A `SegmentInput` with no `motion.kind` produces **exactly** the filter string
   the existing snapshot asserts. This is the test that matters most.
@@ -464,7 +484,7 @@ direction in either mode.
 - The zoom expression's ceiling equals `motion.scale`, so a still never scales
   past the margin it was given.
 
-- [ ] **Step 4: Prove it on the worker**
+- [x] **Step 4: Prove it on the worker**
 
 Re-run Task 2's frozen-pair count against a segment produced by the *real*
 `buildSegmentArgs` output for a kenburns still. The number to beat is 75.7%; the
