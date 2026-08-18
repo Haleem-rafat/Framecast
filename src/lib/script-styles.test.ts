@@ -112,6 +112,34 @@ describe("SCRIPT_STYLES", () => {
     }
   });
 
+  it("agrees with its own duration default about how long the video is", () => {
+    // `ScriptStyle.targetSeconds`'s comment has always claimed this file pins
+    // it, and until now it did not. The approve dialog reads `targetSeconds`
+    // to decide which styles could be a Short; the model reads the rendered
+    // `{{duration}}`. A style retargeted in one place and not the other
+    // misadvertises itself on the browse card and then produces a different
+    // video, with nothing to say which of the two was meant.
+    for (const style of SCRIPT_STYLES) {
+      const minutes = style.variables.find(
+        (variable) => variable.key === "duration",
+      )?.defaultValue;
+      const seconds = style.variables.find(
+        (variable) => variable.key === "seconds",
+      )?.defaultValue;
+
+      expect(
+        minutes ?? seconds,
+        `${style.name} declares neither a duration nor a seconds default`,
+      ).toBeTruthy();
+
+      expect(
+        minutes ? Number(minutes) * 60 : Number(seconds),
+        `${style.name}'s card says ${style.targetSeconds}s but it renders ` +
+          `${minutes ?? seconds}`,
+      ).toBe(style.targetSeconds);
+    }
+  });
+
   it("resolves the style the seed script depends on", () => {
     // `seed-default-prompts.ts` throws on a missing id rather than seeding
     // four templates and skipping the only one the app reads. This is the
@@ -322,5 +350,96 @@ describe("the developer styles", () => {
         ).not.toContain(spine);
       }
     }
+  });
+});
+
+describe("the long-form list style", () => {
+  const longform = findScriptStyle("longform-list");
+  const countdown = findScriptStyle("countdown");
+
+  it("is in the catalogue, at eight minutes", () => {
+    expect(longform).not.toBeNull();
+    expect(longform!.targetSeconds).toBe(480);
+    expect(longform!.targetLength).toBe("About 8 minutes");
+    expect(
+      longform!.variables.find((variable) => variable.key === "duration")
+        ?.defaultValue,
+    ).toBe("8");
+    expect(
+      longform!.variables.find((variable) => variable.key === "count")
+        ?.defaultValue,
+    ).toBe("7");
+  });
+
+  it("asks for the section count the picture plan is derived from", () => {
+    // `planStoryBeats` gives a shot-scripted script one picture per section,
+    // so this sentence is what decides how many pictures the video has and
+    // therefore what it costs. Nothing downstream restates it.
+    expect(longform!.content).toContain(
+      "about 40 sections of around 30 words each",
+    );
+    expect(longform!.content).toContain(
+      "no section under 20 words and none over 40",
+    );
+  });
+
+  it("tells the writer how to tag a shot, in the form the parser reads", () => {
+    // `readShotTag` strips exactly this. A prompt that asked for the tag in
+    // some other shape would produce a script whose every section is untagged
+    // — which is not an error the video shows, it is a video with 24 pictures
+    // instead of 40.
+    const content = longform!.content;
+
+    expect(content).toContain("Put [still] or [motion] at the end of its cue");
+    expect(content).toContain(
+      "[motion] means the thing you are describing genuinely moves",
+    );
+    expect(content).toContain("[still] is everything else, and it is the default");
+    expect(content).toContain("about one section in five");
+    // The one guard the prompt has to carry itself, because the code cannot:
+    // there is no stock footage of an abstraction, so a motion tag on one is
+    // spend on a search that was always going to come back empty.
+    expect(content).toContain(
+      "Never tag a section [motion] for a thing no camera has filmed",
+    );
+  });
+
+  it("says out loud what a missing tag costs", () => {
+    // The failure named in the plan's "what will most likely go wrong". Worth
+    // stating in the prompt as well as checking in `checkLongformScript`,
+    // because the check can only refuse it — the prompt is the only thing that
+    // can stop it happening.
+    expect(longform!.content).toContain(
+      "A section left untagged costs the whole video",
+    );
+  });
+
+  it("asks for a centre-safe frame, which is the whole dual-aspect feature", () => {
+    expect(longform!.content).toContain("the centre 9:16 of each picture");
+  });
+
+  it("keeps the renderer's shared rules verbatim rather than rewording them", () => {
+    // They are properties of the pipeline, not of this format. A style that
+    // reworded them would be describing a different renderer.
+    for (const marker of [
+      "read aloud by a synthetic voice",
+      "stock-footage search query",
+      "sources field",
+    ]) {
+      expect(longform!.content, `the long-form list drops ${marker}`).toContain(
+        marker,
+      );
+    }
+  });
+
+  it("leaves the countdown it was cloned from exactly where it was", () => {
+    // A sibling, not a replacement. An operator who wants a six-minute list
+    // without forty generated pictures still has one, and it must not have
+    // quietly acquired shot tags or a longer target.
+    expect(countdown!.targetSeconds).toBe(360);
+    expect(countdown!.targetLength).toBe("About 6 minutes");
+    expect(countdown!.content).not.toContain("[motion]");
+    expect(countdown!.content).not.toContain("SHOTS");
+    expect(countdown!.content).not.toContain("9:16");
   });
 });
