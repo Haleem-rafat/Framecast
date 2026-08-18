@@ -74,12 +74,14 @@ docker compose run --rm --no-deps -e DATABASE_URL="$TEST_URL" -e NODE_ENV=test \
 **Create:**
 - `src/lib/longform-script.ts` — the shot-tag vocabulary and the pre-spend gate
 - `src/lib/longform-script.test.ts`
-- `prisma/migrations/20260903090000_add_mixed_footage_style/migration.sql`
+- `prisma/migrations/20260902090000_add_mixed_footage_style/migration.sql`
   — **not** today's real date. This repo's migration timestamps run ahead of the
-  calendar; applied history ends at `20260901090000`, and Task 4 takes
-  `20260902090000`. A migration stamped with the real date sorts into the
-  *middle* of applied history, which fails a fresh deploy and can trigger a
-  destructive reset. This has already gone wrong once on this project.
+  calendar; applied history ends at `20260901090000`, so the next free slot is
+  `20260902090000`. Task 7 is the ONLY task in this plan with a migration —
+  Task 4 says so in its own body and has none. A migration stamped with the real
+  date sorts into the *middle* of applied history, which fails a fresh deploy
+  and can trigger a destructive reset. This has already gone wrong once on this
+  project.
 
 **Modify:**
 - `src/services/providers/image.provider.ts` — surface raw token counts
@@ -743,7 +745,7 @@ collector will agree about without either of them re-deciding.
 
 **Files:**
 - Modify: `prisma/schema.prisma`, `src/lib/footage-styles.ts`, `src/lib/beat-storage.ts`, `src/services/footage.service.ts`, `src/services/render.service.ts`
-- Create: `prisma/migrations/20260903090000_add_mixed_footage_style/migration.sql` (NOT the real date — see File Structure)
+- Create: `prisma/migrations/20260902090000_add_mixed_footage_style/migration.sql` (NOT the real date — see File Structure)
 
 **Interfaces:**
 - Consumes: `CueMeta.shot`, `planStoryBeats`.
