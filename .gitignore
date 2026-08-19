@@ -62,3 +62,8 @@ src/generated/prisma
 # finished renders live on local disk — see src/lib/render-storage.ts. Large
 # binaries, machine-local, never committed.
 .framecast/
+
+# Agent worktrees — real git worktrees of this repo, never content of it.
+# Committed accidentally by `git add -A`, they land as gitlinks (mode 160000)
+# with no .gitmodules: a clone gets nine empty directories and git errors.
+.claude/worktrees/
