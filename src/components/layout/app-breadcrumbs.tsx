@@ -53,23 +53,15 @@ function buildCrumbs(pathname: string): Crumb[] {
 }
 
 /**
- * The last crumb on its own, for the phone topbar.
- *
- * A trail is a desktop affordance: it earns its width by showing where you are
- * *and* offering the way back up. At 375px it shows neither well — "Videos /
- * Details" truncates into noise beside the controls it shares the bar with —
- * while the leaf alone still answers the only question the bar is asked, which
- * is which page this is. Going back up is what the dock is for.
- */
-/**
  * The way back out of a page the phone has no other way out of.
  *
- * The topbar's own comment above says going back up is what the dock is for,
- * and for a top-level page that is true. It is not true one level down: the
- * dock lists six destinations and a "More" sheet, none of which is "the list
- * this detail belongs to". So standing on a video, a channel, a series or a
- * new-schedule form, a phone had the browser's own gesture and nothing else —
- * and inside an installed PWA there is no browser chrome to gesture with.
+ * `AppPageTitle` below used to end by saying that going back up is what the
+ * dock is for, and for a top-level page that is true. It is not true one level
+ * down: the dock lists six destinations and a "More" sheet, none of which is
+ * "the list this detail belongs to". So standing on a video, a channel, a
+ * series or a new-schedule form, a phone had the browser's own gesture and
+ * nothing else — and inside an installed PWA there is no browser chrome to
+ * gesture with.
  *
  * Where "up" is comes from `findNavItemByPath`, not from the crumb trail, and
  * that is the whole reason this is three lines instead of a special case per
@@ -99,6 +91,20 @@ export function AppBackLink() {
   );
 }
 
+/**
+ * The last crumb on its own, for the phone topbar.
+ *
+ * A trail is a desktop affordance: it earns its width by showing where you are
+ * *and* offering the way back up. At 375px it shows neither well — "Videos /
+ * Details" truncates into noise beside the controls it shares the bar with —
+ * while the leaf alone still answers the only question the bar is asked, which
+ * is which page this is.
+ *
+ * Which leaves the way back up, and `AppBackLink` above is it. This element is
+ * the answer to "where am I" only; it deliberately does not link anywhere,
+ * because a title that is sometimes a link and sometimes not is a worse control
+ * than a separate one that is always the same thing.
+ */
 export function AppPageTitle() {
   const pathname = usePathname();
   const crumbs = useMemo(() => buildCrumbs(pathname), [pathname]);
