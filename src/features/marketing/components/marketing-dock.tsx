@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import {
   CircleHelp,
   CreditCard,
+  LayoutDashboard,
   LayoutGrid,
   UserPlus,
   Workflow,
@@ -14,6 +15,7 @@ import {
   FloatingDock,
   type FloatingDockItem,
 } from "@/components/ui/floating-dock";
+import { useMarketingAccount } from "@/features/marketing/components/marketing-account";
 
 /**
  * The landing page's sections, in the order the page tells them. Each `id`
@@ -91,6 +93,7 @@ function useActiveSection(): string | null {
  */
 export function MarketingDock() {
   const active = useActiveSection();
+  const { user } = useMarketingAccount();
 
   const items: FloatingDockItem[] = [
     ...SECTIONS.map((section) => ({
@@ -102,11 +105,22 @@ export function MarketingDock() {
       // makes with `aria-current` in the studio.
       active: active === section.id,
     })),
-    {
-      title: "Create an account",
-      icon: <UserPlus />,
-      href: "/sign-up",
-    },
+    // The last slot answers to whoever is holding the phone. Signed out it is
+    // the account this page exists to get created; signed in it is the studio
+    // that account already has — and *not* "Create an account", which is the
+    // one thing a signed-in visitor is guaranteed not to need and which reads,
+    // on their own site, as the page not knowing them.
+    user
+      ? {
+          title: "Dashboard",
+          icon: <LayoutDashboard />,
+          href: "/dashboard",
+        }
+      : {
+          title: "Create an account",
+          icon: <UserPlus />,
+          href: "/sign-up",
+        },
   ];
 
   return (
