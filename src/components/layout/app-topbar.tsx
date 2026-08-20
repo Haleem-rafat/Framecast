@@ -1,4 +1,8 @@
-import { AppBreadcrumbs, AppPageTitle } from "@/components/layout/app-breadcrumbs";
+import {
+  AppBackLink,
+  AppBreadcrumbs,
+  AppPageTitle,
+} from "@/components/layout/app-breadcrumbs";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { UserMenu } from "@/components/layout/user-menu";
@@ -32,7 +36,11 @@ export function AppTopbar({
       <div className="hidden min-w-0 md:block">
         <AppBreadcrumbs />
       </div>
-      <div className="flex min-w-0 flex-1 md:hidden">
+      {/* The trail is the desktop's way back up; below `md` there is only the
+          leaf, so the way up has to be its own control. It renders on nothing
+          but the pages that need it — see AppBackLink. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1 md:hidden">
+        <AppBackLink />
         <AppPageTitle />
       </div>
 

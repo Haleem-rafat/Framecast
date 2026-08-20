@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ChevronLeft } from "lucide-react";
 import { Fragment, useMemo } from "react";
 
 import {
@@ -59,6 +61,44 @@ function buildCrumbs(pathname: string): Crumb[] {
  * while the leaf alone still answers the only question the bar is asked, which
  * is which page this is. Going back up is what the dock is for.
  */
+/**
+ * The way back out of a page the phone has no other way out of.
+ *
+ * The topbar's own comment above says going back up is what the dock is for,
+ * and for a top-level page that is true. It is not true one level down: the
+ * dock lists six destinations and a "More" sheet, none of which is "the list
+ * this detail belongs to". So standing on a video, a channel, a series or a
+ * new-schedule form, a phone had the browser's own gesture and nothing else —
+ * and inside an installed PWA there is no browser chrome to gesture with.
+ *
+ * Where "up" is comes from `findNavItemByPath`, not from the crumb trail, and
+ * that is the whole reason this is three lines instead of a special case per
+ * route. The parent *crumb* of `/automation/series/new` is `/automation/series`,
+ * which has no page — linking to it would be a 404 on a control whose entire
+ * job is to be the safe way out. The parent *nav entry* is `/automation`, which
+ * is a page by definition, because that is what being in `navigation.ts` means.
+ *
+ * A path whose longest match is itself (every top-level page) gets no button,
+ * and neither does one under no entry at all — in both cases there is nothing
+ * this could point at that the dock does not already offer.
+ */
+export function AppBackLink() {
+  const pathname = usePathname();
+  const parent = useMemo(() => findNavItemByPath(pathname), [pathname]);
+
+  if (!parent || parent.href === pathname) return null;
+
+  return (
+    <Link
+      href={parent.href}
+      aria-label={`Back to ${parent.title}`}
+      className="hover:bg-accent -ml-2 flex size-9 shrink-0 items-center justify-center rounded-md transition-colors"
+    >
+      <ChevronLeft className="size-5" />
+    </Link>
+  );
+}
+
 export function AppPageTitle() {
   const pathname = usePathname();
   const crumbs = useMemo(() => buildCrumbs(pathname), [pathname]);
