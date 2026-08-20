@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Menu } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useMarketingAccount } from "@/features/marketing/components/marketing-account";
 import {
   Sheet,
   SheetClose,
@@ -74,6 +75,7 @@ export function MarketingNavLinks({ className }: { className?: string }) {
  */
 export function MarketingNavSheet({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
+  const { user } = useMarketingAccount();
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -108,16 +110,32 @@ export function MarketingNavSheet({ className }: { className?: string }) {
 
           <hr className="my-3" />
 
-          <SheetClose asChild>
-            <Button asChild>
-              <Link href="/sign-up">Create an account</Link>
-            </Button>
-          </SheetClose>
-          <SheetClose asChild>
-            <Button asChild variant="outline" className="mt-2">
-              <Link href="/sign-in">Sign in</Link>
-            </Button>
-          </SheetClose>
+          {/* The same swap the header makes, for the same reason and resolved
+              the same way while the session is still unknown — see the comment
+              beside it in marketing-header.tsx. Both have to agree: this sheet
+              *is* the header below `md`, and a bar offering the studio over a
+              drawer offering sign-up would be one component contradicting
+              itself at a breakpoint. */}
+          {user ? (
+            <SheetClose asChild>
+              <Button asChild>
+                <Link href="/dashboard">Go to your dashboard</Link>
+              </Button>
+            </SheetClose>
+          ) : (
+            <>
+              <SheetClose asChild>
+                <Button asChild>
+                  <Link href="/sign-up">Create an account</Link>
+                </Button>
+              </SheetClose>
+              <SheetClose asChild>
+                <Button asChild variant="outline" className="mt-2">
+                  <Link href="/sign-in">Sign in</Link>
+                </Button>
+              </SheetClose>
+            </>
+          )}
         </nav>
       </SheetContent>
     </Sheet>

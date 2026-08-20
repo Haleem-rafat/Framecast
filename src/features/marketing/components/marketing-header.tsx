@@ -6,6 +6,10 @@ import { useEffect, useState } from "react";
 import { LogoMark } from "@/components/brand/logo-mark";
 import { Button } from "@/components/ui/button";
 import {
+  MarketingAccountAvatar,
+  useMarketingAccount,
+} from "@/features/marketing/components/marketing-account";
+import {
   NAV_LINKS,
   MarketingNavSheet,
 } from "@/features/marketing/components/marketing-nav";
@@ -86,6 +90,7 @@ function useContracted() {
 
 export function MarketingHeader() {
   const contracted = useContracted();
+  const { user } = useMarketingAccount();
 
   return (
     // `pointer-events-none` on the full-width wrapper so the half of it that is
@@ -141,17 +146,41 @@ export function MarketingHeader() {
 
         <div className="ml-auto flex items-center gap-1 md:ml-0">
           <MarketingThemeToggle />
-          <Button
-            asChild
-            variant="ghost"
-            size="sm"
-            className="hidden rounded-full lg:inline-flex"
-          >
-            <Link href="/sign-in">Sign in</Link>
-          </Button>
-          <Button asChild size="sm" className="hidden rounded-full sm:inline-flex">
-            <Link href="/sign-up">Create an account</Link>
-          </Button>
+          {/* Signed in, the two account buttons are noise — the visitor has an
+              account and is standing outside their own studio — so they
+              collapse into the one control that is useful there.
+
+              `user` is null for the first paint of every visit, including a
+              signed-in one, because the session is read on the client (see
+              useMarketingAccount). Resolving that towards the buttons rather
+              than towards a placeholder is deliberate: signed out is both the
+              overwhelmingly common case and the one this page exists to serve,
+              and a header that opens with a blank where its call to action goes
+              is working against the page in exactly the way the scroll comment
+              above describes. The signed-in visitor sees the swap instead, once,
+              and lands on a control that was never going to be their first
+              stop. */}
+          {user ? (
+            <MarketingAccountAvatar user={user} className="ml-1" />
+          ) : (
+            <>
+              <Button
+                asChild
+                variant="ghost"
+                size="sm"
+                className="hidden rounded-full lg:inline-flex"
+              >
+                <Link href="/sign-in">Sign in</Link>
+              </Button>
+              <Button
+                asChild
+                size="sm"
+                className="hidden rounded-full sm:inline-flex"
+              >
+                <Link href="/sign-up">Create an account</Link>
+              </Button>
+            </>
+          )}
           {/* Below md the section links collapse into this sheet, so a 375px
               bar is the wordmark, the theme toggle and one button rather than
               a row of truncated pills. */}
