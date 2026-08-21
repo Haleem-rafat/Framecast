@@ -5,6 +5,7 @@ import {
   footageStyleLabel,
   isGeneratedFootage,
   needsCharacterSheet,
+  stylePicksArtStyle,
 } from "@/lib/footage-styles";
 
 describe("FOOTAGE_STYLES", () => {
@@ -67,5 +68,25 @@ describe("DOODLE", () => {
   // video without generating anything on the branding screen first.
   it("needs no character sheet", () => {
     expect(needsCharacterSheet("DOODLE")).toBe(false);
+  });
+});
+
+describe("stylePicksArtStyle", () => {
+  // The two styles that read `ChannelBrand.artStyle`. Getting this wrong is
+  // invisible in the type system and fatal in use: the branding screen hides
+  // the art style field for anything that answers false, so a generating
+  // style left out here can never be given the look it is then refused for.
+  it("is true for the styles drawn in a named look", () => {
+    expect(stylePicksArtStyle("ILLUSTRATED")).toBe(true);
+    expect(stylePicksArtStyle("DOODLE")).toBe(true);
+  });
+
+  // CINEMATIC and MIXED carry their own fixed look in code, and the stock
+  // styles draw nothing at all.
+  it("is false for the styles that read no slug", () => {
+    expect(stylePicksArtStyle("CINEMATIC")).toBe(false);
+    expect(stylePicksArtStyle("MIXED")).toBe(false);
+    expect(stylePicksArtStyle("LIVE_ACTION")).toBe(false);
+    expect(stylePicksArtStyle("CARTOON")).toBe(false);
   });
 });

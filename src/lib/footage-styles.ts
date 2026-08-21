@@ -132,3 +132,29 @@ export function needsCharacterSheet(style: FootageStyle): boolean {
 export function footageStyleLabel(style: FootageStyle): string {
   return FOOTAGE_STYLES.find((option) => option.value === style)?.label ?? style;
 }
+
+/**
+ * Which styles are drawn in a look chosen from `ART_STYLES`.
+ *
+ * `ILLUSTRATED` and `DOODLE`. A third classifier beside `isGeneratedFootage`
+ * and `needsCharacterSheet`, and it exists for the same reason the second one
+ * split from the first: the questions had one answer while only one style
+ * generated, and they have three different answers now.
+ *
+ *   - generated?      ILLUSTRATED, CINEMATIC, MIXED, DOODLE
+ *   - named look?     ILLUSTRATED, DOODLE
+ *   - character sheet? ILLUSTRATED
+ *
+ * DOODLE is the style that made the middle row necessary. It draws every
+ * picture in a slug the operator picks, exactly as ILLUSTRATED does, and holds
+ * no character at all, exactly as CINEMATIC does — so neither existing
+ * predicate could stand in for this one.
+ *
+ * Read by the branding screen, which hides the art style field for anything
+ * that answers false. That is why getting it wrong is worse than it looks: a
+ * generating style missing from here has no way to be given the look that
+ * `footage.service.ts` then refuses it for.
+ */
+export function stylePicksArtStyle(style: FootageStyle): boolean {
+  return style === "ILLUSTRATED" || style === "DOODLE";
+}

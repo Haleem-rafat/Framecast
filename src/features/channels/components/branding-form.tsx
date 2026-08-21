@@ -12,6 +12,7 @@ import {
   updateBrandingAction,
 } from "@/actions/channel.action";
 import { FormField } from "@/components/shared/form-field";
+import { StylePicker } from "@/features/channels/components/style-picker";
 import { Reveal } from "@/components/shared/reveal";
 import { VoicePicker } from "@/components/shared/voice-picker";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,13 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ART_STYLES, findArtStyle } from "@/lib/art-styles";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
-import { FOOTAGE_STYLES } from "@/lib/footage-styles";
+import {
+  DOODLE_BEAT_MAX_SECONDS,
+  DOODLE_BEAT_MIN_SECONDS,
+  DOODLE_MAX_SECONDS,
+  doodleSectionCount,
+} from "@/lib/doodle-cadence";
+import { FOOTAGE_STYLES, stylePicksArtStyle } from "@/lib/footage-styles";
 import {
   MADE_FOR_KIDS_CONSEQUENCES,
   MADE_FOR_KIDS_GUIDANCE_URL,
@@ -456,18 +463,17 @@ export function BrandingForm({
                     error={errors.footageStyle?.message}
                   >
                     {(controlProps) => (
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger {...controlProps} className="w-full sm:w-64">
-                          <SelectValue placeholder="Pick a footage style" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {FOOTAGE_STYLES.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <StylePicker
+                        {...controlProps}
+                        name="footageStyle"
+                        options={FOOTAGE_STYLES.map((option) => ({
+                          value: option.value,
+                          label: option.label,
+                          description: option.description,
+                        }))}
+                        value={field.value}
+                        onChange={field.onChange}
+                      />
                     )}
                   </FormField>
                 )}
@@ -479,8 +485,14 @@ export function BrandingForm({
                 * box under a setting most of them will never use, and hiding
                 * it is safe here because the value is preserved on save either
                 * way (the field stays registered, holding whatever was
-                * loaded). */}
-              {footageStyle === "ILLUSTRATED" && (
+                * loaded).
+                *
+                * `stylePicksArtStyle` rather than a comparison, because two
+                * styles read the slug now and a third classifier is exactly
+                * what stopped this being a list of enum values in four
+                * places. A generating style missing from it can never be
+                * given the look footage.service.ts then refuses it for. */}
+              {stylePicksArtStyle(footageStyle) && (
                 <Controller
                   control={control}
                   name="artStyle"
@@ -495,24 +507,67 @@ export function BrandingForm({
                       error={errors.artStyle?.message}
                     >
                       {(controlProps) => (
-                        <Select
-                          // `""` stands for "nobody has chosen" — a Select
-                          // value has to be a string, and the schema coerces
-                          // it back to null.
-                          value={field.value ?? ""}
-                          onValueChange={field.onChange}
-                        >
-                          <SelectTrigger {...controlProps} className="w-full sm:w-64">
-                            <SelectValue placeholder="Pick an art style" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ART_STYLES.map((option) => (
-                              <SelectItem key={option.id} value={option.id}>
-                                {option.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <StylePicker
+                          {...controlProps}
+                          name="artStyle"
+                          options={ART_STYLES.map((option) => ({
+                            value: option.id,
+                            label: option.name,
+                            description: option.description,
+                          }))}
+                          // `null` rather than `""`: the picker treats null as
+                          // "nobody has chosen", and the schema coerces the
+                          // empty string this field was loaded with back to
+                          // null on the way out.
+                          value={field.value || null}
+                          onChange={field.onChange}
+                          sampleSrc={(id) => `/art-styles/${id}.webp`}
+                        />
+                      )}
+                    </FormField>
+                  )}
+                />
+              )}
+
+              {/* Only for the one style whose whole feel it decides. Shown
+                * beside the footage style rather than under the art style
+                * because it is not a look — it is how often the look changes,
+                * and the number is meaningless to every other style. */}
+              {footageStyle === "DOODLE" && (
+                <Controller
+                  control={control}
+                  name="beatSeconds"
+                  render={({ field }) => (
+                    <FormField
+                      name="beatSeconds"
+                      label="Seconds per picture"
+                      description={
+                        field.value
+                          ? `About ${doodleSectionCount(
+                              DOODLE_MAX_SECONDS,
+                              Number(field.value),
+                            )} pictures in a five-minute video. Faster cutting is most of what makes this format feel like the channels it copies — and every picture is drawn, so it is also what it costs.`
+                          : "How long one drawing holds the screen. There is no default: it decides how many pictures the video has, and picking one on the channel's behalf would choose its rhythm for it."
+                      }
+                      error={errors.beatSeconds?.message}
+                    >
+                      {(controlProps) => (
+                        <Input
+                          {...controlProps}
+                          type="number"
+                          inputMode="numeric"
+                          min={DOODLE_BEAT_MIN_SECONDS}
+                          max={DOODLE_BEAT_MAX_SECONDS}
+                          step={1}
+                          className="w-full sm:w-32"
+                          // `""` for "nobody has chosen", exactly as the art
+                          // style field does — the schema coerces it to null.
+                          // Stringified because this field's schema accepts a
+                          // number, `""` or null, so its input type is wider
+                          // than an <input value> will take.
+                          value={field.value == null ? "" : String(field.value)}
+                          onChange={(event) => field.onChange(event.target.value)}
+                        />
                       )}
                     </FormField>
                   )}
