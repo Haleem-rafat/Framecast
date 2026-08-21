@@ -235,7 +235,7 @@ export class ScriptService {
     // minute with no picture over it. Capping the duration bounds the same
     // spend without ever doing that.
     //
-    // Above `chargeVideo` on purpose. A refusal is not a charge.
+    // Above the first billed call on purpose. A refusal is not a charge.
     const doodle = brand
       ? planDoodleGeneration({
           footageStyle: brand.footageStyle,
