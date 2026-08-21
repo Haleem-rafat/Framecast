@@ -102,28 +102,32 @@ export default async function ChannelBrandingPage({
         />
       </div>
 
-      <LogoStudio
-        channelId={channel.id}
-        channelTitle={channel.title}
-        logoPath={branding.logoPath}
-      />
-
-      {/* Above the form and below the logo, in the order the two immediate-write
-        * cards already sit: both write on their own click rather than on the
-        * form's Save, and grouping them keeps that distinction visible. */}
-      <CharacterStudio
-        channelId={channel.id}
-        channelTitle={channel.title}
-        footageStyle={branding.footageStyle}
-        characterBrief={branding.characterBrief}
-        characterSheetPath={branding.characterSheetPath}
-        artStyle={branding.artStyle}
-      />
-
+      {/* Both immediate-write cards go into the form's Identity tab rather than
+        * sitting above it. They still write on their own click — that has not
+        * changed and the tab hides the form's Save while they are open — but a
+        * screen with tabs for four of its six cards and two cards stranded
+        * above the tab strip reads as two different pages stacked. */}
       <BrandingForm
         channelId={channel.id}
         channelTitle={channel.title}
         branding={branding}
+        identity={
+          <>
+            <LogoStudio
+              channelId={channel.id}
+              channelTitle={channel.title}
+              logoPath={branding.logoPath}
+            />
+            <CharacterStudio
+              channelId={channel.id}
+              channelTitle={channel.title}
+              footageStyle={branding.footageStyle}
+              characterBrief={branding.characterBrief}
+              characterSheetPath={branding.characterSheetPath}
+              artStyle={branding.artStyle}
+            />
+          </>
+        }
       />
 
       <p className="text-muted-foreground text-xs">

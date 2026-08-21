@@ -2,7 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -13,7 +13,6 @@ import {
 } from "@/actions/channel.action";
 import { FormField } from "@/components/shared/form-field";
 import { StylePicker } from "@/features/channels/components/style-picker";
-import { Reveal } from "@/components/shared/reveal";
 import { VoicePicker } from "@/components/shared/voice-picker";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ART_STYLES, findArtStyle } from "@/lib/art-styles";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
@@ -150,10 +150,22 @@ export function BrandingForm({
   channelId,
   channelTitle,
   branding,
+  identity,
 }: {
   channelId: string;
   channelTitle: string;
   branding: ChannelBranding;
+  /**
+   * The logo and character cards, rendered into the Identity tab.
+   *
+   * Passed in rather than imported because they are not part of this form:
+   * both write on their own click rather than on this Save, which the page
+   * already grouped them by. Handing them in as a slot keeps that distinction
+   * while letting one set of tabs cover the whole screen — the alternative was
+   * two tab strips, or tabs that skip the two cards an operator most often
+   * came here for.
+   */
+  identity?: ReactNode;
 }) {
   const router = useRouter();
   const audienceId = useId();
@@ -184,6 +196,10 @@ export function BrandingForm({
    * copied it back in would fight the very state it is meant to settle.
    */
   const [saved, setSaved] = useState(branding);
+  // Look rather than Identity, even when Identity exists: the logo and the
+  // character sheet are set up once and the look is what an operator comes back
+  // to change.
+  const [tab, setTab] = useState("look");
 
   const {
     register,
@@ -191,7 +207,7 @@ export function BrandingForm({
     handleSubmit,
     reset,
     setValue,
-    formState: { errors, isSubmitting, isDirty },
+    formState: { errors, isSubmitting, isDirty, dirtyFields },
   } = useForm<BrandingFormValues, unknown, BrandingFormOutput>({
     resolver: zodResolver(brandingFormSchema),
     defaultValues: toDefaultValues(branding),
@@ -235,6 +251,11 @@ export function BrandingForm({
     };
   }, [channelId]);
 
+  /** How many fields differ from what was last saved. Counted from
+   *  `dirtyFields` rather than tracked by hand, so it cannot disagree with the
+   *  `isDirty` that enables Save. */
+  const dirtyCount = Object.keys(dirtyFields).length;
+
   async function onSubmit(values: BrandingFormOutput) {
     const result = await updateBrandingAction({ channelId, ...values });
 
@@ -274,22 +295,43 @@ export function BrandingForm({
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-6">
-      <LookCard control={control} register={register} errors={errors} />
+    <form onSubmit={handleSubmit(onSubmit)} noValidate>
+      {/* Every panel is force-mounted and hidden rather than unmounted, and
+        * that is load-bearing rather than a nicety: this is ONE form with ONE
+        * Save across all of it, so a field on a tab nobody opened has to stay
+        * registered or saving from the Look tab would blank the operator's
+        * publishing defaults. Radix hides an inactive force-mounted panel with
+        * the `hidden` attribute, which also keeps it out of the tab order and
+        * away from screen readers. */}
+      <Tabs value={tab} onValueChange={setTab} className="gap-6">
+        <TabsList className="w-full justify-start overflow-x-auto">
+          {identity ? <TabsTrigger value="identity">Identity</TabsTrigger> : null}
+          <TabsTrigger value="look">Look</TabsTrigger>
+          <TabsTrigger value="writing">Writing</TabsTrigger>
+          <TabsTrigger value="voice">Voice &amp; music</TabsTrigger>
+          <TabsTrigger value="publishing">Publishing</TabsTrigger>
+        </TabsList>
 
-      <Reveal>
-        <WritingCard register={register} errors={errors} />
-      </Reveal>
+        {identity ? (
+          <TabsContent value="identity" forceMount className="space-y-6">
+            {identity}
+          </TabsContent>
+        ) : null}
 
-      <Reveal>
-        <NarrationCard control={control} setValue={setValue} errors={errors} />
-      </Reveal>
+        <TabsContent value="look" forceMount className="space-y-6">
+          <LookCard control={control} register={register} errors={errors} />
+        </TabsContent>
 
-      <Reveal>
-        <MusicCard register={register} errors={errors} />
-      </Reveal>
+        <TabsContent value="writing" forceMount className="space-y-6">
+          <WritingCard register={register} errors={errors} />
+        </TabsContent>
 
-      <Reveal>
+        <TabsContent value="voice" forceMount className="space-y-6">
+          <NarrationCard control={control} setValue={setValue} errors={errors} />
+          <MusicCard register={register} errors={errors} />
+        </TabsContent>
+
+        <TabsContent value="publishing" forceMount className="space-y-6">
         <Card>
           <CardHeader>
             <CardTitle>Publishing defaults</CardTitle>
@@ -598,27 +640,44 @@ export function BrandingForm({
             </FieldGroup>
           </CardContent>
         </Card>
-      </Reveal>
+        </TabsContent>
+      </Tabs>
 
-      {/* Stacked and full-width on a phone, inline on a desktop — the primary
-        * action of a long form is the last thing that should be a 110px target
-        * at the bottom of a 375px screen. In DOM order rather than reversed,
-        * so the visual order and the tab order agree. */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        <Button type="submit" disabled={isSubmitting || !isDirty}>
-          {isSubmitting && <Loader2 className="animate-spin" />}
-          Save branding
-        </Button>
-        {isDirty && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => reset(toDefaultValues(saved))}
-          >
-            Discard changes
+      {/* Sticky, because the whole point of splitting this into tabs is that no
+        * single panel is long enough to scroll — but the operator can still
+        * change three things across three tabs, and a Save that lives at the
+        * bottom of whichever panel happens to be open is a Save they have to go
+        * looking for. It sits below the panels in DOM order so visual order and
+        * tab order agree.
+        *
+        * Hidden on the Identity tab, where it would be a lie: the logo and
+        * character cards write on their own click and this Save does nothing
+        * for them. */}
+      {tab !== "identity" && (
+        <div
+          className="bg-background/95 sticky bottom-0 z-10 mt-6 flex flex-col gap-2
+            border-t py-3 backdrop-blur sm:flex-row sm:items-center sm:gap-3"
+        >
+          <Button type="submit" disabled={isSubmitting || !isDirty}>
+            {isSubmitting && <Loader2 className="animate-spin" />}
+            Save branding
           </Button>
-        )}
-      </div>
+          {isDirty && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => reset(toDefaultValues(saved))}
+            >
+              Discard changes
+            </Button>
+          )}
+          <p className="text-muted-foreground text-xs sm:ml-auto">
+            {isDirty
+              ? `${dirtyCount} unsaved ${dirtyCount === 1 ? "change" : "changes"}`
+              : "No unsaved changes"}
+          </p>
+        </div>
+      )}
     </form>
   );
 }
