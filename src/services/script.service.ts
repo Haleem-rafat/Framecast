@@ -1,7 +1,9 @@
 import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
-import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
+import { ConflictError, InternalError, NotFoundError, ValidationError } from "@/lib/errors";
+import { countUntaggedCues, planDoodleGeneration } from "@/lib/doodle-cadence";
+import type { FootageStyle } from "@/generated/prisma/enums";
 import { insightScriptToScript, validateInsightScript } from "@/lib/insight-script";
 import { checkLongformScript, longformCues } from "@/lib/longform-script";
 import { prisma } from "@/lib/prisma";
@@ -122,6 +124,43 @@ function billedTotals(attempts: readonly ScriptGenerationResult[]) {
   );
 }
 
+/**
+ * The one silent failure the doodle format can produce, said out loud.
+ *
+ * `planStoryBeats` cuts one picture per cue only when **every** cue carries a
+ * shot tag. Forty-two tags out of forty-three makes `isShotScripted` false and
+ * the video renders fifteen pictures instead of forty-three — it still renders,
+ * still looks finished, and is quietly the wrong film. `longform-list` can only
+ * warn the model in prose; this format knows the channel is DOODLE, so it can
+ * count what came back.
+ *
+ * A warning on the line the operator already reads, rather than a refusal.
+ * `chargeVideo` is idempotent per video, so regenerating costs no credit and
+ * acting on this is free — and a hard refusal would block a whole video on a
+ * model formatting slip that a second attempt usually fixes.
+ */
+function doodleTagWarning(
+  brand: { footageStyle: FootageStyle } | null,
+  cues: unknown,
+): string | null {
+  if (brand?.footageStyle !== "DOODLE") {
+    return null;
+  }
+
+  const parsed = Array.isArray(cues) ? (cues as unknown as ScriptCue[]) : [];
+  const untagged = countUntaggedCues(parsed);
+
+  if (untagged === 0) {
+    return null;
+  }
+
+  return (
+    `WARNING: ${untagged} of ${parsed.length} sections came back untagged, so this ` +
+    "video will render one picture every twenty seconds instead of one per section. " +
+    "Regenerate the script — it costs no credit."
+  );
+}
+
 export class ScriptService {
   // `Pick`, not the full `TextGenerationProvider`, for the same reason
   // `MetadataService` narrows its own constructor: this service only ever
@@ -158,7 +197,16 @@ export class ScriptService {
           select: {
             channel: {
               select: {
-                brand: { select: { footageStyle: true, characterBrief: true } },
+                brand: {
+                  select: {
+                    footageStyle: true,
+                    characterBrief: true,
+                    // Read only by `planDoodleGeneration` below, and only for a
+                    // DOODLE channel — see the column's comment for why this is
+                    // the one place in the app that selects it.
+                    beatSeconds: true,
+                  },
+                },
               },
             },
           },
@@ -208,8 +256,49 @@ export class ScriptService {
     // derived, deterministically and from data that is itself stored — this
     // channel's `characterBrief` and `footageStyle`, both visible on the
     // branding screen — rather than authored per generation.
-    const system =
-      recurringCharacterInstruction(video.project.channel?.brand) ?? undefined;
+    const brand = video.project.channel?.brand ?? null;
+
+    // The doodle format's two numbers, validated against each other in the one
+    // place that has both.
+    //
+    // `beatSeconds` is read here and nowhere else in the app. Everything
+    // downstream — footage, render, shorts — reaches the same cadence through
+    // `ScriptVersion.cues`, which is what keeps the three of them from drifting
+    // apart; see the column's own comment in schema.prisma for why that matters.
+    //
+    // The length cap is enforced here rather than in `story-beats.ts` because
+    // `MAX_BEATS` is deliberately not applied on the tagged path: capping the
+    // count there would drop the last shots silently and leave the closing
+    // minute with no picture over it. Capping the duration bounds the same
+    // spend without ever doing that.
+    //
+    // Above `chargeVideo` on purpose. A refusal is not a charge.
+    const doodle = brand
+      ? planDoodleGeneration({
+          footageStyle: brand.footageStyle,
+          beatSeconds: brand.beatSeconds,
+          declaredMinutes:
+            input.variables?.duration ??
+            template.variables.find((variable) => variable.key === "duration")
+              ?.defaultValue ??
+            undefined,
+        })
+      : null;
+
+    if (doodle && !doodle.ok) {
+      throw new ValidationError(doodle.reason);
+    }
+
+    // Two standing facts about this channel, either of which may be absent.
+    // They are mutually exclusive in practice — `recurringCharacterInstruction`
+    // returns null for anything but ILLUSTRATED — but joining rather than
+    // choosing means neither has to know that about the other.
+    const instructions = [
+      recurringCharacterInstruction(brand),
+      doodle?.ok ? doodle.instruction : null,
+    ].filter((line): line is string => line !== null);
+
+    const system = instructions.length > 0 ? instructions.join("\n\n") : undefined;
 
     const apiKey =
       (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ??
@@ -390,7 +479,10 @@ export class ScriptService {
             action: "script.generate",
             entityType: "Video",
             entityId: videoId,
-            message: `Generated script v${version.version} (${version.wordCount} words)`,
+            message: doodleTagWarning(brand, version.cues)
+              ? `Generated script v${version.version} (${version.wordCount} words) — ` +
+                doodleTagWarning(brand, version.cues)
+              : `Generated script v${version.version} (${version.wordCount} words)`,
           },
         });
 

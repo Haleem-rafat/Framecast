@@ -7,6 +7,7 @@ import {
   DOODLE_MAX_SECONDS,
   doodleCadenceInstruction,
   doodleSectionCount,
+  planDoodleGeneration,
 } from "@/lib/doodle-cadence";
 import type { ScriptCue } from "@/lib/script-cues";
 
@@ -69,5 +70,54 @@ describe("countUntaggedCues", () => {
   // reporting "0 of 0 sections untagged" as a warning would be noise.
   it("is zero for an empty script", () => {
     expect(countUntaggedCues([])).toBe(0);
+  });
+});
+
+describe("planDoodleGeneration", () => {
+  const plan = (over: Partial<Parameters<typeof planDoodleGeneration>[0]> = {}) =>
+    planDoodleGeneration({
+      footageStyle: "DOODLE",
+      beatSeconds: 7,
+      declaredMinutes: "5",
+      ...over,
+    });
+
+  it("says nothing at all about a channel that is not DOODLE", () => {
+    expect(plan({ footageStyle: "ILLUSTRATED" })).toBeNull();
+    expect(plan({ footageStyle: "LIVE_ACTION", beatSeconds: null })).toBeNull();
+  });
+
+  it("asks for the section count the cadence implies", () => {
+    const result = plan();
+
+    expect(result).toEqual({ ok: true, instruction: expect.stringContaining("43") });
+  });
+
+  // Null is a real state, not a gap to fill with a default: a default would
+  // pick a rhythm for a channel that never asked for one.
+  it("refuses a doodle channel that has chosen no cadence", () => {
+    const result = plan({ beatSeconds: null });
+
+    expect(result?.ok).toBe(false);
+    expect(result?.ok === false && result.reason).toMatch(/seconds per picture/i);
+  });
+
+  // The cap is what bounds the spend, because planStoryBeats deliberately does
+  // not apply MAX_BEATS on the tagged path.
+  it("refuses a video past the length cap", () => {
+    const result = plan({ declaredMinutes: "12" });
+
+    expect(result?.ok).toBe(false);
+    expect(result?.ok === false && result.reason).toMatch(/5 minutes/);
+  });
+
+  it("accepts exactly the cap", () => {
+    expect(plan({ declaredMinutes: "5" })?.ok).toBe(true);
+  });
+
+  it("refuses a duration that is not a number at all", () => {
+    expect(plan({ declaredMinutes: undefined })?.ok).toBe(false);
+    expect(plan({ declaredMinutes: "soon" })?.ok).toBe(false);
+    expect(plan({ declaredMinutes: "0" })?.ok).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import type { FootageStyle } from "@/generated/prisma/enums";
 import type { ScriptCue } from "@/lib/script-cues";
 
 /**
@@ -113,4 +114,75 @@ export function doodleCadenceInstruction(sectionCount: number): string {
  */
 export function countUntaggedCues(cues: readonly ScriptCue[]): number {
   return cues.filter((cue) => !cue.shot).length;
+}
+
+/**
+ * Whether this generation may proceed, and what the writer should be told.
+ *
+ * A discriminated union rather than thrown errors, so the decision is a pure
+ * function of three values and can be tested without a database. The caller —
+ * `script.service.ts`, the only one — turns a refusal into a `ValidationError`
+ * at the point where it has the context to do so, and does it *before*
+ * `chargeVideo`: a refusal is not a charge.
+ */
+export type DoodlePlan =
+  | { readonly ok: true; readonly instruction: string }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * The doodle format's two numbers, checked against each other.
+ *
+ * Null for any channel that is not `DOODLE`, which is most of them — the caller
+ * reads that as "this format has nothing to say about your video" rather than
+ * as an error.
+ *
+ * `declaredMinutes` arrives as the string the template variable holds, because
+ * that is what the caller has: a prompt template's variables are strings all
+ * the way to the model. Parsing it here keeps the caller from having a second
+ * opinion about what "5" means.
+ */
+export function planDoodleGeneration(input: {
+  footageStyle: FootageStyle;
+  beatSeconds: number | null;
+  declaredMinutes: string | undefined;
+}): DoodlePlan | null {
+  if (input.footageStyle !== "DOODLE") {
+    return null;
+  }
+
+  const targetSeconds = Number(input.declaredMinutes) * 60;
+
+  if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) {
+    return {
+      ok: false,
+      reason:
+        "A doodle video needs a duration in minutes before its pictures can be counted.",
+    };
+  }
+
+  if (targetSeconds > DOODLE_MAX_SECONDS) {
+    return {
+      ok: false,
+      reason:
+        `A doodle video can be at most ${DOODLE_MAX_SECONDS / 60} minutes. This format ` +
+        "draws every picture, so its length is what bounds what it costs.",
+    };
+  }
+
+  if (input.beatSeconds === null) {
+    return {
+      ok: false,
+      reason:
+        "This channel has no seconds per picture set. Choose one on the channel's " +
+        "branding screen — it decides how many pictures the video has, and there is " +
+        "no sensible default to pick on the channel's behalf.",
+    };
+  }
+
+  return {
+    ok: true,
+    instruction: doodleCadenceInstruction(
+      doodleSectionCount(targetSeconds, input.beatSeconds),
+    ),
+  };
 }
