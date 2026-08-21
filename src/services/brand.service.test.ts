@@ -208,6 +208,7 @@ function brandingInput(
 ): UpdateBrandingInput {
   return {
     channelId,
+    beatSeconds: null,
     primaryColour: "#FFCC00",
     secondaryColour: "#101010",
     headlineFont: "DejaVu Sans",

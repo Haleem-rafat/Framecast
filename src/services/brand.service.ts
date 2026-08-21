@@ -125,6 +125,10 @@ export interface ChannelBranding extends PublishingDefaults {
    *  gap to fill with a default: a default would give every channel the same
    *  look, which is the opposite of what the setting is for. */
   artStyle: ArtStyleId | null;
+  /** Seconds one picture holds the screen on a `DOODLE` channel, or null for
+   *  "nobody has chosen". Read by `script.service.ts` and by nothing else —
+   *  see the column's comment in schema.prisma for why it must stay that way. */
+  beatSeconds: number | null;
   primaryColour: string;
   secondaryColour: string;
   headlineFont: string;
@@ -310,6 +314,7 @@ type StoredBranding = {
   characterBrief: string | null;
   characterSheetPath: string | null;
   artStyle: string | null;
+  beatSeconds: number | null;
   voiceId: string | null;
   voiceName: string | null;
   updatedAt: Date;
@@ -332,6 +337,7 @@ const BRANDING_SELECT = {
   characterBrief: true,
   characterSheetPath: true,
   artStyle: true,
+  beatSeconds: true,
   voiceId: true,
   voiceName: true,
   updatedAt: true,
@@ -371,6 +377,12 @@ function toBranding(brand: StoredBranding): ChannelBranding {
     // was chosen resolves to null and the screen asks the operator to pick
     // again, which is what should happen.
     artStyle: findArtStyle(brand?.artStyle)?.id ?? null,
+    // Passed through rather than clamped to the 5-20 band. The boundary
+    // already refused anything outside it, and a value that predates the band
+    // — or was written by hand — should reach the screen as what it actually
+    // is so the operator can see it and fix it, not be silently corrected into
+    // a rhythm nobody chose.
+    beatSeconds: brand?.beatSeconds ?? null,
     voiceId: brand?.voiceId ?? null,
     // Never a name without an id. The column pair is written together and
     // cleared together, but a row edited by hand could hold one without the

@@ -98,6 +98,10 @@ function toDefaultValues(branding: ChannelBranding): BrandingFormValues {
     // real selectable value — a `Select` value has to be a string. The schema
     // coerces it back to null on the way out.
     artStyle: branding.artStyle ?? "",
+    // Same "" rather than null as artStyle above, and for the same reason: a
+    // number input's value has to be a string, and the schema coerces the
+    // empty box back to null on the way out.
+    beatSeconds: branding.beatSeconds ?? "",
     // Null rather than "" — unlike tone and niche, "no voice chosen" is a real
     // selectable option in the picker rather than an empty box, and the schema
     // round-trips null through unchanged.

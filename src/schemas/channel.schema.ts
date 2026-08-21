@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DOODLE_BEAT_MAX_SECONDS, DOODLE_BEAT_MIN_SECONDS } from "@/lib/doodle-cadence";
 import { ART_STYLES } from "@/lib/art-styles";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
@@ -253,6 +254,27 @@ export const updateBrandingSchema = z.object({
    */
   artStyle: z
     .union([z.enum(ART_STYLES.map((style) => style.id)), z.literal(""), z.null()])
+    .transform((value) => (value === "" || value === undefined ? null : value)),
+  /**
+   * How long one picture holds the screen, for a `DOODLE` channel.
+   *
+   * Bounded here rather than in the service because the bounds are the
+   * format's, not the database's: under `DOODLE_BEAT_MIN_SECONDS` is a strobe
+   * and over `DOODLE_BEAT_MAX_SECONDS` is what `ILLUSTRATED` already does. An
+   * integer because a fractional cadence would imply a precision the format
+   * does not have — the writer is asked for a section count and the real
+   * seconds fall out of how long the narration turns out to be.
+   *
+   * Nullable and round-tripping, exactly as `artStyle` above: "nobody has
+   * chosen" is a real state, and it is what makes the doodle path refuse at
+   * script generation rather than silently pick a rhythm.
+   */
+  beatSeconds: z
+    .union([
+      z.coerce.number().int().min(DOODLE_BEAT_MIN_SECONDS).max(DOODLE_BEAT_MAX_SECONDS),
+      z.literal(""),
+      z.null(),
+    ])
     .transform((value) => (value === "" || value === undefined ? null : value)),
 });
 
