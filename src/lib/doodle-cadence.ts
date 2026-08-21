@@ -1,5 +1,7 @@
 import type { FootageStyle } from "@/generated/prisma/enums";
-import type { ScriptCue } from "@/lib/script-cues";
+import { readShotTag } from "@/lib/longform-script";
+import { extractAnchor, type ScriptCue } from "@/lib/script-cues";
+import type { ScriptSection } from "@/services/providers/types";
 
 /**
  * The cadence arithmetic for the doodle format, and the reason it is arithmetic
@@ -84,11 +86,14 @@ export function doodleSectionCount(targetSeconds: number, beatSeconds: number): 
  * edited text in `ScriptVersion.prompt`, whose whole job is to record what the
  * template said.
  *
- * The paragraph about a missing tag is not padding. One untagged section out of
- * forty-three drops `isShotScripted` to false and the video renders fifteen
- * pictures instead of forty-three — a finished-looking video that is quietly
- * the wrong film. `longform-list` warns about the same thing in its own prompt
- * for the same reason.
+ * It does NOT ask the writer to tag anything, and that is the correction a real
+ * generation forced. The first version copied `longform-list` and asked for a
+ * `[still]` tag on every cue; the model returned forty-three sections and
+ * tagged none of them, which would have rendered fifteen pictures instead of
+ * forty-three. Tagging was the wrong instrument anyway — `longform-list` tags
+ * because its writer is choosing between drawn and filmed, and a doodle channel
+ * draws EVERYTHING. There is no judgement to record, so `doodleCues` sets the
+ * shot itself and the model is asked for one less thing to get wrong.
  */
 export function doodleCadenceInstruction(sectionCount: number): string {
   return [
@@ -97,23 +102,38 @@ export function doodleCadenceInstruction(sectionCount: number): string {
     `Write exactly ${sectionCount} sections. Keep them short and even — this ` +
       "format cuts fast, and a section three times longer than its neighbours " +
       "holds one picture on screen while the rest flick past.",
-    "Tag every section by putting [still] at the end of its cue. Every " +
-      "section, without exception: one picture per section only happens when " +
-      "every single one is tagged, and a single missing tag silently drops the " +
-      "video to one picture every twenty seconds.",
+    "Give every section a cue describing one drawing. Do not label the cues " +
+      "or mark them in any way — this channel draws every section, so there is " +
+      "nothing to choose between.",
   ].join("\n\n");
 }
 
 /**
- * How many cues came back without a shot tag.
+ * A doodle script's cues: one per section, every one a still.
  *
- * The detector for the one silent failure this format introduces. Zero for an
- * empty script rather than "all of them": `planStoryBeats` also declines the
- * tagged path for an empty script, but for an unrelated reason, and reporting
- * "0 of 0 sections untagged" would be noise on a script that has other problems.
+ * The sibling of `longformCues`, and shorter by everything that function does
+ * to decide between drawn and filmed. A doodle channel has no stock arm, so
+ * there is no motion share to cap and no tag to read — the shot is `still` by
+ * construction.
+ *
+ * That construction is the whole point. `planStoryBeats` takes its
+ * one-picture-per-cue path only when EVERY cue carries a shot, and a model
+ * asked to tag forty-three sections will eventually miss one; when it does, the
+ * video silently renders at one picture every twenty seconds. Setting the shot
+ * here rather than asking for it removes that failure mode instead of detecting
+ * it — which is why there is no longer a warning for it to trigger.
+ *
+ * `readShotTag` still runs, for one reason: an earlier prompt asked for tags and
+ * a model may still volunteer one. Left in the cue, `[still]` reaches the
+ * illustration prompt as literal text and gets DRAWN — which is exactly what
+ * `beatDoodlePrompt`'s no-text rule exists to prevent, arriving from inside.
  */
-export function countUntaggedCues(cues: readonly ScriptCue[]): number {
-  return cues.filter((cue) => !cue.shot).length;
+export function doodleCues(sections: readonly ScriptSection[]): ScriptCue[] {
+  return sections.map((section) => ({
+    anchor: extractAnchor(section.text),
+    cue: readShotTag(section.cue).cue,
+    shot: "still" as const,
+  }));
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  countUntaggedCues,
+  doodleCues,
   DOODLE_BEAT_MAX_SECONDS,
   DOODLE_BEAT_MIN_SECONDS,
   DOODLE_MAX_SECONDS,
@@ -9,13 +9,6 @@ import {
   doodleSectionCount,
   planDoodleGeneration,
 } from "@/lib/doodle-cadence";
-import type { ScriptCue } from "@/lib/script-cues";
-
-const cue = (shot?: "still" | "motion"): ScriptCue => ({
-  anchor: "a b c d e f g h",
-  cue: "a stick figure at a desk",
-  ...(shot ? { shot } : {}),
-});
 
 describe("doodleSectionCount", () => {
   it("is the duration divided by the cadence", () => {
@@ -42,34 +35,50 @@ describe("doodleSectionCount", () => {
 });
 
 describe("doodleCadenceInstruction", () => {
-  it("states the count and the tagging rule", () => {
-    const instruction = doodleCadenceInstruction(43);
-
-    expect(instruction).toContain("43");
-    expect(instruction).toContain("[still]");
+  it("states the count", () => {
+    expect(doodleCadenceInstruction(43)).toContain("43");
   });
 
-  // The failure this whole warning path exists for: one missing tag drops the
-  // video from 43 pictures to 15. The model has to be told what it costs.
-  it("says what a missing tag costs", () => {
-    expect(doodleCadenceInstruction(43)).toMatch(/every section/i);
+  // Asking for tags is what failed in the first real generation, and
+  // doodleCues now sets the shot itself. An instruction that still asked
+  // would be asking the model for one more thing to get wrong.
+  it("does not ask the writer to tag anything", () => {
+    expect(doodleCadenceInstruction(43)).not.toContain("[still]");
   });
 });
 
-describe("countUntaggedCues", () => {
-  it("is zero when every cue carries a tag", () => {
-    expect(countUntaggedCues([cue("still"), cue("still")])).toBe(0);
+describe("doodleCues", () => {
+  const section = (cue: string) => ({ text: "A figure at a desk, late.", cue });
+
+  // The correction a real generation forced: the model returned 43 sections
+  // and tagged none of them. planStoryBeats needs EVERY cue to carry a shot,
+  // so the shot is set here rather than asked for.
+  it("marks every cue a still, whatever the model did or did not say", () => {
+    const cues = doodleCues([section("a figure at a desk"), section("a closed laptop")]);
+
+    expect(cues.every((cue) => cue.shot === "still")).toBe(true);
   });
 
-  it("counts the ones that do not", () => {
-    expect(countUntaggedCues([cue("still"), cue(), cue("still"), cue()])).toBe(2);
+  // Left in the cue, "[still]" reaches the illustration prompt as literal
+  // text and gets drawn.
+  it("strips a tag the model volunteered rather than drawing it", () => {
+    const [cue] = doodleCues([section("a figure at a desk [still]")]);
+
+    expect(cue.cue).toBe("a figure at a desk");
+    expect(cue.shot).toBe("still");
   });
 
-  // An empty script is not a partly tagged one. planStoryBeats' isShotScripted
-  // returns false for an empty array too, but for a different reason, and
-  // reporting "0 of 0 sections untagged" as a warning would be noise.
-  it("is zero for an empty script", () => {
-    expect(countUntaggedCues([])).toBe(0);
+  it("never reports motion, even if the model asked for it", () => {
+    const [cue] = doodleCues([section("[motion] a train pulling away")]);
+
+    expect(cue.shot).toBe("still");
+    expect(cue.cue).toBe("a train pulling away");
+  });
+
+  it("anchors each cue to its section's opening words", () => {
+    const [cue] = doodleCues([section("a figure at a desk")]);
+
+    expect(cue.anchor).toBe("A figure at a desk, late.");
   });
 });
 

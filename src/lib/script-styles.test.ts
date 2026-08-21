@@ -475,13 +475,12 @@ describe("doodle-story", () => {
     expect(style?.content).not.toMatch(/\b\d{2} sections\b/);
   });
 
-  it("tells the writer to tag every section still", () => {
-    expect(style?.content).toContain("[still]");
-  });
-
-  // A stock clip dropped between two stick figures is the one substitution
-  // this format must never make.
-  it("never offers a motion tag", () => {
+  // The correction a real generation forced: asked to tag, the model returned
+  // 43 sections and tagged none. doodleCues sets the shot in code, so the
+  // prompt must not ask for one — an unused instruction is one more thing for
+  // a writer to half-follow.
+  it("asks for no shot tags at all", () => {
+    expect(style?.content).not.toContain("[still]");
     expect(style?.content).not.toContain("[motion]");
   });
 });

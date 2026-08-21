@@ -2,8 +2,7 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@/lib/errors";
-import { countUntaggedCues, planDoodleGeneration } from "@/lib/doodle-cadence";
-import type { FootageStyle } from "@/generated/prisma/enums";
+import { doodleCues, planDoodleGeneration } from "@/lib/doodle-cadence";
 import { insightScriptToScript, validateInsightScript } from "@/lib/insight-script";
 import { checkLongformScript, longformCues } from "@/lib/longform-script";
 import { prisma } from "@/lib/prisma";
@@ -124,42 +123,6 @@ function billedTotals(attempts: readonly ScriptGenerationResult[]) {
   );
 }
 
-/**
- * The one silent failure the doodle format can produce, said out loud.
- *
- * `planStoryBeats` cuts one picture per cue only when **every** cue carries a
- * shot tag. Forty-two tags out of forty-three makes `isShotScripted` false and
- * the video renders fifteen pictures instead of forty-three — it still renders,
- * still looks finished, and is quietly the wrong film. `longform-list` can only
- * warn the model in prose; this format knows the channel is DOODLE, so it can
- * count what came back.
- *
- * A warning on the line the operator already reads, rather than a refusal.
- * `chargeVideo` is idempotent per video, so regenerating costs no credit and
- * acting on this is free — and a hard refusal would block a whole video on a
- * model formatting slip that a second attempt usually fixes.
- */
-function doodleTagWarning(
-  brand: { footageStyle: FootageStyle } | null,
-  cues: unknown,
-): string | null {
-  if (brand?.footageStyle !== "DOODLE") {
-    return null;
-  }
-
-  const parsed = Array.isArray(cues) ? (cues as unknown as ScriptCue[]) : [];
-  const untagged = countUntaggedCues(parsed);
-
-  if (untagged === 0) {
-    return null;
-  }
-
-  return (
-    `WARNING: ${untagged} of ${parsed.length} sections came back untagged, so this ` +
-    "video will render one picture every twenty seconds instead of one per section. " +
-    "Regenerate the script — it costs no credit."
-  );
-}
 
 export class ScriptService {
   // `Pick`, not the full `TextGenerationProvider`, for the same reason
@@ -355,6 +318,22 @@ export class ScriptService {
           ? longformCues(generated.sections)
           : null;
 
+      // A doodle channel's cues, every one a still.
+      //
+      // Keyed off the channel rather than off `input.format`, which is the
+      // difference that matters: the two formats above are chosen per
+      // generation, and this one is a property of the channel that is already
+      // decided by the time anybody picks a template. Gating it on a format
+      // string would mean a doodle channel generating from any other template
+      // silently produced untagged cues and rendered at one picture every
+      // twenty seconds — which is exactly what the first real generation did.
+      //
+      // `planStoryBeats` needs EVERY cue to carry a shot before it will cut one
+      // picture per section, so this is set in code rather than asked of the
+      // model. See `doodleCues`.
+      const parsedDoodle =
+        doodle?.ok && generated.sections ? doodleCues(generated.sections) : null;
+
       return await prisma.$transaction(async (tx) => {
         const script = await tx.script.upsert({
           where: { videoId },
@@ -392,6 +371,11 @@ export class ScriptService {
                 emphasis: cue.emphasis,
               })) ??
               parsedLongform?.map((cue) => ({
+                anchor: cue.anchor,
+                cue: cue.cue,
+                shot: cue.shot,
+              })) ??
+              parsedDoodle?.map((cue) => ({
                 anchor: cue.anchor,
                 cue: cue.cue,
                 shot: cue.shot,
@@ -479,10 +463,7 @@ export class ScriptService {
             action: "script.generate",
             entityType: "Video",
             entityId: videoId,
-            message: doodleTagWarning(brand, version.cues)
-              ? `Generated script v${version.version} (${version.wordCount} words) — ` +
-                doodleTagWarning(brand, version.cues)
-              : `Generated script v${version.version} (${version.wordCount} words)`,
+            message: `Generated script v${version.version} (${version.wordCount} words)`,
           },
         });
 

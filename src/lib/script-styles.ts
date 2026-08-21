@@ -1036,10 +1036,12 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
     // a system instruction beside this template — see `doodleCadenceInstruction`
     // and script.service.ts's note on why it cannot be a {{variable}}.
     //
-    // Every section is [still]. There is no [motion] arm: a stock clip dropped
-    // between two stick figures is the one substitution this format must never
-    // make, and unlike MIXED there is no judgement here for the writer to
-    // record — it is always the same answer.
+    // It also asks for no shot tags, which the first real generation is what
+    // settled. `longform-list` asks its writer to tag because that writer is
+    // choosing between drawn and filmed; a doodle channel draws everything, so
+    // there is no judgement to record and asking for one is asking the model
+    // for another thing to get wrong. It returned forty-three sections and
+    // tagged none of them. `doodleCues` sets the shot in code instead.
     targetLength: "About 5 minutes",
     targetSeconds: 300,
     content: [
@@ -1057,11 +1059,6 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       "- One idea per section. This video cuts every few seconds, so a section carrying two ideas gets one picture for both.",
       "- Put the turn about two thirds through: the moment the story stops going one way and goes the other. Everything before it is setup and everything after it is consequence.",
       "- Close on the smallest concrete detail, not on a lesson. The viewer draws the lesson; you draw the detail.",
-      "",
-      "SHOTS — this format decides its own pictures.",
-      "- Tag every single section by putting [still] at the end of its cue: 'a figure alone at a desk, screen glowing [still]'. The tag is removed before anything is drawn.",
-      "- Every section, without exception. One picture per section only happens when every section is tagged, and a single missing tag drops the whole video to one picture every twenty seconds.",
-      "- Never tag a section as motion. This channel draws everything; there is no stock footage in it.",
       "",
       VOICE_RULES,
       "",

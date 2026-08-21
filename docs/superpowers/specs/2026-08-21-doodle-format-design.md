@@ -260,18 +260,38 @@ the beats whose image is missing — a failed beat is named in `missingBeats`
 rather than skipped, and `render.service.ts` refuses to render until it exists.
 One failure in forty-three costs one retry of one picture.
 
-**One silent failure this format introduces, and closes.** The tagged path fires
-only when **every** cue carries a tag. If the model tags 42 of 43,
-`isShotScripted` returns false, the video falls back to twenty-second pacing and
-renders fifteen pictures instead of forty-three. It still renders, still looks
-finished, and is quietly the wrong film. `longform-list` can only warn the model
-in prose. This format knows more — the channel is `DOODLE` — so after generation
-the tags are counted and a mismatch raises a **visible warning on the script**,
-so the operator regenerates rather than discovering it in the finished video.
+### The correction the first real generation forced
 
-A warning rather than a refusal: regenerating costs no credit (`chargeVideo` is
-idempotent per video), so the operator can act on it freely, and a hard refusal
-would block a whole video on a model formatting slip.
+This section originally specified that the doodle script would ask the writer to
+tag every section `[still]`, copying `longform-list`, and that a partly tagged
+script would raise a warning. The first generation against a real model returned
+**forty-three sections and tagged none of them**. The warning fired correctly and
+said so — but a warning is a detector, and the failure did not need detecting.
+It needed removing.
+
+Two things were wrong with tagging here, and only the second is about the model:
+
+1. **There was never a judgement to record.** `longform-list` asks for a tag
+   because its writer is genuinely choosing between drawn and filmed. A doodle
+   channel draws everything. The answer is `still` for every section of every
+   doodle video that will ever be made, so asking is asking the model for one
+   more thing to get wrong for no information in return.
+2. **The gate was on the wrong thing.** Cue parsing in `script.service.ts` is
+   keyed off `input.format`, so tags would only have been read for a generation
+   that passed `format: "longform"`. A doodle channel generating from any other
+   template would have produced untagged cues and rendered at one picture every
+   twenty seconds, silently.
+
+So `doodleCues` sets `shot: "still"` in code, keyed off the **channel** rather
+than off a format string, and the prompt asks for no tags at all. This deletes
+the failure mode rather than reporting it, which is why the untagged-cue warning
+no longer exists.
+
+`readShotTag` still runs over each cue, for one reason: a model may volunteer a
+tag anyway, and `[still]` left in the cue reaches the illustration prompt as
+literal text and gets **drawn** — the exact thing `beatDoodlePrompt`'s no-text
+rule exists to prevent, arriving from inside the pipeline instead of from the
+model's habits.
 
 ## The comparison, and what it decides
 
