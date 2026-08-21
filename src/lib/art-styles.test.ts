@@ -160,3 +160,32 @@ describe("composeCinematicShot", () => {
     );
   });
 });
+
+describe("doodle-marker", () => {
+  const doodle = findArtStyle("doodle-marker");
+
+  it("is in the catalogue", () => {
+    expect(doodle).not.toBeNull();
+  });
+
+  // The captions are white with a 2px black outline and that string is pinned
+  // by a test in ffmpeg-command.test.ts. White text on white paper is
+  // unreadable, so the paper is what has to move — see the spec's Quality
+  // section. If someone "tidies" this to plain white, the captions go with it.
+  it("asks for off-white paper rather than white, so captions stay legible", () => {
+    expect(doodle?.prompt).toMatch(/off-white/i);
+    expect(doodle?.prompt).not.toMatch(/\bpure white\b/i);
+  });
+
+  // A 1536x1024 still is covered into 1920x1080, so the top and bottom ~15% is
+  // cropped away — and vertical Shorts keep only the centre 9:16.
+  it("keeps the subject centred, because the frame crops top and bottom", () => {
+    expect(doodle?.prompt).toMatch(/centred/i);
+  });
+
+  it("names no artist, studio or film", () => {
+    for (const style of ART_STYLES) {
+      expect(style.prompt).not.toMatch(/in the style of/i);
+    }
+  });
+});

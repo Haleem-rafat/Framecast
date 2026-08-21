@@ -35,6 +35,14 @@
  * looks that each pin something down, whether that is a flat shape, a solid
  * form, a piece of paper or an opaque patch of paint.
  *
+ * The seventh entry arrived from the other end of that bar rather than scraping
+ * past it. The six above each pin *something* down — a flat shape, a solid
+ * form, a piece of paper, an opaque patch of paint — because the styles that
+ * were rejected are the ones whose appeal is looseness. A stick figure has
+ * almost nothing in it to drift at all: two dots, a line, four limbs. It is the
+ * easiest entry here to hold a character in, and the hardest to do anything
+ * else with, which is why its description says so.
+ *
  * Each was verified by generating a character sheet in it and then a scene
  * conditioned on that sheet, and looking at whether it was the same character.
  */
@@ -47,7 +55,8 @@ export type ArtStyleId =
   | "soft-3d"
   | "cut-paper"
   | "coloured-pencil"
-  | "gouache-night";
+  | "gouache-night"
+  | "doodle-marker";
 
 export interface ArtStyle {
   /** Stable slug. The only thing stored on a channel and the only thing a
@@ -142,6 +151,20 @@ export const ART_STYLES: readonly ArtStyle[] = [
       "indigo, plum and slate, lifted by small pools of warm amber light from lamps, " +
       "candles or the moon, each with a soft glow around it. Calm and quiet; nothing " +
       "harsh, nothing frightening.",
+  },
+  {
+    id: "doodle-marker",
+    name: "Marker doodle",
+    description:
+      "Thick black felt-tip stick figures on off-white paper, with two flat accent colours. The most stable look here — there is almost nothing in a stick figure to drift — and the clearest on a phone at speed, but it cannot carry mood or place.",
+    prompt:
+      "Hand-drawn marker doodle on paper. Stick figures with round solid-black " +
+      "heads and simple straight-line limbs, drawn in a single thick black " +
+      "felt-tip line of even weight; no shading, no gradients, no rendered " +
+      "form. Warm off-white paper with faint grain. Two accent colours only — " +
+      "a flat red and a flat blue — used sparingly as fills and repeated " +
+      "exactly; everything else is black line on paper. Flat even light, no " +
+      "shadows. Subject centred with generous empty margin above and below.",
   },
 ];
 
