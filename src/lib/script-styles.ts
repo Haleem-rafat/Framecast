@@ -1020,6 +1020,70 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       "What the hole in a pen lid is actually for",
     ],
   },
+  {
+    id: "doodle-story",
+    name: "Doodle story",
+    description:
+      "One person's story told in short lines over stick-figure drawings, cut fast. Suits a story with a turn in it — a mistake, a discovery, a decision that went badly and then well.",
+    category: "SCRIPT",
+    // A sibling of `longform-list`, and it differs in the same two ways that
+    // one differs from `countdown`: it is shorter, and it decides its own
+    // pictures. What it does NOT carry is a section count, which is the whole
+    // reason it exists as its own style. `longform-list` writes "about 40
+    // sections" into the prompt because eight minutes at twelve seconds is a
+    // constant. A doodle channel's cadence is an operator setting, so the count
+    // is computed per generation from `ChannelBrand.beatSeconds` and arrives as
+    // a system instruction beside this template — see `doodleCadenceInstruction`
+    // and script.service.ts's note on why it cannot be a {{variable}}.
+    //
+    // Every section is [still]. There is no [motion] arm: a stock clip dropped
+    // between two stick figures is the one substitution this format must never
+    // make, and unlike MIXED there is no judgement here for the writer to
+    // record — it is always the same answer.
+    targetLength: "About 5 minutes",
+    targetSeconds: 300,
+    content: [
+      "Write a {{duration}}-minute narration script telling one story: {{topic}}",
+      "",
+      "Audience: {{audience}}",
+      "Tone: {{tone}}",
+      "",
+      "LENGTH.",
+      "The narration is read aloud at about 150 words a minute, so a {{duration}}-minute video needs roughly {{duration}} times 150 words. You will be told separately how many sections to write; divide the words evenly between them.",
+      "",
+      "STRUCTURE.",
+      "- Open in the middle of a moment, not at the beginning of the story. A specific hour, a specific room, one thing going wrong.",
+      "- Say who this is about in the first three sections, and never name them. 'You' or 'he' or 'she' — this format draws stick figures, and a stick figure with a name is a promise the picture cannot keep.",
+      "- One idea per section. This video cuts every few seconds, so a section carrying two ideas gets one picture for both.",
+      "- Put the turn about two thirds through: the moment the story stops going one way and goes the other. Everything before it is setup and everything after it is consequence.",
+      "- Close on the smallest concrete detail, not on a lesson. The viewer draws the lesson; you draw the detail.",
+      "",
+      "SHOTS — this format decides its own pictures.",
+      "- Tag every single section by putting [still] at the end of its cue: 'a figure alone at a desk, screen glowing [still]'. The tag is removed before anything is drawn.",
+      "- Every section, without exception. One picture per section only happens when every section is tagged, and a single missing tag drops the whole video to one picture every twenty seconds.",
+      "- Never tag a section as motion. This channel draws everything; there is no stock footage in it.",
+      "",
+      VOICE_RULES,
+      "",
+      CUE_RULES,
+      "- Cue what a stick figure can actually show: a posture, a gesture, one object, two figures and the distance between them. A cue that needs a face to work will not survive being drawn.",
+      "- One or two figures a picture. A crowd of stick figures is a smudge.",
+      "- The subject sits in the middle of the frame with room above and below it. The frame crops top and bottom, and vertical Shorts keep only the centre strip.",
+    ].join("\n"),
+    variables: [
+      TOPIC,
+      { key: "duration", label: "Duration (minutes)", defaultValue: "5" },
+      { key: "audience", label: "Audience", defaultValue: "curious general viewers" },
+      { key: "tone", label: "Tone", defaultValue: "plain and unhurried" },
+    ],
+    starterSubjects: [
+      "The email that was sent to the wrong person, and what it fixed",
+      "The habit that took four failed attempts before it held",
+      "The job interview that went badly and led somewhere better",
+      "The thing you bought to solve a problem you did not have",
+      "The friendship that ended over something neither of them remembers",
+    ],
+  },
 ];
 
 /** The catalogue entry a slug names, or null. The add path's only lookup. */

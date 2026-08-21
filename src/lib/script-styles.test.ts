@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { DOODLE_MAX_SECONDS } from "@/lib/doodle-cadence";
 import { extractVariables, renderTemplate } from "@/lib/prompt-template";
 import {
   findScriptStyle,
@@ -20,8 +21,17 @@ describe("SCRIPT_STYLES", () => {
     // the list is read top to bottom before anything is added, and a
     // catalogue nobody scrolls to the end of is a catalogue whose later
     // entries may as well not ship.
+    //
+    // Raised from twelve to thirteen for `doodle-story`, and the raise is the
+    // uncomfortable part rather than the entry. A ceiling that moves whenever
+    // something wants past it is not a ceiling. What earns this one its slot is
+    // that it is not a variation on how a script READS — it is the only style
+    // whose section count is computed per generation from a channel setting,
+    // which is what makes the doodle format's cadence work at all. A fourteenth
+    // should have to argue at least that hard, and if it cannot, the answer is
+    // to retire a style rather than to move this number again.
     expect(SCRIPT_STYLES.length).toBeGreaterThanOrEqual(4);
-    expect(SCRIPT_STYLES.length).toBeLessThanOrEqual(12);
+    expect(SCRIPT_STYLES.length).toBeLessThanOrEqual(13);
 
     // Names have to be unique because they land on `@@unique([userId, name])`
     // — two styles sharing one would make the second un-addable for anybody
@@ -441,5 +451,37 @@ describe("the long-form list style", () => {
     expect(countdown!.content).not.toContain("[motion]");
     expect(countdown!.content).not.toContain("SHOTS");
     expect(countdown!.content).not.toContain("9:16");
+  });
+});
+
+describe("doodle-story", () => {
+  const style = findScriptStyle("doodle-story");
+
+  it("is in the catalogue", () => {
+    expect(style).not.toBeNull();
+  });
+
+  // The cap is a money ceiling wearing a length's clothes — see
+  // DOODLE_MAX_SECONDS. A template that defaulted past it would put every
+  // operator straight into the refusal.
+  it("does not default past the doodle length cap", () => {
+    expect(style?.targetSeconds).toBeLessThanOrEqual(DOODLE_MAX_SECONDS);
+  });
+
+  // The section count is NOT in the template: it is computed from the
+  // channel's beatSeconds and sent as a system instruction, because
+  // renderTemplate leaves undeclared placeholders unsubstituted on purpose.
+  it("does not hardcode a section count", () => {
+    expect(style?.content).not.toMatch(/\b\d{2} sections\b/);
+  });
+
+  it("tells the writer to tag every section still", () => {
+    expect(style?.content).toContain("[still]");
+  });
+
+  // A stock clip dropped between two stick figures is the one substitution
+  // this format must never make.
+  it("never offers a motion tag", () => {
+    expect(style?.content).not.toContain("[motion]");
   });
 });
