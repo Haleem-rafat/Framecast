@@ -14,6 +14,8 @@
  * playback. Exposing it would offer a choice that does not exist.
  */
 
+import type { FootageStyle } from "@/generated/prisma/enums";
+
 export interface MotionStyle {
   enabled: boolean;
   /**
@@ -168,3 +170,67 @@ export const DEFAULT_STYLE: VideoStyle = {
   // did. Kinetic is opted into per channel.
   captionMode: "srt",
 };
+
+/**
+ * What a footage style wants before the operator has said anything.
+ *
+ * A layer between `DEFAULT_STYLE` and a channel's stored style, and the order
+ * is the whole design: a format supplies a better starting point than the
+ * global default, and an operator who has explicitly set the same field still
+ * wins. Most channels have no stored `videoStyle` at all — the branding screen
+ * does not edit it — so in practice this is what a doodle channel gets.
+ *
+ * `DOODLE` turns the pan off. `ffmpeg-command.ts` records the measurement: at
+ * `scale: 1.15` the crop window travels 0.48px a frame, `x` quantises to an
+ * integer, and the picture is frozen for 75.7% of adjacent frame pairs. That
+ * judder is invisible on a photograph and unmissable on a thick black line
+ * against pale paper, where it reads as a broken encode. `kenburns` would be
+ * smooth but pre-upscales the source 4x, forty-odd times a video, for a move
+ * this genre does not use: the channels this format copies cut hard on static
+ * frames, and the fast cut IS the motion.
+ *
+ * Here rather than in `render.service.ts`, and that placement is the point.
+ * `shorts.service.ts` re-composes through the same `composer.ts` and would need
+ * the identical override, which is two places to disagree about what a doodle
+ * video looks like. Both of them reach their style through `brandService.resolve`,
+ * which is the one caller of this.
+ */
+const FORMAT_STYLE_DEFAULTS: Partial<Record<FootageStyle, Partial<VideoStyle>>> = {
+  DOODLE: { motion: { enabled: false, scale: DEFAULT_STYLE.motion.scale } },
+};
+
+/**
+ * The style a channel starts from, before anything it has stored itself.
+ *
+ * A fresh object every call. Callers merge a stored style over the result and
+ * mutate it field by field, so a shared object would let one channel's saved
+ * style leak into the next channel's render.
+ */
+export function styleBaseFor(footageStyle: FootageStyle | null): VideoStyle {
+  const base = structuredClone(DEFAULT_STYLE);
+  const format = footageStyle ? FORMAT_STYLE_DEFAULTS[footageStyle] : undefined;
+
+  if (!format) {
+    return base;
+  }
+
+  // Section by section, exactly as `mergeVideoStyle` merges a stored style, so
+  // a format that sets one motion field keeps the rest of `DEFAULT_STYLE`'s.
+  for (const key of Object.keys(format) as (keyof VideoStyle)[]) {
+    const section = format[key];
+
+    if (!section) {
+      continue;
+    }
+
+    const fallback: VideoStyle[keyof VideoStyle] = base[key];
+
+    base[key] = (
+      typeof section === "object" && typeof fallback === "object"
+        ? { ...fallback, ...section }
+        : section
+    ) as never;
+  }
+
+  return base;
+}

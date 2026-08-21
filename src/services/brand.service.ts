@@ -7,7 +7,8 @@ import { findArtStyle, type ArtStyleId } from "@/lib/art-styles";
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStyle } from "@/lib/video-style";
-import { DEFAULT_STYLE } from "@/lib/video-style";
+import type { FootageStyle } from "@/generated/prisma/enums";
+import { DEFAULT_STYLE, styleBaseFor } from "@/lib/video-style";
 import {
   CURATED_CATEGORIES,
   PUBLISHING_DEFAULTS,
@@ -393,7 +394,20 @@ function toBranding(brand: StoredBranding): ChannelBranding {
   };
 }
 
-function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle {
+/**
+ * A channel's style: its format's starting point, with anything it has stored
+ * itself merged over the top.
+ *
+ * `footageStyle` is the third argument rather than something read inside
+ * because `resolve` already has the brand row — fetching it again here would be
+ * a second chance to disagree with the row the rest of the function is
+ * describing.
+ */
+function mergeVideoStyle(
+  stored: unknown,
+  channelId: string | null,
+  footageStyle: FootageStyle | null,
+): VideoStyle {
   const result = videoStyleSchema.safeParse(stored);
 
   // Absent is not malformed. A channel with no brand row at all, or a brand
@@ -414,7 +428,7 @@ function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle 
 
   const parsed: ParsedVideoStyle = result.success ? result.data : {};
 
-  const merged = structuredClone(DEFAULT_STYLE);
+  const merged = styleBaseFor(footageStyle);
 
   for (const key of Object.keys(DEFAULT_STYLE) as (keyof VideoStyle)[]) {
     const section = parsed[key];
@@ -428,7 +442,10 @@ function mergeVideoStyle(stored: unknown, channelId: string | null): VideoStyle 
     // scalar — `captionMode` is the only one — is replaced outright, because
     // there is nothing inside a string to merge and spreading one would
     // produce an object of numbered characters.
-    const fallback: VideoStyle[keyof VideoStyle] = DEFAULT_STYLE[key];
+    // The format's base rather than DEFAULT_STYLE, so a stored style that sets
+    // one motion field on a doodle channel keeps the format's answer for the
+    // others instead of silently reverting them to the global default.
+    const fallback: VideoStyle[keyof VideoStyle] = merged[key];
 
     merged[key] = (
       typeof section === "object" && typeof fallback === "object"
@@ -464,7 +481,7 @@ export class BrandService {
     const brand = channelId ? await this.findBrand(channelId) : null;
 
     return {
-      videoStyle: mergeVideoStyle(brand?.videoStyle, channelId),
+      videoStyle: mergeVideoStyle(brand?.videoStyle, channelId, brand?.footageStyle ?? null),
       logoPath: brand?.logoPath ?? null,
       primaryColour: brand?.primaryColour ?? FALLBACK.primaryColour,
       secondaryColour: brand?.secondaryColour ?? FALLBACK.secondaryColour,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_STYLE } from "@/lib/video-style";
+import { DEFAULT_STYLE, styleBaseFor } from "@/lib/video-style";
 
 describe("DEFAULT_STYLE", () => {
   it("pans far enough to be visible but not so far the picture softens", () => {
@@ -31,5 +31,45 @@ describe("DEFAULT_STYLE", () => {
     // this field existed, resolves to this and takes the `buildSrt` branch in
     // render.service.ts.
     expect(DEFAULT_STYLE.captionMode).toBe("srt");
+  });
+});
+
+describe("styleBaseFor", () => {
+  // The measurement this exists for is in ffmpeg-command.ts — at scale 1.15
+  // the crop window travels 0.48px a frame and the picture is frozen for
+  // 75.7% of adjacent frame pairs. On a photograph that judder hides; on a
+  // thick black line against pale paper it is exactly where the eye is.
+  it("turns motion off for a doodle channel", () => {
+    expect(styleBaseFor("DOODLE").motion.enabled).toBe(false);
+  });
+
+  it("leaves every other style panning as it always did", () => {
+    expect(styleBaseFor("ILLUSTRATED").motion.enabled).toBe(true);
+    expect(styleBaseFor("CINEMATIC").motion.enabled).toBe(true);
+    expect(styleBaseFor("LIVE_ACTION").motion.enabled).toBe(true);
+    expect(styleBaseFor(null).motion.enabled).toBe(true);
+  });
+
+  // Only the one field moves. A format default that quietly reset the caption
+  // colour or the music gain would be a second, invisible style system.
+  it("changes nothing else about the style", () => {
+    const doodle = styleBaseFor("DOODLE");
+
+    expect(doodle.captions).toEqual(DEFAULT_STYLE.captions);
+    expect(doodle.audio).toEqual(DEFAULT_STYLE.audio);
+    expect(doodle.transitions).toEqual(DEFAULT_STYLE.transitions);
+    expect(doodle.voice).toEqual(DEFAULT_STYLE.voice);
+    expect(doodle.captionMode).toBe(DEFAULT_STYLE.captionMode);
+    expect(doodle.motion.scale).toBe(DEFAULT_STYLE.motion.scale);
+  });
+
+  // Callers merge a stored style over this and mutate the result field by
+  // field, so handing out a shared object would let one channel's saved style
+  // leak into the next channel's render.
+  it("returns a fresh object each time", () => {
+    const first = styleBaseFor("DOODLE");
+    first.motion.enabled = true;
+
+    expect(styleBaseFor("DOODLE").motion.enabled).toBe(false);
   });
 });
