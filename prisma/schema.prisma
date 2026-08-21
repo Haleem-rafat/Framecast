@@ -438,6 +438,27 @@ model ChannelBrand {
   /// art style is for.
   artStyle String?
 
+  /// How many seconds one picture holds the screen, for a `DOODLE` channel.
+  ///
+  /// Read in exactly one place — `script.service.ts`, where it becomes a
+  /// section count in a system instruction — and deliberately not passed to
+  /// `planStoryBeats`. That function is called from footage, render and
+  /// shorts, and its own doc comment states the premise this column must not
+  /// break: the grouping has to be "derivable from data both of them have,
+  /// without a stored plan that could drift from the script". A cadence fetched
+  /// in three places is three chances to disagree, and a disagreement here puts
+  /// pictures under the wrong words without throwing.
+  ///
+  /// Bounded 5-20 at the boundary (`updateBrandingSchema`). Under five is a
+  /// strobe; over twenty is what ILLUSTRATED already does, so a channel wanting
+  /// that should pick ILLUSTRATED rather than a doodle style imitating one.
+  ///
+  /// Nullable with no default, for the reason `artStyle` above is: a default
+  /// would pick a rhythm for a channel that never asked for one. Null on a
+  /// DOODLE channel is refused at script generation with a message naming the
+  /// setting.
+  beatSeconds Int?
+
   /// Which ElevenLabs voice reads this channel's narration.
   ///
   /// Per channel for the plainest possible reason: the operator runs a finance
@@ -540,6 +561,25 @@ enum FootageStyle {
   /// have no recurring protagonist to hold, and a stock clip could not hold one
   /// anyway.
   MIXED
+
+  /// Generated stick-figure stills on paper, one per scripted section, cut
+  /// every five to twenty seconds. Searches no stock provider, exactly as
+  /// CINEMATIC does.
+  ///
+  /// What separates it from CINEMATIC is not where the pictures come from but
+  /// how many there are. CINEMATIC and ILLUSTRATED both let `planStoryBeats`
+  /// group sections into pictures held 15-25 seconds, a band measured on
+  /// four-minute bedtime stories. This style's script tags every section, which
+  /// puts `planStoryBeats` on its one-picture-per-cue path and makes the
+  /// writer's section count the video's picture count — so the cadence is a
+  /// property of the script, not of the renderer.
+  ///
+  /// Reads no character sheet. `needsCharacterSheet` is ILLUSTRATED alone and
+  /// stays that way: a stick figure's consistency is the line weight, which is
+  /// in the art style prompt already, so there is nothing to pre-generate and
+  /// an operator can make their first doodle video without opening the
+  /// branding screen.
+  DOODLE
 }
 
 // ---------------------------------------------------------------------------
