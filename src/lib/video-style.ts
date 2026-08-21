@@ -180,7 +180,8 @@ export const DEFAULT_STYLE: VideoStyle = {
  * wins. Most channels have no stored `videoStyle` at all — the branding screen
  * does not edit it — so in practice this is what a doodle channel gets.
  *
- * `DOODLE` turns the pan off. `ffmpeg-command.ts` records the measurement: at
+ * `DOODLE` turns the pan off and the dissolve with it. `ffmpeg-command.ts`
+ * records the measurement behind the pan: at
  * `scale: 1.15` the crop window travels 0.48px a frame, `x` quantises to an
  * integer, and the picture is frozen for 75.7% of adjacent frame pairs. That
  * judder is invisible on a photograph and unmissable on a thick black line
@@ -196,7 +197,22 @@ export const DEFAULT_STYLE: VideoStyle = {
  * which is the one caller of this.
  */
 const FORMAT_STYLE_DEFAULTS: Partial<Record<FootageStyle, Partial<VideoStyle>>> = {
-  DOODLE: { motion: { enabled: false, scale: DEFAULT_STYLE.motion.scale } },
+  DOODLE: {
+    motion: { enabled: false, scale: DEFAULT_STYLE.motion.scale },
+    // And no dissolve between them, which the first real render is what
+    // caught. Turning the pan off was only half of "hard cuts on static
+    // frames": every join still ran the default half-second `fade`, so at 5.5
+    // seconds a picture roughly a tenth of every shot was two line drawings
+    // ghosted through each other. A dissolve works on photographs, where the
+    // two images share a tonal range and the mush reads as a blur. Between
+    // black marker strokes on pale paper there is nothing to blend — both
+    // drawings simply stay visible, and the eye reads it as a fault rather
+    // than a transition.
+    transitions: {
+      enabled: false,
+      durationSeconds: DEFAULT_STYLE.transitions.durationSeconds,
+    },
+  },
 };
 
 /**

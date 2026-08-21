@@ -43,8 +43,15 @@ describe("styleBaseFor", () => {
     expect(styleBaseFor("DOODLE").motion.enabled).toBe(false);
   });
 
+  // Caught by the first real render: 43 pictures, 42 joins, and ffmpeg found
+  // zero hard cuts because every one of them was a half-second dissolve.
+  it("cuts hard for a doodle channel rather than dissolving", () => {
+    expect(styleBaseFor("DOODLE").transitions.enabled).toBe(false);
+  });
+
   it("leaves every other style panning as it always did", () => {
     expect(styleBaseFor("ILLUSTRATED").motion.enabled).toBe(true);
+    expect(styleBaseFor("ILLUSTRATED").transitions.enabled).toBe(true);
     expect(styleBaseFor("CINEMATIC").motion.enabled).toBe(true);
     expect(styleBaseFor("LIVE_ACTION").motion.enabled).toBe(true);
     expect(styleBaseFor(null).motion.enabled).toBe(true);
@@ -57,7 +64,7 @@ describe("styleBaseFor", () => {
 
     expect(doodle.captions).toEqual(DEFAULT_STYLE.captions);
     expect(doodle.audio).toEqual(DEFAULT_STYLE.audio);
-    expect(doodle.transitions).toEqual(DEFAULT_STYLE.transitions);
+    expect(doodle.transitions.durationSeconds).toBe(DEFAULT_STYLE.transitions.durationSeconds);
     expect(doodle.voice).toEqual(DEFAULT_STYLE.voice);
     expect(doodle.captionMode).toBe(DEFAULT_STYLE.captionMode);
     expect(doodle.motion.scale).toBe(DEFAULT_STYLE.motion.scale);
