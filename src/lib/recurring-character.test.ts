@@ -108,3 +108,11 @@ describe("recurringCharacterInstruction — what it tells the writer", () => {
     expect(instruction).toContain("is unchanged by this");
   });
 });
+
+describe("recurringCharacterInstruction — a doodle channel", () => {
+  it("says nothing, however good the brief is", () => {
+    expect(
+      recurringCharacterInstruction({ footageStyle: "DOODLE", characterBrief: PIP }),
+    ).toBeNull();
+  });
+});

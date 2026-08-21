@@ -247,7 +247,17 @@ export type FootagePlan =
    * Which providers a motion shot searches is `MIXED_STOCK_PROVIDERS` below,
    * and it is a constant for the reason stated there.
    */
-  | { readonly kind: "MIXED" };
+  | { readonly kind: "MIXED" }
+  /**
+   * Generate every picture as a stick-figure still, and search nowhere.
+   *
+   * Identical to `CINEMATIC` in where the pictures come from, and different in
+   * how many there are — which is not decided here. A doodle script tags every
+   * section, so `planStoryBeats` returns one beat per cue and this arm simply
+   * generates however many that is. The cadence lives in the script; see
+   * `beatSeconds` on `ChannelBrand`.
+   */
+  | { readonly kind: "DOODLE" };
 
 export const FOOTAGE_SEARCH_PLAN: Record<FootageStyle, FootagePlan> = {
   LIVE_ACTION: { kind: "STOCK", providers: ["PEXELS", "PIXABAY"] },
@@ -255,6 +265,7 @@ export const FOOTAGE_SEARCH_PLAN: Record<FootageStyle, FootagePlan> = {
   ILLUSTRATED: { kind: "ILLUSTRATED" },
   CINEMATIC: { kind: "CINEMATIC" },
   MIXED: { kind: "MIXED" },
+  DOODLE: { kind: "DOODLE" },
 };
 
 /**
@@ -274,10 +285,14 @@ const MIXED_STOCK_PROVIDERS: readonly FootageProviderKey[] = ["PEXELS", "PIXABAY
 /** How each generating style names itself in a refusal an operator reads. A
  *  map rather than a ternary because there are three of them now, and the
  *  third one's word is neither of the other two's. */
-const GENERATED_STYLE_NOUN: Record<"ILLUSTRATED" | "CINEMATIC" | "MIXED", string> = {
+const GENERATED_STYLE_NOUN: Record<
+  "ILLUSTRATED" | "CINEMATIC" | "MIXED" | "DOODLE",
+  string
+> = {
   ILLUSTRATED: "Illustrated",
   CINEMATIC: "Cinematic",
   MIXED: "Mixed",
+  DOODLE: "Doodle",
 };
 
 /**
@@ -342,6 +357,45 @@ export function beatIllustrationPrompt(input: {
     "A single full-bleed scene filling the whole frame, as one page of a picture book.",
     "Do NOT draw a reference sheet, a turnaround, multiple poses, panels, borders or a",
     "plain background. No text, no words, no letters, no captions, no watermark.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+/**
+ * One doodle beat's prompt.
+ *
+ * A third composer rather than a flag on either of the two above, because it
+ * shares exactly half of each. Like the illustrated prompt it draws in a look
+ * chosen from `ART_STYLES`; like the cinematic one it has no character to hold,
+ * so there is no brief to state and no sheet to condition on.
+ *
+ * The line about text is doing real work and is not boilerplate copied from its
+ * neighbour. Every reference channel in this genre labels its drawings — arrows,
+ * a word above a figure's head — so an image model asked for a marker doodle
+ * writes words unprompted more often than not, and burned-in captions are
+ * already carrying the words. Two sets of text on one frame is the failure the
+ * Shorts path was built to avoid, arriving from the other direction.
+ */
+function beatDoodlePrompt(input: {
+  cues: string[];
+  style: ArtStyle;
+  tone: string | null;
+}): string {
+  const scene = input.cues.join(". ").slice(0, BEAT_CUE_MAX_LENGTH);
+
+  return [
+    "Draw one simple hand-drawn doodle illustrating a single moment.",
+    "",
+    `The scene: ${scene}`,
+    "",
+    composeArtStyle(input.style),
+    input.tone ? `Tone: ${input.tone}.` : "",
+    "",
+    "One drawing filling the whole frame. One or two figures at most.",
+    "No text, no words, no letters, no numbers, no labels, no speech bubbles,",
+    "no arrows with writing on them, no captions and no watermark.",
+    "No panels, no borders, no grid of poses.",
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -586,7 +640,12 @@ export class FootageService {
         ? anchorCues(scriptCues, activeVersion.content.trim()).anchored
         : [];
 
-    if (plan.kind === "ILLUSTRATED" || plan.kind === "CINEMATIC" || plan.kind === "MIXED") {
+    if (
+      plan.kind === "ILLUSTRATED" ||
+      plan.kind === "CINEMATIC" ||
+      plan.kind === "MIXED" ||
+      plan.kind === "DOODLE"
+    ) {
       return this.collectGenerated({
         // Passed rather than re-derived: `collectGenerated` branches on it for
         // the character sheet and for the prompt, and re-reading the brand row
@@ -814,7 +873,7 @@ export class FootageService {
    * nobody notices until it is published.
    */
   private async collectGenerated(args: {
-    kind: "ILLUSTRATED" | "CINEMATIC" | "MIXED";
+    kind: "ILLUSTRATED" | "CINEMATIC" | "MIXED" | "DOODLE";
     videoId: string;
     anchored: AnchoredCue[];
     durationSeconds: number;
@@ -833,6 +892,12 @@ export class FootageService {
     // than a drawn still. Only MIXED, and it gates every stock query below —
     // an illustrated or cinematic run must go on searching nobody at all.
     const mixed = kind === "MIXED";
+    // Which styles draw in a look chosen from `ART_STYLES`, and therefore have
+    // an art style to be refused for. ILLUSTRATED and DOODLE both read the
+    // channel's slug; CINEMATIC and MIXED carry their own fixed look in code
+    // and read no slug at all. Separate from `illustrated` because DOODLE
+    // shares the look requirement and shares none of the character ones.
+    const drawnInNamedStyle = illustrated || kind === "DOODLE";
 
     // Everything an illustrated channel is refused for, and none of which a
     // cinematic one has: the brief, the art style and the sheet all exist to
@@ -855,18 +920,6 @@ export class FootageService {
         );
       }
 
-      // Never defaulted: a fallback look would give every channel that skipped
-      // this the same one.
-      if (!style) {
-        throw new ConflictError(
-          brand?.artStyle
-            ? "This channel's art style is no longer one this app offers. Pick another on " +
-              "the channel's branding screen, then generate a new character sheet in it."
-            : "This channel is set to illustrated footage but has no art style. Pick one on " +
-              "the channel's branding screen — it is what every picture is drawn in.",
-        );
-      }
-
       if (!brand?.characterSheetPath) {
         throw new ConflictError(
           "This channel is set to illustrated footage but has no character sheet. " +
@@ -874,6 +927,23 @@ export class FootageService {
             "from it, and without it each picture would show a different character.",
         );
       }
+    }
+
+    // Never defaulted: a fallback look would give every channel that skipped
+    // this the same one.
+    //
+    // Outside the `illustrated` block because a doodle channel needs a look for
+    // the same reason and none of the character setup around it — the marker
+    // line IS its consistency, so this is the only thing it must be refused for.
+    if (drawnInNamedStyle && !style) {
+      throw new ConflictError(
+        brand?.artStyle
+          ? "This channel's art style is no longer one this app offers. Pick another on " +
+            "the channel's branding screen."
+          : `This channel is set to ${GENERATED_STYLE_NOUN[kind].toLowerCase()} footage ` +
+            "but has no art style. Pick one on the channel's branding screen — it is " +
+            "what every picture is drawn in.",
+      );
     }
 
     // A script with no cues has no beats to group, and unlike the stock paths
@@ -1039,7 +1109,13 @@ export class FootageService {
       try {
         image = await this.images.generate({
           prompt:
-            illustrated && brief && style
+            kind === "DOODLE" && style
+              ? beatDoodlePrompt({
+                  cues: beat.cues,
+                  style,
+                  tone: brand?.tone ?? null,
+                })
+              : illustrated && brief && style
               ? beatIllustrationPrompt({
                   cues: beat.cues,
                   brief,

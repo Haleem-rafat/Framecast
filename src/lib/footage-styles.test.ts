@@ -49,3 +49,23 @@ describe("needsCharacterSheet", () => {
     expect(needsCharacterSheet("CINEMATIC")).toBe(false);
   });
 });
+
+describe("DOODLE", () => {
+  it("is offered in the picker", () => {
+    expect(FOOTAGE_STYLES.map((option) => option.value)).toContain("DOODLE");
+  });
+
+  // A predicate rather than an exhaustive Record, so nothing in the type
+  // system would have caught this style being left out of it — and a
+  // generating style that reports otherwise gets sent to a stock provider
+  // that has never heard of it.
+  it("counts as generated footage", () => {
+    expect(isGeneratedFootage("DOODLE")).toBe(true);
+  });
+
+  // The whole point of the style: an operator can make their first doodle
+  // video without generating anything on the branding screen first.
+  it("needs no character sheet", () => {
+    expect(needsCharacterSheet("DOODLE")).toBe(false);
+  });
+});

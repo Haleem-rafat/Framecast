@@ -73,6 +73,12 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
     description:
       "Generated stills for most shots and real stock footage for the ones the script marks as movement, for long-form list videos. The script decides the split, not this setting — so a video whose writer asked for no movement costs the same as the cinematic style, and one that asked for a lot costs less. A movement shot with nothing in the stock libraries is drawn instead of left blank; a still shot is never filled with stock, because the drawn shots are what makes the channel look like itself.",
   },
+  {
+    value: "DOODLE",
+    label: "Marker doodle",
+    description:
+      "Generated stick figures on paper, one per scripted section, cut every five to twenty seconds. Needs no character sheet — the line weight is the consistency — so a channel can make its first video without generating anything here first. Pick the seconds per picture below; it is the whole feel of the format.",
+  },
 ];
 
 /** Which styles generate pictures rather than searching for them. A function
@@ -91,7 +97,12 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
  *  this predicate is "generates at least some of its pictures", and no caller
  *  wants the other one. */
 export function isGeneratedFootage(style: FootageStyle): boolean {
-  return style === "ILLUSTRATED" || style === "CINEMATIC" || style === "MIXED";
+  return (
+    style === "ILLUSTRATED" ||
+    style === "CINEMATIC" ||
+    style === "MIXED" ||
+    style === "DOODLE"
+  );
 }
 
 /**
