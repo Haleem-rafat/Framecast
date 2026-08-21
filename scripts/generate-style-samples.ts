@@ -30,12 +30,19 @@
  * Pass style ids as arguments to force just those.
  */
 
+import { config } from "dotenv";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { ART_STYLES, composeArtStyle } from "@/lib/art-styles";
-import { gatewayImageProvider } from "@/services/providers/image.provider";
+// .env.local first, exactly as scripts/render.ts and prisma.config.ts do.
+config({ path: ".env.local" });
+config({ path: ".env" });
+
+// The catalogue and the provider are imported dynamically inside main(), never
+// at module top level — `@/config/env` reads process.env at import time and
+// would run before the dotenv calls above. Same reason scripts/render.ts and
+// scripts/make-insight-video.ts do it.
 
 /** Where the picker looks. Kept in step with `sampleSrc` in branding-form.tsx,
  *  which builds `/art-styles/<id>.webp` from the same slug. */
@@ -57,7 +64,15 @@ const SUBJECT =
  *  the grid. The same shape `ILLUSTRATION_SIZE` asks for in landscape. */
 const SAMPLE_SIZE = "1536x1024" as const;
 
+/** What the committed samples are scaled down to. The card renders at about a
+ *  third of this on a normal screen; generating at 1536 and shipping at 768
+ *  keeps the whole catalogue at ~236KB instead of ~20MB. */
+const SAMPLE_WIDTH = 768;
+
 async function main(): Promise<void> {
+  const { ART_STYLES, composeArtStyle } = await import("@/lib/art-styles");
+  const { gatewayImageProvider } = await import("@/services/providers/image.provider");
+
   const only = new Set(process.argv.slice(2));
   const wanted = ART_STYLES.filter((style) => only.size === 0 || only.has(style.id));
 
@@ -93,6 +108,26 @@ async function main(): Promise<void> {
       aspectRatio: "16:9",
       size: SAMPLE_SIZE,
     });
+
+    // The provider returns whatever the model produced, and gpt-image-1 returns
+    // PNG. Writing those bytes to a `.webp` name is how the first run of this
+    // script produced seven 3MB files that every tool reported as PNG and the
+    // browser was asked to read as WebP — so the extension is checked against
+    // the bytes rather than assumed.
+    const isWebp =
+      image.data.subarray(0, 4).toString("ascii") === "RIFF" &&
+      image.data.subarray(8, 12).toString("ascii") === "WEBP";
+
+    if (!isWebp) {
+      const raw = path.replace(/\.webp$/, ".png");
+
+      await writeFile(raw, image.data);
+      console.log(
+        `drew       ${style.id} (${image.model}) as PNG — convert before committing:\n` +
+          `           sips -Z ${SAMPLE_WIDTH} ${raw} && cwebp -q 82 ${raw} -o ${path} && rm ${raw}`,
+      );
+      continue;
+    }
 
     await writeFile(path, image.data);
     console.log(`drew       ${style.id} (${image.model})`);
