@@ -4,6 +4,11 @@
  *   pnpm tsx --conditions=react-server scripts/generate-style-samples.ts
  *   pnpm tsx --conditions=react-server scripts/generate-style-samples.ts doodle-marker
  *
+ * Covers two catalogues: the art styles an illustrated channel is drawn in, and
+ * the presets a channel is set to. Both are picked from a card that wants a
+ * picture on it, and both resolve to a look this file can compose — so one
+ * script rather than two that drift.
+ *
  * ## Why one fixed subject
  *
  * The operator is choosing between *looks*, so the subject has to be the
@@ -44,9 +49,10 @@ config({ path: ".env" });
 // would run before the dotenv calls above. Same reason scripts/render.ts and
 // scripts/make-insight-video.ts do it.
 
-/** Where the picker looks. Kept in step with `sampleSrc` in branding-form.tsx,
- *  which builds `/art-styles/<id>.webp` from the same slug. */
-const OUTPUT_DIR = join(process.cwd(), "public", "art-styles");
+/** Where each picker looks. Kept in step with the `sampleSrc` callbacks in
+ *  branding-form.tsx, which build these paths from the same slugs. */
+const ART_STYLE_DIR = join(process.cwd(), "public", "art-styles");
+const PRESET_DIR = join(process.cwd(), "public", "style-presets");
 
 /**
  * The one subject every sample draws.
@@ -70,25 +76,53 @@ const SAMPLE_SIZE = "1536x1024" as const;
 const SAMPLE_WIDTH = 768;
 
 async function main(): Promise<void> {
-  const { ART_STYLES, composeArtStyle } = await import("@/lib/art-styles");
+  const { ART_STYLES, composeArtStyle, composeCinematicShot, findArtStyle } = await import(
+    "@/lib/art-styles"
+  );
+  const { STYLE_PRESETS } = await import("@/lib/style-presets");
   const { gatewayImageProvider } = await import("@/services/providers/image.provider");
 
   const only = new Set(process.argv.slice(2));
-  const wanted = ART_STYLES.filter((style) => only.size === 0 || only.has(style.id));
+
+  /**
+   * Every card that wants a picture, from both catalogues.
+   *
+   * A preset without an art style is composed through `composeCinematicShot`
+   * rather than skipped: that IS its look — the grade and the lens fixed in
+   * code — and a preset card with no sample is the empty tile this script
+   * exists to stop.
+   */
+  const wanted = [
+    ...ART_STYLES.map((style) => ({
+      id: style.id,
+      dir: ART_STYLE_DIR,
+      look: composeArtStyle(style),
+    })),
+    ...STYLE_PRESETS.map((preset) => {
+      const style = findArtStyle(preset.artStyle);
+
+      return {
+        id: preset.id,
+        dir: PRESET_DIR,
+        look: style ? composeArtStyle(style) : composeCinematicShot({ shot: SUBJECT, tone: null }),
+      };
+    }),
+  ].filter((entry) => only.size === 0 || only.has(entry.id));
 
   if (wanted.length === 0) {
     console.error(
       `No style matched ${[...only].join(", ")}. Known ids: ` +
-        ART_STYLES.map((style) => style.id).join(", "),
+        [...ART_STYLES.map((s) => s.id), ...STYLE_PRESETS.map((p) => p.id)].join(", "),
     );
     process.exitCode = 1;
     return;
   }
 
-  await mkdir(OUTPUT_DIR, { recursive: true });
+  await mkdir(ART_STYLE_DIR, { recursive: true });
+  await mkdir(PRESET_DIR, { recursive: true });
 
   for (const style of wanted) {
-    const path = join(OUTPUT_DIR, `${style.id}.webp`);
+    const path = join(style.dir, `${style.id}.webp`);
 
     if (existsSync(path) && only.size === 0) {
       console.log(`unchanged  ${style.id} (delete the file or pass its id to redraw)`);
@@ -101,7 +135,7 @@ async function main(): Promise<void> {
         "",
         `The scene: ${SUBJECT}`,
         "",
-        composeArtStyle(style),
+        style.look,
         "",
         "No text, no words, no letters, no captions, no watermark.",
       ].join("\n"),
