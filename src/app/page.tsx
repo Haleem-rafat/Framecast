@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { LandingCredibility } from "@/features/marketing/components/landing-credibility";
 import { LandingCta } from "@/features/marketing/components/landing-cta";
 import { LandingFaq } from "@/features/marketing/components/landing-faq";
 import { LandingFeatures } from "@/features/marketing/components/landing-features";
@@ -8,6 +9,7 @@ import { LandingOutput } from "@/features/marketing/components/landing-output";
 import { LandingPipeline } from "@/features/marketing/components/landing-pipeline";
 import { LandingPricing } from "@/features/marketing/components/landing-pricing";
 import { LandingStudio } from "@/features/marketing/components/landing-studio";
+import { LandingValue } from "@/features/marketing/components/landing-value";
 import { MarketingShell } from "@/features/marketing/components/marketing-shell";
 
 export const metadata: Metadata = {
@@ -28,6 +30,16 @@ export default function HomePage() {
   return (
     <MarketingShell width="wide">
       <LandingHero />
+
+      {/* Blocks 2 and 3 of the four-block structure, directly under the hook,
+        * because each answers the question the one before it creates: the hook
+        * names a problem, the value proposition says what changes, and
+        * credibility says why any of it should be believed. Everything below
+        * them is the detail a reader asks for only after those three have
+        * landed. See docs/superpowers/specs/2026-08-23-landing-page-v2-design.md */}
+      <LandingValue />
+      <LandingCredibility />
+
       <LandingPipeline />
       {/*
         There was a section here that put the approval gate on screen as a

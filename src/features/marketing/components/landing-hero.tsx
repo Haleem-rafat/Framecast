@@ -9,6 +9,11 @@ import { useTheme } from "next-themes";
 import StarBorder from "@/components/react-bits/StarBorder";
 import TextCursor from "@/components/react-bits/TextCursor";
 import { Button } from "@/components/ui/button";
+import {
+  APPROVAL_GATES,
+  CTA,
+  HOOK,
+} from "@/features/marketing/landing-copy";
 import { useAmbientEffectsAllowed } from "@/hooks/use-ambient-effects-allowed";
 
 /**
@@ -283,12 +288,16 @@ function toCanvasColor(color: string): string {
 function HeroHeadline() {
   return (
     <div className="relative">
+      {/* The hook, not the mechanism. "Type a topic. Get a finished video."
+        * used to live here and was a good sentence about the product — which
+        * is the problem: a reader who is not already sold does not appear in
+        * it. It moved down to open the value proposition, where a mechanism
+        * sentence belongs. See landing-copy.ts. */}
       <h1 className="text-[2.25rem] leading-[1.06] font-semibold tracking-tight text-balance sm:text-6xl lg:text-7xl">
-        Type a topic. Get a{" "}
+        {HOOK.headline}{" "}
         <span className="hero-sheen from-brand-violet-ink via-brand-blue-ink to-brand-cyan-ink bg-gradient-to-r bg-clip-text text-transparent">
-          finished video
+          {HOOK.headlineEmphasis}
         </span>
-        .
       </h1>
     </div>
   );
@@ -358,8 +367,7 @@ export function LandingHero() {
         </div>
 
         <p className="text-muted-foreground mt-7 max-w-xl text-base text-pretty sm:text-lg">
-          No writing, no recording, no editing — and nothing reaches your
-          channel that you have not watched first.
+          {HOOK.subheading}
         </p>
 
         {/* React Bits' StarBorder around the primary action. v1 puts a static
@@ -376,7 +384,7 @@ export function LandingHero() {
           >
             <Button asChild size="lg" className="rounded-full px-5">
               <Link href="/sign-up">
-                Create your first video
+                {CTA.action}
                 <ArrowRight />
               </Link>
             </Button>
@@ -387,14 +395,24 @@ export function LandingHero() {
           </Button>
         </div>
 
+        {/* The other three quarters of the call to action. The button alone
+          * names the step and nothing else; a reader deciding whether to click
+          * wants the duration, the price and what happens next, and wants them
+          * before the click rather than after it. Each is a commitment — if one
+          * stops being true the fix is the product, not a softer sentence. */}
+        <p className="text-muted-foreground mt-4 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm">
+          <span>{CTA.price}</span>
+          <span aria-hidden="true">·</span>
+          <span>{CTA.duration.toLowerCase()}</span>
+          <span aria-hidden="true">·</span>
+          <span>{CTA.payoff.toLowerCase()}</span>
+        </p>
+
         <p className="border-brand-amber-ink/35 bg-background/50 mt-7 flex max-w-xl items-start gap-3 rounded-2xl border px-4 py-3 text-left text-sm text-pretty backdrop-blur-sm">
           <Hand className="text-brand-amber-ink mt-0.5 size-4 shrink-0" />
           <span>
-            <span className="font-medium">And it stops twice, for you.</span>{" "}
-            <span className="text-muted-foreground">
-              Nothing runs until you have approved the script. Nothing publishes
-              until you have watched the finished video.
-            </span>
+            <span className="font-medium">{APPROVAL_GATES.lead}</span>{" "}
+            <span className="text-muted-foreground">{APPROVAL_GATES.detail}</span>
           </span>
         </p>
 

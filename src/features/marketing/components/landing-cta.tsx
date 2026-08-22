@@ -2,6 +2,7 @@ import Link from "next/link";
 import { KeyRound, ServerCog, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { CTA } from "@/features/marketing/landing-copy";
 import { Meteors } from "@/components/ui/meteors";
 import { Spotlight } from "@/components/ui/spotlight-new";
 
@@ -52,12 +53,24 @@ export function LandingCta() {
 
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Button asChild size="lg">
-                <Link href="/sign-up">Create an account</Link>
+                <Link href="/sign-up">{CTA.action}</Link>
               </Button>
               <Button asChild size="lg" variant="ghost">
                 <Link href="/privacy">How your data is used</Link>
               </Button>
             </div>
+
+            {/* The same four elements the hero carries. A reader who has come
+              * all the way down here is the one who needed longer to decide,
+              * which makes them the last person who should have to scroll back
+              * up to find out what it costs. */}
+            <p className="text-muted-foreground mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              <span>{CTA.price}</span>
+              <span aria-hidden="true">·</span>
+              <span>{CTA.duration.toLowerCase()}</span>
+              <span aria-hidden="true">·</span>
+              <span>{CTA.payoff.toLowerCase()}</span>
+            </p>
           </div>
 
           <dl className="space-y-6">
