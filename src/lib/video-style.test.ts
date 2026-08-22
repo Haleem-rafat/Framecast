@@ -86,3 +86,28 @@ describe("styleBaseFor", () => {
     expect(styleBaseFor("DOODLE").motion.enabled).toBe(false);
   });
 });
+
+describe("styleBaseFor — a preset over a footage style", () => {
+  // The more specific statement wins: "this channel is an insight short" says
+  // more than "this channel generates its pictures".
+  it("lets the preset beat the footage style's own default", () => {
+    const base = styleBaseFor("DOODLE", { captionMode: "srt" });
+
+    expect(base.captionMode).toBe("srt");
+    // And only that field moves — the doodle defaults below it survive.
+    expect(base.motion.enabled).toBe(false);
+    expect(base.transitions.enabled).toBe(false);
+  });
+
+  it("merges a preset section field by field", () => {
+    const base = styleBaseFor(null, { motion: { enabled: false, scale: 2 } });
+
+    expect(base.motion.enabled).toBe(false);
+    expect(base.motion.scale).toBe(2);
+    expect(base.captions).toEqual(DEFAULT_STYLE.captions);
+  });
+
+  it("changes nothing when no preset is given", () => {
+    expect(styleBaseFor("DOODLE")).toEqual(styleBaseFor("DOODLE", undefined));
+  });
+});

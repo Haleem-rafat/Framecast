@@ -208,6 +208,7 @@ function brandingInput(
 ): UpdateBrandingInput {
   return {
     channelId,
+    stylePreset: null,
     beatSeconds: null,
     primaryColour: "#FFCC00",
     secondaryColour: "#101010",

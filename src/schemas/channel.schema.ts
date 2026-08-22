@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { DOODLE_BEAT_MAX_SECONDS, DOODLE_BEAT_MIN_SECONDS } from "@/lib/doodle-cadence";
+import { STYLE_PRESETS } from "@/lib/style-presets";
 import { ART_STYLES } from "@/lib/art-styles";
 import { BRAND_FONTS } from "@/lib/brand-fonts";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
@@ -269,6 +270,19 @@ export const updateBrandingSchema = z.object({
    * chosen" is a real state, and it is what makes the doodle path refuse at
    * script generation rather than silently pick a rhythm.
    */
+  /**
+   * Which named look this channel is set to.
+   *
+   * An enum over the shipped catalogue, so a request can never post arbitrary
+   * render settings — the column stores a slug and the server resolves it.
+   *
+   * Nullable and round-tripping, exactly as `artStyle` above: "nobody has
+   * chosen" is a real state, and a preset is a base the operator can walk away
+   * from rather than a mode that locks the screen.
+   */
+  stylePreset: z
+    .union([z.enum(STYLE_PRESETS.map((preset) => preset.id)), z.literal(""), z.null()])
+    .transform((value) => (value === "" || value === undefined ? null : value)),
   beatSeconds: z
     .union([
       z.coerce.number().int().min(DOODLE_BEAT_MIN_SECONDS).max(DOODLE_BEAT_MAX_SECONDS),

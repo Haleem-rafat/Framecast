@@ -232,30 +232,46 @@ const FORMAT_STYLE_DEFAULTS: Partial<Record<FootageStyle, Partial<VideoStyle>>> 
  * mutate it field by field, so a shared object would let one channel's saved
  * style leak into the next channel's render.
  */
-export function styleBaseFor(footageStyle: FootageStyle | null): VideoStyle {
+export function styleBaseFor(
+  footageStyle: FootageStyle | null,
+  presetVideo?: Partial<VideoStyle>,
+): VideoStyle {
   const base = structuredClone(DEFAULT_STYLE);
-  const format = footageStyle ? FORMAT_STYLE_DEFAULTS[footageStyle] : undefined;
 
-  if (!format) {
-    return base;
-  }
-
-  // Section by section, exactly as `mergeVideoStyle` merges a stored style, so
-  // a format that sets one motion field keeps the rest of `DEFAULT_STYLE`'s.
-  for (const key of Object.keys(format) as (keyof VideoStyle)[]) {
-    const section = format[key];
-
-    if (!section) {
+  // Three layers, in this order, and the order is the design:
+  //
+  //   DEFAULT_STYLE  →  the footage style's own defaults  →  the preset
+  //
+  // and then `mergeVideoStyle` puts the channel's stored style over all of it.
+  // A preset beats a footage-style default because it is the more specific
+  // statement — "this channel is an insight short" says more than "this channel
+  // generates its pictures" — and both lose to a human being who went and
+  // changed the field.
+  for (const layer of [
+    footageStyle ? FORMAT_STYLE_DEFAULTS[footageStyle] : undefined,
+    presetVideo,
+  ]) {
+    if (!layer) {
       continue;
     }
 
-    const fallback: VideoStyle[keyof VideoStyle] = base[key];
+    // Section by section, exactly as `mergeVideoStyle` merges a stored style,
+    // so a layer that sets one motion field keeps the rest of the layer below.
+    for (const key of Object.keys(layer) as (keyof VideoStyle)[]) {
+      const section = layer[key];
 
-    base[key] = (
-      typeof section === "object" && typeof fallback === "object"
-        ? { ...fallback, ...section }
-        : section
-    ) as never;
+      if (!section) {
+        continue;
+      }
+
+      const fallback: VideoStyle[keyof VideoStyle] = base[key];
+
+      base[key] = (
+        typeof section === "object" && typeof fallback === "object"
+          ? { ...fallback, ...section }
+          : section
+      ) as never;
+    }
   }
 
   return base;

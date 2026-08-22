@@ -1,0 +1,23 @@
+-- The column that makes a look choosable.
+--
+-- Every element of a finished style already shipped and none of it could be
+-- picked in one action. Reproducing one of this app's own published Shorts on a
+-- new channel meant setting five things across three places: footageStyle,
+-- artStyle and beatSeconds are columns the branding screen edits; captionMode,
+-- motion and transitions live inside the videoStyle JSON that the screen
+-- deliberately does not edit; and the script format was a per-generation
+-- argument with no column at all.
+--
+-- This is the fifth. STYLE_PRESETS (src/lib/style-presets.ts) carries the other
+-- four per named look, so a channel says "insight short" once instead of
+-- answering five questions in three screens.
+--
+-- Text rather than an enum, exactly as "artStyle" is, and for the same reason:
+-- the value is composed into render settings rather than read into a dispatch
+-- table, so retiring a preset should be a code change rather than a migration.
+-- A channel naming one that no longer exists resolves to null and falls back to
+-- its own settings.
+--
+-- Nullable with no default, so there is nothing to backfill and no channel's
+-- output changes until somebody picks one.
+ALTER TABLE "channel_brand" ADD COLUMN "stylePreset" TEXT;

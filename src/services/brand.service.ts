@@ -8,6 +8,7 @@ import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStyle } from "@/lib/video-style";
 import type { FootageStyle } from "@/generated/prisma/enums";
+import { findStylePreset, type StylePresetId } from "@/lib/style-presets";
 import { DEFAULT_STYLE, styleBaseFor } from "@/lib/video-style";
 import {
   CURATED_CATEGORIES,
@@ -126,6 +127,9 @@ export interface ChannelBranding extends PublishingDefaults {
    *  gap to fill with a default: a default would give every channel the same
    *  look, which is the opposite of what the setting is for. */
   artStyle: ArtStyleId | null;
+  /** A slug into `STYLE_PRESETS`, or null for "nobody has chosen". A base
+   *  merged under everything below, never a lock over it. */
+  stylePreset: StylePresetId | null;
   /** Seconds one picture holds the screen on a `DOODLE` channel, or null for
    *  "nobody has chosen". Read by `script.service.ts` and by nothing else —
    *  see the column's comment in schema.prisma for why it must stay that way. */
@@ -315,6 +319,7 @@ type StoredBranding = {
   characterBrief: string | null;
   characterSheetPath: string | null;
   artStyle: string | null;
+  stylePreset: string | null;
   beatSeconds: number | null;
   voiceId: string | null;
   voiceName: string | null;
@@ -338,6 +343,7 @@ const BRANDING_SELECT = {
   characterBrief: true,
   characterSheetPath: true,
   artStyle: true,
+  stylePreset: true,
   beatSeconds: true,
   voiceId: true,
   voiceName: true,
@@ -383,6 +389,10 @@ function toBranding(brand: StoredBranding): ChannelBranding {
     // — or was written by hand — should reach the screen as what it actually
     // is so the operator can see it and fix it, not be silently corrected into
     // a rhythm nobody chose.
+    // Resolved against the catalogue rather than cast, exactly as `artStyle`
+    // above: a preset retired since it was chosen reads as "nobody has chosen"
+    // and the screen asks again.
+    stylePreset: findStylePreset(brand?.stylePreset)?.id ?? null,
     beatSeconds: brand?.beatSeconds ?? null,
     voiceId: brand?.voiceId ?? null,
     // Never a name without an id. The column pair is written together and
@@ -407,6 +417,7 @@ function mergeVideoStyle(
   stored: unknown,
   channelId: string | null,
   footageStyle: FootageStyle | null,
+  stylePreset: string | null,
 ): VideoStyle {
   const result = videoStyleSchema.safeParse(stored);
 
@@ -428,7 +439,10 @@ function mergeVideoStyle(
 
   const parsed: ParsedVideoStyle = result.success ? result.data : {};
 
-  const merged = styleBaseFor(footageStyle);
+  // Resolved against the shipped catalogue rather than trusted: the column is
+  // plain text, so a preset retired since it was chosen resolves to null and
+  // the channel falls back to its own settings rather than to nothing.
+  const merged = styleBaseFor(footageStyle, findStylePreset(stylePreset)?.video);
 
   for (const key of Object.keys(DEFAULT_STYLE) as (keyof VideoStyle)[]) {
     const section = parsed[key];
@@ -481,7 +495,12 @@ export class BrandService {
     const brand = channelId ? await this.findBrand(channelId) : null;
 
     return {
-      videoStyle: mergeVideoStyle(brand?.videoStyle, channelId, brand?.footageStyle ?? null),
+      videoStyle: mergeVideoStyle(
+        brand?.videoStyle,
+        channelId,
+        brand?.footageStyle ?? null,
+        brand?.stylePreset ?? null,
+      ),
       logoPath: brand?.logoPath ?? null,
       primaryColour: brand?.primaryColour ?? FALLBACK.primaryColour,
       secondaryColour: brand?.secondaryColour ?? FALLBACK.secondaryColour,
