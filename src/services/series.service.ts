@@ -212,6 +212,11 @@ function cadenceOf(input: CreateSeriesInput | UpdateSeriesInput) {
     hour: input.hour,
     minute: input.minute,
     timeZone: input.timeZone,
+    // A series has no reel setting of its own yet, and the schedule's column is
+    // the one `selectShortsIfAsked` reads for series-owned videos too. False
+    // rather than omitted so the shape stays complete and a later `Series.
+    // autoShorts` has an obvious place to be threaded through.
+    autoShorts: false,
   };
 }
 

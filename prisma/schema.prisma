@@ -1636,6 +1636,15 @@ model Series {
 /// src/lib/schedule-time.ts is written per-frequency precisely so a third
 /// member is a new branch rather than a rewrite.
 enum ScheduleFrequency {
+  /// Every day at `hour`:`minute` in `timeZone`. Neither `dayOfWeek` nor
+  /// `dayOfMonth` is read.
+  ///
+  /// Added for the three-channel daily cadence, where the alternative was seven
+  /// WEEKLY rows per channel — twenty-one across three channels, each with its
+  /// own ScheduleRun history, all needing to be paused together when something
+  /// goes wrong. `nextOccurrence` walks calendar days rather than adding 24
+  /// hours, so a 06:00 schedule stays at 06:00 through both DST boundaries.
+  DAILY
   WEEKLY
   MONTHLY
 }
@@ -1743,6 +1752,26 @@ model Schedule {
   /// them and no form writes them. See `resolveAutoPublish` in
   /// schedule.service.ts, which is the only place the rule lives.
   autoPublish       Boolean           @default(false)
+
+  /// Whether reaching READY also selects reels out of this video.
+  ///
+  /// Keyed on a *state* rather than a clock, exactly as `autoPublish` is: the
+  /// moment a video is finished is the moment its reels can be cut, and there
+  /// is no second time worth waiting for. Off by default, because selection
+  /// spends a model call and nothing should start doing that because a column
+  /// was added.
+  ///
+  /// The point of it is a daily cadence: `release.service.ts` drips reels that
+  /// already exist, and without this nobody creates them — the worker encodes
+  /// QUEUED shorts but the step that picks the moments is a button. A cadence
+  /// with an empty queue publishes nothing and says nothing about why.
+  ///
+  /// Selection writes only to `Short`, never to `Video`, so a failure here
+  /// leaves the parent READY and publishable exactly as it was. That property
+  /// belongs to shorts.service.ts and this flag must not be the thing that
+  /// breaks it.
+  autoShorts        Boolean           @default(false)
+
   publishVisibility PublishVisibility @default(PRIVATE)
 
   /// The next instant this schedule is due, derived from the fields above. Null

@@ -180,6 +180,7 @@ export interface ScheduleSummary {
    *  the pair is dead — `resolveAutoPublish` reads the show's — and the series
    *  form is where that one is edited. */
   autoPublish: boolean;
+  autoShorts: boolean;
   publishVisibility: PublishVisibility;
   /** Null while paused-and-never-resumed. Meaningless while paused anyway —
    *  the UI says "paused" rather than showing a time that will not happen. */
@@ -477,6 +478,7 @@ export class ScheduleService {
     minute: number;
     timeZone: string;
     autoPublish: boolean;
+    autoShorts: boolean;
     publishVisibility: PublishVisibility;
     projectId: string;
     project: { name: string };
@@ -499,6 +501,7 @@ export class ScheduleService {
       minute: row.minute,
       timeZone: row.timeZone,
       autoPublish: row.autoPublish,
+      autoShorts: row.autoShorts,
       publishVisibility: row.publishVisibility,
       cadence: describeRecurrence(recurrenceOf(row)),
       projectId: row.projectId,
@@ -556,6 +559,10 @@ export class ScheduleService {
               autoPublish: input.autoPublish,
               publishVisibility: input.publishVisibility,
             }),
+        // Not inside the series branch above: unlike autoPublish, this is read
+        // from the schedule for series-owned rows too, because the series has
+        // no equivalent setting to read instead. Nothing here is dead.
+        autoShorts: input.autoShorts,
         nextRunAt,
         seriesId: owner.seriesId ?? null,
         topics: {

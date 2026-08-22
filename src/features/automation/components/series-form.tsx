@@ -161,7 +161,7 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
   const [publishVisibility, setPublishVisibility] = useState<PublishVisibility>(
     series?.publishVisibility ?? "PRIVATE",
   );
-  const [frequency, setFrequency] = useState<"WEEKLY" | "MONTHLY">(
+  const [frequency, setFrequency] = useState<"DAILY" | "WEEKLY" | "MONTHLY">(
     series?.frequency ?? "WEEKLY",
   );
   const [dayOfWeek, setDayOfWeek] = useState(String(series?.dayOfWeek ?? 1));
@@ -632,7 +632,7 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
               {(control) => (
                 <Select
                   value={frequency}
-                  onValueChange={(next) => setFrequency(next as "WEEKLY" | "MONTHLY")}
+                  onValueChange={(next) => setFrequency(next as "DAILY" | "WEEKLY" | "MONTHLY")}
                 >
                   <SelectTrigger {...control} className="w-full">
                     <SelectValue />

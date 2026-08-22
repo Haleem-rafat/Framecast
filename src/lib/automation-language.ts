@@ -168,7 +168,7 @@ export function describeTimeZone(timeZone: string): string {
 }
 
 export interface CadenceParts {
-  frequency: "WEEKLY" | "MONTHLY";
+  frequency: "DAILY" | "WEEKLY" | "MONTHLY";
   /** 0 = Sunday … 6 = Saturday. Set for WEEKLY. */
   dayOfWeek: number | null;
   /** 1–31. Set for MONTHLY. */

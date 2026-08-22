@@ -171,6 +171,7 @@ const CADENCE = {
  */
 const NO_AUTO_PUBLISH = {
   autoPublish: false,
+  autoShorts: false,
   publishVisibility: "PRIVATE" as const,
 };
 

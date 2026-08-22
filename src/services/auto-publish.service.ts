@@ -3,6 +3,7 @@ import "server-only";
 import type { PublishVisibility } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { shortsService } from "@/services/shorts.service";
 import {
   hoursUntilQuotaReset,
   publishService,
@@ -422,6 +423,78 @@ export class AutoPublishService {
         nextRunAt: null,
       },
     });
+  }
+}
+
+/**
+ * Selects reels out of a video an automation just finished, when its schedule
+ * asked for them.
+ *
+ * ## Why this lives beside auto-publish rather than inside the pipeline
+ *
+ * It fires on the same *state* auto-publish does — a video an automation made
+ * has reached READY — and for the same reason: that is the first moment the
+ * work is possible, and there is no second moment worth waiting for. Bolting it
+ * onto `runPipeline` as a seventh stage would make a failed selection a failed
+ * *video*, which is exactly the property `shorts.service.ts` was built to
+ * avoid: it writes only to `Short`, so a short that fails to select leaves its
+ * parent READY and publishable.
+ *
+ * That property is why this swallows its own errors. A schedule asking for
+ * reels is asking for a bonus; it is not asking to have its video invalidated
+ * because a model call timed out. The failure is logged and the video stands.
+ *
+ * ## Why the schedule is found the same way `pauseParent` finds it
+ *
+ * A video reaches an automation through one of two links — a series with a
+ * schedule attached, or a `ScheduleRun` row naming the run that made it — and
+ * neither is always present. Copying that resolution rather than inventing a
+ * third one keeps "which automation made this video" a question with one
+ * answer.
+ */
+export async function selectShortsIfAsked(
+  videoId: string,
+  log: (message: string) => void,
+): Promise<void> {
+  const video = await prisma.video.findUnique({
+    where: { id: videoId },
+    select: { userId: true, seriesId: true },
+  });
+
+  if (!video) {
+    return;
+  }
+
+  const schedule = video.seriesId
+    ? await prisma.schedule.findFirst({
+        where: { seriesId: video.seriesId, deletedAt: null },
+        select: { autoShorts: true },
+      })
+    : await prisma.scheduleRun
+        .findFirst({
+          where: { videoId },
+          orderBy: { createdAt: "desc" },
+          select: { schedule: { select: { autoShorts: true } } },
+        })
+        .then((run) => run?.schedule ?? null);
+
+  // Not an automation's video, or an automation that did not ask. Both are the
+  // ordinary case and neither is worth a line in the log.
+  if (!schedule?.autoShorts) {
+    return;
+  }
+
+  try {
+    const shorts = await shortsService.generate(video.userId, videoId);
+
+    log(`selected ${shorts.length} reel(s) — the worker encodes them next`);
+  } catch (error) {
+    // Deliberately swallowed. See the note above: the video is finished and
+    // publishable, and a schedule asking for reels did not ask to lose it.
+    log(
+      `reel selection failed, leaving the video READY: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
   }
 }
 

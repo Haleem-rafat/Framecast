@@ -30,14 +30,14 @@
 
 /** The kinds of recurrence a schedule can express. Deliberately only two: see
  *  `schedule.service.ts` for why a cron expression was not the answer. */
-export type ScheduleFrequencyKind = "WEEKLY" | "MONTHLY";
+export type ScheduleFrequencyKind = "DAILY" | "WEEKLY" | "MONTHLY";
 
 export interface Recurrence {
   frequency: ScheduleFrequencyKind;
   /** 0 = Sunday … 6 = Saturday, matching `Date.prototype.getUTCDay`. Required
-   *  for WEEKLY, ignored for MONTHLY. */
+   *  for WEEKLY, ignored for MONTHLY and DAILY. */
   dayOfWeek: number | null;
-  /** 1–31. Required for MONTHLY, ignored for WEEKLY. See `nextOccurrence` for
+  /** 1–31. Required for MONTHLY, ignored for WEEKLY and DAILY. See `nextOccurrence` for
    *  what happens to the 31st in February. */
   dayOfMonth: number | null;
   /** Local wall-clock time in `timeZone`, never UTC. */
@@ -268,6 +268,30 @@ export function nextOccurrence(recurrence: Recurrence, after: Date): Date {
   const { timeZone, hour, minute } = recurrence;
   const from = zonedWallClock(after, timeZone);
 
+  if (recurrence.frequency === "DAILY") {
+    // Today's occurrence if it is still ahead, otherwise tomorrow's. Walked as
+    // calendar days for the reason the whole file exists: adding 24 hours to an
+    // instant drifts an hour twice a year, and a schedule set for 06:00 must
+    // stay at 06:00 through both boundaries.
+    //
+    // Three candidates rather than two. On a spring-forward day the wall clock
+    // in the skipped hour does not exist locally and `wallClockToInstant` has
+    // to resolve it somewhere, which can land on an instant that is not
+    // strictly after `after`. The third day is slack for that case and costs
+    // nothing in the ordinary one, where the loop returns on the first or
+    // second candidate.
+    for (let delta = 0; delta <= 2; delta++) {
+      const date = addCalendarDays(from.year, from.month, from.day, delta);
+      const candidate = wallClockToInstant({ ...date, hour, minute }, timeZone);
+
+      if (candidate.getTime() > after.getTime()) {
+        return candidate;
+      }
+    }
+
+    throw new Error("Could not find the next daily occurrence.");
+  }
+
   if (recurrence.frequency === "WEEKLY") {
     const target = recurrence.dayOfWeek;
 
@@ -448,6 +472,10 @@ export function describeRecurrence(recurrence: Recurrence): string {
   const time = `${String(recurrence.hour).padStart(2, "0")}:${String(
     recurrence.minute,
   ).padStart(2, "0")}`;
+
+  if (recurrence.frequency === "DAILY") {
+    return `Every day at ${time} (${recurrence.timeZone})`;
+  }
 
   if (recurrence.frequency === "WEEKLY") {
     const day = WEEKDAY_NAMES[recurrence.dayOfWeek ?? 0];

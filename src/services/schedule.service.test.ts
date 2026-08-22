@@ -851,6 +851,7 @@ describe("scheduleService — operator actions", () => {
       minute: 0,
       timeZone: "UTC",
       autoPublish: false,
+      autoShorts: false,
       publishVisibility: "PRIVATE" as const,
       variables: {},
     });
@@ -873,6 +874,7 @@ describe("scheduleService — operator actions", () => {
       minute: 30,
       timeZone: "Europe/London",
       autoPublish: false,
+      autoShorts: false,
       publishVisibility: "PRIVATE" as const,
       variables: {},
     });

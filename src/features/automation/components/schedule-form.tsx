@@ -120,7 +120,7 @@ export function ScheduleForm({
   const [projectId, setProjectId] = useState(
     schedule?.projectId ?? projects[0]?.id ?? "",
   );
-  const [frequency, setFrequency] = useState<"WEEKLY" | "MONTHLY">(
+  const [frequency, setFrequency] = useState<"DAILY" | "WEEKLY" | "MONTHLY">(
     schedule?.frequency ?? "WEEKLY",
   );
   const [dayOfWeek, setDayOfWeek] = useState(String(schedule?.dayOfWeek ?? 1));
@@ -350,7 +350,7 @@ export function ScheduleForm({
               {(control) => (
                 <Select
                   value={frequency}
-                  onValueChange={(next) => setFrequency(next as "WEEKLY" | "MONTHLY")}
+                  onValueChange={(next) => setFrequency(next as "DAILY" | "WEEKLY" | "MONTHLY")}
                 >
                   <SelectTrigger {...control} className="w-full">
                     <SelectValue />

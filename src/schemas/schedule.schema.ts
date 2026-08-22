@@ -62,7 +62,7 @@ const timeZoneSchema = z
  * one day accept an hour of 24 that a schedule refuses.
  */
 export const recurrenceShape = {
-  frequency: z.enum(["WEEKLY", "MONTHLY"]),
+  frequency: z.enum(["DAILY", "WEEKLY", "MONTHLY"]),
   /** 0 = Sunday … 6 = Saturday, matching `Date.prototype.getUTCDay` and
    *  `WEEKDAY_NAMES`. Required for WEEKLY, ignored otherwise. */
   dayOfWeek: z.number().int().min(0).max(6).nullable().default(null),
@@ -104,6 +104,16 @@ export const scheduleVariablesSchema = z
 export const autoPublishShape = {
   autoPublish: z.boolean().default(false),
   publishVisibility: z.enum(["PUBLIC", "UNLISTED", "PRIVATE"]).default("PRIVATE"),
+  /**
+   * Whether reaching READY also cuts reels out of the video.
+   *
+   * Defaulted false like its neighbours, and for a milder version of the same
+   * reason: selection spends a model call rather than reaching a channel, so
+   * the cost of it being wrong is money rather than something published that
+   * cannot be unpublished. Still off by default — nothing should start spending
+   * because a column was added.
+   */
+  autoShorts: z.boolean().default(false),
 } as const;
 
 const baseScheduleSchema = z.object({
@@ -125,7 +135,7 @@ const baseScheduleSchema = z.object({
  */
 export function requireMatchingDay(
   value: {
-    frequency: "WEEKLY" | "MONTHLY";
+    frequency: "DAILY" | "WEEKLY" | "MONTHLY";
     dayOfWeek: number | null;
     dayOfMonth: number | null;
   },

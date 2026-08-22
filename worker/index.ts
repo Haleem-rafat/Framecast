@@ -120,6 +120,7 @@ async function main(): Promise<void> {
   const { prisma } = await import("@/lib/prisma");
   const { jobService, HEARTBEAT_SECONDS } = await import("@/services/job.service");
   const { runPipeline, PipelineCancelledError } = await import("@/services/pipeline-runner");
+  const { selectShortsIfAsked } = await import("@/services/auto-publish.service");
   const { scheduleService } = await import("@/services/schedule.service");
   const { releaseService } = await import("@/services/release.service");
   const { autoPublishService } = await import("@/services/auto-publish.service");
@@ -220,6 +221,14 @@ async function main(): Promise<void> {
       await stopHeartbeat();
       await jobService.release(videoId, "succeeded");
       log(`released video ${videoId}: READY`);
+
+      // After the release, never before, and outside the try that owns the
+      // render. The video is finished and publishable at this point; reel
+      // selection is a bonus a schedule asked for, and it must not be able to
+      // turn a finished video into a failed one. `selectShortsIfAsked` swallows
+      // its own errors for the same reason and returns without a word when the
+      // video is not an automation's or the automation did not ask.
+      await selectShortsIfAsked(videoId, (message) => log(`${videoId}    ${message}`));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // `cancelRequested` (set by the heartbeat above) is what tells a

@@ -171,6 +171,7 @@ async function main(): Promise<void> {
         // cadences in bulk is the last place that should decide, on somebody's
         // behalf, that their channel starts publishing without them.
         autoPublish: false,
+      autoShorts: false,
         publishVisibility: "PRIVATE",
         variables,
         topics: [],
