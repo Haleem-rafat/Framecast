@@ -43,6 +43,7 @@ import {
   doodleSectionCount,
 } from "@/lib/doodle-cadence";
 import { FOOTAGE_STYLES, stylePicksArtStyle } from "@/lib/footage-styles";
+import { STYLE_PRESETS } from "@/lib/style-presets";
 import {
   MADE_FOR_KIDS_CONSEQUENCES,
   MADE_FOR_KIDS_GUIDANCE_URL,
@@ -105,6 +106,7 @@ function toDefaultValues(branding: ChannelBranding): BrandingFormValues {
     // real selectable value — a `Select` value has to be a string. The schema
     // coerces it back to null on the way out.
     artStyle: branding.artStyle ?? "",
+    stylePreset: branding.stylePreset ?? "",
     // Same "" rather than null as artStyle above, and for the same reason: a
     // number input's value has to be a string, and the schema coerces the
     // empty box back to null on the way out.
@@ -319,6 +321,52 @@ export function BrandingForm({
         ) : null}
 
         <TabsContent value="look" forceMount className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Style</CardTitle>
+              <CardDescription>
+                A named look, set in one choice. It fills in the footage, the art
+                style, the cutting speed, the captions and the script format
+                together — and it is a starting point rather than a lock:
+                anything you change below this wins over it, and nothing you have
+                already set is cleared by picking one.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Controller
+                control={control}
+                name="stylePreset"
+                render={({ field }) => (
+                  <FormField
+                    name="stylePreset"
+                    label="Preset"
+                    description={
+                      STYLE_PRESETS.find((preset) => preset.id === field.value)
+                        ?.description ??
+                      "Nothing chosen — this channel uses whatever the settings below say."
+                    }
+                    error={errors.stylePreset?.message}
+                  >
+                    {(controlProps) => (
+                      <StylePicker
+                        {...controlProps}
+                        name="stylePreset"
+                        options={STYLE_PRESETS.map((preset) => ({
+                          value: preset.id,
+                          label: preset.name,
+                          description: preset.description,
+                        }))}
+                        value={field.value || null}
+                        onChange={field.onChange}
+                        sampleSrc={(id) => `/style-presets/${id}.webp`}
+                      />
+                    )}
+                  </FormField>
+                )}
+              />
+            </CardContent>
+          </Card>
+
           <LookCard control={control} register={register} errors={errors} />
         </TabsContent>
 
