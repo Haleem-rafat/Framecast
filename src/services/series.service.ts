@@ -212,11 +212,15 @@ function cadenceOf(input: CreateSeriesInput | UpdateSeriesInput) {
     hour: input.hour,
     minute: input.minute,
     timeZone: input.timeZone,
-    // A series has no reel setting of its own yet, and the schedule's column is
-    // the one `selectShortsIfAsked` reads for series-owned videos too. False
-    // rather than omitted so the shape stays complete and a later `Series.
-    // autoShorts` has an obvious place to be threaded through.
-    autoShorts: false,
+    // Passed through rather than hardcoded. `autoShorts` rides in on
+    // `autoPublishShape`, so the series form already collects it, and a value
+    // the form gathers and the service drops is the dead setting
+    // `schedule.service.ts` refuses to write for autoPublish, arriving through
+    // a different door. Unlike autoPublish there is no series-level column that
+    // would win instead — `selectShortsIfAsked` reads the schedule for
+    // series-owned videos too — so the schedule's column is simply where this
+    // one lives.
+    autoShorts: input.autoShorts,
   };
 }
 
