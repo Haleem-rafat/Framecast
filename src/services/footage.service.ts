@@ -1031,14 +1031,24 @@ export class FootageService {
         .filter((externalId): externalId is string => externalId !== null),
     );
 
+    // What this style holds constant, in its own words. A three-way choice
+    // rather than illustrated-or-not, because DOODLE arrived holding a third
+    // thing: not a character (ILLUSTRATED), not a grade and lens (CINEMATIC),
+    // but a line. Left on the two-way ternary it described itself as
+    // cinematic, which is a log line that would send somebody reading it
+    // looking for a photographic style that was never running.
+    const holds = illustrated
+      ? "from this channel's character sheet"
+      : kind === "DOODLE"
+        ? "in one marker line on paper, cut hard between drawings"
+        : "in one fixed grade and lens, a different subject each time";
+
     onProgress(
-      `footage style ${kind}${style && illustrated ? ` (${style.name})` : ""} — ` +
+      `footage style ${kind}${style && drawnInNamedStyle ? ` (${style.name})` : ""} — ` +
         `${beats.length} story beat(s) from ${anchored.length} section(s), ` +
         `${Math.round(durationSeconds / beats.length)}s of picture each, drawn with ` +
         `${env.AI_ILLUSTRATION_MODEL} ` +
-        (illustrated
-          ? "from this channel's character sheet"
-          : "in one fixed grade and lens, a different subject each time") +
+        holds +
         (mixed
           ? `, and stock footage for the ${
               beats.filter((_beat, index) => wantsMotion(index)).length

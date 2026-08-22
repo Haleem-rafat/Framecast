@@ -256,3 +256,81 @@ describe("GatewayImageProvider", () => {
     ).rejects.toMatchObject({ retryable: false });
   });
 });
+
+describe("GatewayImageProvider — what a failure tells the operator", () => {
+  /** The shape a Vercel AI Gateway budget refusal actually arrives in: the
+   *  human sentence one level down, the JSON body one level below that. */
+  const budgetRefusal = () => {
+    const inner = Object.assign(new Error('{"error":{"message":"Team budget exceeded. Current spend: $20.07, limit: $20.00.","type":"quota_for_entity_exceeded"}}'), {
+      statusCode: 402,
+    });
+
+    return Object.assign(
+      new Error(
+        "Team budget exceeded. Current spend: $20.07, limit: $20.00. Please contact your administrator to increase the budget.",
+      ),
+      { statusCode: 402, cause: inner },
+    );
+  };
+
+  // The failure that prompted this: an operator saw "the model provider failed
+  // to generate an image", read it as a glitch, and retried two hours later
+  // against a hard billing cap that no retry could clear.
+  it("says why, rather than only that something failed", async () => {
+    const generate = vi.fn().mockRejectedValue(budgetRefusal());
+
+    await expect(
+      new GatewayImageProvider(generate).generate({ prompt: "x", aspectRatio: "16:9" }),
+    ).rejects.toThrow(/budget exceeded/i);
+  });
+
+  it("says a retry will not help, so nobody spends two hours finding out", async () => {
+    const generate = vi.fn().mockRejectedValue(budgetRefusal());
+
+    await expect(
+      new GatewayImageProvider(generate).generate({ prompt: "x", aspectRatio: "16:9" }),
+    ).rejects.toThrow(/retry/i);
+  });
+
+  it("marks a billing refusal unretryable", async () => {
+    const generate = vi.fn().mockRejectedValue(budgetRefusal());
+
+    await new GatewayImageProvider(generate)
+      .generate({ prompt: "x", aspectRatio: "16:9" })
+      .catch((error: { retryable?: boolean }) => {
+        expect(error.retryable).toBe(false);
+      });
+  });
+
+  // A rate limit IS worth retrying, and must not be described as permanent.
+  it("still treats a rate limit as retryable", async () => {
+    const generate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("Too many requests"), { statusCode: 429 }));
+
+    await new GatewayImageProvider(generate)
+      .generate({ prompt: "x", aspectRatio: "16:9" })
+      .catch((error: { retryable?: boolean; message: string }) => {
+        expect(error.retryable).toBe(true);
+        expect(error.message).not.toMatch(/will not help/i);
+      });
+  });
+
+  // A JSON body is not a sentence. Preferring it would put a brace and a
+  // schema in front of the operator instead of the reason.
+  it("prefers the human sentence over the JSON body it wraps", async () => {
+    const generate = vi.fn().mockRejectedValue(budgetRefusal());
+
+    await expect(
+      new GatewayImageProvider(generate).generate({ prompt: "x", aspectRatio: "16:9" }),
+    ).rejects.not.toThrow(/^\{/);
+  });
+
+  it("falls back to the plain message when the cause carries nothing useful", async () => {
+    const generate = vi.fn().mockRejectedValue(new Error(""));
+
+    await expect(
+      new GatewayImageProvider(generate).generate({ prompt: "x", aspectRatio: "16:9" }),
+    ).rejects.toThrow(/failed to generate an image/i);
+  });
+});

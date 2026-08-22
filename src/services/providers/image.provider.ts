@@ -25,6 +25,70 @@ function isRetryable(error: unknown): boolean {
   return status === 429 || (status !== undefined && status >= 500);
 }
 
+/** How far down a cause chain to look. The gateway wraps twice — a named
+ *  error over the SDK's `AI_APICallError` over the provider's JSON body — and
+ *  a bound stops a cyclic `cause` from spinning. */
+const MAX_CAUSE_DEPTH = 5;
+
+/**
+ * What actually went wrong, in the words the provider used.
+ *
+ * The catch below used to throw one sentence — "The model provider failed to
+ * generate an image." — for every failure it could have. That sentence is true
+ * of a rate limit, a content refusal and an exhausted billing account alike,
+ * and only one of those is worth retrying. An operator read it as a glitch and
+ * retried a hard `402 Team budget exceeded` two hours later, against a cap no
+ * retry could clear, and the reason was sitting one level down the cause chain
+ * the whole time.
+ *
+ * The *human sentence* is preferred over the JSON body it wraps. Both carry the
+ * same fact, but one of them puts a brace and a schema in front of the person
+ * reading it — so a message that starts with `{` is skipped in favour of the
+ * next one down, and only used if nothing better exists.
+ */
+function describeFailure(cause: unknown): string {
+  let status: number | undefined;
+  let sentence: string | undefined;
+  let fallback: string | undefined;
+  let current: unknown = cause;
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth += 1) {
+    const error = current as { message?: unknown; statusCode?: unknown; cause?: unknown };
+
+    if (status === undefined && typeof error.statusCode === "number") {
+      status = error.statusCode;
+    }
+
+    const message = typeof error.message === "string" ? error.message.trim() : "";
+
+    if (message) {
+      if (message.startsWith("{")) {
+        fallback ??= message;
+      } else {
+        sentence ??= message;
+      }
+    }
+
+    current = error.cause;
+  }
+
+  const detail = sentence ?? fallback;
+
+  if (!detail) {
+    return "The model provider failed to generate an image.";
+  }
+
+  // Said out loud only when it is true. A rate limit clears on its own and a
+  // 5xx may never recur, so telling an operator to stop retrying those would
+  // send them looking for a problem that is not theirs.
+  const permanent = status !== undefined && !isRetryable(cause);
+  const prefix = permanent
+    ? "The image model refused the request, and a retry will not help"
+    : "The model provider failed to generate an image";
+
+  return `${prefix}: ${detail}`;
+}
+
 /**
  * Generates thumbnails, channel logos and story illustrations through the same
  * Vercel AI Gateway that GatewayProvider (gateway.provider.ts) routes scripts
@@ -106,12 +170,9 @@ export class GatewayImageProvider implements ImageProvider {
           : {}),
       };
     } catch (cause) {
-      throw new ProviderError(
-        "GATEWAY",
-        "The model provider failed to generate an image.",
-        isRetryable(cause),
-        { cause },
-      );
+      throw new ProviderError("GATEWAY", describeFailure(cause), isRetryable(cause), {
+        cause,
+      });
     }
   }
 }
