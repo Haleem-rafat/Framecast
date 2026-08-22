@@ -96,6 +96,8 @@ export interface AutomationEntry {
    *  sentence — by every path that stops one on its own. `describeHealth` reads
    *  exactly this to tell the two apart. */
   pausedReason: string | null;
+  /** Whether a human stopped it. See `describeHealth`. */
+  pausedByOperator: boolean;
   consecutiveFailures: number;
   /**
    * The rule as a finished sentence: "Every Monday at 6:00 AM, Cairo time".
@@ -198,6 +200,7 @@ const loadSeries: AutomationSource = async (userId) => {
         select: {
           status: true,
           pausedReason: true,
+          pausedByOperator: true,
           consecutiveFailures: true,
           frequency: true,
           dayOfWeek: true,
@@ -261,6 +264,7 @@ const loadSeries: AutomationSource = async (userId) => {
         href: `/automation/series/${row.id}`,
         status: schedule.status,
         pausedReason: schedule.pausedReason,
+        pausedByOperator: schedule.pausedByOperator,
         consecutiveFailures: schedule.consecutiveFailures,
         cadence: describeCadence(schedule),
         timeZone: schedule.timeZone,
@@ -307,6 +311,7 @@ const loadTopicQueues: AutomationSource = async (userId) => {
       name: true,
       status: true,
       pausedReason: true,
+      pausedByOperator: true,
       consecutiveFailures: true,
       frequency: true,
       dayOfWeek: true,
@@ -366,6 +371,7 @@ const loadTopicQueues: AutomationSource = async (userId) => {
     href: `/automation/schedules/${row.id}`,
     status: row.status,
     pausedReason: row.pausedReason,
+    pausedByOperator: row.pausedByOperator,
     consecutiveFailures: row.consecutiveFailures,
     cadence: describeCadence(row),
     timeZone: row.timeZone,
@@ -409,6 +415,7 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
       id: true,
       status: true,
       pausedReason: true,
+      pausedByOperator: true,
       consecutiveFailures: true,
       slotMinutes: true,
       timeZone: true,
@@ -480,6 +487,7 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
     href: `/automation/releases/${row.id}`,
     status: row.status,
     pausedReason: row.pausedReason,
+    pausedByOperator: row.pausedByOperator,
     consecutiveFailures: row.consecutiveFailures,
     cadence: describeSlots({ slotMinutes: row.slotMinutes, timeZone: row.timeZone }),
     timeZone: row.timeZone,

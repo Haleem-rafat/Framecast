@@ -636,7 +636,10 @@ export class ScheduleService {
 
     await prisma.schedule.updateMany({
       where: { id, userId, deletedAt: null },
-      data: { status: "PAUSED", pausedReason: reason ?? null },
+      // `pausedByOperator` is what this method IS. The self-pause paths below
+      // leave it false, which is how the canvas tells "you stopped this" from
+      // "it gave up" without reading the reason and guessing.
+      data: { status: "PAUSED", pausedReason: reason ?? null, pausedByOperator: true },
     });
   }
 
@@ -669,6 +672,9 @@ export class ScheduleService {
       data: {
         status: "ACTIVE",
         pausedReason: null,
+        // Cleared with the reason. Left set, a resumed automation that later
+        // paused itself would still claim a human had done it.
+        pausedByOperator: false,
         // A schedule that paused itself after repeated failures gets a clean
         // slate: the operator resuming it is asserting they fixed the cause,
         // and leaving the counter at three would pause it again on the next

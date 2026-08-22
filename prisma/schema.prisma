@@ -1722,7 +1722,21 @@ model Schedule {
   /// ACTIVE schedule and for one the operator paused by hand without comment.
   pausedReason String?
 
-  frequency  ScheduleFrequency
+  /// Whether a human stopped it, as opposed to it stopping itself.
+  ///
+  /// Recorded outright because inferring it did not survive contact. The label
+  /// used to read the actor off `pausedReason` — empty meant the operator,
+  /// present meant a self-pause — which held only while nothing paused
+  /// deliberately AND explained why. Setting up the daily cadence did both, and
+  /// six automations a human had just paused all reported that they had given
+  /// up. See `describeHealth` in lib/automation-language.ts.
+  ///
+  /// False on every row written before this column, which is why the fallback
+  /// there still reads reasonless-and-false as an operator pause: that is what
+  /// those rows meant when they were written.
+  pausedByOperator Boolean @default(false)
+
+    frequency  ScheduleFrequency
   /// 0 = Sunday … 6 = Saturday. Set for WEEKLY, null for MONTHLY.
   dayOfWeek  Int?
   /// 1–31. Set for MONTHLY, null for WEEKLY. A day the month does not have
@@ -2164,7 +2178,21 @@ model ReleaseCadence {
   /// `Schedule.pausedReason` worth knowing.
   pausedReason String?
 
-  /// Times of day, as minutes past local midnight, ascending and distinct —
+  /// Whether a human stopped it, as opposed to it stopping itself.
+  ///
+  /// Recorded outright because inferring it did not survive contact. The label
+  /// used to read the actor off `pausedReason` — empty meant the operator,
+  /// present meant a self-pause — which held only while nothing paused
+  /// deliberately AND explained why. Setting up the daily cadence did both, and
+  /// six automations a human had just paused all reported that they had given
+  /// up. See `describeHealth` in lib/automation-language.ts.
+  ///
+  /// False on every row written before this column, which is why the fallback
+  /// there still reads reasonless-and-false as an operator pause: that is what
+  /// those rows meant when they were written.
+  pausedByOperator Boolean @default(false)
+
+    /// Times of day, as minutes past local midnight, ascending and distinct —
   /// `[480, 840, 1200]` is 08:00, 14:00 and 20:00.
   ///
   /// A scalar list rather than a child table because a slot has no state of

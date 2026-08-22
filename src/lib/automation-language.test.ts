@@ -210,3 +210,64 @@ describe("countOf", () => {
     expect(countOf(2, "topic")).toBe("2 topics");
   });
 });
+
+describe("describeHealth — who stopped it", () => {
+  // The bug this closes: the label used to infer the actor from whether a
+  // reason existed, so an operator pause carrying an explanation read as the
+  // system giving up. Setting up the daily cadence paused six automations with
+  // a note and every one of them said "Stopped on its own".
+  it("says the operator paused it even when they explained why", () => {
+    expect(
+      describeHealth({
+        status: "PAUSED",
+        pausedReason: "Created paused — review a week of output first.",
+        pausedByOperator: true,
+        consecutiveFailures: 0,
+      }),
+    ).toMatchObject({
+      label: "Paused by you",
+      detail: "Created paused — review a week of output first.",
+    });
+  });
+
+  it("still says paused by you when they left no note", () => {
+    expect(
+      describeHealth({
+        status: "PAUSED",
+        pausedReason: null,
+        pausedByOperator: true,
+        consecutiveFailures: 0,
+      }),
+    ).toMatchObject({ label: "Paused by you" });
+  });
+
+  // The self-pause paths — repeated failures, an empty queue, a deleted
+  // project — must keep reading as what they are.
+  it("still reports a self-pause as one", () => {
+    expect(
+      describeHealth({
+        status: "PAUSED",
+        pausedReason: "Paused after three failed uploads in a row.",
+        pausedByOperator: false,
+        consecutiveFailures: 3,
+      }),
+    ).toMatchObject({
+      label: "Stopped on its own",
+      detail: "Paused after three failed uploads in a row.",
+    });
+  });
+
+  // Rows that predate the column: false with no reason used to mean "the
+  // operator paused by hand", and must keep meaning that rather than becoming
+  // a self-pause with nothing to show for it.
+  it("reads a reasonless legacy pause as the operator's", () => {
+    expect(
+      describeHealth({
+        status: "PAUSED",
+        pausedReason: null,
+        pausedByOperator: false,
+        consecutiveFailures: 0,
+      }),
+    ).toMatchObject({ label: "Paused by you" });
+  });
+});

@@ -264,6 +264,18 @@ export interface AutomationHealth {
  * recurrence — writes a sentence into it. So the presence of a reason *is* the
  * signal, and no new column was needed to tell them apart.
  *
+ * That held until something paused an automation deliberately AND said why.
+ * Setting up the daily cadence did exactly that — six automations paused on
+ * purpose, each carrying a sentence explaining the decision — and every one of
+ * them reported that it had given up. An inference that is only correct while
+ * nobody writes a helpful message is not a signal, it is a coincidence, so
+ * `pausedByOperator` now records the actor outright.
+ *
+ * The old inference survives as the fallback for rows written before the
+ * column: `pausedByOperator: false` with no reason still means the operator
+ * paused by hand, because that is what those rows meant when they were
+ * written. Only false-with-a-reason is a self-pause.
+ *
  * The warning branch is the one that catches the fault before it stops
  * anything: a running automation with failures behind it is still running, and
  * saying "one more and it stops itself" is worth more than the notice that
@@ -272,10 +284,14 @@ export interface AutomationHealth {
 export function describeHealth(automation: {
   status: "ACTIVE" | "PAUSED";
   pausedReason: string | null;
+  /** Whether a human stopped it. Optional so a caller that has not been
+   *  updated still compiles, and absent reads as false — which lands on the
+   *  legacy fallback below rather than on a wrong answer. */
+  pausedByOperator?: boolean;
   consecutiveFailures: number;
 }): AutomationHealth {
   if (automation.status === "PAUSED") {
-    if (automation.pausedReason) {
+    if (automation.pausedReason && !automation.pausedByOperator) {
       return {
         tone: "stopped",
         label: "Stopped on its own",
@@ -287,7 +303,10 @@ export function describeHealth(automation: {
     return {
       tone: "paused",
       label: "Paused by you",
-      detail: "It will not make anything until you resume it.",
+      // The operator's own note when there is one. "It will not make anything
+      // until you resume it" is what to say when nobody wrote a reason, not
+      // something to say instead of one they did write.
+      detail: automation.pausedReason ?? "It will not make anything until you resume it.",
       rank: 2,
     };
   }
