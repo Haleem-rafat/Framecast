@@ -212,6 +212,16 @@ const FORMAT_STYLE_DEFAULTS: Partial<Record<FootageStyle, Partial<VideoStyle>>> 
       enabled: false,
       durationSeconds: DEFAULT_STYLE.transitions.durationSeconds,
     },
+    // One to three words at a time, landing on the moment each is spoken, with
+    // the stressed word coloured — rather than a whole line appearing and
+    // disappearing together.
+    //
+    // `srt` is the right default for a four-minute landscape video watched on a
+    // laptop, where a full line is read in one glance. It is the wrong one for
+    // a vertical short held at arm's length, where the line is the width of the
+    // frame and the viewer is scrolling. This format cuts every five to twenty
+    // seconds and is built for that second case.
+    captionMode: "kinetic",
   },
 };
 

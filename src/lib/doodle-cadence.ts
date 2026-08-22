@@ -129,11 +129,87 @@ export function doodleCadenceInstruction(sectionCount: number): string {
  * `beatDoodlePrompt`'s no-text rule exists to prevent, arriving from inside.
  */
 export function doodleCues(sections: readonly ScriptSection[]): ScriptCue[] {
-  return sections.map((section) => ({
-    anchor: extractAnchor(section.text),
-    cue: readShotTag(section.cue).cue,
-    shot: "still" as const,
-  }));
+  return sections.map((section) => {
+    const stressed = stressWord(section.text);
+
+    return {
+      anchor: extractAnchor(section.text),
+      cue: readShotTag(section.cue).cue,
+      shot: "still" as const,
+      // Omitted rather than an empty array when there is nothing worth
+      // colouring: `CueMeta.emphasis` is optional, and an empty array reads as
+      // "the writer considered this and chose none" rather than "nobody asked".
+      ...(stressed ? { emphasis: [stressed] } : {}),
+    };
+  });
+}
+
+/**
+ * The shortest word a caption is worth colouring.
+ *
+ * Under six characters is almost always a function word — "then", "over",
+ * "with" — and a highlight on one of those reads as a rendering fault rather
+ * than as stress. Six also happens to exclude every entry in `UNSTRESSED`
+ * below that is not already excluded by length, which is why that list is as
+ * short as it is.
+ */
+const STRESS_MIN_LENGTH = 6;
+
+/** Long words that still carry no stress. Not a general stopword list — only
+ *  the ones long enough to pass the length test above and common enough to be
+ *  picked repeatedly across a script. */
+const UNSTRESSED = new Set([
+  "another",
+  "because",
+  "before",
+  "between",
+  "however",
+  "nothing",
+  "really",
+  "should",
+  "something",
+  "through",
+  "without",
+]);
+
+/**
+ * The one word in a section a kinetic caption colours.
+ *
+ * Derived rather than asked for, and the reason is narration safety. Only the
+ * insight format's schema carries an `emphasis` field; every other format
+ * returns `{ text, cue }`, so asking a model to mark a word would mean putting
+ * a marker in one of those two strings. `text` is sent to ElevenLabs verbatim —
+ * an asterisk there is a character the voice reads. `cue` is safe but is the
+ * tagging pattern this format already abandoned once, when the model returned
+ * forty-three sections and tagged none of them.
+ *
+ * So: the longest content word wins. That picks a *plausible* stress rather
+ * than the *meaningful* one — a human would sometimes choose differently — but
+ * it is deterministic, costs nothing, needs no cooperation from the model, and
+ * degrades to no highlight rather than to a wrong cadence. The captions still
+ * chunk and still land on the beat without it, which is most of the effect.
+ *
+ * Ties go to the earliest word, so re-running on the same script colours the
+ * same word — `planStoryBeats` is deterministic for the same reason.
+ */
+function stressWord(text: string): string | undefined {
+  let best: string | undefined;
+
+  for (const raw of text.split(/\s+/)) {
+    // Punctuation is stripped from the ends only: `kinetic-captions.ts` matches
+    // through punctuation, and a hyphenated word is one word to both of us.
+    const word = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+
+    if (word.length < STRESS_MIN_LENGTH || UNSTRESSED.has(word.toLowerCase())) {
+      continue;
+    }
+
+    if (!best || word.length > best.length) {
+      best = word;
+    }
+  }
+
+  return best;
 }
 
 /**

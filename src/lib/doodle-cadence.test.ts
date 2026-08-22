@@ -130,3 +130,42 @@ describe("planDoodleGeneration", () => {
     expect(plan({ declaredMinutes: "0" })?.ok).toBe(false);
   });
 });
+
+describe("doodleCues — the word the captions colour", () => {
+  const section = (text: string) => ({ text, cue: "a figure at a desk" });
+
+  // Kinetic captions colour one word per phrase. Only the insight format's
+  // schema carries an emphasis field, so a doodle section's is derived.
+  it("picks a content word out of the section", () => {
+    const [cue] = doodleCues([section("He forgot the subscription for three years.")]);
+
+    expect(cue.emphasis).toEqual(["subscription"]);
+  });
+
+  // Short function words carry no stress and colouring one reads as a bug.
+  it("never picks a short or common word", () => {
+    const [cue] = doodleCues([section("And then it was over and he was done.")]);
+
+    expect(cue.emphasis).toBeUndefined();
+  });
+
+  it("ignores punctuation when choosing and when reporting", () => {
+    const [cue] = doodleCues([section("Nobody noticed the overdraft, not once.")]);
+
+    expect(cue.emphasis).toEqual(["overdraft"]);
+  });
+
+  // The captions match case-insensitively, so the stored word keeps the
+  // section's own casing rather than being upper-cased here.
+  it("keeps the word as it was written", () => {
+    const [cue] = doodleCues([section("The Chancellor said nothing at all.")]);
+
+    expect(cue.emphasis).toEqual(["Chancellor"]);
+  });
+
+  it("says nothing rather than guessing on an empty section", () => {
+    const [cue] = doodleCues([section("")]);
+
+    expect(cue.emphasis).toBeUndefined();
+  });
+});

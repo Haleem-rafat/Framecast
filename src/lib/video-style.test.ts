@@ -49,6 +49,13 @@ describe("styleBaseFor", () => {
     expect(styleBaseFor("DOODLE").transitions.enabled).toBe(false);
   });
 
+  // A whole line appearing at once is right for a laptop and wrong for a
+  // phone held at arm's length while scrolling.
+  it("gives a doodle channel kinetic captions", () => {
+    expect(styleBaseFor("DOODLE").captionMode).toBe("kinetic");
+    expect(styleBaseFor("ILLUSTRATED").captionMode).toBe("srt");
+  });
+
   it("leaves every other style panning as it always did", () => {
     expect(styleBaseFor("ILLUSTRATED").motion.enabled).toBe(true);
     expect(styleBaseFor("ILLUSTRATED").transitions.enabled).toBe(true);
@@ -66,7 +73,6 @@ describe("styleBaseFor", () => {
     expect(doodle.audio).toEqual(DEFAULT_STYLE.audio);
     expect(doodle.transitions.durationSeconds).toBe(DEFAULT_STYLE.transitions.durationSeconds);
     expect(doodle.voice).toEqual(DEFAULT_STYLE.voice);
-    expect(doodle.captionMode).toBe(DEFAULT_STYLE.captionMode);
     expect(doodle.motion.scale).toBe(DEFAULT_STYLE.motion.scale);
   });
 

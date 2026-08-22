@@ -95,24 +95,27 @@ export function StylePicker({
               className="sr-only"
             />
 
-            <div className="bg-muted relative aspect-[3/2] w-full">
-              {showSample ? (
+            {/* No frame at all when there is nothing to put in it. A row of
+              * five "No sample yet" tiles is not an empty state, it is a
+              * broken-looking page — and footage style is the one picker a
+              * sample could not honestly serve anyway: LIVE_ACTION is filmed
+              * stock and MIXED is both sources at once, so a single still
+              * would misrepresent them. Those options fall back to a compact
+              * text card, which is also shorter. */}
+            {showSample ? (
+              <div className="bg-muted relative aspect-[3/2] w-full">
                 <Image
                   src={src}
                   alt=""
                   fill
-                  sizes="(min-width: 1024px) 20rem, (min-width: 640px) 50vw, 100vw"
+                  sizes="(min-width: 1024px) 16rem, (min-width: 640px) 33vw, 100vw"
                   className="object-cover"
                   onError={() =>
                     setMissing((current) => new Set(current).add(option.value))
                   }
                 />
-              ) : (
-                <span className="text-muted-foreground flex h-full items-center justify-center text-xs">
-                  No sample yet
-                </span>
-              )}
-            </div>
+              </div>
+            ) : null}
 
             <div className="flex flex-col gap-1 p-3">
               <span className="text-sm font-medium">{option.label}</span>
