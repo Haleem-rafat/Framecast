@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { ART_STYLES } from "@/lib/art-styles";
 import { SCRIPT_STYLES } from "@/lib/script-styles";
-import { findStylePreset, STYLE_PRESETS, stylePresetLabel } from "@/lib/style-presets";
+import {
+  findStylePreset,
+  presetFieldValues,
+  STYLE_PRESETS,
+  stylePresetLabel,
+} from "@/lib/style-presets";
 import { stylePicksArtStyle } from "@/lib/footage-styles";
 
 /**
@@ -60,5 +65,45 @@ describe("STYLE_PRESETS", () => {
     expect(findStylePreset("marker-doodle")?.name).toBe("Marker doodle");
     expect(findStylePreset("nope")).toBeNull();
     expect(stylePresetLabel(null)).toBe("None chosen");
+  });
+});
+
+describe("presetFieldValues", () => {
+  // What the picker writes into the form when a card is clicked. A pure
+  // function so the *set of fields a preset touches* is pinned by a test
+  // rather than living only in a JSX callback — a preset that quietly stopped
+  // setting the cadence would otherwise be invisible until a video came out
+  // at the wrong speed.
+  it("fills every column the preset carries", () => {
+    const doodle = findStylePreset("marker-doodle");
+
+    expect(presetFieldValues(doodle!)).toEqual({
+      footageStyle: "DOODLE",
+      artStyle: "doodle-marker",
+      beatSeconds: "7",
+    });
+  });
+
+  // Absent is a real answer, not a gap: CINEMATIC reads no art style, and the
+  // insight format decides its own cadence. Both must clear the field rather
+  // than leave a stale value from whatever the channel was before.
+  it("clears the fields a preset deliberately does not carry", () => {
+    const insight = findStylePreset("insight-short");
+
+    expect(presetFieldValues(insight!)).toEqual({
+      footageStyle: "CINEMATIC",
+      artStyle: "",
+      beatSeconds: "",
+    });
+  });
+
+  // The form holds every control's value as a string.
+  it("returns strings, because that is what the controls hold", () => {
+    for (const preset of STYLE_PRESETS) {
+      const values = presetFieldValues(preset);
+
+      expect(typeof values.artStyle).toBe("string");
+      expect(typeof values.beatSeconds).toBe("string");
+    }
   });
 });

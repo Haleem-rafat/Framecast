@@ -129,3 +129,50 @@ export function findStylePreset(id: string | null | undefined): StylePreset | nu
 export function stylePresetLabel(id: string | null | undefined): string {
   return findStylePreset(id)?.name ?? "None chosen";
 }
+
+/**
+ * What the branding form writes into its other controls when a preset card is
+ * clicked.
+ *
+ * ── Why the picker applies these rather than the resolver ──────────────────
+ * A preset carries five things. Three of them — `footageStyle`, `artStyle` and
+ * `beatSeconds` — are columns of their own, and only `video` is merged at
+ * resolve time. Something has to put the other three somewhere, and the choice
+ * was between filling them in on selection and filling them in on read.
+ *
+ * On read is worse, and for a specific reason rather than a general one:
+ * `footageStyle` has a database default of `LIVE_ACTION`, so a channel's stored
+ * value is never *absent*. There is no way to tell "I chose live action" from
+ * "I never touched it", which means a resolver could not know whether it was
+ * allowed to override. It would either ignore the preset or silently overrule a
+ * real choice, and the presets are documented as a base somebody can walk away
+ * from rather than a mode that locks the screen.
+ *
+ * Applying on selection has neither problem. The operator sees the fields
+ * change, can change them back before saving, and the diff is visible in the
+ * unsaved-changes count — which is the whole difference between a preset that
+ * helps and a preset that does things behind your back.
+ *
+ * ── Why strings ────────────────────────────────────────────────────────────
+ * Every control in the form holds a string, and `updateBrandingSchema` coerces
+ * on the way out — `""` becomes null for both nullable fields. Returning `""`
+ * rather than `null` for an absent value is therefore not a fudge: it is the
+ * form's own representation of "nobody has chosen", and it CLEARS whatever the
+ * channel was set to before. That matters most for `artStyle`: a channel moving
+ * from a doodle preset to an insight one must not keep `doodle-marker` sitting
+ * in a column that `CINEMATIC` never reads and the screen no longer shows.
+ */
+export function presetFieldValues(preset: StylePreset): {
+  footageStyle: FootageStyle;
+  /** `ArtStyleId | ""` rather than `string`, because that is exactly what the
+   *  form control accepts — a wider type here would compile and then fail at
+   *  the `setValue` call site with nothing explaining why. */
+  artStyle: ArtStyleId | "";
+  beatSeconds: string;
+} {
+  return {
+    footageStyle: preset.footageStyle,
+    artStyle: preset.artStyle ?? "",
+    beatSeconds: preset.beatSeconds === undefined ? "" : String(preset.beatSeconds),
+  };
+}

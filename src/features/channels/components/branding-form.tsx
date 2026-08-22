@@ -43,7 +43,7 @@ import {
   doodleSectionCount,
 } from "@/lib/doodle-cadence";
 import { FOOTAGE_STYLES, stylePicksArtStyle } from "@/lib/footage-styles";
-import { STYLE_PRESETS } from "@/lib/style-presets";
+import { findStylePreset, presetFieldValues, STYLE_PRESETS } from "@/lib/style-presets";
 import {
   MADE_FOR_KIDS_CONSEQUENCES,
   MADE_FOR_KIDS_GUIDANCE_URL,
@@ -325,11 +325,12 @@ export function BrandingForm({
             <CardHeader>
               <CardTitle>Style</CardTitle>
               <CardDescription>
-                A named look, set in one choice. It fills in the footage, the art
-                style, the cutting speed, the captions and the script format
-                together — and it is a starting point rather than a lock:
-                anything you change below this wins over it, and nothing you have
-                already set is cleared by picking one.
+                A named look, set in one choice. Picking one fills in the
+                footage style, the art style and the cutting speed below, and
+                carries the captions and cutting with it. Nothing is hidden:
+                every field it sets stays editable, the changes show up in the
+                unsaved count, and you can change any of them back before
+                saving.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -357,7 +358,27 @@ export function BrandingForm({
                           description: preset.description,
                         }))}
                         value={field.value || null}
-                        onChange={field.onChange}
+                        onChange={(value) => {
+                          field.onChange(value);
+
+                          const preset = findStylePreset(value);
+
+                          if (!preset) {
+                            return;
+                          }
+
+                          // Written into the controls rather than applied on
+                          // read, so the operator sees what the preset did and
+                          // can change any of it back before saving. Marked
+                          // dirty so the count in the save bar includes them —
+                          // a preset that changed four fields silently and
+                          // reported one unsaved change would be lying.
+                          const values = presetFieldValues(preset);
+
+                          setValue("footageStyle", values.footageStyle, { shouldDirty: true });
+                          setValue("artStyle", values.artStyle, { shouldDirty: true });
+                          setValue("beatSeconds", values.beatSeconds, { shouldDirty: true });
+                        }}
                         sampleSrc={(id) => `/style-presets/${id}.webp`}
                       />
                     )}
