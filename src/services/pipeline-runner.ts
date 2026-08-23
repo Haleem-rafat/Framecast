@@ -1,6 +1,8 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import { canReuseRender } from "@/lib/render-reuse";
+import { statRenderFile } from "@/lib/render-storage";
 import { ensureBucket } from "@/lib/storage";
 import { footageService } from "@/services/footage.service";
 import { metadataService } from "@/services/metadata.service";
@@ -210,7 +212,17 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
       id: true,
       status: true,
       script: { select: { activeVersion: { select: { content: true } } } },
-      voiceOver: { select: { durationSeconds: true } },
+      // `updatedAt` is read by the render stage to decide whether an existing
+      // render still plays the current narration — see `canReuseRender`.
+      voiceOver: { select: { durationSeconds: true, updatedAt: true } },
+      // The most recent render, for the same decision. One row: an older
+      // success behind a newer failure is not a render anybody should reuse
+      // without knowing why the newer one failed.
+      renderJobs: {
+        select: { status: true, outputUrl: true, finishedAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
       // The operator's standing "re-narrate this in that voice" request. Read
       // here only to decide whether the narration stage may skip — which
       // voice it uses, and clearing the request afterwards, both belong to
@@ -310,6 +322,51 @@ export async function runPipeline(input: RunPipelineInput): Promise<void> {
   await runStage("render", onProgress, async (report) => {
     if (video.status === "READY") {
       return "video is already READY — skipped";
+    }
+
+    // The status is not enough on its own, and this is the case it misses.
+    // Everything that can fail AFTER a render — publishing, metadata, the
+    // thumbnail, an upload YouTube refused — leaves a finished MP4 on disk and
+    // the video marked FAILED. `jobService.retry` then resets the status to
+    // QUEUED, so the READY check above can never be true on a retry, and the
+    // pipeline re-encodes a video that was already encoded. For a
+    // generated-footage video that is minutes of CPU to reproduce a file that
+    // is sitting there.
+    //
+    // `canReuseRender` asks about the file rather than the status, and treats
+    // exactly one thing as invalidating: narration newer than the render. That
+    // is the same rule the rest of this function already follows — see the doc
+    // comment above on why a changed narration rebuilds everything downstream.
+    const latestRender = video.renderJobs.at(0) ?? null;
+
+    if (
+      canReuseRender({
+        latestRender,
+        narrationUpdatedAt: video.voiceOver?.updatedAt ?? null,
+        outputExists:
+          latestRender?.outputUrl !== null &&
+          latestRender?.outputUrl !== undefined &&
+          (await statRenderFile(latestRender.outputUrl)) !== null,
+      })
+    ) {
+      // Back to READY, because that is what the file on disk means. The retry
+      // that brought us here was for whatever failed after the render, and
+      // that step runs next.
+      await prisma.video.updateMany({
+        where: { id: videoId, userId, deletedAt: null },
+        data: { status: "READY" },
+      });
+
+      await prisma.videoStatusEvent.create({
+        data: {
+          videoId,
+          from: video.status,
+          to: "READY",
+          message: "Existing render reused — only the steps after it are being retried",
+        },
+      });
+
+      return "a finished render already exists and still matches the narration — skipped";
     }
 
     // No service owns the QUEUED -> GENERATING edge: narration requires QUEUED
