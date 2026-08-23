@@ -2,6 +2,7 @@ import "server-only";
 
 import { env } from "@/config/env";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
+import { describeRefreshFailure } from "@/lib/oauth-refresh";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/prisma";
 import type { YouTubeTokens } from "@/lib/youtube-oauth";
@@ -248,38 +249,14 @@ export class ChannelService {
     });
 
     if (!response.ok) {
-      // Google's own words, not a summary of them. The message used to be one
-      // sentence for every failure, which is how an operator ends up
-      // reconnecting a channel — correctly following the advice — against a
-      // problem reconnecting cannot fix. `invalid_grant` means the grant is
-      // genuinely gone and reconnecting IS the fix; `invalid_client` means the
-      // deployment's own OAuth credentials are wrong and no amount of
-      // reconnecting will help; a 5xx means try again in a minute.
-      const detail = await response
-        .text()
-        .then((body) => {
-          const parsed = JSON.parse(body) as { error?: string; error_description?: string };
+      // Classified in `describeRefreshFailure`, which is pure so the decision
+      // can be tested against Google's real response bodies. The distinction
+      // that matters: a revoked grant is fixed by reconnecting, a bad client id
+      // is not, and telling an operator to reconnect against the second is a
+      // loop that cannot terminate.
+      const failure = describeRefreshFailure(response.status, await response.text());
 
-          return parsed.error_description ?? parsed.error ?? body.slice(0, 200);
-        })
-        .catch(() => null);
-
-      const transient = response.status >= 500;
-      const reconnectFixesIt = detail?.includes("invalid_grant") ?? false;
-
-      throw new ProviderError(
-        "YOUTUBE",
-        transient
-          ? `Google could not refresh this channel's access token just now (${response.status}). ` +
-            "This usually clears on its own — the upload will be retried."
-          : reconnectFixesIt
-            ? "This channel's access has been revoked or has expired, so its token can no longer " +
-              "be refreshed. Reconnect the channel on the channels screen."
-            : `Google refused to refresh this channel's access token (${response.status})` +
-              `${detail ? `: ${detail}` : "."} Reconnecting may not help — if it does not, ` +
-              "the problem is this deployment's Google credentials rather than your channel.",
-        transient,
-      );
+      throw new ProviderError("YOUTUBE", failure.message, failure.retryable);
     }
 
     const body = (await response.json()) as {
