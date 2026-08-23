@@ -397,7 +397,10 @@ export class AdminService {
           handle: channel.handle,
           youtubeChannelId: channel.youtubeChannelId,
           isActive: channel.isActive,
-          tokenExpired: channel.tokenExpiresAt.getTime() <= now,
+          // A disconnected channel has no expiry to compare against. Reported
+          // as expired rather than as fine: whatever the admin screen does
+          // about a channel that cannot upload, it should do it for this one.
+          tokenExpired: channel.tokenExpiresAt === null || channel.tokenExpiresAt.getTime() <= now,
           connectedAt: channel.connectedAt,
           deletedAt: channel.deletedAt,
           publicationCount: channel._count.publications,

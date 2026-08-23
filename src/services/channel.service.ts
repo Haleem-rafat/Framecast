@@ -1,7 +1,7 @@
 import "server-only";
 
 import { env } from "@/config/env";
-import { NotFoundError, ProviderError } from "@/lib/errors";
+import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/prisma";
 import type { YouTubeTokens } from "@/lib/youtube-oauth";
@@ -142,13 +142,44 @@ export class ChannelService {
   }
 
   /**
-   * Hard delete. Leaving encrypted upload credentials behind after the
-   * operator asks to disconnect is not acceptable, and `Publication.channelId`
-   * cascades so its publish history goes with it.
+   * Destroys the credentials, keeps the channel.
+   *
+   * This was a hard delete, with a correct reason: leaving encrypted upload
+   * credentials behind after somebody asks to disconnect is not acceptable.
+   * What the delete did not account for is everything hanging off a `Channel`
+   * with `onDelete: Cascade` — `ChannelBrand`, `Series`, `ReleaseCadence`,
+   * `Publication` — and `Project.channelId`, which is `SetNull`.
+   *
+   * So disconnecting silently deleted the channel's entire configuration: its
+   * footage style, art style, voice, tone and niche, every schedule built on
+   * it, its release cadence, and its publish history. Reconnecting then made a
+   * NEW row, because `connect` upserts on `(userId, youtubeChannelId)` and
+   * there was nothing left to match — which left the operator's projects
+   * unlinked and unable to publish at all. That is not a hypothetical: it
+   * happened on this deployment, to a channel with twenty-three videos.
+   *
+   * Nulling the three credential columns satisfies the actual requirement —
+   * the secrets are gone — and soft-deleting keeps everything that is not a
+   * secret. `deletedAt` is already what every read in this file filters on, so
+   * a disconnected channel disappears from the UI exactly as a deleted one did.
+   *
+   * Reconnecting needs no new code: `connect` already upserts on
+   * `(userId, youtubeChannelId)` and already clears `deletedAt`, so it revives
+   * this row with its brand, series and cadence still attached. That path was
+   * always there; nothing could reach it while the row was being deleted out
+   * from under it.
    */
   async disconnect(userId: string, channelId: string): Promise<void> {
-    const { count } = await prisma.channel.deleteMany({
-      where: { id: channelId, userId },
+    const { count } = await prisma.channel.updateMany({
+      where: { id: channelId, userId, deletedAt: null },
+      data: {
+        deletedAt: new Date(),
+        isActive: false,
+        // The point of the whole method.
+        accessToken: null,
+        refreshToken: null,
+        tokenExpiresAt: null,
+      },
     });
 
     if (count === 0) {
@@ -172,6 +203,17 @@ export class ChannelService {
 
     if (!channel) {
       throw new NotFoundError("Channel");
+    }
+
+    // A disconnected channel keeps its row and loses its secrets, so "no
+    // credentials" is now a state a caller can reach rather than an
+    // impossibility. Named as itself: an operator who disconnected a channel
+    // and left a video queued against it should be told that, not handed a
+    // decryption failure.
+    if (!channel.accessToken || !channel.refreshToken || !channel.tokenExpiresAt) {
+      throw new ConflictError(
+        "This channel is disconnected, so nothing can be uploaded to it. Reconnect it on the channels screen and try again.",
+      );
     }
 
     const msUntilExpiry = channel.tokenExpiresAt.getTime() - Date.now();
@@ -206,10 +248,37 @@ export class ChannelService {
     });
 
     if (!response.ok) {
+      // Google's own words, not a summary of them. The message used to be one
+      // sentence for every failure, which is how an operator ends up
+      // reconnecting a channel — correctly following the advice — against a
+      // problem reconnecting cannot fix. `invalid_grant` means the grant is
+      // genuinely gone and reconnecting IS the fix; `invalid_client` means the
+      // deployment's own OAuth credentials are wrong and no amount of
+      // reconnecting will help; a 5xx means try again in a minute.
+      const detail = await response
+        .text()
+        .then((body) => {
+          const parsed = JSON.parse(body) as { error?: string; error_description?: string };
+
+          return parsed.error_description ?? parsed.error ?? body.slice(0, 200);
+        })
+        .catch(() => null);
+
+      const transient = response.status >= 500;
+      const reconnectFixesIt = detail?.includes("invalid_grant") ?? false;
+
       throw new ProviderError(
         "YOUTUBE",
-        "Could not refresh this channel's access token. Reconnect the channel.",
-        response.status >= 500,
+        transient
+          ? `Google could not refresh this channel's access token just now (${response.status}). ` +
+            "This usually clears on its own — the upload will be retried."
+          : reconnectFixesIt
+            ? "This channel's access has been revoked or has expired, so its token can no longer " +
+              "be refreshed. Reconnect the channel on the channels screen."
+            : `Google refused to refresh this channel's access token (${response.status})` +
+              `${detail ? `: ${detail}` : "."} Reconnecting may not help — if it does not, ` +
+              "the problem is this deployment's Google credentials rather than your channel.",
+        transient,
       );
     }
 

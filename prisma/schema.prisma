@@ -162,9 +162,13 @@ model Channel {
   description                      String?
   thumbnailUrl                     String?
   // OAuth tokens are written by the server only and never selected into client payloads.
-  accessToken                      String
-  refreshToken                     String
-  tokenExpiresAt                   DateTime
+  /// Null once the channel is disconnected. Nullable so that disconnecting can
+  /// destroy the credentials without destroying the channel — see
+  /// `ChannelService.disconnect`, which used to hard-delete the row and took
+  /// the channel's brand, series, release cadence and publish history with it.
+  accessToken                      String?
+  refreshToken                     String?
+  tokenExpiresAt                   DateTime?
   scopes                           String[]
   isActive                         Boolean   @default(true)
   /// ElevenLabs pronunciation dictionary for this channel. Entries accumulate

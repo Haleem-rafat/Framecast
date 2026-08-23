@@ -237,7 +237,8 @@ describe("channelService", () => {
       // The refresh moved the row's expiry an hour out, so a second call
       // (even against the default singleton, with its real fetch) returns
       // the persisted refreshed token without refreshing again.
-      expect(row.tokenExpiresAt.getTime()).toBeGreaterThan(Date.now() + 55 * 60 * 1000);
+      expect(row.tokenExpiresAt).not.toBeNull();
+      expect(row.tokenExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 55 * 60 * 1000);
       expect(await channelService.resolveAccessToken(userId, channel.id)).toBe(
         "ya29.refreshed-token",
       );
@@ -267,7 +268,8 @@ describe("channelService", () => {
 
       const row = await prisma.channel.findUniqueOrThrow({ where: { id: channel.id } });
       const { decryptSecret } = await import("@/lib/crypto");
-      expect(decryptSecret(row.refreshToken)).toBe("1//test-refresh-token");
+      expect(row.refreshToken).not.toBeNull();
+      expect(decryptSecret(row.refreshToken!)).toBe("1//test-refresh-token");
     });
 
     it("replaces the refresh token when Google does return a new one", async () => {
@@ -294,7 +296,8 @@ describe("channelService", () => {
 
       const row = await prisma.channel.findUniqueOrThrow({ where: { id: channel.id } });
       const { decryptSecret } = await import("@/lib/crypto");
-      expect(decryptSecret(row.refreshToken)).toBe("1//new-refresh-token");
+      expect(row.refreshToken).not.toBeNull();
+      expect(decryptSecret(row.refreshToken!)).toBe("1//new-refresh-token");
     });
   });
 });
