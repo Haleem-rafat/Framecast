@@ -673,6 +673,58 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
     expect(schedule.pausedReason).toContain("still broken");
   });
 
+  it("pauses on the FIRST failure when the gateway budget is gone", async () => {
+    /**
+     * The failure this branch was written for. On 25 August 2026 the gateway's
+     * spend limit was reached and five schedules failed on a 402 for two days
+     * without one of them pausing: the failure counter is per schedule and the
+     * budget is per account, so each looked like a single unlucky day.
+     *
+     * The status and body below are the real ones from the worker log.
+     */
+    const refusal = new Error(
+      "Team budget exceeded. Current spend: $30.00, limit: $30.00.",
+    );
+    refusal.name = "GatewayInternalServerError";
+    Object.assign(refusal, {
+      statusCode: 402,
+      responseBody: JSON.stringify({
+        error: {
+          message: "Team budget exceeded. Current spend: $30.00, limit: $30.00.",
+          type: "quota_for_entity_exceeded",
+        },
+      }),
+    });
+
+    const scheduleId = await makeDueSchedule({ topics: ["one", "two", "three"] });
+
+    await new ScheduleService(fakeAutomation({ fail: refusal })).tick();
+
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+
+    expect(schedule.status).toBe("PAUSED");
+    expect(schedule.consecutiveFailures).toBe(1);
+    // The reason has to carry the fix, not just the fact. An operator reading
+    // "paused" with no figure has to go and find the gateway dashboard to learn
+    // what happened; this tells them.
+    expect(schedule.pausedReason).toMatch(/cannot fix itself/i);
+    expect(schedule.pausedReason).toMatch(/budget/i);
+    expect(schedule.pausedReason).toContain("$30.00");
+  });
+
+  it("still waits for three when the failure could be bad luck", async () => {
+    // The guard on the branch above: an ordinary failure must not start pausing
+    // schedules on its first occurrence.
+    const scheduleId = await makeDueSchedule({ topics: ["one", "two", "three"] });
+
+    await new ScheduleService(fakeAutomation({ fail: new Error("one bad day") })).tick();
+
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+
+    expect(schedule.status).toBe("ACTIVE");
+    expect(schedule.pausedReason).toBeNull();
+  });
+
   it("resets the failure count on the next success", async () => {
     const scheduleId = await makeDueSchedule();
 

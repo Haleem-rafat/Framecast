@@ -9,6 +9,7 @@ import type {
   VideoFormat,
 } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
+import { describeGatewayFailure } from "@/lib/gateway-failure";
 import { prisma } from "@/lib/prisma";
 import {
   advancePast,
@@ -1049,8 +1050,27 @@ export class ScheduleService {
       const reason = messageOf(error);
       const failures = await this.countFailure(claim.scheduleId);
 
-      const pauseWith =
-        failures >= MAX_CONSECUTIVE_FAILURES
+      /**
+       * A spend limit is not bad luck, and waiting for a third one wastes two
+       * more days.
+       *
+       * `MAX_CONSECUTIVE_FAILURES` exists because one bad Monday should not
+       * disarm a schedule that has run for months. That reasoning does not hold
+       * for an exhausted gateway budget, and this deployment proved it: the
+       * counter is per SCHEDULE and the budget is per ACCOUNT, so five schedules
+       * each failing once looked like five separate bad days rather than one
+       * wall every one of them had hit. Nothing paused, and the runs kept firing
+       * on time into a 402 for two days.
+       *
+       * Paused on the first, because the next run cannot succeed either and the
+       * fix is one an operator has to make. Any success still resets the
+       * counter, so nothing here makes a recovered schedule harder to restart.
+       */
+      const budget = describeGatewayFailure(error).budgetExhausted;
+
+      const pauseWith = budget
+        ? `Paused on the first failure because it cannot fix itself: ${reason}`
+        : failures >= MAX_CONSECUTIVE_FAILURES
           ? `Paused after ${failures} runs in a row failed. The last said: ${reason}`
           : null;
 

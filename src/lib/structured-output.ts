@@ -57,7 +57,13 @@ function parseJson(value: string): { ok: true; value: unknown } | { ok: false } 
  * chain. `seen` guards against a self-referential cause rather than trusting
  * providers not to build one.
  */
-function* causeChain(error: unknown): Generator<unknown> {
+/** Every error in a `cause` chain, outermost first, stopping on a cycle.
+ *
+ *  Exported for `gateway-failure.ts`, which has to look for a response body at
+ *  every depth for the same reason `providerStatusCode` below looks for a
+ *  status at every depth: the SDK wraps a transport failure one or two levels
+ *  down, and a top-level-only read misses it. */
+export function* causeChain(error: unknown): Generator<unknown> {
   const seen = new Set<unknown>();
   let current = error;
 

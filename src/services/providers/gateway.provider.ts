@@ -6,6 +6,7 @@ import { z } from "zod";
 import { env } from "@/config/env";
 import { estimateCostUsd } from "@/lib/cost";
 import { ProviderError } from "@/lib/errors";
+import { describeGatewayFailure } from "@/lib/gateway-failure";
 import { insightScriptToScript, type InsightScript } from "@/lib/insight-script";
 import { normalise } from "@/lib/script-cues";
 import type {
@@ -16,11 +17,28 @@ import type {
   VideoMetadata,
 } from "@/services/providers/types";
 
-/** 429 and 5xx are transient; everything else means the request itself is wrong. */
-function isRetryable(error: unknown): boolean {
-  const status = (error as { statusCode?: number })?.statusCode;
+/**
+ * Turns a gateway rejection into the error an operator reads.
+ *
+ * `fallback` is what to say when nothing more specific is known. It names the
+ * operation that failed — which this file knows and `describeGatewayFailure`
+ * deliberately does not — so a classifier with no opinion leaves the caller's
+ * own, more informative sentence in place.
+ *
+ * The classification itself is not done here. It reads a status and an error
+ * code out of a response body, and that decision is worth testing against real
+ * response bodies rather than through this class; see `gateway-failure.ts`,
+ * and `oauth-refresh.ts` before it.
+ */
+function providerFailure(fallback: string, cause: unknown): ProviderError {
+  const failure = describeGatewayFailure(cause);
 
-  return status === 429 || (status !== undefined && status >= 500);
+  return new ProviderError(
+    "ANTHROPIC",
+    failure.message ?? fallback,
+    failure.retryable,
+    { cause },
+  );
 }
 
 // Structured output rather than free-form prose: a per-section cue is only
@@ -298,12 +316,7 @@ export class GatewayProvider implements TextGenerationProvider {
         insight,
       };
     } catch (cause) {
-      throw new ProviderError(
-        "ANTHROPIC",
-        "The model provider failed to generate a script.",
-        isRetryable(cause),
-        { cause },
-      );
+      throw providerFailure("The model provider failed to generate a script.", cause);
     }
   }
 
@@ -352,12 +365,7 @@ export class GatewayProvider implements TextGenerationProvider {
 
       return result.object;
     } catch (cause) {
-      throw new ProviderError(
-        "ANTHROPIC",
-        "The model provider failed to generate video metadata.",
-        isRetryable(cause),
-        { cause },
-      );
+      throw providerFailure("The model provider failed to generate video metadata.", cause);
     }
   }
 }
