@@ -156,6 +156,37 @@ const EMPTY_QUEUE_REASON =
   "videos, so the drip starts again by itself as soon as this channel has " +
   "rendered shorts waiting.";
 
+/**
+ * How long a source video's other clips wait after one of them goes out.
+ *
+ * Clips cut from one video are the same story told in pieces. Posting them
+ * within hours of each other puts near-identical videos in front of the same
+ * viewers on the same day: they compete with each other for the one slot the
+ * feed will give that channel, and a viewer who has just seen the setup has no
+ * reason to stop on the payoff. The drip exists precisely to avoid that, and
+ * `queueOrder` — which deliberately keeps a video's clips together and in
+ * sequence — walks straight into it on any cadence with more than one slot a
+ * day.
+ *
+ * Twenty hours rather than a calendar day, so a once-a-day cadence at a fixed
+ * time is never blocked by its own release from yesterday: those are 24 hours
+ * apart, and a boundary at 24 would make the gate depend on a few seconds of
+ * worker lateness. Anything running more often than daily spreads a video's
+ * clips across separate days, which is the whole point.
+ */
+export const SIBLING_COOLDOWN_HOURS = 20;
+
+/** The sentence an operator reads when everything banked belongs to a video
+ *  that has already had a clip out today. Not a fault, and worded so it does
+ *  not read as one: the bank is intact and the next slot on another day will
+ *  spend it. */
+const SIBLING_COOLDOWN_REASON =
+  `Everything banked for this channel was cut from a video that already had a ` +
+  `clip released in the last ${SIBLING_COOLDOWN_HOURS} hours. Clips from one ` +
+  `video are held apart so they do not compete with each other in the same ` +
+  `feed on the same day, so this slot was left empty and the queue is ` +
+  `untouched.`;
+
 export interface ReleaseQueueEntry {
   shortId: string;
   /** Position in its own video's set, 0-based — the panel shows `index + 1`. */
@@ -843,19 +874,21 @@ export class ReleaseService {
 
       const next = await this.takeReleasable(claim);
 
-      if (!next) {
-        // The empty queue, and the one place this service deliberately parts
-        // company with `ScheduleService`: recorded, and explicitly *not* a
-        // failure. `consecutiveFailures` is untouched and the cadence stays
-        // ACTIVE, so the drip restarts by itself the moment a video banks some
-        // clips. See this class's own doc comment.
+      if (next.short === null) {
+        // Nothing to send, for one of two reasons the row now carries. Either
+        // way this is the one place this service deliberately parts company
+        // with `ScheduleService`: recorded, and explicitly *not* a failure.
+        // `consecutiveFailures` is untouched and the cadence stays ACTIVE, so
+        // the drip restarts by itself — the moment a video banks some clips, or
+        // the moment the held-back ones come off cooldown. See this class's own
+        // doc comment.
         return this.finishRun(claim, runId, {
           outcome: "SKIPPED",
-          reason: EMPTY_QUEUE_REASON,
+          reason: next.reason,
         });
       }
 
-      return await this.releaseShort(claim, runId, next);
+      return await this.releaseShort(claim, runId, next.short);
     } finally {
       await this.releaseClaim(claim.cadenceId);
     }
@@ -947,7 +980,9 @@ export class ReleaseService {
    */
   private async takeReleasable(
     claim: ReleaseClaim,
-  ): Promise<{ id: string; title: string } | null> {
+  ): Promise<
+    { short: { id: string; title: string } } | { short: null; reason: string }
+  > {
     const candidates = await prisma.short.findMany({
       where: this.bankedShortsWhere(claim.userId, claim.channelId),
       orderBy: this.queueOrder(),
@@ -957,19 +992,42 @@ export class ReleaseService {
         index: true,
         title: true,
         outputPath: true,
+        videoId: true,
         video: { select: { title: true } },
       },
     });
 
+    if (candidates.length === 0) {
+      return { short: null, reason: EMPTY_QUEUE_REASON };
+    }
+
+    const cooling = await this.videosCoolingDown(
+      [...new Set(candidates.map((candidate) => candidate.videoId))],
+    );
+    // Whether anything was passed over for its parent rather than for its file,
+    // so an empty result can say which of the two happened. A slot skipped
+    // because the bank is empty and one skipped because the bank is all
+    // siblings are different situations and only one of them resolves itself
+    // when the next video renders.
+    let heldBack = false;
+
     for (const candidate of candidates) {
+      if (cooling.has(candidate.videoId)) {
+        heldBack = true;
+        continue;
+      }
+
       const present =
         candidate.outputPath !== null &&
         (await statShortFile(candidate.outputPath).catch(() => null)) !== null;
 
       if (present) {
         return {
-          id: candidate.id,
-          title: candidate.title ?? `${candidate.video.title} — Short ${candidate.index + 1}`,
+          short: {
+            id: candidate.id,
+            title:
+              candidate.title ?? `${candidate.video.title} — Short ${candidate.index + 1}`,
+          },
         };
       }
 
@@ -991,7 +1049,43 @@ export class ReleaseService {
         });
     }
 
-    return null;
+    return {
+      short: null,
+      reason: heldBack ? SIBLING_COOLDOWN_REASON : EMPTY_QUEUE_REASON,
+    };
+  }
+
+  /**
+   * Which of these source videos had one of their clips released too recently
+   * for another to follow it.
+   *
+   * One query for the whole candidate scan rather than one per candidate: the
+   * scan is bounded by `MAX_QUEUE_SCAN` but is routinely most of it, and this
+   * runs on every slot of every cadence.
+   *
+   * A `ShortPublication` row is the record of a release *attempt*, and every
+   * status counts here — including FAILED. That is deliberate and it is the
+   * same reading `bankedShortsWhere` takes of the same table: a failed attempt
+   * may already have put the clip on YouTube, and a sibling posted an hour
+   * after a clip that did land is the exact thing this cooldown exists to
+   * prevent. Waiting is cheap; the queue is not spent.
+   */
+  private async videosCoolingDown(videoIds: string[]): Promise<Set<string>> {
+    if (videoIds.length === 0) {
+      return new Set();
+    }
+
+    const since = new Date(Date.now() - SIBLING_COOLDOWN_HOURS * 60 * 60 * 1000);
+
+    const recent = await prisma.shortPublication.findMany({
+      where: {
+        createdAt: { gte: since },
+        short: { videoId: { in: videoIds } },
+      },
+      select: { short: { select: { videoId: true } } },
+    });
+
+    return new Set(recent.map((row) => row.short.videoId));
   }
 
   /**

@@ -13,7 +13,7 @@ import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import type { FetchLike } from "@/services/publish.service";
 import { PublishService } from "@/services/publish.service";
-import { ReleaseService } from "@/services/release.service";
+import { ReleaseService, SIBLING_COOLDOWN_HOURS } from "@/services/release.service";
 import { videoService } from "@/services/video.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -318,7 +318,7 @@ describe("releaseService — a due slot releases exactly one clip", () => {
     expect(await releases.tick()).toBeNull();
   });
 
-  it("spends the queue oldest video first, then in play order within it", async () => {
+  it("spends the queue oldest video first, and never two clips of one video at once", async () => {
     const channelId = await makeChannel();
     const older = await makeVideo(channelId, "The older video");
     // A distinct `createdAt`, since the ordering is on the video and two rows
@@ -330,21 +330,69 @@ describe("releaseService — a due slot releases exactly one clip", () => {
     const newer = await makeVideo(channelId, "The newer video");
 
     const newerClip = await makeBankedShort(newer, 0);
-    const olderSecond = await makeBankedShort(older, 1);
+    await makeBankedShort(older, 1);
     const olderFirst = await makeBankedShort(older, 0);
 
     const cadenceId = await makeDueCadence(channelId);
     const { service: releases } = service();
-
-    for (const expected of [olderFirst, olderSecond, newerClip]) {
+    const due = async () => {
       await prisma.releaseCadence.update({
         where: { id: cadenceId },
         data: { nextReleaseAt: new Date(Date.now() - 60_000) },
       });
 
-      const result = await releases.tick();
-      expect(result?.shortId).toBe(expected.id);
-    }
+      return releases.tick();
+    };
+
+    expect((await due())?.shortId).toBe(olderFirst.id);
+
+    // The older video's second clip is next in queue order and is deliberately
+    // passed over: these slots are seconds apart, and two clips of one story in
+    // one feed compete with each other rather than compounding. The queue moves
+    // on to the next video instead of stalling.
+    expect((await due())?.shortId).toBe(newerClip.id);
+
+    // Now everything banked belongs to a video that has just had a clip out, so
+    // the slot is spent on nothing — recorded, and explicitly not a failure.
+    const held = await due();
+
+    expect(held?.shortId).toBeNull();
+    expect(held?.outcome).toBe("SKIPPED");
+    expect(held?.reason).toMatch(/already had a clip released/);
+  });
+
+  it("releases a held-back clip once its video's cooldown has passed", async () => {
+    const channelId = await makeChannel();
+    const videoId = await makeVideo(channelId, "How inflation actually works");
+    const second = await makeBankedShort(videoId, 1);
+    const first = await makeBankedShort(videoId, 0);
+
+    const cadenceId = await makeDueCadence(channelId);
+    const { service: releases } = service();
+    const due = async () => {
+      await prisma.releaseCadence.update({
+        where: { id: cadenceId },
+        data: { nextReleaseAt: new Date(Date.now() - 60_000) },
+      });
+
+      return releases.tick();
+    };
+
+    expect((await due())?.shortId).toBe(first.id);
+
+    // Backdating the publication is the only way to move this clock: the
+    // cooldown is measured from when the sibling actually went out, which is
+    // the fact that makes it safe against a worker restarting or a slot running
+    // late. Nothing is held back forever — the bank is intact and the next day
+    // spends it.
+    await prisma.shortPublication.updateMany({
+      where: { shortId: first.id },
+      data: {
+        createdAt: new Date(Date.now() - (SIBLING_COOLDOWN_HOURS + 1) * 60 * 60 * 1000),
+      },
+    });
+
+    expect((await due())?.shortId).toBe(second.id);
   });
 });
 
