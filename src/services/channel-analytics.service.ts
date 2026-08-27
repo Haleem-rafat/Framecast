@@ -261,6 +261,21 @@ export interface ChannelWindowTotals {
    */
   averageViewSeconds: number;
   /**
+   * Mean share of each video watched, 0-100.
+   *
+   * A mean across the window's DAYS, not weighted by their views — unlike
+   * `averageViewSeconds` above, which is exact because watch time and views are
+   * both sums and the ratio of two sums is the real figure. There is no stored
+   * quantity whose sum divided by total views gives this one, so a weighted
+   * figure would need the per-day products this table does not keep.
+   *
+   * Left unweighted rather than made exact with a raw query, because of what it
+   * is for: it is read to compare one video against another and this week
+   * against last, and both comparisons survive the weighting. It should not be
+   * quoted as "the channel retained exactly this much".
+   */
+  averageViewPercent: number;
+  /**
    * Null when this channel's monetary figures were never obtainable. Not zero:
    * see `ChannelCollection.revenueAvailable`.
    */
@@ -273,6 +288,10 @@ export interface TopVideoRow {
   youtubeVideoId: string | null;
   views: number;
   watchTimeMinutes: number;
+  /** Mean share watched, 0-100, across this video's days in the window. The
+   *  figure that says whether its opening held anyone — see
+   *  `ChannelWindowTotals.averageViewPercent` for why it is unweighted. */
+  averageViewPercent: number;
 }
 
 export interface ChannelPerformance {
@@ -856,6 +875,7 @@ export class ChannelAnalyticsService {
               comments: row.comments,
               watchTimeMinutes: row.watchTimeMinutes,
               averageViewSeconds: row.averageViewSeconds,
+              averageViewPercent: row.averageViewPercent,
               subscribersGained: row.subscribersGained,
               estimatedRevenue: row.estimatedRevenue,
             },
@@ -886,6 +906,7 @@ export class ChannelAnalyticsService {
       comments: BigInt(Math.max(0, Math.round(day.comments))),
       watchTimeMinutes: day.estimatedMinutesWatched,
       averageViewSeconds: day.averageViewSeconds,
+      averageViewPercent: day.averageViewPercent,
       // Can legitimately be negative — a day on which more people unsubscribed
       // than subscribed — so this one is not clamped at zero.
       subscribersGained: Math.round(day.subscribersGained),
@@ -1102,6 +1123,7 @@ export class ChannelAnalyticsService {
             subscribersGained: true,
             estimatedRevenue: true,
           },
+          _avg: { averageViewPercent: true },
           _count: { _all: true },
         }),
         prisma.videoAnalytic.aggregate({
@@ -1112,6 +1134,7 @@ export class ChannelAnalyticsService {
           by: ["publicationId"],
           where: inWindow,
           _sum: { views: true, watchTimeMinutes: true },
+          _avg: { averageViewPercent: true },
           orderBy: { _sum: { views: "desc" } },
           take: 5,
         }),
@@ -1171,6 +1194,7 @@ export class ChannelAnalyticsService {
         subscribersGained: number | null;
         estimatedRevenue: Prisma.Decimal | null;
       };
+      _avg: { averageViewPercent: number | null };
     },
     revenueAvailable: boolean | null,
   ): ChannelWindowTotals {
@@ -1186,6 +1210,7 @@ export class ChannelAnalyticsService {
       // Watch time ÷ views, in seconds. Exact, and immune to the day-with-three-
       // views problem that averaging the per-day averages would have.
       averageViewSeconds: views > 0 ? (watchTimeMinutes * 60) / views : 0,
+      averageViewPercent: totals._avg.averageViewPercent ?? 0,
       estimatedRevenue:
         revenueAvailable === true
           ? Number(totals._sum.estimatedRevenue ?? 0)
@@ -1197,6 +1222,7 @@ export class ChannelAnalyticsService {
     groups: Array<{
       publicationId: string;
       _sum: { views: bigint | null; watchTimeMinutes: number | null };
+      _avg: { averageViewPercent: number | null };
     }>,
   ): Promise<TopVideoRow[]> {
     if (groups.length === 0) {
@@ -1224,6 +1250,7 @@ export class ChannelAnalyticsService {
           youtubeVideoId: publication.youtubeVideoId,
           views: Number(group._sum.views ?? 0),
           watchTimeMinutes: group._sum.watchTimeMinutes ?? 0,
+          averageViewPercent: group._avg.averageViewPercent ?? 0,
         },
       ];
     });

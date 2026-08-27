@@ -1352,6 +1352,18 @@ model VideoAnalytic {
   impressions        BigInt   @default(0)
   clickThroughRate   Float    @default(0)
   averageViewSeconds Float    @default(0)
+  /// Mean share of the video watched, 0-100, as YouTube's `averageViewPercentage`
+  /// reports it. The length-independent companion to `averageViewSeconds`: forty
+  /// seconds is most of a short and nothing at all of an eight-minute list, so
+  /// this is the only one of the two that can be compared across formats — and
+  /// the one that moves before views do, since a video people leave early stops
+  /// being distributed whatever it was about.
+  ///
+  /// Defaults to 0 like every other figure here, and for the same reason: a day
+  /// the API reported with no views really did have nothing watched. It is NOT
+  /// the `impressions`/`clickThroughRate` case, where 0 would be a claim the API
+  /// never let us make.
+  averageViewPercent Float    @default(0)
   watchTimeMinutes   Float    @default(0)
   subscribersGained  Int      @default(0)
   estimatedRevenue   Decimal  @default(0) @db.Decimal(12, 4)

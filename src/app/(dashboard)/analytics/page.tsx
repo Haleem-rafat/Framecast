@@ -111,7 +111,12 @@ export default async function AnalyticsPage() {
           never measured them and will not draw a 0% that looks like one.
           Subscriber and view changes are measured from the first collection
           forward, because YouTube reports only a channel&apos;s totals as of
-          now and keeps no history of them.
+          now and keeps no history of them. The share watched is the figure to
+          read first: it is comparable between a short and a long video, and it
+          moves before views do, since a video people leave early stops being
+          shown whatever it was about. It is a mean across days rather than one
+          weighted by their views, so read it as a comparison between videos
+          rather than as an exact channel figure.
           {!channelAnalytics.revenueKnown &&
             " Estimated revenue is hidden until YouTube answers a monetary query for at least one channel; a channel outside the Partner Programme is refused, and showing $0.00 for it would be wrong rather than empty."}
         </p>

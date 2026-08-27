@@ -45,6 +45,27 @@ afterEach(async () => {
   await deleteTestUser(userId);
 });
 
+/**
+ * This test's own collection row.
+ *
+ * Never a bare `prisma.channelCollection.findFirstOrThrow()`, which is what
+ * every call here used to be. `framecast_test` is shared by every test file,
+ * and a killed run leaves its users behind because `afterEach` never got to
+ * delete them — so a bare `findFirst` reads whichever row happens to sort
+ * first, which is routinely some other test's. That is the whole reason this
+ * file spent a long time being described as flaky: it was not flaky, it was
+ * unscoped, and the failures tracked how much rubbish was left in the database
+ * rather than anything in the code.
+ *
+ * Scoped through the channel to `userId`, the same boundary `deleteTestUser`
+ * cleans up, so the row this returns is by construction one this test made.
+ */
+function ownCollection() {
+  return prisma.channelCollection.findFirstOrThrow({
+    where: { channel: { userId } },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // A fake Google
 // ---------------------------------------------------------------------------
@@ -172,6 +193,7 @@ function fakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
             { name: "comments" },
             { name: "estimatedMinutesWatched" },
             { name: "averageViewDuration" },
+            { name: "averageViewPercentage" },
             { name: "subscribersGained" },
           ];
 
@@ -195,6 +217,11 @@ function fakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
                   Math.floor(entry.views / 50),
                   entry.minutes ?? entry.views * 3,
                   180,
+                  // The share watched, 0-100, as the API reports it. A fixed
+                  // figure like the 180 above it: these two are read straight
+                  // through to their columns, so a constant is enough to prove
+                  // they land in the right ones.
+                  62.5,
                   Math.floor(entry.views / 100),
                 ],
           );
@@ -496,7 +523,7 @@ describe("a channel that fails", () => {
     const service = new ChannelAnalyticsService(google.fetchImpl);
     await service.tick();
 
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     expect(state.consecutiveFailures).toBe(1);
     expect(state.nextCollectionAt.getTime()).toBeGreaterThan(Date.now() + 30 * 60_000);
     // The claim is released, not held — a channel still holding a lease is a
@@ -526,7 +553,7 @@ describe("quota exhaustion", () => {
     // between a surfaced failure and a silent retry loop.
     expect(result?.reason).toContain("will not retry");
 
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     // Pushed past the reset rather than retried in an hour: the allowance is
     // per Google Cloud project and shared with `videos.insert`, so retrying
     // early cannot succeed and can only take units publishing needs.
@@ -604,7 +631,7 @@ describe("a video the Analytics API says nothing about", () => {
 
     // Nothing to backfill, so it drops straight to the daily cadence rather
     // than spinning every fifteen minutes over an empty list.
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     expect(state.backfillComplete).toBe(true);
     expect(state.nextCollectionAt.getTime()).toBeGreaterThan(
       Date.now() + 20 * 3_600_000,
@@ -701,7 +728,7 @@ describe("the backfill", () => {
     expect(afterFirst).toBeGreaterThan(0);
     expect(afterFirst).toBeLessThan(days.length);
 
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     expect(state.backfillComplete).toBe(false);
     // Still on the fast cadence while there is history left to walk.
     expect(state.nextCollectionAt.getTime()).toBeLessThan(Date.now() + 3_600_000);
@@ -709,7 +736,7 @@ describe("the backfill", () => {
     // Run it out.
     await collectUntilIdle(service);
 
-    const finished = await prisma.channelCollection.findFirstOrThrow();
+    const finished = await ownCollection();
     expect(finished.backfillComplete).toBe(true);
     // And once caught up it drops to a daily cadence.
     expect(finished.nextCollectionAt.getTime()).toBeGreaterThan(
@@ -734,7 +761,7 @@ describe("the backfill", () => {
 
     await collectUntilIdle(service);
 
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     expect(state.backfillComplete).toBe(true);
 
     // Never asked about a day before the video existed — there is nothing there
@@ -761,7 +788,7 @@ describe("revenue", () => {
     const service = new ChannelAnalyticsService(google.fetchImpl);
     await service.tick();
 
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     expect(state.revenueAvailable).toBe(true);
 
     const overview = await service.getOverview(userId);
@@ -786,7 +813,7 @@ describe("revenue", () => {
     expect(result?.outcome).toBe("collected");
     expect(result?.videoDays).toBe(1);
 
-    const state = await prisma.channelCollection.findFirstOrThrow();
+    const state = await ownCollection();
     expect(state.revenueAvailable).toBe(false);
 
     const overview = await service.getOverview(userId);
@@ -956,6 +983,33 @@ describe("the client boundary", () => {
     expect(totals?.watchTimeMinutes).toBeCloseTo(6030, 3);
     // 6030 minutes × 60 ÷ 3003 views ≈ 120.5 seconds.
     expect(totals?.averageViewSeconds).toBeCloseTo((6030 * 60) / 3003, 3);
+    // The fake reports the same share on both days, so the mean is that share
+    // whatever the weighting — which is the point of asserting it here rather
+    // than on the lopsided pair above. `averageViewPercent` is a mean across
+    // DAYS, not weighted by their views, and this fixture must not be read as
+    // evidence either way.
+    expect(totals?.averageViewPercent).toBeCloseTo(62.5, 3);
+  });
+
+  it("stores the share watched on each day's row", async () => {
+    const { youtubeVideoIds } = await connectChannel({ videos: 1 });
+
+    const google = fakeGoogle({
+      videoDays: { [youtubeVideoIds[0]]: [{ day: daysAgo(3), views: 1000 }] },
+    });
+
+    await new ChannelAnalyticsService(google.fetchImpl).tick();
+
+    // Read off the row rather than off the overview: this is the column the
+    // whole retention figure is built on, and a mapping that dropped it would
+    // still produce a plausible-looking zero everywhere above.
+    const row = await prisma.videoAnalytic.findFirstOrThrow({
+      where: { publication: { video: { userId } } },
+    });
+
+    expect(row.averageViewPercent).toBeCloseTo(62.5, 3);
+    // Not confused with the seconds beside it, which the fake reports as 180.
+    expect(row.averageViewSeconds).toBeCloseTo(180, 3);
   });
 });
 

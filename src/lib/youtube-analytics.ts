@@ -21,6 +21,15 @@ export interface VideoDayMetrics {
   estimatedMinutesWatched: number;
   /** Mean seconds watched per view. */
   averageViewSeconds: number;
+  /**
+   * Mean share of the video watched per view, 0-100.
+   *
+   * The comparable number across videos of different lengths, and the one that
+   * moves before views do: a short people leave in the first seconds stops
+   * being shown, whatever it was about. Zero for a day the API reported with no
+   * views, which is the same "nothing happened" every other figure here writes.
+   */
+  averageViewPercent: number;
   subscribersGained: number;
   /**
    * Null rather than 0 when the channel is not monetised or the operator
@@ -65,6 +74,17 @@ const CORE_METRICS = [
   "comments",
   "estimatedMinutesWatched",
   "averageViewDuration",
+  // The share of each video actually watched, 0-100. Requested alongside the
+  // others rather than in a tolerated request of its own, because unlike
+  // `estimatedRevenue` it is not gated on a scope: the reason revenue is split
+  // out below is a 403 an unmonetised channel returns, and there is no
+  // equivalent refusal for a playback-details metric.
+  //
+  // It is here because it is the only figure in this list that says whether a
+  // video HELD the people it reached. Views measure distribution, which is
+  // mostly decided by how long people stayed on the last one — so a channel
+  // reading only views is reading its own past, one video late.
+  "averageViewPercentage",
   "subscribersGained",
 ] as const;
 
@@ -328,6 +348,7 @@ export async function fetchVideosDailyMetrics({
       // The API names this `averageViewDuration` and reports it in seconds;
       // `VideoAnalytic.averageViewSeconds` says so in its own name.
       averageViewSeconds: column(core.columns, row, "averageViewDuration"),
+      averageViewPercent: column(core.columns, row, "averageViewPercentage"),
       subscribersGained: column(core.columns, row, "subscribersGained"),
       estimatedRevenue: revenueAvailable
         ? (revenueByKey.get(`${videoId}|${day}`) ?? 0)

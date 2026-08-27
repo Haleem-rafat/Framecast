@@ -20,6 +20,7 @@ import {
   formatCompactNumber,
   formatCurrency,
   formatDuration,
+  formatPercent,
 } from "@/utils/format";
 
 /**
@@ -207,6 +208,16 @@ function ChannelCard({
                   value={formatDuration(Math.round(totals.averageViewSeconds))}
                   change={null}
                 />
+                {/* Beside the seconds rather than instead of them, because the
+                  * two answer different questions: seconds say how much of the
+                  * operator's time was watched, the percentage says whether the
+                  * video held anyone — and only the percentage can be compared
+                  * between a 40-second short and an 8-minute list. */}
+                <Figure
+                  label="Avg. watched"
+                  value={formatPercent(totals.averageViewPercent / 100)}
+                  change={null}
+                />
                 <Figure
                   label="Subs gained"
                   value={
@@ -241,7 +252,14 @@ function ChannelCard({
                     items={channel.topVideos.map((video) => ({
                       label: video.title,
                       value: video.views,
-                      display: `${formatCompactNumber(video.views)} views`,
+                      // Views and the share watched together, because ranking by
+                      // views alone shows which videos were pushed hardest and
+                      // says nothing about which ones earned it. A video high on
+                      // this list with a low share watched is a title that
+                      // worked and an opening that did not.
+                      display:
+                        `${formatCompactNumber(video.views)} views · ` +
+                        `${formatPercent(video.averageViewPercent / 100)} watched`,
                     }))}
                   />
                 </div>
