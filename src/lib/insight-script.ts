@@ -27,6 +27,7 @@
  */
 
 import { extractAnchor, normalise, type ScriptCue } from "@/lib/script-cues";
+import { checkHook } from "@/lib/short-hook";
 import type { TransitionStyle } from "@/lib/video-style";
 
 /** How fast the narration is assumed to be read, in words per second.
@@ -190,6 +191,17 @@ export function validateInsightScript(script: InsightScript): ValidationResult {
         );
       }
     }
+  }
+
+  // Read off scene one rather than off the first scene labelled HOOK. What the
+  // viewer hears first is the first scene, whatever the model called it, and a
+  // script whose beats are out of order is already failing the check below —
+  // it should not also get its opening judged against a sentence that is not
+  // the one that plays.
+  const opening = script.scenes[0];
+
+  if (opening !== undefined) {
+    errors.push(...checkHook(opening.narration).errors);
   }
 
   const beats = new Set(script.scenes.map((scene) => scene.beat));

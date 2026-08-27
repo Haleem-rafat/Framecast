@@ -35,6 +35,8 @@ import {
   verticalCaptionStyle,
   windowsOverlap,
 } from "@/lib/shorts-plan";
+import { describeGatewayFailure } from "@/lib/gateway-failure";
+import { checkHook, firstSentence } from "@/lib/short-hook";
 import { deleteShortFile, writeShortFile } from "@/lib/shorts-storage";
 import { getObject } from "@/lib/storage";
 import { planStoryBeats, type StoryBeat } from "@/lib/story-beats";
@@ -275,6 +277,16 @@ export const gatewayMomentSelector: MomentSelector = async (input) => {
       "clips: a complete thought with a hook at the front, understandable to " +
       "someone who has never seen the full video.",
     "",
+    // Stated here as well as enforced after the answer. A moment refused for
+    // its opening is a moment thrown away, and the model can avoid choosing it
+    // for free if it is told the rule before it picks.
+    "The first section of each moment is the first thing a scrolling viewer " +
+      "hears, and it decides whether they stay. Do not start a moment on a " +
+      "section that begins with a continuation word (now, then, but, so, " +
+      "however, instead), with a pronoun standing for someone the viewer has " +
+      "not met (it, he, she, they), or with a date or scene laid down before " +
+      "the point. Start on a section that states its own surprise outright.",
+    "",
     `Each moment must run between ${MIN_SHORT_SECONDS} and ${MAX_SHORT_SECONDS} ` +
       "seconds — add up the section lengths to check. The moments must not " +
       "overlap each other, and must not all come from the same part of the video.",
@@ -317,13 +329,22 @@ export const gatewayMomentSelector: MomentSelector = async (input) => {
     // there — or, as here, waiting for an outage to end that never began.
     const answeredButUnusable = NoObjectGeneratedError.isInstance(cause);
 
+    // A spend limit is neither of the two cases below: the model did not answer
+    // badly and the provider did not fail, the account was refused. It is also
+    // the failure this call actually hit in production, and reporting it as
+    // "the provider failed" is what kept the real cause off the screen for two
+    // days. `describeGatewayFailure` has an opinion only about that case, so
+    // the wording for the other two is untouched.
+    const gateway = describeGatewayFailure(cause);
+
     throw new ProviderError(
       "ANTHROPIC",
-      answeredButUnusable
-        ? "The model answered, but not in a shape shorts can be cut from, so no " +
+      gateway.message ??
+        (answeredButUnusable
+          ? "The model answered, but not in a shape shorts can be cut from, so no " +
             "moments could be read out of it. Try generating again."
-        : "The model provider failed to choose moments for shorts.",
-      isRetryableProviderFailure(cause),
+          : "The model provider failed to choose moments for shorts."),
+      gateway.budgetExhausted ? false : isRetryableProviderFailure(cause),
       { cause },
     );
   }
@@ -336,6 +357,11 @@ interface VideoTimeline {
    *  alongside because `planStoryBeats` groups *cues*, not windows, and a
    *  beat-collected video's picture plan is that grouping. */
   anchored: AnchoredCue[];
+  /** The narration `anchored` indexes into, trimmed exactly as the alignment's
+   *  string was. Carried so a chosen moment's opening words can be read back
+   *  out and judged before the clip is queued — see the hook check in
+   *  `generate`. */
+  content: string;
   sections: string;
   alignment: Alignment;
   narrationSeconds: number;
@@ -483,6 +509,7 @@ export class ShortsService {
     return {
       windows,
       anchored,
+      content,
       sections: describeSections(anchored, windows, content),
       alignment,
       narrationSeconds,
@@ -741,6 +768,23 @@ export class ShortsService {
     });
 
     const accepted: Array<{ window: ShortWindow; candidate: MomentCandidate }> = [];
+    /**
+     * Moments refused for how they open, kept apart from the ones refused for
+     * their arithmetic.
+     *
+     * A clip cut out of a longer video inherits that video's running order, and
+     * the sentence that opened section fourteen was written for somebody who
+     * had heard the first thirteen. On a scroll feed there is no such person:
+     * the opening is the whole audition, and one that resumes an argument
+     * nobody heard is the single most reliable way this feature produces a
+     * clip that goes nowhere.
+     *
+     * Dropped rather than repaired. Moving the start to a later sentence would
+     * abandon the moment the model actually identified, and rewriting the
+     * opening would put words into a narration that has already been spoken and
+     * aligned — the audio is fixed by the time anything here runs.
+     */
+    const brokenHooks: string[] = [];
 
     for (const candidate of candidates) {
       // The model answers in 1-based section numbers because that is how the
@@ -766,6 +810,21 @@ export class ShortsService {
         continue;
       }
 
+      // `planShortWindow` only ever moves a window's END, so the words this
+      // clip opens on are exactly the opening section's, and reading them back
+      // out of `content` is reading what the viewer will actually hear.
+      const opening = timeline.anchored[candidate.startSection - 1];
+      const spoken =
+        opening === undefined
+          ? ""
+          : timeline.content.slice(opening.startChar, opening.endChar);
+      const hook = checkHook(spoken);
+
+      if (!hook.ok) {
+        brokenHooks.push(firstSentence(spoken));
+        continue;
+      }
+
       accepted.push({ window, candidate });
 
       if (accepted.length >= count) {
@@ -774,10 +833,20 @@ export class ShortsService {
     }
 
     if (accepted.length === 0) {
+      // Two different faults, and they want different things from the operator:
+      // one is arithmetic to try again on, the other is a script that reads as
+      // one continuous piece and has to be edited before any clip cut from it
+      // can stand alone.
       throw new ConflictError(
-        "No usable moment could be cut from this video — every section the model " +
-          "chose was too short, too long, or outside the narration. Try again, or " +
-          "edit the script into clearer sections.",
+        brokenHooks.length > 0
+          ? "No usable moment could be cut from this video. Every one the model " +
+            "chose begins in the middle of the argument, so it would open on a " +
+            "sentence a scrolling viewer cannot follow — for example " +
+            `"${brokenHooks[0]}". Give the script sections that each open on ` +
+            "their own point, then generate again."
+          : "No usable moment could be cut from this video — every section the " +
+            "model chose was too short, too long, or outside the narration. Try " +
+            "again, or edit the script into clearer sections.",
       );
     }
 

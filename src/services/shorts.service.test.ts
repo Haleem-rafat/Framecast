@@ -56,7 +56,12 @@ vi.setConfig({ testTimeout: 30_000 });
  */
 const SECTIONS = [
   "Everyone thinks inflation is about prices rising.",
-  "It is really about the supply of money expanding.",
+  // Self-contained on purpose, like every other line here. `checkHook`
+  // refuses a clip that opens on "It", and a fixture whose second section
+  // did would be testing the gate rather than the windowing this file is
+  // about. Same 49 characters, so every timing expectation below is
+  // unchanged.
+  "Inflation is really the supply of money growing..",
   "The printing press is the clearest example here..",
   "Weimar Germany printed money to pay off war debts",
   "Prices doubled every few days by the autumn there",
@@ -1194,5 +1199,63 @@ describe("list", () => {
     await service.renderShort(queued.id);
 
     expect((await service.list(userId, videoId))[0].hasFile).toBe(true);
+  });
+});
+
+describe("generate — clips that would open in the middle of the argument", () => {
+  /**
+   * A clip cut out of a longer video inherits that video's running order, so
+   * the sentence it starts on was written for somebody who had heard the ones
+   * before it. On a scroll feed nobody has. `checkHook` is what refuses those,
+   * and this is where a refusal actually costs a clip.
+   *
+   * Padded to the fixture's 49 characters so the seconds stay countable by
+   * hand, exactly as `SECTIONS` and `LONG_SECTIONS` are.
+   */
+  const opener = (text: string) => text.padEnd(49, ".");
+
+  it("drops a moment whose first section resumes an argument", async () => {
+    const videoId = await makeClippableVideo({
+      sections: [
+        opener("It was already far too late by then"),
+        opener("Prices doubled every few days that autumn"),
+        opener("A wheelbarrow of notes bought one loaf"),
+        opener("Weimar Germany printed money for war debts"),
+        opener("The lesson is that money is a claim"),
+        opener("Print more claims and each is worth less"),
+      ],
+    });
+    // The first moment opens on "It", the second on "Weimar Germany".
+    const service = new ShortsService(fakeSelector([moment(1, 3), moment(4, 6)]));
+
+    const shorts = await service.generate(userId, videoId);
+
+    expect(shorts).toHaveLength(1);
+    // Section 4 of six, each spoken for five seconds including its joining
+    // space: the surviving clip starts at 15s, not at 0s.
+    expect(shorts[0].startSeconds).toBeCloseTo(15, 3);
+  });
+
+  it("refuses the whole set, naming the sentence, when every moment opens badly", async () => {
+    const videoId = await makeClippableVideo({
+      sections: [
+        opener("It was already far too late by then"),
+        opener("Then the currency stopped meaning anything"),
+        opener("But nobody in the ministry said so aloud"),
+        opener("They had all read the same memorandum"),
+        opener("However the printing presses kept running"),
+        opener("Instead the notes were simply reissued"),
+      ],
+    });
+    const service = new ShortsService(fakeSelector([moment(1, 3), moment(4, 6)]));
+
+    // Named rather than silent: an operator who is told "no usable moment" and
+    // nothing else has no way to know the fix is in their script.
+    await expect(service.generate(userId, videoId)).rejects.toThrow(
+      /begins in the middle of the argument/,
+    );
+    await expect(service.generate(userId, videoId)).rejects.toThrow(
+      /It was already far too late by then/,
+    );
   });
 });

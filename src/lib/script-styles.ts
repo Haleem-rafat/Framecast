@@ -982,6 +982,7 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       "",
       "STRUCTURE — four moves, in this order, with nothing else in between.",
       "- The hook is the first sentence and it is the whole video's fate. State the strangest, most specific, most concrete fact you have, in under twelve words. No greeting, no 'in this video', no 'did you know', no setup before it.",
+      "- The hook has to stand on its own. Whoever sees it did not choose it, has read no title and has heard no previous sentence, so it must not carry on from one: never open with 'now', 'then', 'but', 'so', 'however' or 'instead', never open with 'it', 'he', 'she' or 'they' standing for someone not yet named, and never open on a date or a scene before the point. Any of those is a sentence written for a viewer who is already watching, and that viewer does not exist here.",
       "- Then one line that says why it is not what anyone would expect.",
       "- Then the explanation, in three or four short sentences. One mechanism, one cause, one number. Never two competing explanations — there is no room to compare them.",
       "- Then the payoff: the consequence, in one or two lines, and stop. No recap, no 'follow for more', no question to the comments, no teaser for another video.",

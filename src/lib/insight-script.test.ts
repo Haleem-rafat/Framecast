@@ -385,3 +385,36 @@ describe("emphasis becomes words the captions can colour", () => {
     expect(insightScriptToScript(script).cues[4].emphasis).toEqual(["open"]);
   });
 });
+
+describe("validateInsightScript: the opening sentence", () => {
+  /**
+   * The hook rules themselves are `short-hook.test.ts`'s subject. What is
+   * asserted here is only that this gate *applies* them — the wiring is the
+   * part that can silently come undone.
+   */
+  it("fails a script whose first scene resumes an argument", () => {
+    const script = validScript();
+    script.scenes[0].narration = "But the file was already closed.";
+
+    const result = validateInsightScript(script);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(" ")).toContain("carries on from something");
+  });
+
+  it("judges scene one, not the first scene labelled HOOK", () => {
+    const script = validScript();
+    // A model that mislabelled its opening still opens with it.
+    script.scenes[0].beat = "TENSION";
+    script.scenes[0].narration = "It was already too late by then.";
+
+    expect(validateInsightScript(script).errors.join(" ")).toContain("has not met");
+  });
+
+  it("leaves a self-contained opening alone", () => {
+    const script = validScript();
+    script.scenes[0].narration = "You forgot the task you finished this morning.";
+
+    expect(validateInsightScript(script).ok).toBe(true);
+  });
+});
