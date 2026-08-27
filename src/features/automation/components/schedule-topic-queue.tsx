@@ -20,6 +20,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { describeTopicShape } from "@/lib/topic-shape";
 import type { ScheduleTopicRecord } from "@/services/schedule.service";
 
 /**
@@ -56,6 +57,19 @@ export function ScheduleTopicQueue({
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+
+  /**
+   * The first line worth saying something about, or null.
+   *
+   * One hint rather than one per line: somebody pasting twenty topics at once
+   * would otherwise get twenty near-identical paragraphs under the box, which
+   * is a wall to scroll past rather than a thing to read. The first is enough
+   * to make the point, and the point generalises.
+   *
+   * Advice only — `describeTopicShape` cannot refuse a topic and the Add button
+   * below is deliberately not gated on it. See that module's header for why.
+   */
+  const hint = parsed.map(describeTopicShape).find((shape) => !shape.ok)?.hint ?? null;
 
   function onAdd(event: React.FormEvent): void {
     event.preventDefault();
@@ -185,6 +199,10 @@ export function ScheduleTopicQueue({
               />
             )}
           </FormField>
+
+          {hint !== null && (
+            <p className="text-muted-foreground text-xs text-balance">{hint}</p>
+          )}
 
           <Button type="submit" size="sm" disabled={parsed.length === 0 || isPending}>
             {isPending ? <Loader2 className="animate-spin" /> : <Plus />}
