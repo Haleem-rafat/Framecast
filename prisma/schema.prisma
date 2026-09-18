@@ -659,6 +659,15 @@ enum VideoStatus {
 /// the one property of a finished video that cannot be changed afterwards
 /// without paying for the whole pipeline again, and it decides whether the
 /// video can have shorts cut from it at all — a vertical video already is one.
+/// How a short's last line lands — see `src/lib/short-script.ts`. Alternated
+/// per channel so a later comparison has roughly equal samples of each.
+enum EndingKind {
+  /// The last line leads back into the first, so a replay reads as one thought.
+  LOOP
+  /// The last line is a flat verdict a viewer could argue with.
+  DEBATE
+}
+
 enum VideoFormat {
   /// 1920x1080. What every video produced before this column existed is.
   LANDSCAPE
@@ -825,6 +834,13 @@ model ScriptVersion {
   /// as `cues`: a script written before this column exists still has its
   /// sources inline, and `extractSourcesSection` still finds them there.
   sources   Json?
+  /// Two to six words drawn over the first three seconds of a vertical kinetic
+  /// render (see kinetic-captions.ts). Null for every script longer than
+  /// ninety seconds and every script written before this column existed.
+  hookCard   String?
+  /// How a short's last line was asked to land, recorded so the two kinds can
+  /// be compared against retention later. Null outside shorts.
+  endingKind EndingKind?
   // The rendered prompt actually sent, retained for reproducibility.
   prompt    String?
   model     String?

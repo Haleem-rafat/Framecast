@@ -57,6 +57,20 @@ function providerFailure(fallback: string, cause: unknown): ProviderError {
 // than relying on the prompt: an operator's stored prompt template is
 // editable and may still ask for an inline SOURCES section, and the schema is
 // the one instruction that travels with every structured request.
+/**
+ * A short's opening-screen words. Optional in both schemas below because only
+ * a short asks for it — a five-minute explainer sending this field would be a
+ * change to a request that must stay byte for byte what it was. Whether it was
+ * required is `ScriptService`'s call, made against `checkHookCard`.
+ */
+const hookCardField = z
+  .string()
+  .optional()
+  .describe(
+    "Only when the instructions ask for a hook card: two to six words shown " +
+      "on screen over the first three seconds. Must make sense with the sound off.",
+  );
+
 const scriptSchema = z.object({
   sections: z
     .array(
@@ -86,6 +100,7 @@ const scriptSchema = z.object({
         "published in the video's description and are never spoken, so they " +
         "belong here and nowhere in any section's text.",
     ),
+  hook_card: hookCardField,
 });
 
 /**
@@ -151,6 +166,7 @@ const insightScriptSchema = z.object({
       }),
     )
     .min(1),
+  hook_card: hookCardField,
 });
 
 /** The one place the pack's field names become the validator's. */
@@ -236,6 +252,7 @@ export class GatewayProvider implements TextGenerationProvider {
       let sections: ScriptGenerationResult["sections"];
       let sources: ScriptGenerationResult["sources"];
       let insight: ScriptGenerationResult["insight"];
+      let hookCard: string | undefined;
       let inputTokens: number;
       let outputTokens: number;
 
@@ -273,6 +290,7 @@ export class GatewayProvider implements TextGenerationProvider {
         // all the way to the video description instead — see
         // publish.service.ts's buildDescription.
         sources = result.object.sources;
+        hookCard = result.object.hook_card;
         inputTokens = result.usage.inputTokens ?? 0;
         outputTokens = result.usage.outputTokens ?? 0;
       } else if (input.withInsightScenes) {
@@ -284,6 +302,7 @@ export class GatewayProvider implements TextGenerationProvider {
         });
 
         insight = toInsightScript(result.object);
+        hookCard = result.object.hook_card;
         // Derived by the same function ScriptService uses to build the cues,
         // rather than joined a second time here. Two joins would be two answers
         // to "what does this video say", and the anchors are offsets into
@@ -314,6 +333,7 @@ export class GatewayProvider implements TextGenerationProvider {
         sections,
         sources,
         insight,
+        hookCard,
       };
     } catch (cause) {
       throw providerFailure("The model provider failed to generate a script.", cause);

@@ -4,8 +4,11 @@ import {
   ANAPHORIC_DETERMINERS,
   BACK_REFERENCE_OPENERS,
   CONTINUATION_OPENERS,
+  FORMULA_OPENERS,
+  checkFreshOpening,
   checkHook,
   firstSentence,
+  openingKey,
 } from "@/lib/short-hook";
 
 /**
@@ -189,5 +192,34 @@ describe("checkHook: what it deliberately cannot catch", () => {
     expect(checkHook("The 24-flavor table won the first contest easily.").ok).toBe(
       true,
     );
+  });
+});
+
+describe("checkFreshOpening", () => {
+  it("refuses every formula opener", () => {
+    for (const opener of FORMULA_OPENERS) {
+      expect(checkFreshOpening(`${opener} the sea was a road.`, []).ok).toBe(false);
+    }
+  });
+
+  it("refuses an opening whose first three words match a recent one", () => {
+    const result = checkFreshOpening("The wisest emperor chose his son.", [
+      "The wisest emperor wrote twelve books.",
+    ]);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toContain('"the wisest emperor"');
+  });
+
+  it("ignores case and punctuation when matching", () => {
+    expect(openingKey("Rome, burned — twice.")).toBe("rome burned twice");
+  });
+
+  it("accepts a fresh opening", () => {
+    expect(
+      checkFreshOpening("Marcus Aurelius handed Rome to a lunatic.", [
+        "China burned the largest fleet on earth.",
+      ]).ok,
+    ).toBe(true);
   });
 });

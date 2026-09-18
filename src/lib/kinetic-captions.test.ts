@@ -211,3 +211,40 @@ describe("buildAss", () => {
     }
   });
 });
+
+describe("buildAss — hook card", () => {
+  const WORDS: [string, number, number][] = [
+    ["Marcus", 0, 0.4],
+    ["Aurelius", 0.4, 0.9],
+  ];
+
+  function withCard(hookCard?: string) {
+    return buildAss({
+      alignment: align(WORDS),
+      style: STYLE,
+      width: 1080,
+      height: 1920,
+      maxWordsPerLine: 3,
+      maxCharsPerLine: 18,
+      hookCard,
+    });
+  }
+
+  it("draws the card top-centre, upper-case, for the first three seconds", () => {
+    const ass = withCard("The wise man's worst choice");
+
+    expect(ass).toMatch(/^Style: HookCard,.*,8,\d+,\d+,230,1$/m);
+    expect(ass).toContain(
+      "Dialogue: 1,0:00:00.00,0:00:03.00,HookCard,,0,0,0,,{\\fad(0,300)}THE WISE MAN'S WORST CHOICE",
+    );
+  });
+
+  it("escapes braces so a card cannot open an override block", () => {
+    expect(withCard("Rome {fell} twice")).toContain("ROME \\{FELL\\} TWICE");
+  });
+
+  it("draws no card when none is given", () => {
+    expect(withCard()).not.toContain("HookCard");
+    expect(withCard("   ")).not.toContain("HookCard");
+  });
+});

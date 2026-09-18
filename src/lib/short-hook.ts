@@ -274,3 +274,80 @@ export function checkHook(narration: string): HookCheck {
 
   return { ok: errors.length === 0, errors };
 }
+
+/**
+ * Openings a scrolling viewer has already learned to skip.
+ *
+ * Every one of these announces that a fact is coming instead of stating it,
+ * and a channel that opens the same way every day trains its audience to
+ * swipe on the first word. Measured, not guessed: all seventeen of the history
+ * shorts on the channel this was written for opened "Did you know", and none
+ * of them left the first test pool of about a thousand viewers.
+ *
+ * Exported so the test asserts the list is applied rather than restating it.
+ * Lowercase, matched at the very start on a word boundary, like
+ * `CONTINUATION_OPENERS`.
+ */
+export const FORMULA_OPENERS = [
+  "did you know",
+  "what if i told you",
+  "have you ever",
+  "imagine",
+  "this is the story of",
+  "meet",
+  "ever wonder",
+  "here's why",
+  "here is why",
+  "you won't believe",
+  "picture this",
+] as const;
+
+/**
+ * An opening's first three words, lowercased with punctuation removed — the
+ * part of a sentence a viewer hears before deciding, and so the part two
+ * videos must not share.
+ */
+export function openingKey(sentence: string): string {
+  return sentence
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s']/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ");
+}
+
+/**
+ * Judges whether a short's opening is new: not a formula, and not the way one
+ * of this channel's recent videos opened.
+ *
+ * Separate from `checkHook` rather than folded into it, because `checkHook`
+ * also judges clips cut out of a finished video, which have no channel history
+ * to be fresh against and no say in how their first line was written.
+ */
+export function checkFreshOpening(
+  narration: string,
+  recentOpenings: readonly string[],
+): HookCheck {
+  const hook = firstSentence(narration);
+  const errors: string[] = [];
+  const formula = FORMULA_OPENERS.find((opener) => startsWith(hook, opener));
+
+  if (formula !== undefined) {
+    errors.push(
+      `The first sentence opens with "${formula}", a formula viewers have ` +
+        `learned to scroll past. Open on the fact itself.`,
+    );
+  }
+
+  const key = openingKey(hook);
+
+  if (key.length > 0 && recentOpenings.some((recent) => openingKey(recent) === key)) {
+    errors.push(
+      `The first sentence opens "${key}", the same way a recent video on this ` +
+        `channel opened. Use a different opening shape.`,
+    );
+  }
+
+  return { ok: errors.length === 0, errors };
+}

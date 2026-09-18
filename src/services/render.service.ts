@@ -231,7 +231,7 @@ export class RenderService {
         // rather than trusting stored offsets, exactly as FootageService does
         // when it collects — the two must agree on where a section starts or
         // the clip it fetched plays under the wrong words.
-        script: { select: { activeVersion: { select: { content: true, cues: true } } } },
+        script: { select: { activeVersion: { select: { content: true, cues: true, hookCard: true } } } },
       },
     });
 
@@ -571,6 +571,10 @@ export class RenderService {
               maxWordsPerLine: SHORT_MAX_WORDS_PER_LINE,
               maxCharsPerLine: SHORT_MAX_CHARS_PER_LINE,
               emphasis,
+              // A short's opening screen. Vertical only: the card is part of
+              // how a short survives the scroll, and a landscape video is
+              // chosen, not scrolled past.
+              hookCard: vertical ? (activeVersion?.hookCard ?? undefined) : undefined,
             })
           : vertical
             ? buildSrt(alignment, SHORT_MAX_WORDS_PER_LINE, SHORT_MAX_CHARS_PER_LINE)

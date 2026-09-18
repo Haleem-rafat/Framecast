@@ -70,7 +70,28 @@ export interface KineticCaptionInput {
    * looks switched off rather than broken.
    */
   emphasis?: readonly string[];
+  /**
+   * A short's hook card, drawn large at the top for the first three seconds.
+   *
+   * Two to six words written with the script (see `short-script.ts`) so that
+   * a viewer scrolling with the sound off sees the hook as text before the
+   * narration has said it. Absent for everything that is not a vertical
+   * short, which draws exactly what it drew before.
+   */
+  hookCard?: string;
 }
+
+/** How long the hook card stays up, in seconds — the window in which a
+ *  scrolling viewer decides whether to stay. */
+const HOOK_CARD_SECONDS = 3;
+
+/** The card fades out rather than cutting, so it leaves without drawing the
+ *  eye away from the first caption. */
+const HOOK_CARD_FADE_OUT_MS = 300;
+
+/** Top margin as a share of frame height: clear of YouTube's own top chrome
+ *  on a phone, and well above the captions at the bottom. */
+const HOOK_CARD_TOP_FRACTION = 0.12;
 
 /** ASS wants `H:MM:SS.cc` — centiseconds, one digit of hours, no padding on
  *  the hour. Deliberately not the SRT `HH:MM:SS,mmm` beside it. */
@@ -126,10 +147,28 @@ function header(input: KineticCaptionInput): string {
       `${style.primaryColour},${style.outlineColour},&H00000000&,-1,0,0,0,` +
       `100,100,0,0,1,${style.outline},${style.shadow},2,` +
       `${style.marginL},${style.marginR},${style.marginV},1`,
+    // Alignment 8 is top-centre. Larger than the captions and with a heavier
+    // outline, because it is read over the busiest part of the picture.
+    ...(cardText(input) === null
+      ? []
+      : [
+          `Style: HookCard,${style.fontName},${Math.round(style.fontSize * 1.15)},` +
+            `${style.primaryColour},${style.primaryColour},${style.outlineColour},` +
+            `&H00000000&,-1,0,0,0,100,100,0,0,1,${style.outline + 2},${style.shadow},8,` +
+            `${style.marginL},${style.marginR},` +
+            `${Math.round(input.height * HOOK_CARD_TOP_FRACTION)},1`,
+        ]),
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ].join("\n");
+}
+
+/** The card's text as it is drawn, or null when there is none to draw. */
+function cardText(input: KineticCaptionInput): string | null {
+  const card = input.hookCard?.trim();
+
+  return card ? card.toUpperCase() : null;
 }
 
 /**
@@ -193,6 +232,16 @@ export function buildAss(input: KineticCaptionInput): string {
   const events = cues.flatMap((cue) =>
     eventsForCue(cue, emphasised, cue[cue.length - 1].end),
   );
+
+  const card = cardText(input);
+
+  // Layer 1, so the card is drawn above any caption that overlaps it.
+  if (card !== null) {
+    events.push(
+      `Dialogue: 1,${timestamp(0)},${timestamp(HOOK_CARD_SECONDS)},HookCard,,0,0,0,,` +
+        `{\\fad(0,${HOOK_CARD_FADE_OUT_MS})}${escapeText(card)}`,
+    );
+  }
 
   return `${header(input)}\n${events.join("\n")}\n`;
 }
