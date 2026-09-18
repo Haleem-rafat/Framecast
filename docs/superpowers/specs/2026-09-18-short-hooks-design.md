@@ -67,9 +67,11 @@ as any other failed run. Both attempts are billed and summed by `billedTotals`.
 - Rendered by a pure `hookCardEvents()` beside `kinetic-captions.ts`: one ASS
   style (top-centre, `Alignment 8`, bold, upper-case, large, thick outline) and
   one event from 0.00 to 3.00s with a 300ms fade-out. Appended to the ASS file
-  the render already burns. When `captionMode` is `srt`, the card is written
-  to its own ASS file and burned in the same pass.
-- **Vertical renders only.** A landscape render ignores the column.
+  the render already burns.
+- **Vertical, kinetic-caption renders only.** A landscape render ignores the
+  column. An `srt` render ignores it too: burning a second subtitle file would
+  change `buildAssembleArgs` for a case no channel uses today (the history
+  Shorts are kinetic), so it waits until one does.
 
 ## Part 3 — Endings
 
