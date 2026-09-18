@@ -748,3 +748,58 @@ describe("brandService.listVoices", () => {
     });
   });
 });
+
+describe("brandService — caption mode", () => {
+  it("leaves the stored style alone when no caption mode is sent", async () => {
+    // The branding screen never sends one. Its Save must not start pinning a
+    // caption mode the footage style or preset would otherwise decide.
+    await prisma.channelBrand.create({
+      data: { channelId, videoStyle: { motion: { enabled: false } } },
+    });
+
+    const saved = await brandService.updateBranding(userId, brandingInput());
+    const row = await prisma.channelBrand.findUnique({ where: { channelId } });
+
+    expect(saved.captionMode).toBeNull();
+    expect(row?.videoStyle).toEqual({ motion: { enabled: false } });
+  });
+
+  it("writes the caption mode into the stored style without blanking its other dials", async () => {
+    await prisma.channelBrand.create({
+      data: {
+        channelId,
+        videoStyle: { motion: { enabled: false }, transitions: { enabled: false } },
+      },
+    });
+
+    const saved = await brandService.updateBranding(
+      userId,
+      brandingInput({ captionMode: "kinetic" }),
+    );
+    const row = await prisma.channelBrand.findUnique({ where: { channelId } });
+
+    expect(saved.captionMode).toBe("kinetic");
+    expect(row?.videoStyle).toEqual({
+      motion: { enabled: false },
+      transitions: { enabled: false },
+      captionMode: "kinetic",
+    });
+    // And the render sees it, which is the only reason to store it.
+    expect((await brandService.resolve(channelId)).videoStyle.captionMode).toBe(
+      "kinetic",
+    );
+  });
+
+  it("stores an explicit srt over a footage style that defaults to kinetic", async () => {
+    // DOODLE's own default is kinetic; a stored choice has to beat it, or
+    // offering the choice would be a lie on exactly the channels that ask.
+    const saved = await brandService.updateBranding(
+      userId,
+      brandingInput({ footageStyle: "DOODLE", captionMode: "srt" }),
+    );
+
+    expect(saved.captionMode).toBe("srt");
+    expect((await brandService.resolve(channelId)).videoStyle.captionMode).toBe("srt");
+    expect(await brandService.getBranding(userId, channelId)).toEqual(saved);
+  });
+});

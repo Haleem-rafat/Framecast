@@ -290,6 +290,20 @@ export const updateBrandingSchema = z.object({
       z.null(),
     ])
     .transform((value) => (value === "" || value === undefined ? null : value)),
+  /**
+   * Whether captions arrive a line at a time or a word at a time.
+   *
+   * Optional, unlike every other field here, and absence means "leave it
+   * alone" rather than "clear it". This is the one value this schema writes
+   * that lives inside the `videoStyle` JSON rather than in a column of its own,
+   * and a stored caption mode *overrides* whatever the footage style or preset
+   * would have chosen (see `styleBaseFor`). So it is written only when somebody
+   * actually picked one — the new-series wizard sends it when the operator
+   * changes it and never otherwise, and the branding screen does not send it at
+   * all — because pinning it on every Save would silently stop a later preset
+   * change from reaching the captions.
+   */
+  captionMode: z.enum(["srt", "kinetic"]).optional(),
 });
 
 export type UpdateBrandingInput = z.infer<typeof updateBrandingSchema>;

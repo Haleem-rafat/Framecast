@@ -6,7 +6,8 @@ import { env } from "@/config/env";
 import { findArtStyle, type ArtStyleId } from "@/lib/art-styles";
 import { NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import type { VideoStyle } from "@/lib/video-style";
+import type { CaptionMode, VideoStyle } from "@/lib/video-style";
+import type { Prisma } from "@/generated/prisma/client";
 import type { FootageStyle } from "@/generated/prisma/enums";
 import { findStylePreset, type StylePresetId } from "@/lib/style-presets";
 import { DEFAULT_STYLE, styleBaseFor } from "@/lib/video-style";
@@ -152,6 +153,18 @@ export interface ChannelBranding extends PublishingDefaults {
   /** The name recorded beside `voiceId`, so a saved voice can be named on the
    *  screen even when ElevenLabs cannot be reached to list it. */
   voiceName: string | null;
+  /**
+   * The caption mode this channel has *explicitly* stored inside `videoStyle`,
+   * or null when it has none and the footage style or preset decides.
+   *
+   * The one `videoStyle` leaf this shape carries, and it carries the stored
+   * value rather than the resolved one on purpose: a screen that offers the
+   * choice has to know whether the channel made it, because writing back the
+   * mode it merely inherited would pin it — see `captionMode` in
+   * channel.schema.ts. The resolved value is `styleBaseFor(...)` with this
+   * over it, which a client can compute itself.
+   */
+  captionMode: CaptionMode | null;
   /** Null for a channel with no brand row, which the screen reports as
    *  "never saved" rather than inventing a date. */
   updatedAt: Date | null;
@@ -323,6 +336,7 @@ type StoredBranding = {
   beatSeconds: number | null;
   voiceId: string | null;
   voiceName: string | null;
+  videoStyle: unknown;
   updatedAt: Date;
 } | null;
 
@@ -347,8 +361,49 @@ const BRANDING_SELECT = {
   beatSeconds: true,
   voiceId: true,
   voiceName: true,
+  // Read for `captionMode` alone — see `storedCaptionMode`. The rest of the
+  // column is still not this shape's to show.
+  videoStyle: true,
   updatedAt: true,
 } as const;
+
+/** Whether a stored `videoStyle` is a plain object whose keys can be kept. */
+function isStyleObject(stored: unknown): stored is Record<string, unknown> {
+  return typeof stored === "object" && stored !== null && !Array.isArray(stored);
+}
+
+/**
+ * The caption mode a stored `videoStyle` explicitly names, or null.
+ *
+ * Read leaf-by-leaf rather than through `videoStyleSchema`, because the two
+ * questions differ: `mergeVideoStyle` discards a column that is partly garbage
+ * as a whole, while this only asks whether the one key a screen offers holds
+ * one of its two values. A malformed neighbour does not make the caption mode
+ * somebody chose any less chosen.
+ */
+function storedCaptionMode(stored: unknown): CaptionMode | null {
+  if (!isStyleObject(stored)) {
+    return null;
+  }
+
+  const mode = stored.captionMode;
+
+  return mode === "srt" || mode === "kinetic" ? mode : null;
+}
+
+/**
+ * The stored `videoStyle` with its caption mode replaced and every other key
+ * kept exactly as it was.
+ *
+ * A merge rather than a write of `{ captionMode }`, and that is the whole
+ * reason `updateBranding` could not take this field before: the column holds
+ * motion, transitions, audio and voice dials that nothing in the UI edits, and
+ * a write naming only the caption mode would blank all of them. A column that
+ * is not an object at all — null, which is most channels — starts from empty.
+ */
+function withCaptionMode(stored: unknown, mode: CaptionMode): Prisma.InputJsonValue {
+  return { ...(isStyleObject(stored) ? stored : {}), captionMode: mode } as Prisma.InputJsonValue;
+}
 
 /**
  * One mapping from stored columns to `ChannelBranding`, shared by the read and
@@ -400,6 +455,7 @@ function toBranding(brand: StoredBranding): ChannelBranding {
     // other, and a picker showing a name against no selection is worse than
     // showing nothing.
     voiceName: brand?.voiceId ? (brand.voiceName ?? null) : null,
+    captionMode: storedCaptionMode(brand?.videoStyle),
     updatedAt: brand?.updatedAt ?? null,
   };
 }
@@ -617,7 +673,9 @@ export class BrandService {
    * has one Save. Splitting it would mean a channel could come out of a failed
    * save with new colours and an old audience declaration, and no way to see
    * which half landed. `videoStyle` and `logoPath` are deliberately absent:
-   * the first is not edited here at all, and the second is written by
+   * the first is not edited here — apart from its one `captionMode` leaf,
+   * merged into whatever is stored and only when a caller names one — and
+   * the second is written by
    * `LogoService.choose` at the moment an option is picked, so naming it on
    * the `update` branch would let a Save that happened to be in flight put the
    * previous logo back.
@@ -642,11 +700,16 @@ export class BrandService {
     userId: string,
     input: UpdateBrandingInput,
   ): Promise<ChannelBranding> {
-    const { channelId, ...fields } = input;
+    const { channelId, captionMode, ...fields } = input;
 
     const channel = await prisma.channel.findFirst({
       where: { id: channelId, userId, deletedAt: null },
-      select: { id: true },
+      // The stored style is read only when it is about to be rewritten — see
+      // `withCaptionMode` for why the rewrite has to start from it.
+      select: {
+        id: true,
+        brand: captionMode ? { select: { videoStyle: true } } : false,
+      },
     });
 
     if (!channel) {
@@ -662,6 +725,11 @@ export class BrandService {
     const written = {
       ...fields,
       voiceName: fields.voiceId ? fields.voiceName : null,
+      // Absent means untouched, not cleared — see `captionMode` in
+      // channel.schema.ts. Named only when the caller picked one.
+      ...(captionMode
+        ? { videoStyle: withCaptionMode(channel.brand?.videoStyle, captionMode) }
+        : {}),
     };
 
     const brand = await prisma.channelBrand.upsert({
