@@ -277,7 +277,7 @@ shared with production.
 | `RENDER_ROOT` | `/data/renders` — same. |
 | `BETTER_AUTH_SECRET` | `openssl rand -base64 32`. Fine to differ between prod and staging — it only signs each environment's own sessions. |
 | `CREDENTIAL_ENCRYPTION_KEY` | **Copy unchanged, same value in both files. Never regenerate.** See below. |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | From the Google Cloud Console OAuth client already in use. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | From the Google Cloud Console OAuth client already in use. **Its consent screen must be published ("In production")**, or Google expires every channel's refresh token after 7 days and publishing fails weekly with "access has expired or been revoked". See README → *Providers and credentials → YouTube channels that need reconnecting every week* for the console steps. |
 | `AI_GATEWAY_API_KEY` | From the Vercel AI Gateway project. |
 | `PEXELS_API_KEY`, `PIXABAY_API_KEY` | Platform-level stock footage keys, not per-operator. |
 | `JAMENDO_CLIENT_ID` | Prod only. In `staging.env`, **comment the line out** — do not write `JAMENDO_CLIENT_ID=`. `src/config/env.ts` accepts it absent but rejects the empty string, and `env_file:` passes a bare `NAME=` through as `""`, so an "empty" line stops `app-staging` booting. |

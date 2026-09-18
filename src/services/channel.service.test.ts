@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { NotFoundError } from "@/lib/errors";
+import { NotFoundError, ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { FetchLike } from "@/services/channel.service";
-import { ChannelService, channelService } from "@/services/channel.service";
+import {
+  CHANNEL_CONNECTED_ACTION,
+  CHANNEL_TOKEN_REVOKED_ACTION,
+  ChannelService,
+  channelService,
+} from "@/services/channel.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Postgres database (see src/test/setup.ts)
@@ -298,6 +303,189 @@ describe("channelService", () => {
       const { decryptSecret } = await import("@/lib/crypto");
       expect(row.refreshToken).not.toBeNull();
       expect(decryptSecret(row.refreshToken!)).toBe("1//new-refresh-token");
+    });
+  });
+
+  // A dead refresh token is reported with its age, because Google kills tokens
+  // issued to an OAuth app in Testing after exactly seven days with the same
+  // invalid_grant it uses for a real revocation. Age is the only tell.
+  describe("resolveAccessToken — a refused refresh token", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    function refusingFetch(status: number, body: object): FetchLike {
+      return (async () =>
+        ({
+          ok: false,
+          status,
+          text: async () => JSON.stringify(body),
+        }) as Response) as FetchLike;
+    }
+
+    const INVALID_GRANT = {
+      error: "invalid_grant",
+      error_description: "Token has been expired or revoked.",
+    };
+
+    /** Connects, forces the next call to refresh, and backdates the connection. */
+    async function connectedDaysAgo(days: number): Promise<string> {
+      const summary = await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Dev Pixel",
+        ...TOKENS,
+      });
+      await prisma.channel.update({
+        where: { id: summary.id },
+        data: { tokenExpiresAt: new Date(Date.now() - 60_000) },
+      });
+      await prisma.activityLog.updateMany({
+        where: { entityId: summary.id, action: CHANNEL_CONNECTED_ACTION },
+        data: { createdAt: new Date(Date.now() - days * DAY) },
+      });
+      return summary.id;
+    }
+
+    it("records each (re)connection, which is what the age is measured from", async () => {
+      const summary = await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Dev Pixel",
+        ...TOKENS,
+      });
+      await channelService.connect(userId, {
+        youtubeChannelId: YOUTUBE_CHANNEL_ID,
+        title: "Dev Pixel",
+        ...TOKENS,
+      });
+
+      expect(
+        await prisma.activityLog.count({
+          where: { userId, entityId: summary.id, action: CHANNEL_CONNECTED_ACTION },
+        }),
+      ).toBe(2);
+    });
+
+    it("names Testing mode when the token died seven days after connecting", async () => {
+      const channelId = await connectedDaysAgo(7.1);
+      const service = new ChannelService(refusingFetch(400, INVALID_GRANT));
+
+      const error = await service.resolveAccessToken(userId, channelId).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProviderError);
+      expect((error as ProviderError).retryable).toBe(false);
+      expect((error as ProviderError).message).toMatch(/Testing/);
+      expect((error as ProviderError).message).toContain("Publishing status → Publish app");
+
+      const logged = await prisma.activityLog.findFirstOrThrow({
+        where: { userId, entityId: channelId, action: CHANNEL_TOKEN_REVOKED_ACTION },
+      });
+      expect(logged.level).toBe("ERROR");
+      expect(logged.metadata).toMatchObject({
+        googleError: "invalid_grant",
+        likelyTestingMode: true,
+      });
+      expect((logged.metadata as { tokenAgeHours: number }).tokenAgeHours).toBeCloseTo(
+        7.1 * 24,
+        0,
+      );
+    });
+
+    it("logs one row per dead token and keeps measuring to the first refusal", async () => {
+      const channelId = await connectedDaysAgo(7.1);
+      const service = new ChannelService(refusingFetch(400, INVALID_GRANT));
+
+      await service.resolveAccessToken(userId, channelId).catch(() => undefined);
+      // Days later the collector tries again. Measured to now this would be
+      // 20 days and read as "not Testing mode"; measured to the first refusal
+      // it is still 7.
+      await prisma.activityLog.updateMany({
+        where: { entityId: channelId, action: CHANNEL_TOKEN_REVOKED_ACTION },
+        data: { createdAt: new Date(Date.now() - 13 * DAY) },
+      });
+      await prisma.activityLog.updateMany({
+        where: { entityId: channelId, action: CHANNEL_CONNECTED_ACTION },
+        data: { createdAt: new Date(Date.now() - 20 * DAY) },
+      });
+      const second = (await service
+        .resolveAccessToken(userId, channelId)
+        .catch((e: unknown) => e)) as ProviderError;
+
+      expect(second.message).toMatch(/Testing/);
+      expect(
+        await prisma.activityLog.count({
+          where: { entityId: channelId, action: CHANNEL_TOKEN_REVOKED_ACTION },
+        }),
+      ).toBe(1);
+    });
+
+    it("does not blame Testing mode for a token revoked two days in", async () => {
+      const channelId = await connectedDaysAgo(2);
+      const service = new ChannelService(refusingFetch(400, INVALID_GRANT));
+
+      const error = (await service
+        .resolveAccessToken(userId, channelId)
+        .catch((e: unknown) => e)) as ProviderError;
+
+      expect(error.message).not.toMatch(/Testing/);
+      expect(error.message).toContain("2 days old");
+      expect(error.message).toMatch(/reconnect the channel/i);
+    });
+
+    // Reconnecting starts a new token, so a later refusal is measured from the
+    // new connection and logged afresh.
+    it("measures a reconnected channel from the reconnection", async () => {
+      const channelId = await connectedDaysAgo(7.1);
+      const service = new ChannelService(refusingFetch(400, INVALID_GRANT));
+      await service.resolveAccessToken(userId, channelId).catch(() => undefined);
+      await prisma.activityLog.updateMany({
+        where: { entityId: channelId },
+        data: { createdAt: new Date(Date.now() - 10 * DAY) },
+      });
+
+      await connectedDaysAgo(1);
+      const error = (await service
+        .resolveAccessToken(userId, channelId)
+        .catch((e: unknown) => e)) as ProviderError;
+
+      expect(error.message).not.toMatch(/Testing/);
+      expect(error.message).toContain("1 day old");
+      expect(
+        await prisma.activityLog.count({
+          where: { entityId: channelId, action: CHANNEL_TOKEN_REVOKED_ACTION },
+        }),
+      ).toBe(2);
+    });
+
+    it("keeps a misconfigured client out of the revoked path entirely", async () => {
+      const channelId = await connectedDaysAgo(7.1);
+      const service = new ChannelService(
+        refusingFetch(401, { error: "invalid_client", error_description: "Unauthorized" }),
+      );
+
+      const error = (await service
+        .resolveAccessToken(userId, channelId)
+        .catch((e: unknown) => e)) as ProviderError;
+
+      expect(error.message).toMatch(/deployment's Google credentials/);
+      expect(error.message).not.toMatch(/Testing/);
+      expect(
+        await prisma.activityLog.count({
+          where: { entityId: channelId, action: CHANNEL_TOKEN_REVOKED_ACTION },
+        }),
+      ).toBe(0);
+    });
+
+    it("reports an unreachable Google as retryable, not as a revoked grant", async () => {
+      const channelId = await connectedDaysAgo(7.1);
+      const service = new ChannelService((async () => {
+        throw new TypeError("fetch failed");
+      }) as FetchLike);
+
+      const error = (await service
+        .resolveAccessToken(userId, channelId)
+        .catch((e: unknown) => e)) as ProviderError;
+
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error.retryable).toBe(true);
+      expect(error.message).not.toMatch(/revoked|Testing/);
     });
   });
 });

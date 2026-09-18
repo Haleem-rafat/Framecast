@@ -305,6 +305,49 @@ A stored credential takes precedence over the gateway key. Spend is recorded
 per call in `ProviderUsage` (`lib/cost.ts`), including what an image actually
 cost rather than what survived the reporting.
 
+### YouTube channels that need reconnecting every week
+
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` belong to a Google Cloud OAuth
+client. While that client's OAuth consent screen is in **Testing**, Google
+expires every refresh token it issues **7 days** after the channel is
+connected. The refresh then fails with `invalid_grant` ("Token has been expired
+or revoked"), and publishing and analytics stop for that channel until it is
+reconnected, which only buys it another 7 days. No code can change this. The
+fix is a setting in the Google Cloud Console.
+
+**How to tell it's this.** The app records every connection
+(`channel.connected`) and the first refusal after it
+(`channel.tokenRefresh.revoked`, level ERROR) on `/logs`. The refusal row's
+metadata carries `tokenAgeHours` and `likelyTestingMode`. When the token died
+7–9 days after connecting, the publish error itself says Testing mode is the
+likely cause. A token that died sooner was revoked some other way, for example
+access removed at myaccount.google.com/permissions.
+
+**Fix (once, by whoever owns the Google Cloud project):**
+
+1. Open console.cloud.google.com and select the project that owns the OAuth
+   client whose ID is in the deployment's `GOOGLE_CLIENT_ID` (check
+   `/srv/framecast/env/prod.env` on the VPS. Staging may use the same one).
+2. **APIs & Services → OAuth consent screen**. In the newer console this page
+   is **Google Auth Platform → Audience**.
+3. Under **Publishing status** (user type *External*), click **Publish app**
+   and confirm. The status now reads **In production**.
+4. The YouTube scopes Framecast requests (`youtube.upload`, `youtube.readonly`,
+   `yt-analytics.readonly`, `yt-analytics-monetary.readonly`) are *sensitive*.
+   Google may therefore ask you to submit the app for verification. Publishing
+   works without verification: an unverified app **in production** still gets
+   long-lived refresh tokens. The consent screen then shows a "Google hasn't
+   verified this app" warning (continue via *Advanced → Go to …*), and the
+   app is capped at 100 users. That is fine for a single-operator studio.
+5. **Reconnect every channel once** on `/channels`. Tokens issued while the app
+   was in Testing keep their 7-day expiry, and only a new connection gets a
+   token without one.
+
+A token issued in production still dies if the account owner revokes access,
+changes the channel's owner, or leaves it unused for 6 months. None of these
+apply to an active channel, because the analytics collector uses every
+connected channel's token daily.
+
 ## Getting started
 
 Requires **Node 24+**, **pnpm**, **Docker**, and **FFmpeg** on `PATH` for local
