@@ -85,6 +85,104 @@ export interface VoiceChoiceOption {
 }
 
 /**
+ * The operator's ElevenLabs voices and which of the three honest answers the
+ * service gave — the fetch half of `VoicePicker`, exported for a screen that
+ * lays the same list out differently (the new-series wizard's voice cards).
+ * Every wording rule below still applies to whoever renders it.
+ *
+ * `loading` is this hook's own fourth state — the service only ever answers
+ * with one of the three real ones.
+ */
+export function useVoiceList(): {
+  voices: SpeechVoice[];
+  status: VoiceListStatus | "loading";
+} {
+  const [voices, setVoices] = useState<SpeechVoice[]>([]);
+  const [status, setStatus] = useState<VoiceListStatus | "loading">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadVoices() {
+      const result = await listVoicesAction();
+
+      if (cancelled) return;
+
+      // The action cannot fail for a reachability reason — the service turns
+      // every one of those into a status — so a rejected result means the
+      // session check failed, which the operator will discover on submit.
+      if (!result.ok) {
+        setStatus("unavailable");
+        return;
+      }
+
+      setVoices(result.data.voices);
+      setStatus(result.data.status);
+    }
+
+    void loadVoices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { voices, status };
+}
+
+/** What the list's status means, in words — shared by every layout of the
+ *  list so the credential-missing and outage wording cannot drift. Renders
+ *  nothing when there is a non-empty list to show. */
+export function VoiceListNotice({
+  status,
+  voiceCount,
+}: {
+  status: VoiceListStatus | "loading";
+  voiceCount: number;
+}) {
+  return (
+    <>
+      {status === "loading" && (
+        <p className="text-muted-foreground flex items-center gap-2 text-xs">
+          <Loader2 className="size-3.5 animate-spin" />
+          Listing the voices on your ElevenLabs account…
+        </p>
+      )}
+
+      {status === "no-credential" && (
+        <p className="text-muted-foreground flex items-start gap-2 text-xs">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            No ElevenLabs key is stored, so there is no account to list voices
+            from. Add one on the{" "}
+            <Link href="/providers" className="underline underline-offset-3">
+              Providers page
+            </Link>{" "}
+            and this list fills in. Narration needs that key anyway.
+          </span>
+        </p>
+      )}
+
+      {status === "unavailable" && (
+        <p className="text-muted-foreground flex items-start gap-2 text-xs">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          ElevenLabs didn&apos;t answer, so the voices on your account
+          couldn&apos;t be listed. Whatever is already chosen is unchanged —
+          nothing below is a guess at what your account has.
+        </p>
+      )}
+
+      {status === "ok" && voiceCount === 0 && (
+        <p className="text-muted-foreground text-xs">
+          Your ElevenLabs account returned no voices. Adding one in ElevenLabs
+          and reloading this page will list it.
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
  * The list of voices an operator can narrate with, fetched from their own
  * ElevenLabs account.
  *
@@ -151,38 +249,8 @@ export function VoicePicker({
   invalid?: boolean;
   disabled?: boolean;
 }) {
-  const [voices, setVoices] = useState<SpeechVoice[]>([]);
-  /** `loading` is this component's own fourth state — the service only ever
-   *  answers with one of the three real ones. */
-  const [status, setStatus] = useState<VoiceListStatus | "loading">("loading");
+  const { voices, status } = useVoiceList();
   const [previewing, setPreviewing] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadVoices() {
-      const result = await listVoicesAction();
-
-      if (cancelled) return;
-
-      // The action cannot fail for a reachability reason — the service turns
-      // every one of those into a status — so a rejected result means the
-      // session check failed, which the operator will discover on submit.
-      if (!result.ok) {
-        setStatus("unavailable");
-        return;
-      }
-
-      setVoices(result.data.voices);
-      setStatus(result.data.status);
-    }
-
-    void loadVoices();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const unlisted =
     value &&
@@ -193,42 +261,7 @@ export function VoicePicker({
 
   return (
     <div className="space-y-3">
-      {status === "loading" && (
-        <p className="text-muted-foreground flex items-center gap-2 text-xs">
-          <Loader2 className="size-3.5 animate-spin" />
-          Listing the voices on your ElevenLabs account…
-        </p>
-      )}
-
-      {status === "no-credential" && (
-        <p className="text-muted-foreground flex items-start gap-2 text-xs">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            No ElevenLabs key is stored, so there is no account to list voices
-            from. Add one on the{" "}
-            <Link href="/providers" className="underline underline-offset-3">
-              Providers page
-            </Link>{" "}
-            and this list fills in. Narration needs that key anyway.
-          </span>
-        </p>
-      )}
-
-      {status === "unavailable" && (
-        <p className="text-muted-foreground flex items-start gap-2 text-xs">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          ElevenLabs didn&apos;t answer, so the voices on your account
-          couldn&apos;t be listed. Whatever is already chosen is unchanged —
-          nothing below is a guess at what your account has.
-        </p>
-      )}
-
-      {status === "ok" && voices.length === 0 && (
-        <p className="text-muted-foreground text-xs">
-          Your ElevenLabs account returned no voices. Adding one in ElevenLabs
-          and reloading this page will list it.
-        </p>
-      )}
+      <VoiceListNotice status={status} voiceCount={voices.length} />
 
       <RadioGroup
         value={value}
