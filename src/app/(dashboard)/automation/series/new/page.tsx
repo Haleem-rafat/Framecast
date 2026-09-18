@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
-import { SeriesForm } from "@/features/automation/components/series-form";
+import { SeriesWizard } from "@/features/automation/components/wizard/series-wizard";
 import { requireUser } from "@/server/session";
+import { brandService } from "@/services/brand.service";
 import { seriesService } from "@/services/series.service";
 
 export const metadata: Metadata = { title: "New series" };
@@ -32,14 +33,30 @@ export default async function NewSeriesPage() {
     );
   }
 
+  // Every channel's brand, read up front: the wizard's voice, music, look and
+  // caption steps start from the chosen channel's current answers and write
+  // back through the branding screen's own action, which needs the fields
+  // they do not touch as well. An operator has a handful of channels, so one
+  // read each is cheaper than a round trip every time the channel changes.
+  const brandings = Object.fromEntries(
+    await Promise.all(
+      setup.channels.map(
+        async (channel) =>
+          [channel.id, await brandService.getBranding(user.id, channel.id)] as const,
+      ),
+    ),
+  );
+
   return (
-    <>
+    // The header sits in the wizard's own column, so the title and the step
+    // under it share a left edge instead of the step floating off-centre.
+    <div className="mx-auto w-full max-w-[700px] space-y-6">
       <PageHeader
         title="New series"
-        description="Answer this once. Every episode is written in the style you pick, in the shape you pick, on the channel you pick — and the topics come from the list you write below, never from a model guessing."
+        description="A recurring show, answered once. Every episode is written, voiced and scheduled the way you set it up here — and the topics come from your list, never from a model guessing."
       />
 
-      <SeriesForm setup={setup} timeZones={TIME_ZONES} />
-    </>
+      <SeriesWizard setup={setup} brandings={brandings} timeZones={TIME_ZONES} />
+    </div>
   );
 }
