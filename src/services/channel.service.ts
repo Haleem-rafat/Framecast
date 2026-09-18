@@ -2,7 +2,12 @@ import "server-only";
 
 import { env } from "@/config/env";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
-import { describeRefreshFailure } from "@/lib/oauth-refresh";
+import {
+  classifyRefreshFailure,
+  describeRefreshFailure,
+  formatTokenAge,
+  looksLikeTestingModeExpiry,
+} from "@/lib/oauth-refresh";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { prisma } from "@/lib/prisma";
 import type { YouTubeTokens } from "@/lib/youtube-oauth";
@@ -13,6 +18,13 @@ export type FetchLike = typeof fetch;
 /** Google access tokens last ~1h; refresh a little early rather than racing
  * an upload that starts mid-request against the exact expiry instant. */
 const REFRESH_WINDOW_MS = 5 * 60 * 1000;
+
+/** ActivityLog action written each time a channel is (re)connected. */
+export const CHANNEL_CONNECTED_ACTION = "channel.connected";
+
+/** ActivityLog action written the first time Google refuses a channel's
+ *  refresh token with `invalid_grant` after it was (re)connected. */
+export const CHANNEL_TOKEN_REVOKED_ACTION = "channel.tokenRefresh.revoked";
 
 export interface ChannelSummary {
   id: string;
@@ -110,35 +122,56 @@ export class ChannelService {
     const encryptedRefreshToken = encryptSecret(refreshToken);
     const tokenExpiresAt = new Date(Date.now() + expiresInSeconds * 1000);
 
-    return prisma.channel.upsert({
-      where: { userId_youtubeChannelId: { userId, youtubeChannelId } },
-      create: {
-        userId,
-        youtubeChannelId,
-        title,
-        handle,
-        description,
-        thumbnailUrl,
-        accessToken: encryptedAccessToken,
-        refreshToken: encryptedRefreshToken,
-        tokenExpiresAt,
-        scopes,
-        isActive: true,
-        deletedAt: null,
-      },
-      update: {
-        title,
-        handle,
-        description,
-        thumbnailUrl,
-        accessToken: encryptedAccessToken,
-        refreshToken: encryptedRefreshToken,
-        tokenExpiresAt,
-        scopes,
-        isActive: true,
-        deletedAt: null,
-      },
-      select: SUMMARY_SELECT,
+    return prisma.$transaction(async (tx) => {
+      const channel = await tx.channel.upsert({
+        where: { userId_youtubeChannelId: { userId, youtubeChannelId } },
+        create: {
+          userId,
+          youtubeChannelId,
+          title,
+          handle,
+          description,
+          thumbnailUrl,
+          accessToken: encryptedAccessToken,
+          refreshToken: encryptedRefreshToken,
+          tokenExpiresAt,
+          scopes,
+          isActive: true,
+          deletedAt: null,
+        },
+        update: {
+          title,
+          handle,
+          description,
+          thumbnailUrl,
+          accessToken: encryptedAccessToken,
+          refreshToken: encryptedRefreshToken,
+          tokenExpiresAt,
+          scopes,
+          isActive: true,
+          deletedAt: null,
+        },
+        select: SUMMARY_SELECT,
+      });
+
+      // The moment Google issued the refresh token now stored. `connectedAt`
+      // can't serve: it is set once, on the first connection, and several
+      // readers order channels by it, so moving it on reconnect would change
+      // which channel counts as "first". This row is what lets a later
+      // `invalid_grant` say how old the token was when it died — see
+      // `refreshTokenAgeMs` and oauth-refresh.ts.
+      await tx.activityLog.create({
+        data: {
+          userId,
+          action: CHANNEL_CONNECTED_ACTION,
+          entityType: "Channel",
+          entityId: channel.id,
+          message: `Connected YouTube channel "${title}". Google issued a new refresh token.`,
+          metadata: { youtubeChannelId },
+        },
+      });
+
+      return channel;
     });
   }
 
@@ -237,16 +270,30 @@ export class ChannelService {
     channelId: string,
     refreshToken: string,
   ): Promise<string> {
-    const response = await this.fetchImpl("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: env.GOOGLE_CLIENT_ID ?? "",
-        client_secret: env.GOOGLE_CLIENT_SECRET ?? "",
-        refresh_token: refreshToken,
-        grant_type: "refresh_token",
-      }),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: env.GOOGLE_CLIENT_ID ?? "",
+          client_secret: env.GOOGLE_CLIENT_SECRET ?? "",
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+        }),
+      });
+    } catch (error) {
+      // DNS, a reset connection, a timeout: Google never answered, so nothing
+      // is known about the token. Typed and retryable rather than a bare
+      // `TypeError: fetch failed` — and never reported as a revoked grant.
+      throw new ProviderError(
+        "YOUTUBE",
+        "Could not reach Google to refresh this channel's access token. This usually clears " +
+          "on its own, and the upload will be tried again.",
+        true,
+        { cause: error },
+      );
+    }
 
     if (!response.ok) {
       // Classified in `describeRefreshFailure`, which is pure so the decision
@@ -254,7 +301,15 @@ export class ChannelService {
       // that matters: a revoked grant is fixed by reconnecting, a bad client id
       // is not, and telling an operator to reconnect against the second is a
       // loop that cannot terminate.
-      const failure = describeRefreshFailure(response.status, await response.text());
+      const rawBody = await response.text();
+      const kind = classifyRefreshFailure(response.status, rawBody);
+
+      // Only a dead grant needs its age: that is what tells Google's 7-day
+      // Testing-mode expiry apart from a real revocation.
+      const tokenAgeMs =
+        kind === "revoked" ? await this.recordRevokedGrant(userId, channelId) : null;
+
+      const failure = describeRefreshFailure(response.status, rawBody, { tokenAgeMs });
 
       throw new ProviderError("YOUTUBE", failure.message, failure.retryable);
     }
@@ -281,6 +336,80 @@ export class ChannelService {
     });
 
     return body.access_token;
+  }
+
+  /**
+   * How old this channel's refresh token was when Google first refused it —
+   * from its most recent (re)connection to the first `invalid_grant` since —
+   * and records that first refusal, with the age, on the activity log.
+   *
+   * Measured to the FIRST refusal rather than to now because every publish and
+   * collector pass after that refuses the same dead token again; measuring to
+   * now would let the age drift past Testing mode's 7 days and hide the one
+   * cause that reconnecting cannot fix for good.
+   *
+   * `null` when the channel was connected before connections were recorded.
+   * Never throws: this only improves a message about a failure that is already
+   * being reported, so it must not replace that failure with its own.
+   */
+  private async recordRevokedGrant(userId: string, channelId: string): Promise<number | null> {
+    try {
+      const where = { userId, entityType: "Channel", entityId: channelId };
+
+      const connected = await prisma.activityLog.findFirst({
+        where: { ...where, action: CHANNEL_CONNECTED_ACTION },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      });
+
+      const firstRefusal = await prisma.activityLog.findFirst({
+        where: {
+          ...where,
+          action: CHANNEL_TOKEN_REVOKED_ACTION,
+          ...(connected ? { createdAt: { gte: connected.createdAt } } : {}),
+        },
+        orderBy: { createdAt: "asc" },
+        select: { createdAt: true },
+      });
+
+      const refusedAt = firstRefusal?.createdAt ?? new Date();
+      const tokenAgeMs = connected ? refusedAt.getTime() - connected.createdAt.getTime() : null;
+
+      // One row per dead token, not one per retry: the collector and every
+      // publish attempt would otherwise add another identical error each pass.
+      if (!firstRefusal) {
+        const testingMode = looksLikeTestingModeExpiry(tokenAgeMs);
+
+        await prisma.activityLog.create({
+          data: {
+            userId,
+            level: "ERROR",
+            action: CHANNEL_TOKEN_REVOKED_ACTION,
+            entityType: "Channel",
+            entityId: channelId,
+            message:
+              tokenAgeMs === null
+                ? "Google refused this channel's refresh token (invalid_grant). Its age is unknown: " +
+                  "the channel was connected before connections were recorded."
+                : `Google refused this channel's refresh token (invalid_grant) ` +
+                  `${formatTokenAge(tokenAgeMs)} after it was connected.` +
+                  (testingMode
+                    ? " That matches Google's 7-day expiry for OAuth apps in Testing publishing status."
+                    : ""),
+            metadata: {
+              googleError: "invalid_grant",
+              tokenAgeHours:
+                tokenAgeMs === null ? null : Math.round((tokenAgeMs / 3_600_000) * 10) / 10,
+              likelyTestingMode: testingMode,
+            },
+          },
+        });
+      }
+
+      return tokenAgeMs;
+    } catch {
+      return null;
+    }
   }
 }
 
