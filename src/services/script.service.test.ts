@@ -925,3 +925,165 @@ describe("scriptService.generate — the channel's recurring character", () => {
     expect(version.prompt).not.toContain("{{");
   });
 });
+
+describe("scriptService.generate — shorts", () => {
+  const GOOD = {
+    content: "Marcus Aurelius handed Rome to a lunatic. He knew better and did it anyway.",
+    hookCard: "THE WISE MAN'S WORST CHOICE",
+  };
+
+  function answer(fields: { content: string; hookCard?: string }) {
+    return {
+      ...fields,
+      model: FAKE_MODEL,
+      provider: "ANTHROPIC" as const,
+      inputTokens: 100,
+      outputTokens: 400,
+      costUsd: 0.0063,
+      latencyMs: 1200,
+    };
+  }
+
+  let provider: { generateScript: ReturnType<typeof vi.fn> };
+  let shorts: ScriptService;
+  let templateId: string;
+  let channelVideo: () => Promise<string>;
+
+  beforeEach(async () => {
+    provider = { generateScript: vi.fn() };
+    shorts = new ScriptService(provider);
+
+    templateId = (
+      await prisma.promptTemplate.create({
+        data: {
+          userId,
+          name: "Short",
+          category: "SCRIPT",
+          content: "Write a {{seconds}}-second short about {{topic}}.",
+          variables: {
+            create: [
+              { key: "topic", label: "Topic", required: true },
+              { key: "seconds", label: "Seconds", defaultValue: "45" },
+            ],
+          },
+        },
+      })
+    ).id;
+
+    const channel = await prisma.channel.create({
+      data: {
+        userId,
+        youtubeChannelId: `UC-short-${randomUUID()}`,
+        title: "Test shorts channel",
+      },
+    });
+    const project = await projectService.create(userId, {
+      name: `${PROJECT_NAME}-${randomUUID().slice(0, 8)}`,
+    });
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { channelId: channel.id },
+    });
+
+    channelVideo = async () =>
+      (
+        await videoService.create(userId, {
+          projectId: project.id,
+          title: "The wisest emperor",
+          topic: "Marcus Aurelius and Commodus",
+        })
+      ).id;
+  });
+
+  it("stores the hook card and a LOOP ending for a channel's first short", async () => {
+    provider.generateScript.mockResolvedValueOnce(answer(GOOD));
+
+    const version = await shorts.generate(userId, await channelVideo(), { templateId });
+
+    expect(version.hookCard).toBe(GOOD.hookCard);
+    expect(version.endingKind).toBe("LOOP");
+    expect(provider.generateScript.mock.calls[0][0].system).toContain("ENDING: loop");
+  });
+
+  it("retries once with the gate's reasons and bills both attempts", async () => {
+    provider.generateScript
+      .mockResolvedValueOnce(answer({ content: "Did you know Rome fell? Subscribe." }))
+      .mockResolvedValueOnce(answer(GOOD));
+
+    await shorts.generate(userId, await channelVideo(), { templateId });
+
+    expect(provider.generateScript).toHaveBeenCalledTimes(2);
+    expect(provider.generateScript.mock.calls[1][0].prompt).toContain(
+      "Your previous answer was rejected",
+    );
+    expect(provider.generateScript.mock.calls[1][0].prompt).toContain('"did you know"');
+
+    const usage = await prisma.providerUsage.findFirst({
+      where: { model: FAKE_MODEL, succeeded: true },
+    });
+    expect(usage?.inputTokens).toBe(200);
+  });
+
+  it("gives up after two failures and saves nothing", async () => {
+    provider.generateScript.mockResolvedValue(answer({ content: "Did you know Rome fell?" }));
+    const id = await channelVideo();
+
+    await expect(shorts.generate(userId, id, { templateId })).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    expect(provider.generateScript).toHaveBeenCalledTimes(2);
+    expect(await prisma.scriptVersion.count({ where: { script: { videoId: id } } })).toBe(0);
+  });
+
+  it("refuses an opening this channel's last video already used", async () => {
+    provider.generateScript.mockResolvedValue(answer(GOOD));
+    await shorts.generate(userId, await channelVideo(), { templateId });
+
+    await expect(
+      shorts.generate(userId, await channelVideo(), { templateId }),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("does not hold a regeneration against the draft it replaces", async () => {
+    provider.generateScript.mockResolvedValue(answer(GOOD));
+    const id = await channelVideo();
+
+    await shorts.generate(userId, id, { templateId });
+    const again = await shorts.generate(userId, id, { templateId });
+
+    expect(again.version).toBe(2);
+  });
+
+  it("alternates the ending on the channel's next short", async () => {
+    provider.generateScript
+      .mockResolvedValueOnce(answer(GOOD))
+      .mockResolvedValueOnce(
+        answer({
+          content: "Four hundred ships burned on one order. China chose to disappear.",
+          hookCard: "CHINA BURNED ITS OWN FLEET",
+        }),
+      );
+
+    await shorts.generate(userId, await channelVideo(), { templateId });
+    const second = await shorts.generate(userId, await channelVideo(), { templateId });
+
+    expect(second.endingKind).toBe("DEBATE");
+    expect(provider.generateScript.mock.calls[1][0].system).toContain(
+      "- Marcus Aurelius handed Rome to a lunatic.",
+    );
+  });
+
+  it("sends a five-minute script on the same channel exactly as before", async () => {
+    provider.generateScript.mockResolvedValue(answer({ content: "Did you know Rome fell?" }));
+
+    const version = await shorts.generate(userId, await channelVideo(), {
+      templateId,
+      variables: { seconds: "300" },
+    });
+
+    expect(provider.generateScript).toHaveBeenCalledTimes(1);
+    expect(provider.generateScript.mock.calls[0][0].system).toBeUndefined();
+    expect(version.hookCard).toBeNull();
+    expect(version.endingKind).toBeNull();
+  });
+});

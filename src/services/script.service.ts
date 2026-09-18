@@ -9,6 +9,14 @@ import { prisma } from "@/lib/prisma";
 import { renderTemplate } from "@/lib/prompt-template";
 import { recurringCharacterInstruction } from "@/lib/recurring-character";
 import { anchorCues, extractAnchor, type ScriptCue } from "@/lib/script-cues";
+import { firstSentence } from "@/lib/short-hook";
+import {
+  checkShortScript,
+  isShortTarget,
+  nextEndingKind,
+  shortInstruction,
+  type EndingKind,
+} from "@/lib/short-script";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import { gatewayProvider } from "@/services/providers/gateway.provider";
@@ -80,6 +88,17 @@ const INSIGHT_ATTEMPTS = 2;
  *  with one section untagged spends about $2 of generated stills on a video
  *  that is a quarter shorter of pictures than it was written for. */
 const LONGFORM_ATTEMPTS = 2;
+
+/** The same two again, for a short. The retry is where most of this gate's
+ *  value is: a model told "you opened like the last video did" almost always
+ *  opens differently the second time, and a third bill would buy nothing a
+ *  second one did not. */
+const SHORT_ATTEMPTS = 2;
+
+/** How many of the channel's recent scripts a short's opening must differ
+ *  from. Ten is about a week and a half at one short a day — long enough that
+ *  a returning viewer has heard every one of them. */
+const RECENT_OPENINGS = 10;
 
 /**
  * What the model is told before the validator's own sentences.
@@ -158,6 +177,10 @@ export class ScriptService {
         // outcome as a live-action channel, which is to say no change at all.
         project: {
           select: {
+            // Read only to find this channel's recent shorts — see
+            // `shortContext`. A project with no channel has no history to be
+            // fresh against, so its shorts are not gated at all.
+            channelId: true,
             channel: {
               select: {
                 brand: {
@@ -261,7 +284,43 @@ export class ScriptService {
       doodle?.ok ? doodle.instruction : null,
     ].filter((line): line is string => line !== null);
 
+    // A short — see `isShortTarget` for why this is read from the template's
+    // declared length and not from the video's format. Everything a short
+    // needs to know about its channel is read here, above the first billed
+    // call, and none of it is read for a longer script: a five-minute
+    // explainer sends the request it always sent.
+    const declared = (key: string) =>
+      input.variables?.[key] ??
+      template.variables.find((variable) => variable.key === key)?.defaultValue ??
+      undefined;
+    const channelId = video.project.channelId;
+    const short =
+      channelId !== null &&
+      isShortTarget({
+        format: input.format,
+        seconds: declared("seconds"),
+        duration: declared("duration"),
+      })
+        ? await this.shortContext(channelId, videoId)
+        : null;
+
+    if (short) {
+      instructions.push(shortInstruction(short.recentOpenings, short.ending));
+    }
+
     const system = instructions.length > 0 ? instructions.join("\n\n") : undefined;
+
+    // The short gate, as a check the retry loops can run on any answer.
+    // Undefined for everything that is not a short, which is what keeps the
+    // insight path's behaviour for a longer brief exactly what it was.
+    const shortCheck = short
+      ? (generated: ScriptGenerationResult) =>
+          checkShortScript({
+            narration: generated.content,
+            hookCard: generated.hookCard,
+            recentOpenings: short.recentOpenings,
+          }).errors
+      : undefined;
 
     const apiKey =
       (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ??
@@ -284,18 +343,21 @@ export class ScriptService {
       // Both gated formats record their own attempts as they resolve, since
       // a draft the gate threw away was still billed. The prose path has
       // exactly one attempt and records it below.
-      const gated = input.format === "insight" || input.format === "longform";
+      const gated =
+        input.format === "insight" || input.format === "longform" || shortCheck !== undefined;
       const generated =
         input.format === "insight"
-          ? await this.generateInsight({ prompt, system, apiKey }, record)
+          ? await this.generateInsight({ prompt, system, apiKey }, record, shortCheck)
           : input.format === "longform"
             ? await this.generateLongform({ prompt, system, apiKey }, record)
-            : await this.provider.generateScript({
-                prompt,
-                system,
-                apiKey,
-                withSections: true,
-              });
+            : shortCheck
+              ? await this.generateShort({ prompt, system, apiKey }, record, shortCheck)
+              : await this.provider.generateScript({
+                  prompt,
+                  system,
+                  apiKey,
+                  withSections: true,
+                });
 
       if (!gated) {
         record(generated);
@@ -394,6 +456,10 @@ export class ScriptService {
             // no separate sources" and lets the description fall back to an
             // inline SOURCES section if an older script carries one.
             sources: generated.sources?.length ? generated.sources : undefined,
+            // Both only for a short, and the card only because the gate above
+            // refused any short that came back without one.
+            hookCard: short ? generated.hookCard : undefined,
+            endingKind: short?.ending,
             prompt,
             model: generated.model,
             provider: generated.provider,
@@ -539,6 +605,9 @@ export class ScriptService {
   private async generateInsight(
     request: { prompt: string; system?: string; apiKey?: string },
     onAttempt: (result: ScriptGenerationResult) => void,
+    // The short gate, when this insight script is also a short. Its sentences
+    // join the validator's so one retry carries every complaint.
+    extraCheck?: (result: ScriptGenerationResult) => string[],
   ): Promise<ScriptGenerationResult> {
     let errors: string[] = [];
 
@@ -571,12 +640,13 @@ export class ScriptService {
       }
 
       const validation = validateInsightScript(generated.insight);
+      const problems = [...validation.errors, ...(extraCheck?.(generated) ?? [])];
 
-      if (validation.ok) {
+      if (problems.length === 0) {
         return generated;
       }
 
-      errors = validation.errors;
+      errors = problems;
     }
 
     throw new ConflictError(
@@ -657,6 +727,89 @@ export class ScriptService {
         `with the last one:\n` +
         errors.map((error) => `- ${error}`).join("\n"),
     );
+  }
+
+  /**
+   * Asks for a short and refuses to hand back one whose opening is stale,
+   * whose hook card is missing or wrong, or whose ending asks for something.
+   *
+   * The same loop as `generateLongform`, for the reason that method gives for
+   * not sharing one: the request, the check and the sentence it gives up with
+   * are the whole body. See `short-script.ts` for why these rules are checked
+   * on the answer rather than only stated in the prompt.
+   */
+  private async generateShort(
+    request: { prompt: string; system?: string; apiKey?: string },
+    onAttempt: (result: ScriptGenerationResult) => void,
+    check: (result: ScriptGenerationResult) => string[],
+  ): Promise<ScriptGenerationResult> {
+    let errors: string[] = [];
+
+    for (let attempt = 0; attempt < SHORT_ATTEMPTS; attempt += 1) {
+      const generated = await this.provider.generateScript({
+        prompt:
+          errors.length === 0
+            ? request.prompt
+            : `${request.prompt}\n\n${RETRY_PREFACE}\n\n` +
+              errors.map((error) => `- ${error}`).join("\n"),
+        system: request.system,
+        apiKey: request.apiKey,
+        withSections: true,
+      });
+
+      onAttempt(generated);
+
+      errors = check(generated);
+
+      if (errors.length === 0) {
+        return generated;
+      }
+    }
+
+    throw new ConflictError(
+      `The script did not meet the short-video rules after ${SHORT_ATTEMPTS} ` +
+        `attempts, so nothing was saved. What was wrong with the last one:\n` +
+        errors.map((error) => `- ${error}`).join("\n"),
+    );
+  }
+
+  /**
+   * What a short needs to know about its channel before it is written: how
+   * the channel's recent videos opened, and which ending comes next.
+   *
+   * Active versions only — a draft the operator threw away was never heard by
+   * anyone, so it constrains nothing. This video's own script is excluded, so
+   * regenerating a short is not refused for resembling the draft it replaces.
+   */
+  private async shortContext(
+    channelId: string,
+    videoId: string,
+  ): Promise<{ recentOpenings: string[]; ending: EndingKind }> {
+    const onChannel = { project: { is: { channelId } }, deletedAt: null };
+
+    const [recent, last] = await Promise.all([
+      prisma.scriptVersion.findMany({
+        where: {
+          activeFor: { is: { video: { is: { ...onChannel, id: { not: videoId } } } } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: RECENT_OPENINGS,
+        select: { content: true },
+      }),
+      prisma.scriptVersion.findFirst({
+        where: {
+          endingKind: { not: null },
+          script: { is: { video: { is: onChannel } } },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { endingKind: true },
+      }),
+    ]);
+
+    return {
+      recentOpenings: recent.map((row) => firstSentence(row.content)),
+      ending: nextEndingKind(last?.endingKind ?? null),
+    };
   }
 
   /**
