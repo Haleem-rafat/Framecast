@@ -372,17 +372,19 @@ function TallMedia({ src, icon: Icon }: { src?: string; icon?: LucideIcon }) {
   );
 }
 
-/** A horizontal, snap-scrolling row: wide screens see every card, a phone
- *  swipes through them instead of scrolling past a page of tall cards. */
+/** A horizontal, snap-scrolling row. Six or seven tall cards do not fit a
+ *  700px column, and stacking them would turn one choice into a page of
+ *  scrolling — sideways keeps the question and Continue on one screen. On a
+ *  phone the row bleeds to the screen edge so the next card peeks in. */
 function CardRow({ children }: { children: ReactNode }) {
   return (
-    <div className="-mx-4 overflow-x-auto px-4 py-1.5 sm:-mx-1.5 sm:px-1.5">
+    <div className="-mx-4 snap-x overflow-x-auto scroll-px-4 px-4 py-1.5 sm:-mx-1.5 sm:scroll-px-1.5 sm:px-1.5">
       {children}
     </div>
   );
 }
 
-const TALL_GROUP = "flex w-max snap-x gap-3";
+const TALL_GROUP = "flex w-max gap-3";
 const TALL_CARD = "w-36 shrink-0 snap-start sm:w-40";
 
 /**
