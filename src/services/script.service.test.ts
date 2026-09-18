@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 
 import { ConflictError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -8,6 +17,7 @@ import { projectService } from "@/services/project.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import type {
   ScriptGenerationInput,
+  ScriptGenerationResult,
   TextGenerationProvider,
 } from "@/services/providers/types";
 import { ScriptService } from "@/services/script.service";
@@ -944,13 +954,15 @@ describe("scriptService.generate — shorts", () => {
     };
   }
 
-  let provider: { generateScript: ReturnType<typeof vi.fn> };
+  type Generate = (input: ScriptGenerationInput) => Promise<ScriptGenerationResult>;
+
+  let provider: { generateScript: Mock<Generate> };
   let shorts: ScriptService;
   let templateId: string;
   let channelVideo: () => Promise<string>;
 
   beforeEach(async () => {
-    provider = { generateScript: vi.fn() };
+    provider = { generateScript: vi.fn<Generate>() };
     shorts = new ScriptService(provider);
 
     templateId = (
