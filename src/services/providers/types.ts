@@ -95,6 +95,12 @@ export interface ScriptGenerationResult {
    */
   sources?: string[];
   /**
+   * A short's hook card: two to six words for the opening screen. Present only
+   * when the model returned one; `ScriptService` decides whether it was
+   * required and refuses the script if a short came back without it.
+   */
+  hookCard?: string;
+  /**
    * The single-insight format's scenes, exactly as the model returned them.
    *
    * Present only when `withInsightScenes` was set. Handed up unvalidated on
