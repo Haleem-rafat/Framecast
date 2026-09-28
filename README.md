@@ -122,7 +122,8 @@ encode or store leaves its parent `READY` and publishable exactly as it was.
 
 ## Automation
 
-Five distinct things, each with its own service, all visible on one canvas:
+Seven distinct things, each with its own service, and the first six visible on
+one canvas:
 
 - **One-click video** (`automation.service.ts`) — one form: topic, a little
   direction, a length. It owns no domain logic; it performs the existing
@@ -144,6 +145,16 @@ Five distinct things, each with its own service, all visible on one canvas:
 - **Auto-publish** (`auto-publish.service.ts`) — fires on a *state* rather than
   a clock: a video an automation created reaches `READY` and uploads itself.
   Off by default.
+- **Topic auto-fill** (`topic-queue.service.ts`) — the topic queue fills itself.
+  Below three waiting topics, ten more are generated and appended, so a schedule
+  no longer pauses when its queue empties. On for every schedule and series, with
+  no switch. Ranked for reach against the channel's own figures: a recognisable
+  subject earns roughly four times the views of an obscure one on this account,
+  so the prompt names that rule and, where analytics exist, feeds the best recent
+  titles in as "more like these" and the worst as "unlike these"
+  (`readReachEvidence`). Generated topics are marked in the queue, never repeat a
+  subject the channel has covered, and only a *failed* generation on a run that
+  is actually due can still pause a schedule.
 
 The **automation canvas** (`/automation`) is a read-only projection over all of
 these, grouped by channel, ordered so the branch needing the most attention
@@ -264,7 +275,7 @@ Key invariants:
 | Process | Command | What it does |
 | --- | --- | --- |
 | **Web app** | `pnpm dev` / `pnpm start` | The whole UI. Serves renders and narration by byte range through route handlers. |
-| **Render worker** | `pnpm worker` | No HTTP, no auth. Polls every 5s for a queued video or short and runs the pipeline; ticks schedules, shorts releases and auto-publish jobs every 30s; collects channel analytics on a much slower timer. Identifies itself as `WORKER_ID` in status events. |
+| **Render worker** | `pnpm worker` | No HTTP, no auth. Polls every 5s for a queued video or short and runs the pipeline; ticks schedules, shorts releases and auto-publish jobs every 30s; collects channel analytics and tops up low topic queues on much slower timers, only when it is otherwise idle. Identifies itself as `WORKER_ID` in status events. |
 | **Render CLI** | `pnpm render` | The debugging path. Calls the identical `runPipeline`, printing every stage event — useful precisely *because* it is not a second implementation. |
 
 The worker and the CLI both load `.env.local` then `.env`, and import
@@ -273,7 +284,7 @@ everything dynamically inside `main()` — a static import of anything touching
 
 ## Data model
 
-37 migrations, ~50 models. Grouped:
+47 migrations, ~50 models. Grouped:
 
 - **Auth** — `User` (with `role`, `approval`), `Session`, `Account`, `Verification`
 - **Channels** — `Channel`, `ChannelBrand`, `ChannelCollection`, `ChannelStatistic`

@@ -17,6 +17,7 @@ import { projectService } from "@/services/project.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import type { TextGenerationProvider } from "@/services/providers/types";
 import { ScheduleService } from "@/services/schedule.service";
+import type { TopicRefillOutcome } from "@/services/topic-queue.service";
 import { ScriptService } from "@/services/script.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -342,6 +343,74 @@ function fakeAutomation(options?: {
   };
 }
 
+/**
+ * A stand-in for the topic auto-fill.
+ *
+ * Every tick now asks whether the queue needs topping up before it takes a topic,
+ * and the real `TopicQueueService` would reach a provider to answer. Faked here
+ * for the same reason `fakeAutomation` is: these tests are about the claim, the
+ * advance and the history, and none of them should bill an Anthropic call to
+ * assert something about a lease.
+ *
+ * The default answer is the one that is true almost every tick — the queue is
+ * fine, nothing was spent — so every test written before this existed behaves
+ * exactly as it did.
+ */
+function fakeTopics(
+  outcome: TopicRefillOutcome = { status: "not-needed", queued: 2 },
+) {
+  return { refill: vi.fn(async () => outcome) };
+}
+
+/**
+ * A refill that genuinely appends a topic, for the tests about an empty queue
+ * surviving one.
+ *
+ * It writes a real `ScheduleTopic` row rather than reporting a fictional one,
+ * because what is under test is that `executeClaim` then *takes* it — and a fake
+ * that only returned `filled` would pass while the queue stayed empty.
+ */
+function fillingTopics(topic = "a subject the studio chose") {
+  return {
+    refill: vi.fn(async (scheduleId: string) => {
+      const last = await prisma.scheduleTopic.findFirst({
+        where: { scheduleId },
+        orderBy: { position: "desc" },
+        select: { position: true },
+      });
+
+      await prisma.scheduleTopic.create({
+        data: {
+          scheduleId,
+          position: (last?.position ?? -1) + 1,
+          topic,
+          generated: true,
+        },
+      });
+
+      return {
+        status: "filled" as const,
+        scheduleId,
+        added: [topic],
+      };
+    }),
+  };
+}
+
+/**
+ * The service under test, wired the way the worker wires it with two things
+ * faked: the guided flow and the topic auto-fill.
+ *
+ * `undefined` for the middle parameter leaves `styles` at its production default,
+ * which is what every one of these tests did before it took a third.
+ */
+function makeService(
+  automation: ConstructorParameters<typeof ScheduleService>[0] = fakeAutomation(),
+  topics: ConstructorParameters<typeof ScheduleService>[2] = fakeTopics(),
+) {
+  return new ScheduleService(automation, undefined, topics);
+}
+
 /** A schedule that is already overdue, so a single `tick()` fires it. */
 async function makeDueSchedule(options?: {
   dueAt?: Date;
@@ -398,7 +467,7 @@ describe("scheduleService — a due schedule fires exactly once", () => {
     const scheduleId = await makeDueSchedule();
     const automation = fakeAutomation();
 
-    const result = await new ScheduleService(automation).tick();
+    const result = await makeService(automation).tick();
 
     expect(result?.outcome).toBe("SUCCEEDED");
     expect(automation.start).toHaveBeenCalledTimes(1);
@@ -422,7 +491,7 @@ describe("scheduleService — a due schedule fires exactly once", () => {
   it("advances nextRunAt into the future and releases the claim", async () => {
     const scheduleId = await makeDueSchedule();
 
-    await new ScheduleService(fakeAutomation()).tick();
+    await makeService(fakeAutomation()).tick();
 
     const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
     expect(schedule.nextRunAt).not.toBeNull();
@@ -434,7 +503,7 @@ describe("scheduleService — a due schedule fires exactly once", () => {
 
   it("is no longer due immediately afterwards", async () => {
     await makeDueSchedule();
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     expect(await service.tick()).not.toBeNull();
     expect(await service.tick()).toBeNull();
@@ -454,8 +523,8 @@ describe("scheduleService — a due schedule fires exactly once", () => {
       // Two independent services, as two workers would be, sharing one fake so
       // the call count is across both.
       const [first, second] = await Promise.all([
-        new ScheduleService(automation).tick(),
-        new ScheduleService(automation).tick(),
+        makeService(automation).tick(),
+        makeService(automation).tick(),
       ]);
 
       const fired = [first, second].filter((result) => result !== null);
@@ -480,7 +549,7 @@ describe("scheduleService — a due schedule fires exactly once", () => {
     // `claimDue` is the lock; this asserts it directly rather than through
     // `tick`, because it is the single statement everything else rests on.
     const scheduleId = await makeDueSchedule();
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     const claims = await Promise.all([
       service.claimDue(),
@@ -507,7 +576,7 @@ describe("scheduleService — downtime does not become a burst", () => {
     });
     const automation = fakeAutomation();
 
-    await new ScheduleService(automation).tick();
+    await makeService(automation).tick();
 
     expect(automation.start).toHaveBeenCalledTimes(1);
 
@@ -531,7 +600,7 @@ describe("scheduleService — downtime does not become a burst", () => {
     expect(consumed).toBe(1);
 
     // And nothing is left due, so the next poll does not fire again.
-    expect(await new ScheduleService(automation).tick()).toBeNull();
+    expect(await makeService(automation).tick()).toBeNull();
   });
 
   it("explains a missed occurrence rather than leaving a silent gap", async () => {
@@ -539,7 +608,7 @@ describe("scheduleService — downtime does not become a burst", () => {
       dueAt: new Date(Date.now() - 21 * 24 * HOURS),
     });
 
-    await new ScheduleService(fakeAutomation()).tick();
+    await makeService(fakeAutomation()).tick();
 
     const missed = await prisma.scheduleRun.findFirstOrThrow({
       where: { scheduleId, outcome: "MISSED" },
@@ -567,7 +636,7 @@ describe("scheduleService — refusing before spending", () => {
       ],
     });
 
-    const result = await new ScheduleService(automation).tick();
+    const result = await makeService(automation).tick();
 
     expect(result?.outcome).toBe("SKIPPED");
     expect(automation.start).not.toHaveBeenCalled();
@@ -586,20 +655,95 @@ describe("scheduleService — refusing before spending", () => {
     expect(schedule.nextRunAt!.getTime()).toBeGreaterThan(Date.now());
   });
 
-  it("pauses itself, without spending, when the topic queue is empty", async () => {
+  it("makes a video from a topped-up queue instead of pausing on an empty one", async () => {
+    // The behaviour this feature exists to replace. This used to be a SKIPPED run
+    // and a paused schedule whose reason read "Nothing here invents a subject".
     const scheduleId = await makeDueSchedule({ topics: [] });
     const automation = fakeAutomation();
+    const topics = fillingTopics("why lighthouses were nationalised");
 
-    const result = await new ScheduleService(automation).tick();
+    const result = await makeService(automation, topics).tick();
+
+    expect(result?.outcome).toBe("SUCCEEDED");
+    expect(automation.start).toHaveBeenCalledTimes(1);
+    expect(automation.start.mock.calls[0]?.[1].topic).toBe(
+      "why lighthouses were nationalised",
+    );
+
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+    expect(schedule.status).toBe("ACTIVE");
+    expect(schedule.pausedReason).toBeNull();
+  });
+
+  it("tops the queue up before taking, and lets a due run past its own backoff", async () => {
+    const scheduleId = await makeDueSchedule();
+    const topics = fakeTopics();
+
+    await makeService(fakeAutomation(), topics).tick();
+
+    expect(topics.refill).toHaveBeenCalledWith(scheduleId, { ignoreBackoff: true });
+  });
+
+  it("pauses with a generation failure, not a missing list, when the queue is empty", async () => {
+    const scheduleId = await makeDueSchedule({ topics: [] });
+    const automation = fakeAutomation();
+    const topics = fakeTopics({
+      status: "failed",
+      error: "The AI Gateway budget for this account is exhausted.",
+      failures: 1,
+    });
+
+    const result = await makeService(automation, topics).tick();
 
     expect(result?.outcome).toBe("SKIPPED");
     expect(automation.start).not.toHaveBeenCalled();
 
     const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
     expect(schedule.status).toBe("PAUSED");
-    // The whole argument for a queue over a model-invented topic: when it runs
-    // out, the studio stops rather than guessing.
-    expect(schedule.pausedReason).toContain("invents");
+    // The distinction the operator acts on. "Add some topics" would send them to
+    // type a list when what actually happened was a 402 from the gateway.
+    expect(schedule.pausedReason).toContain("could not be generated");
+    expect(schedule.pausedReason).toContain("budget for this account is exhausted");
+    expect(schedule.pausedReason).not.toContain("invents");
+    // A self-pause, not an operator one — the canvas reads this to tell "you
+    // stopped this" from "it gave up".
+    expect(schedule.pausedByOperator).toBe(false);
+  });
+
+  it("skips rather than pauses when another worker is already filling the queue", async () => {
+    const scheduleId = await makeDueSchedule({ topics: [] });
+    const topics = fakeTopics({ status: "busy" });
+
+    const result = await makeService(fakeAutomation(), topics).tick();
+
+    expect(result?.outcome).toBe("SKIPPED");
+    expect(result?.reason).toContain("another worker");
+
+    // Pausing here would be the worst outcome available: the topics land seconds
+    // later and the schedule is stopped anyway.
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+    expect(schedule.status).toBe("ACTIVE");
+  });
+
+  it("does not pause a schedule that still has topics when generation fails", async () => {
+    const scheduleId = await makeDueSchedule({ topics: ["something to make"] });
+    const automation = fakeAutomation();
+    const topics = fakeTopics({
+      status: "failed",
+      error: "Anthropic rejected the key.",
+      failures: 2,
+    });
+
+    const result = await makeService(automation, topics).tick();
+
+    // A failed refill has not failed to produce a video. This run had a topic and
+    // made one; only an empty queue after a failed refill stops a schedule.
+    expect(result?.outcome).toBe("SUCCEEDED");
+    expect(automation.start).toHaveBeenCalledTimes(1);
+
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+    expect(schedule.status).toBe("ACTIVE");
+    expect(schedule.consecutiveFailures).toBe(0);
   });
 
   it("skips when the project has been archived", async () => {
@@ -607,7 +751,7 @@ describe("scheduleService — refusing before spending", () => {
     await projectService.archive(userId, projectId);
 
     const automation = fakeAutomation();
-    const result = await new ScheduleService(automation).tick();
+    const result = await makeService(automation).tick();
 
     expect(result?.outcome).toBe("SKIPPED");
     expect(automation.start).not.toHaveBeenCalled();
@@ -623,7 +767,7 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
     const scheduleId = await makeDueSchedule();
     const automation = fakeAutomation({ fail: new Error("Anthropic rejected the key") });
 
-    const result = await new ScheduleService(automation).tick();
+    const result = await makeService(automation).tick();
 
     expect(result?.outcome).toBe("FAILED");
     expect(result?.reason).toBe("Anthropic rejected the key");
@@ -650,7 +794,7 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
       topics: ["one", "two", "three", "four"],
     });
     const automation = fakeAutomation({ fail: new Error("still broken") });
-    const service = new ScheduleService(automation);
+    const service = makeService(automation);
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       // Each iteration puts the schedule back in the past so the next tick is
@@ -698,7 +842,7 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
 
     const scheduleId = await makeDueSchedule({ topics: ["one", "two", "three"] });
 
-    await new ScheduleService(fakeAutomation({ fail: refusal })).tick();
+    await makeService(fakeAutomation({ fail: refusal })).tick();
 
     const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
 
@@ -717,7 +861,7 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
     // schedules on its first occurrence.
     const scheduleId = await makeDueSchedule({ topics: ["one", "two", "three"] });
 
-    await new ScheduleService(fakeAutomation({ fail: new Error("one bad day") })).tick();
+    await makeService(fakeAutomation({ fail: new Error("one bad day") })).tick();
 
     const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
 
@@ -728,7 +872,7 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
   it("resets the failure count on the next success", async () => {
     const scheduleId = await makeDueSchedule();
 
-    await new ScheduleService(
+    await makeService(
       fakeAutomation({ fail: new Error("one bad week") }),
     ).tick();
 
@@ -741,7 +885,7 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
       where: { id: scheduleId },
       data: { nextRunAt: new Date(Date.now() - 60_000) },
     });
-    await new ScheduleService(fakeAutomation()).tick();
+    await makeService(fakeAutomation()).tick();
 
     const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
     expect(schedule.consecutiveFailures).toBe(0);
@@ -759,7 +903,7 @@ describe("scheduleService — a scheduled run never publishes", () => {
     const scheduleId = await makeDueSchedule({ topics: ["how a port unloads a ship"] });
     const automation = new AutomationService(new ScriptService(fakeProvider()));
 
-    const result = await new ScheduleService(automation).tick();
+    const result = await makeService(automation).tick();
 
     expect(result?.outcome).toBe("SUCCEEDED");
     expect(result?.videoId).not.toBeNull();
@@ -802,7 +946,7 @@ describe("scheduleService — a scheduled run never publishes", () => {
 describe("scheduleService — operator actions", () => {
   it("pauses immediately, so the very next due-check ignores it", async () => {
     const scheduleId = await makeDueSchedule();
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     await service.pause(userId, scheduleId, "Paused by the operator.");
 
@@ -820,7 +964,7 @@ describe("scheduleService — operator actions", () => {
     const scheduleId = await makeDueSchedule({
       dueAt: new Date(Date.now() - 21 * 24 * HOURS),
     });
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     await service.pause(userId, scheduleId);
     await service.resume(userId, scheduleId);
@@ -833,13 +977,22 @@ describe("scheduleService — operator actions", () => {
     expect(await service.claimDue()).toBeNull();
   });
 
-  it("refuses to resume into an empty queue", async () => {
+  it("resumes into an empty queue, because the queue fills itself before the run", async () => {
+    // This used to be a refusal: resuming into an empty queue meant pausing again
+    // on the first occurrence, so the round trip was refused up front. It is not a
+    // round trip any more — and keeping the refusal would have been actively
+    // harmful, because a schedule paused over a failed generation tells the
+    // operator to resume it once the provider works, and this guard would have
+    // answered that instruction by demanding they type a list first.
     const scheduleId = await makeDueSchedule({ topics: [] });
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     await service.pause(userId, scheduleId);
+    await service.resume(userId, scheduleId);
 
-    await expect(service.resume(userId, scheduleId)).rejects.toBeInstanceOf(ConflictError);
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+    expect(schedule.status).toBe("ACTIVE");
+    expect(schedule.pausedReason).toBeNull();
   });
 
   it("clears a self-imposed failure pause when the operator resumes", async () => {
@@ -849,7 +1002,7 @@ describe("scheduleService — operator actions", () => {
       data: { status: "PAUSED", consecutiveFailures: 3, pausedReason: "three failures" },
     });
 
-    await new ScheduleService(fakeAutomation()).resume(userId, scheduleId);
+    await makeService(fakeAutomation()).resume(userId, scheduleId);
 
     const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
     expect(schedule.consecutiveFailures).toBe(0);
@@ -858,7 +1011,7 @@ describe("scheduleService — operator actions", () => {
 
   it("appends topics to the end of the queue, never ahead of waiting ones", async () => {
     const scheduleId = await makeDueSchedule({ topics: ["first", "second"] });
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     await service.addTopics(userId, scheduleId, { topics: ["third", "fourth"] });
 
@@ -876,7 +1029,7 @@ describe("scheduleService — operator actions", () => {
 
   it("refuses to remove a topic that has already been used", async () => {
     const scheduleId = await makeDueSchedule({ topics: ["only topic"] });
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     await service.tick();
 
@@ -893,7 +1046,7 @@ describe("scheduleService — operator actions", () => {
     const scheduleId = await makeDueSchedule();
     const before = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
 
-    await new ScheduleService(fakeAutomation()).update(userId, scheduleId, {
+    await makeService(fakeAutomation()).update(userId, scheduleId, {
       name: "Renamed",
       projectId,
       frequency: "WEEKLY",
@@ -916,7 +1069,7 @@ describe("scheduleService — operator actions", () => {
   it("recomputes nextRunAt when the timing changes", async () => {
     const scheduleId = await makeDueSchedule();
 
-    await new ScheduleService(fakeAutomation()).update(userId, scheduleId, {
+    await makeService(fakeAutomation()).update(userId, scheduleId, {
       name: `Weekly ${RUN}`,
       projectId,
       frequency: "WEEKLY",
@@ -940,7 +1093,7 @@ describe("scheduleService — every query is scoped to the signed-in user", () =
   it("does not return, edit or pause another operator's schedule", async () => {
     const scheduleId = await makeDueSchedule();
     const otherUserId = await createTestUser("schedule-other");
-    const service = new ScheduleService(fakeAutomation());
+    const service = makeService(fakeAutomation());
 
     try {
       await expect(service.get(otherUserId, scheduleId)).rejects.toBeInstanceOf(
@@ -971,8 +1124,8 @@ describe("scheduleService — every query is scoped to the signed-in user", () =
     const otherUserId = await createTestUser("schedule-other-list");
 
     try {
-      expect(await new ScheduleService(fakeAutomation()).list(otherUserId)).toEqual([]);
-      expect(await new ScheduleService(fakeAutomation()).list(userId)).toHaveLength(1);
+      expect(await makeService(fakeAutomation()).list(otherUserId)).toEqual([]);
+      expect(await makeService(fakeAutomation()).list(userId)).toHaveLength(1);
     } finally {
       await deleteTestUser(otherUserId);
     }

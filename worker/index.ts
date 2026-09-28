@@ -96,6 +96,27 @@ const MOTION_TICK_INTERVAL_MS = 10_000;
 
 const ANALYTICS_TICK_INTERVAL_MS = 120_000;
 
+/**
+ * How often to ask whether a topic queue is running low.
+ *
+ * Two minutes, matching the analytics collector rather than the schedule tick,
+ * and for the same reason: nothing is waiting on the answer. A queue refills
+ * below three remaining topics (`REFILL_THRESHOLD`), which is two spare runs'
+ * worth of headroom — so asking twice a minute instead of once every two would
+ * only discover the same low queue sooner than anybody needed it discovered.
+ *
+ * The check itself is one indexed read with a filtered child count, and almost
+ * always finds nothing. When it does find work, that work is one short Anthropic
+ * call — the same order of cost as a schedule tick that fires, and it is billed
+ * whether it happens here or, two days later, inside the run that would otherwise
+ * have had nothing to make.
+ *
+ * Note where it is *called*: the idle branch at the bottom of the loop, beside
+ * the analytics collector rather than up with the schedule and release ticks. See
+ * the comment at the call site.
+ */
+const TOPIC_REFILL_TICK_INTERVAL_MS = 120_000;
+
 /** Display names for `PipelineStageName`, same list as scripts/render.ts —
  * kept here rather than imported because it's purely a presentation concern,
  * duplicated intentionally rather than shared for it. */
@@ -125,6 +146,7 @@ async function main(): Promise<void> {
   const { releaseService } = await import("@/services/release.service");
   const { autoPublishService } = await import("@/services/auto-publish.service");
   const { motionService } = await import("@/services/motion.service");
+  const { topicQueueService } = await import("@/services/topic-queue.service");
   const { shortsService } = await import("@/services/shorts.service");
   const { channelAnalyticsService } = await import(
     "@/services/channel-analytics.service"
@@ -348,6 +370,16 @@ async function main(): Promise<void> {
    *  just come back up may be holding generations that fal.ai finished while it
    *  was down — and those are already paid for. */
   let nextMotionTickAt = 0;
+
+  /**
+   * When the topic-queue refill may next look.
+   *
+   * Zero, so a worker that has just come back up tops the queues up on its first
+   * idle moment. That is the deploy this feature ships on: several of this
+   * operator's schedules are sitting paused with an empty queue right now, and
+   * the first thing anybody should see is them filling.
+   */
+  let nextTopicRefillTickAt = 0;
 
   /** When the analytics collector may next look. Zero so a freshly deployed
    *  worker collects on its first idle moment rather than two minutes later —
@@ -575,6 +607,41 @@ async function main(): Promise<void> {
       // encode running when this line is reached.
       if (Date.now() >= nextAnalyticsTickAt) {
         await tickAnalytics();
+      }
+
+      // Topping up topic queues, and it sits down here rather than up with the
+      // schedule tick deliberately — which is worth arguing, because that tick's
+      // own comment argues the opposite for itself.
+      //
+      // The schedule tick is ahead of the video claim because it *creates* queued
+      // work: a Monday 09:00 occurrence that fires whenever a render backlog
+      // happens to clear is a broken promise. This one creates nothing anybody is
+      // waiting on. It fills a list that will not be read for days, and the run
+      // path tops the queue up itself before it takes a topic — so the worst a
+      // deferred refill can cost is that the top-up happens inside the run
+      // instead of ahead of it, which is exactly the fallback it was designed
+      // with. Against that: it is a provider call, seconds of held loop, on a box
+      // with two vCPUs that FFmpeg is also using.
+      //
+      // One queue per tick. `topicQueueService.tick()` refills exactly one, which
+      // is also the answer to a worker coming back up with nine empty queues:
+      // they fill two minutes apart rather than firing nine Anthropic calls into
+      // the same second.
+      if (Date.now() >= nextTopicRefillTickAt) {
+        nextTopicRefillTickAt = Date.now() + TOPIC_REFILL_TICK_INTERVAL_MS;
+
+        const refill = await topicQueueService.tick();
+
+        // Only the outcomes that did something. `not-needed` is the answer almost
+        // every time, and logging it would bury everything else in this stream.
+        if (refill?.status === "filled") {
+          log(
+            `topics refilled schedule ${refill.scheduleId} → ` +
+              `${refill.added.length} queued: ${refill.added.join("; ")}`,
+          );
+        } else if (refill?.status === "failed") {
+          log(`topics refill failed (attempt ${refill.failures}) — ${refill.error}`);
+        }
       }
 
       await sleep(POLL_INTERVAL_MS);

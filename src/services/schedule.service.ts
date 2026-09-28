@@ -26,6 +26,11 @@ import {
   automationService,
   type AutomationService,
 } from "@/services/automation.service";
+import {
+  topicQueueService,
+  type TopicQueueService,
+  type TopicRefillOutcome,
+} from "@/services/topic-queue.service";
 
 /**
  * Recurring automation: the guided one-click flow, on a timer.
@@ -65,6 +70,15 @@ import {
  *   4. **Spending on a run that cannot finish.** Solved by refusing before the
  *      first billed call, using the same onboarding checks the guided flow
  *      uses — see `executeClaim`.
+ *
+ * ## Where the topic comes from
+ *
+ * The queue, still — a run takes the row at the head of `ScheduleTopic` and has
+ * never asked a model what to make. What changed is that the queue now fills
+ * itself: `executeClaim` tops it up before it takes, and the empty-queue pause
+ * that used to be this file's most-hit path is gone. `TopicQueueService` owns all
+ * of that; this file owns only *when* to ask it and what an empty queue means
+ * afterwards (`describeEmptyQueue`).
  */
 
 /**
@@ -122,6 +136,10 @@ export interface ScheduleTopicRecord {
   id: string;
   position: number;
   topic: string;
+  /** True for a topic the auto-fill wrote rather than the operator. Surfaced so
+   *  the queue can mark them: "the studio chose this subject" is a fact this
+   *  feature owes the person whose channel it goes on. */
+  generated: boolean;
   consumedAt: Date | null;
 }
 
@@ -188,8 +206,12 @@ export interface ScheduleSummary {
   nextRunAt: Date | null;
   lastRunAt: Date | null;
   consecutiveFailures: number;
-  /** Topics still waiting. Zero is the number that matters: a schedule with an
-   *  empty queue pauses itself on its next occurrence. */
+  /** Topics still waiting.
+   *
+   *  No longer the number that decides whether this schedule survives the week:
+   *  below `REFILL_THRESHOLD` the queue tops itself up, so a low count is a
+   *  refill about to happen rather than a warning. Still shown, because it is
+   *  what the next few videos will be about. */
   queuedTopicCount: number;
   /** The topic the next run will take, so the operator can see what is coming
    *  without opening the schedule. */
@@ -388,6 +410,16 @@ export class ScheduleService {
       AutomationService,
       "describeScriptStyle"
     > = automationService,
+    /**
+     * The queue's auto-fill. A third constructor parameter for the same reason
+     * the second is one: every test written before it existed still type-checks,
+     * and a test that is about the claim or the DST arithmetic does not have to
+     * know that topics can now generate themselves.
+     *
+     * The default is the real service, whose own provider seam is what a test
+     * injects to drive a refill without billing anything.
+     */
+    private readonly topics: Pick<TopicQueueService, "refill"> = topicQueueService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -440,7 +472,13 @@ export class ScheduleService {
       prisma.scheduleTopic.findMany({
         where: { scheduleId: id },
         orderBy: [{ consumedAt: { sort: "asc", nulls: "first" } }, { position: "asc" }],
-        select: { id: true, position: true, topic: true, consumedAt: true },
+        select: {
+          id: true,
+          position: true,
+          topic: true,
+          generated: true,
+          consumedAt: true,
+        },
       }),
       prisma.scheduleRun.findMany({
         where: { scheduleId: id },
@@ -655,19 +693,18 @@ export class ScheduleService {
   async resume(userId: string, id: string): Promise<void> {
     const existing = await this.requireOwned(userId, id);
 
-    // Resuming into an empty queue would pause the schedule again on its first
-    // occurrence, which is a confusing round trip. Refused up front instead,
-    // naming the thing that has to change.
-    const queued = await prisma.scheduleTopic.count({
-      where: { scheduleId: id, consumedAt: null },
-    });
-
-    if (queued === 0) {
-      throw new ConflictError(
-        "This schedule has no topics left to run. Add at least one before resuming it.",
-      );
-    }
-
+    // An empty queue used to be refused here: resuming into one would pause the
+    // schedule again on its first occurrence, and that round trip was more
+    // confusing than a refusal naming the thing to fix.
+    //
+    // It is not refused any more, and the reason is not a relaxation — it is that
+    // the round trip no longer happens. `executeClaim` tops the queue up before
+    // it takes a topic, so a resumed schedule with nothing in it generates ten
+    // subjects on its first occurrence and makes a video. Keeping the refusal
+    // would have been actively harmful in the one case it now matters most: a
+    // schedule that paused *because* generation failed tells the operator to
+    // resume it once the provider is working, and this guard would have answered
+    // that instruction by demanding they type a list first.
     await prisma.schedule.updateMany({
       where: { id, userId, deletedAt: null },
       data: {
@@ -932,8 +969,14 @@ export class ScheduleService {
    *      ElevenLabs key means the run would be billed for a script and then die
    *      at narration.
    *   4. The project still has to be usable.
-   *   5. A topic has to be available.
-   *   6. Only then, `automationService.start`.
+   *   5. The topic queue is topped up if it is running low — the first step here
+   *      that can cost anything, and deliberately after the four free refusals
+   *      above rather than before them. Generating ten subjects for an account
+   *      with no ElevenLabs key would be money spent on a queue that cannot be
+   *      consumed. See `TopicQueueService`.
+   *   6. A topic has to be available. It almost always is, now that step 5
+   *      exists; when it is not, `describeEmptyQueue` decides what that means.
+   *   7. Only then, `automationService.start`.
    *
    * The claim's lease is released in `finally` regardless of which of those
    * refused, because a schedule left holding a lease is a schedule that skips
@@ -960,17 +1003,24 @@ export class ScheduleService {
         });
       }
 
+      // Topped up *before* the take, not after a failed one. The threshold
+      // (`REFILL_THRESHOLD`) means this is normally a single indexed count that
+      // finds the queue healthy and returns without spending anything; when it
+      // does generate, it does so while there is still a topic at the head, so
+      // this run produces a video either way. `ignoreBackoff` because a schedule
+      // that is actually due is worth one call whatever a failure ten minutes ago
+      // said — the backoff exists to stop the *idle* tick hammering a dead
+      // provider, not to cost the operator a Monday.
+      const refill = await this.topics.refill(claim.scheduleId, {
+        ignoreBackoff: true,
+      });
+
       const topic = await this.takeNextTopic(claim.scheduleId);
 
       if (!topic) {
-        const reason =
-          "The topic queue is empty. Nothing here invents a subject, so the " +
-          "schedule paused itself rather than guessing what to make a video about.";
-
         return this.finishRun(claim, runId, {
           outcome: "SKIPPED",
-          reason,
-          pauseWith: reason,
+          ...this.describeEmptyQueue(refill),
         });
       }
 
@@ -978,6 +1028,64 @@ export class ScheduleService {
     } finally {
       await this.releaseClaim(claim.scheduleId);
     }
+  }
+
+  /**
+   * What to write, and whether to pause, when a due run found nothing to make.
+   *
+   * This used to be one sentence and one unconditional pause, and the sentence
+   * blamed the operator: "Nothing here invents a subject, so the schedule paused
+   * itself rather than guessing what to make a video about." Something here now
+   * does invent a subject — see `TopicQueueService` — so reaching this point at
+   * all means the *auto-fill* came up empty, and there are three genuinely
+   * different reasons for that. Telling the operator the wrong one is worse than
+   * telling them nothing: "add some topics" sends them to type a list when what
+   * actually happened was a 402 from the gateway.
+   *
+   * Only the first of the three pauses. That is the rule the whole feature turns
+   * on: a schedule stops over topics only when it is actually due, the queue is
+   * genuinely empty, and generating more genuinely failed.
+   */
+  private describeEmptyQueue(refill: TopicRefillOutcome): {
+    reason: string;
+    pauseWith: string | null;
+  } {
+    if (refill.status === "failed") {
+      const reason =
+        "There was nothing in the topic queue and new topics could not be " +
+        `generated: ${refill.error} This is a generation failure, not a missing ` +
+        "list — the schedule paused itself so it stops trying every occurrence. " +
+        "Resume it once the provider is working, or add a topic by hand to start " +
+        "it again immediately.";
+
+      return { reason, pauseWith: reason };
+    }
+
+    if (refill.status === "busy") {
+      // Another worker is generating for this queue right now. Pausing over that
+      // would be the worst possible outcome — the topics land seconds later and
+      // the schedule is stopped anyway — so this occurrence is simply skipped and
+      // the next one finds a full queue.
+      return {
+        reason:
+          "There was nothing in the topic queue and another worker was already " +
+          "generating more. This occurrence was skipped rather than paused; the " +
+          "next one will have something to make.",
+        pauseWith: null,
+      };
+    }
+
+    // `filled` or `not-needed`, and the queue was still empty a moment later —
+    // the topics were removed between the refill and the take. A race with the
+    // operator's own delete button, which is not a fault and not worth stopping a
+    // schedule over.
+    return {
+      reason:
+        "The topic queue was emptied while this run was starting, so there was " +
+        "nothing to make. Nothing was spent, and the next occurrence will refill " +
+        "the queue before it runs.",
+      pauseWith: null,
+    };
   }
 
   /**

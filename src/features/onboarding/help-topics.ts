@@ -100,7 +100,9 @@ export const HELP_TOPICS: HelpTopic[] = [
       "recurring character, language, category and the made-for-kids " +
       "declaration are not asked here — they come from the channel, so " +
       "changing the channel changes every future episode at once. Episodes " +
-      "come from the topic queue at the bottom. Nothing invents a subject.",
+      "come from the topic queue at the bottom, which tops itself up with " +
+      "subjects picked for reach once it drops below three. Write your own " +
+      "there whenever you want them made first.",
   },
   {
     id: "series-detail",
@@ -109,8 +111,9 @@ export const HELP_TOPICS: HelpTopic[] = [
     body:
       "The recipe card keeps the two apart: above are the choices this series " +
       "makes, below are the channel's, which move when you edit the channel. " +
-      "The topic queue is what it will make next, oldest first — when it runs " +
-      "out the series stops rather than guessing. “Make one now” produces an " +
+      "The topic queue is what it will make next, oldest first, and it refills " +
+      "itself below three — the ones marked Auto are the studio's, ranked " +
+      "against this channel's own view figures. “Make one now” produces an " +
       "episode immediately without disturbing the cadence.",
   },
   {
@@ -125,11 +128,13 @@ export const HELP_TOPICS: HelpTopic[] = [
   {
     id: "schedule-detail",
     pattern: "/automation/schedules/:id",
-    title: "An empty queue means skipped, not broken",
+    title: "The queue keeps itself full",
     body:
-      "One subject is consumed per run, oldest first. A run that comes due " +
-      "with nothing waiting is recorded as skipped rather than inventing a " +
-      "topic, and the run history is where the two are told apart. Pausing " +
+      "One subject is consumed per run, oldest first. Below three waiting, ten " +
+      "more are generated and appended — chosen for reach against this " +
+      "channel's figures, never repeating something you have covered, and " +
+      "marked Auto so you can tell them from your own. This only stops if that " +
+      "generation fails, and the run history says so when it does. Pausing " +
       "stops it entirely until you resume it.",
   },
   {
