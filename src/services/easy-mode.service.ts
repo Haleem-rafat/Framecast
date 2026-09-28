@@ -3,6 +3,11 @@ import "server-only";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { starterSubjectsForStyleName } from "@/lib/script-styles";
+import {
+  buildSubjectPrompt,
+  normaliseSubject as normalise,
+  parseSubjects,
+} from "@/lib/subject-prompt";
 import type { StartEasyVideoInput } from "@/schemas/easy-mode.schema";
 import {
   automationService,
@@ -498,7 +503,8 @@ export class EasyModeService {
         (await providerCredentialService.resolveKey(userId, "ANTHROPIC")) ?? undefined;
 
       const result = await this.suggester.generateScript({
-        prompt: buildSuggestionPrompt({
+        prompt: buildSubjectPrompt({
+          count: SUGGESTION_COUNT,
           niche: brand.niche,
           tone: brand.tone,
           styleName: setup.prompt.name,
@@ -510,7 +516,7 @@ export class EasyModeService {
       const seen = new Set(avoid.map(normalise));
       const subjects: EasySubject[] = [];
 
-      for (const topic of parseSuggestions(result.content)) {
+      for (const topic of parseSubjects(result.content)) {
         if (subjects.length >= SUGGESTION_COUNT) break;
         if (seen.has(normalise(topic))) continue;
 
@@ -922,119 +928,6 @@ function buildPlan(args: {
     unanswerable,
     variables,
   };
-}
-
-/**
- * The one prompt this service sends, and the constraints that make its answers
- * usable.
- *
- * It asks for subjects, not titles: `{{topic}}` is substituted verbatim into
- * the operator's script prompt, so "10 SHOCKING facts about X" would produce a
- * script about a clickbait headline. And it is given the subjects already on
- * offer plus what the channel has already covered, because the cheapest way to
- * waste this call is to have it return the five things the operator is already
- * looking at.
- */
-function buildSuggestionPrompt(args: {
-  niche: string;
-  tone: string;
-  styleName: string;
-  avoid: readonly string[];
-}): string {
-  const lines = [
-    `Suggest ${SUGGESTION_COUNT} subjects for narrated explainer videos on a ` +
-      `YouTube channel about: ${args.niche}.`,
-    `The channel's voice is ${args.tone}. Each video is written with a script ` +
-      `style called "${args.styleName}".`,
-    "",
-    "Rules:",
-    "- Each entry is a SUBJECT, not a title. Write it the way somebody would " +
-      "describe what a video is about: 'how index funds took over the stock " +
-      "market', not '10 SHOCKING facts about index funds'.",
-    "- One clear line each, under twenty words, no numbering and no quotation marks.",
-    "- Specific enough that two of them could not be the same video.",
-    "- Only subjects a narrated video over stock footage can carry. No tutorials, " +
-      "no screen recordings, nothing that needs a chart or a diagram on screen.",
-    "- Nothing that depends on this week's news; these are made days later.",
-  ];
-
-  if (args.avoid.length > 0) {
-    lines.push(
-      "",
-      "Do not suggest any of these, or anything that is plainly the same video:",
-      ...args.avoid.slice(0, 40).map((topic) => `- ${topic}`),
-    );
-  }
-
-  lines.push(
-    "",
-    'Reply with JSON only, no prose: ["subject one", "subject two", ...]',
-  );
-
-  return lines.join("\n");
-}
-
-/**
- * Reads the model's answer, tolerantly.
- *
- * JSON first, because that is what the prompt asked for. A model that answered
- * with a bulleted list instead is not a failure worth throwing away a paid call
- * over, so the fallback strips the list markers and takes the lines. Anything
- * else yields nothing, and `suggest()` reports that as an error rather than as
- * an empty list of ideas.
- */
-function parseSuggestions(content: string): string[] {
-  const trimmed = content.trim();
-
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-
-    if (Array.isArray(parsed)) {
-      return parsed
-        .filter((entry): entry is string => typeof entry === "string")
-        .map(cleanSubject)
-        .filter(isUsableSubject);
-    }
-  } catch {
-    // Fall through to the line reader below.
-  }
-
-  return trimmed
-    .split("\n")
-    .map(cleanSubject)
-    .filter(isUsableSubject);
-}
-
-/** Strips the decoration a model adds when it ignores "no numbering": leading
- *  bullets, `1.`, wrapping quotes, and a trailing comma from a JSON-ish line. */
-function cleanSubject(line: string): string {
-  return line
-    .trim()
-    .replace(/^[-*•]\s*/, "")
-    .replace(/^\d+[.)]\s*/, "")
-    .replace(/,$/, "")
-    .replace(/^["'“”]|["'“”]$/g, "")
-    .trim();
-}
-
-/**
- * Bounds that match `startAutomationSchema`'s own topic limits, so a suggestion
- * the operator taps is one the server will accept. A model that returned a
- * paragraph produces a topic the action would reject after the tap, which reads
- * as the button being broken.
- */
-function isUsableSubject(subject: string): boolean {
-  return subject.length >= 3 && subject.length <= 300 && !subject.startsWith("[");
-}
-
-/** Case- and punctuation-insensitive comparison, so "How index funds took over"
- *  and "how index funds took over." are one subject rather than two. */
-function normalise(topic: string): string {
-  return topic
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 export const easyModeService = new EasyModeService();

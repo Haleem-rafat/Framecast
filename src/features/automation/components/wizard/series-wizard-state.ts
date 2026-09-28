@@ -523,7 +523,8 @@ export function validateStep(
 
       const topics = parseTopics(draft.topicText);
 
-      if (topics.length === 0) return "Write at least one topic — nothing here invents a subject.";
+      if (topics.length === 0)
+        return "Write at least one topic — the first episode is made from what you choose.";
       if (topics.length > MAX_TOPICS) return `A series can start with at most ${MAX_TOPICS} topics.`;
       if (topics.some((topic) => topic.length < 3)) return "Every topic needs a few more words.";
       if (topics.some((topic) => topic.length > 300)) return "Keep each topic to 300 characters.";

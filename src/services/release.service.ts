@@ -64,8 +64,9 @@ import { publishService, type PublishService, YouTubeQuotaError } from "@/servic
  *
  * ## The one place it deliberately differs
  *
- * An empty queue. A `Schedule` with no topics left **pauses itself**, because a
- * schedule that cannot say what to make must stop rather than improvise. A
+ * An empty queue. A `Schedule` refills its topic queue when it runs low and
+ * pauses only if that generation failed (`TopicQueueService`) — there is always
+ * something it could make, so nothing to make means something is broken. A
  * cadence with nothing banked has not failed and must not pause: it means the
  * operator has not published a long video this week, and the drip has to resume
  * by itself the moment one lands. So an empty queue writes a SKIPPED run with a

@@ -599,8 +599,14 @@ export class SeriesService {
    *
    *   1. **It refuses before spending.** The same readiness blockers, checked
    *      before the first billed call.
-   *   2. **It does not invent a topic.** An empty queue is a refusal, not a
-   *      prompt to a model asking what this show should cover this week.
+   *   2. **It takes what is queued.** It does not generate a subject of its own,
+   *      and an empty queue is still a refusal here. That is deliberately
+   *      narrower than the scheduled path, which tops the queue up before it
+   *      takes (`TopicQueueService`): this button is somebody standing at the
+   *      screen who can see the queue, so making them wait on a model call — and
+   *      possibly telling them it failed — is worse than the one-line refusal
+   *      below. The slow tick keeps the queue full for them anyway, so an empty
+   *      one here means the auto-fill is broken, which is what the refusal says.
    *   3. **It stops at a queued video.** No `Publication`, no PUBLISHED. The
    *      operator's own publish click is still the only thing that reaches an
    *      audience.
@@ -627,8 +633,9 @@ export class SeriesService {
 
     if (!topic) {
       throw new ConflictError(
-        "This series has no topics left. Nothing here invents a subject, so add " +
-          "one to the queue and it will make that.",
+        "This series has no topics left, and the queue normally refills itself " +
+          "before it gets this low — check the logs for a failed topic " +
+          "generation. Add one to the queue and it will make that immediately.",
       );
     }
 

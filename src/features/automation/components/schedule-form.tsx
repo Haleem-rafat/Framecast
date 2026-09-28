@@ -230,9 +230,11 @@ export function ScheduleForm({
           ? "Pick a timezone."
           : missingAnswers.length > 0
             ? `Your prompt needs: ${missingAnswers.map((field) => field.label).join(", ")}.`
-            : !schedule && topics.length === 0
-              ? "Write at least one topic — a schedule with an empty queue pauses itself on its first run."
-              : null;
+            : // An empty queue used to be refused here, because a schedule with
+              // nothing in it paused itself on its first occurrence. It fills
+              // itself now (`TopicQueueService`), so demanding a list before the
+              // save is demanding the exact typing this feature removed.
+              null;
 
   function onSubmit(event: React.FormEvent): void {
     event.preventDefault();
@@ -544,9 +546,12 @@ export function ScheduleForm({
           <CardHeader>
             <CardTitle>Topic queue</CardTitle>
             <CardDescription>
-              One topic per line. Each run takes the next one down the list.
-              Nothing here invents a subject for you — when the list runs out,
-              the schedule pauses itself and tells you so.
+              One topic per line. Each run takes the next one down the list, and
+              when fewer than three are left Framecast writes ten more — picked
+              for reach against this channel&rsquo;s own view figures, and never
+              repeating something you have covered. Start it with the subjects
+              you actually want first; it will make those before anything it
+              chose.
             </CardDescription>
           </CardHeader>
 
@@ -556,7 +561,7 @@ export function ScheduleForm({
               label="Topics"
               description={`${topics.length} topic${topics.length === 1 ? "" : "s"} — ${
                 topics.length === 0
-                  ? "the schedule needs at least one"
+                  ? "Framecast will write ten before the first run"
                   : frequency === "WEEKLY"
                     ? `about ${topics.length} week${topics.length === 1 ? "" : "s"} of videos`
                     : `about ${topics.length} month${topics.length === 1 ? "" : "s"} of videos`

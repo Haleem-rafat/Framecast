@@ -1682,11 +1682,18 @@ enum ScheduleFrequency {
 }
 
 /// PAUSED is the only state in which the due-check ignores a schedule, and it
-/// is reached three ways: the operator presses Pause, the topic queue runs dry,
-/// or the run has failed `MAX_CONSECUTIVE_FAILURES` times in a row. All three
-/// write `pausedReason`, because a schedule that stopped on its own has to be
-/// able to say why — an operator who finds no video on Monday needs the answer
-/// on the schedule itself, not in a log they would have to know to look for.
+/// is reached three ways: the operator presses Pause, the run has failed
+/// `MAX_CONSECUTIVE_FAILURES` times in a row, or a run came due with an empty
+/// queue *and* generating new topics for it failed. All three write
+/// `pausedReason`, because a schedule that stopped on its own has to be able to
+/// say why — an operator who finds no video on Monday needs the answer on the
+/// schedule itself, not in a log they would have to know to look for.
+///
+/// The third of those used to be simply "the topic queue runs dry", and it was
+/// by far the most common. It no longer is: the queue tops itself up below
+/// three remaining topics (`TopicQueueService`), so an empty queue at run time
+/// now means the *generation* failed, and the reason written says so rather
+/// than blaming the operator for not typing anything.
 ///
 /// Shared with `ReleaseCadence`, which pauses for its own three reasons and
 /// writes `pausedReason` for the same one: an operator who finds no short on
@@ -1840,6 +1847,43 @@ model Schedule {
   /// for a fault nobody is watching.
   consecutiveFailures Int @default(0)
 
+  /// Held for the duration of one topic-queue refill, exactly as
+  /// `claimExpiresAt` is held for the duration of one run.
+  ///
+  /// A separate column rather than a reuse of `claimExpiresAt`, because the two
+  /// overlap by design: the run path tops the queue up *while* it holds the run
+  /// claim, so a refill that took the run's lease would be unable to take its
+  /// own. What this one prevents is the thing that actually costs money — two
+  /// workers both deciding a queue is low and both generating ten topics for
+  /// it, which is one wasted model call and twenty topics where the operator
+  /// expected ten.
+  ///
+  /// A lease rather than a lock, for the same reason every other lease here is
+  /// one: a worker killed mid-generation must not leave a queue that can never
+  /// be refilled again.
+  topicRefillLeaseExpiresAt DateTime?
+
+  /// How many refill attempts have failed in a row, cleared by any success.
+  ///
+  /// Drives the backoff in `topicRefillNextAttemptAt` below, and nothing else.
+  /// Deliberately NOT wired to `consecutiveFailures`: a failed refill has not
+  /// failed to produce a video, and letting it count towards the pause
+  /// threshold would let a provider outage during a slow tick disarm a schedule
+  /// whose queue is perfectly full.
+  topicRefillFailures Int @default(0)
+
+  /// The earliest instant the slow tick may try to refill this queue again.
+  ///
+  /// Null means "any time", which is every row until the first failure. Set
+  /// after a failed attempt so a provider that is down is asked once every few
+  /// minutes rather than on every tick — the tick runs when the worker is idle,
+  /// which on a quiet box is continuously.
+  ///
+  /// Ignored by the run path. A schedule that is actually due is the one moment
+  /// this is worth a call whatever the backoff says, because the alternative is
+  /// a schedule that pauses itself over a rate limit from four minutes ago.
+  topicRefillNextAttemptAt DateTime?
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -1881,21 +1925,45 @@ model Schedule {
   @@map("schedule")
 }
 
-/// One subject the operator wrote ahead of time, waiting its turn.
+/// One subject waiting its turn: written by the operator, or generated for them
+/// when the queue ran low.
 ///
-/// The queue is where topics come from, rather than a model inventing one each
-/// week. A standing instruction ("pick something about personal finance") would
-/// mean the studio choosing the subject of a video the operator pays for and
-/// puts their name on, and getting that wrong is not a small failure — it is a
-/// video about something they would never have covered, discovered after it was
-/// rendered. A queue is cheap, predictable, reviewable in advance, and when it
-/// empties the schedule stops rather than improvising.
+/// The queue is still where topics come from — nothing downstream invents a
+/// subject at the moment it needs one, and a run still takes the row at the head
+/// rather than asking a model what to make. What changed is who fills it. This
+/// table's original comment argued that a standing instruction would mean the
+/// studio choosing the subject of a video the operator pays for and puts their
+/// name on, and that an empty queue should stop the schedule rather than let it
+/// improvise. The second half of that did not survive contact with the product:
+/// typing topics by hand was the single thing the operator most wanted gone, and
+/// the schedules that mattered spent more time paused with an empty queue than
+/// running.
+///
+/// So the queue is topped up ahead of time instead — see `TopicQueueService`.
+/// The properties the original argument was really protecting are kept: the
+/// topics exist *before* the run that uses them, they sit in a list the operator
+/// can read, reorder by deleting, and override at any point, and `generated`
+/// below says which ones they did not write. What is gone is the pause.
 model ScheduleTopic {
   id         String    @id @default(uuid()) @db.Uuid
   /// Sort key, not an index into anything. Consumed rows keep their position so
   /// history reads in the order the operator wrote them.
   position   Int
   topic      String
+  /// True for a topic `TopicQueueService` generated, false for one a human
+  /// typed.
+  ///
+  /// Recorded rather than inferred, and worth a column of its own: the queue
+  /// screen has to be able to say "these four are ours" without the operator
+  /// having to remember what they typed three weeks ago, and "the studio chose
+  /// this subject" is exactly the fact this feature owes them. It is also the
+  /// only way to answer "did the auto-fill produce anything good?" after the
+  /// fact, by joining generated topics to the views the videos made from them
+  /// got.
+  ///
+  /// Defaults to false, so every row written before this column reads as what
+  /// it was: something a person wrote.
+  generated  Boolean   @default(false)
   /// Set when a run takes this topic, which happens *before* the model is
   /// called — see `ScheduleService.executeClaim` for why a failed run does not
   /// put the topic back.

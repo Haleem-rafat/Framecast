@@ -67,12 +67,54 @@ function fakeProvider(options?: { fail?: Error }): Pick<
  * the video row, the script version, Gate 1 and the hard stop before publishing
  * are all the production code paths.
  */
-function makeServices(provider = fakeProvider()) {
+function makeServices(
+  provider = fakeProvider(),
+  topics: ConstructorParameters<typeof ScheduleService>[2] = quietTopics(),
+) {
   const automation = new AutomationService(new ScriptService(provider));
-  const schedules = new ScheduleService(automation, automation);
+  const schedules = new ScheduleService(automation, automation, topics);
   const series = new SeriesService(automation, schedules);
 
-  return { automation, schedules, series };
+  return { automation, schedules, series, topics };
+}
+
+/**
+ * The topic auto-fill, stubbed to say "the queue is fine".
+ *
+ * `ScheduleService` asks it whether the queue needs topping up before every run,
+ * and the production implementation answers by reaching a provider — so leaving it
+ * wired here would bill a live Anthropic call from a test about a series' recipe.
+ * "Nothing needed" is the answer it gives almost every tick anyway, so every test
+ * written before the auto-fill existed behaves exactly as it did.
+ */
+function quietTopics() {
+  return { refill: vi.fn(async () => ({ status: "not-needed" as const, queued: 9 })) };
+}
+
+/** The auto-fill actually working, for the test that a series' queue refills like
+ *  any other. It writes a real row, because what is under test is that the run
+ *  then *takes* it. */
+function fillingTopics(topic: string) {
+  return {
+    refill: vi.fn(async (scheduleId: string) => {
+      const last = await prisma.scheduleTopic.findFirst({
+        where: { scheduleId },
+        orderBy: { position: "desc" },
+        select: { position: true },
+      });
+
+      await prisma.scheduleTopic.create({
+        data: {
+          scheduleId,
+          position: (last?.position ?? -1) + 1,
+          topic,
+          generated: true,
+        },
+      });
+
+      return { status: "filled" as const, scheduleId, added: [topic] };
+    }),
+  };
 }
 
 async function cleanupProviderUsage(): Promise<void> {
@@ -543,8 +585,15 @@ describe("seriesService — the schedule's guarantees are the schedule's", () =>
     expect(detail.pausedReason).toContain("3 runs in a row failed");
   });
 
-  it("pauses itself rather than inventing a topic when the queue runs dry", async () => {
-    const { series, schedules } = makeServices();
+  it("keeps making episodes past the end of the queue, and marks the ones it chose", async () => {
+    // This used to assert the opposite: a series whose queue ran dry paused itself
+    // rather than inventing a topic. A series' cadence *is* a `Schedule`, so it
+    // inherits the auto-fill with no code of its own — which is the point of
+    // testing it here rather than only on the schedule.
+    const { series, schedules } = makeServices(
+      fakeProvider(),
+      fillingTopics("how the Suez Canal changed shipping"),
+    );
     const created = await series.create(userId, seriesInput({ topics: ["only one"] }));
 
     await makeDue(created.id);
@@ -553,11 +602,19 @@ describe("seriesService — the schedule's guarantees are the schedule's", () =>
     await makeDue(created.id);
     const second = await schedules.tick();
 
-    expect(second?.outcome).toBe("SKIPPED");
-    expect(second?.reason).toContain("Nothing here invents a subject");
+    expect(second?.outcome).toBe("SUCCEEDED");
 
     const detail = await series.get(userId, created.id);
-    expect(detail.status).toBe("PAUSED");
+    expect(detail.status).toBe("ACTIVE");
+    expect(detail.pausedReason).toBeNull();
+
+    // And the generated one is labelled, so the operator can tell it from the
+    // subject they wrote.
+    const used = detail.topics.filter((topic) => topic.consumedAt !== null);
+    expect(used.map((topic) => [topic.topic, topic.generated])).toEqual([
+      ["only one", false],
+      ["how the Suez Canal changed shipping", true],
+    ]);
   });
 
   it("refuses an on-demand run into an empty queue rather than improvising", async () => {

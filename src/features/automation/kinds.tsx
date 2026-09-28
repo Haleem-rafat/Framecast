@@ -65,9 +65,10 @@ export const AUTOMATION_KINDS: Record<AutomationKind, AutomationKindMeta> = {
         seriesId={entry.id}
         seriesName={entry.name}
         status={entry.status}
-        // "Make one now" refuses an empty queue rather than inventing a
-        // subject, so the button is disabled before it is pressed instead of
-        // after. `backlog` is never null for this kind.
+        // "Make one now" refuses an empty queue — deliberately narrower than a
+        // scheduled run, which tops the queue up first — so the button is
+        // disabled before it is pressed instead of after. `backlog` is never null
+        // for this kind.
         queuedTopicCount={entry.backlog ?? 0}
         compact
       />

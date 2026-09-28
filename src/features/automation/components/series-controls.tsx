@@ -148,12 +148,16 @@ export function SeriesControls({
         type="button"
         size={compact ? "sm" : "default"}
         onClick={onGenerate}
-        // An empty queue is a refusal rather than a prompt to invent a subject,
-        // so the button says so before it is pressed instead of after.
+        // An empty queue is still a refusal here, and the button says so before
+        // it is pressed instead of after. Unlike a scheduled run, this one does
+        // not stop to generate a queue first — somebody is standing at the screen
+        // and making them wait on a model call is worse than the one line below.
+        // The queue refills itself on the worker's tick, so an empty one here
+        // means the auto-fill is failing, which the logs will say.
         disabled={isPending || queuedTopicCount === 0}
         title={
           queuedTopicCount === 0
-            ? "Add a topic first — nothing here invents a subject."
+            ? "The queue is empty and has not refilled itself — add a topic to make one now."
             : undefined
         }
       >

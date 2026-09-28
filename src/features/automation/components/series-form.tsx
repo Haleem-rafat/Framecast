@@ -294,7 +294,7 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
               : missingAnswers.length > 0
                 ? `The script style needs: ${missingAnswers.map((field) => field.label).join(", ")}.`
                 : !series && topics.length === 0
-                  ? "Write at least one topic — nothing here invents a subject."
+                  ? "Write at least one topic — the first episode is made from what you choose."
                   : null;
 
   function onSubmit(event: React.FormEvent): void {
@@ -738,9 +738,11 @@ export function SeriesForm({ setup, timeZones, series }: SeriesFormProps) {
           <CardHeader>
             <CardTitle>Topic queue</CardTitle>
             <CardDescription>
-              One topic per line. Each episode takes the next one down the list.
-              Nothing here invents a subject for you — when the list runs out,
-              the series pauses itself and tells you so.
+              One topic per line. Each episode takes the next one down the list,
+              and once fewer than three are left Framecast writes ten more —
+              picked for reach against this channel&rsquo;s own view figures,
+              never repeating a subject you have covered. Start it with the
+              episodes you actually want; those go first.
             </CardDescription>
           </CardHeader>
 

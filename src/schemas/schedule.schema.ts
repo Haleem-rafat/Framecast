@@ -161,11 +161,14 @@ export function requireMatchingDay(
 /**
  * Creating a schedule optionally seeds its topic queue in the same submission.
  *
- * Deliberately part of `create` rather than a second step: a schedule with an
- * empty queue is a schedule that pauses itself on its first occurrence, so
- * asking for the first few topics up front is asking for the thing that makes
- * it work at all. It is still `.default([])` — an operator who wants to paste a
- * long list on the detail page afterwards is not blocked from saving.
+ * Part of `create` rather than a second step, because the subjects an operator
+ * has actually decided on are the ones that should be made first, and the create
+ * form is where they have them in mind.
+ *
+ * `.default([])`, and that default now genuinely works: a schedule saved with no
+ * topics fills its own queue before its first run (`TopicQueueService`). It used
+ * to mean "pauses itself on its first occurrence", which is why the form refused
+ * it — that refusal is gone.
  */
 export const createScheduleSchema = baseScheduleSchema
   .extend({
