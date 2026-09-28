@@ -89,6 +89,15 @@ const HOOK_CARD_SECONDS = 3;
  *  eye away from the first caption. */
 const HOOK_CARD_FADE_OUT_MS = 300;
 
+/** Longest line the card may draw before it is broken in two.
+ *
+ *  The file sets `WrapStyle: 2`, which means libass never wraps a line on its
+ *  own: anything wider than the frame is simply drawn off both edges, which is
+ *  what the first rendered card did. So the break is decided here, in words,
+ *  and handed to libass as an explicit `\N`. Eighteen characters is the same
+ *  limit the captions below use and is measured against the 1080px frame. */
+const HOOK_CARD_MAX_CHARS_PER_LINE = 18;
+
 /** Top margin as a share of frame height: clear of YouTube's own top chrome
  *  on a phone, and well above the captions at the bottom. */
 const HOOK_CARD_TOP_FRACTION = 0.12;
@@ -164,11 +173,42 @@ function header(input: KineticCaptionInput): string {
   ].join("\n");
 }
 
-/** The card's text as it is drawn, or null when there is none to draw. */
+/**
+ * The card's text as it is drawn, wrapped to at most two lines, or null when
+ * there is none to draw.
+ *
+ * Wrapped on word boundaries and never mid-word: a card is two to six words
+ * (see `short-script.ts`), so there is always a break to take.
+ */
 function cardText(input: KineticCaptionInput): string | null {
   const card = input.hookCard?.trim();
 
-  return card ? card.toUpperCase() : null;
+  if (!card) {
+    return null;
+  }
+
+  const lines: string[] = [];
+  let line = "";
+
+  for (const word of card.toUpperCase().split(/\s+/)) {
+    const candidate = line.length === 0 ? word : `${line} ${word}`;
+
+    if (candidate.length > HOOK_CARD_MAX_CHARS_PER_LINE && line.length > 0) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+
+  if (line.length > 0) {
+    lines.push(line);
+  }
+
+  // Each line is escaped on its own and the break is added afterwards: the
+  // break IS a backslash sequence, and `escapeText` doubles backslashes, so
+  // escaping the joined string would draw a literal "\N" on the card.
+  return lines.map(escapeText).join("\\N");
 }
 
 /**
@@ -239,7 +279,7 @@ export function buildAss(input: KineticCaptionInput): string {
   if (card !== null) {
     events.push(
       `Dialogue: 1,${timestamp(0)},${timestamp(HOOK_CARD_SECONDS)},HookCard,,0,0,0,,` +
-        `{\\fad(0,${HOOK_CARD_FADE_OUT_MS})}${escapeText(card)}`,
+        `{\\fad(0,${HOOK_CARD_FADE_OUT_MS})}${card}`,
     );
   }
 

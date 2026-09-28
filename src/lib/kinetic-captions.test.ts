@@ -234,8 +234,9 @@ describe("buildAss — hook card", () => {
     const ass = withCard("The wise man's worst choice");
 
     expect(ass).toMatch(/^Style: HookCard,.*,8,\d+,\d+,230,1$/m);
+    // Wrapped at a word boundary, because the file never wraps on its own.
     expect(ass).toContain(
-      "Dialogue: 1,0:00:00.00,0:00:03.00,HookCard,,0,0,0,,{\\fad(0,300)}THE WISE MAN'S WORST CHOICE",
+      "Dialogue: 1,0:00:00.00,0:00:03.00,HookCard,,0,0,0,,{\\fad(0,300)}THE WISE MAN'S\\NWORST CHOICE",
     );
   });
 
@@ -246,5 +247,35 @@ describe("buildAss — hook card", () => {
   it("draws no card when none is given", () => {
     expect(withCard()).not.toContain("HookCard");
     expect(withCard("   ")).not.toContain("HookCard");
+  });
+});
+
+describe("buildAss — the hook card is wrapped, not clipped", () => {
+  function card(text: string) {
+    return buildAss({
+      alignment: align([
+        ["Marcus", 0, 0.4],
+        ["Aurelius", 0.4, 0.9],
+      ]),
+      style: STYLE,
+      width: 1080,
+      height: 1920,
+      maxWordsPerLine: 3,
+      maxCharsPerLine: 18,
+      hookCard: text,
+    });
+  }
+
+  it("breaks a long card onto a second line at a word boundary", () => {
+    // 21 characters: wider than the frame at this size, and the file never
+    // wraps on its own — see HOOK_CARD_MAX_CHARS_PER_LINE.
+    expect(card("The line nobody reads")).toContain("THE LINE NOBODY\\NREADS");
+  });
+
+  it("leaves a card that already fits on one line", () => {
+    const ass = card("Rome fell twice");
+
+    expect(ass).toContain("ROME FELL TWICE");
+    expect(ass).not.toContain("ROME FELL\\NTWICE");
   });
 });
