@@ -194,12 +194,37 @@ function toInsightScript(
 // accidentally omit by editing a stored prompt template, since metadata
 // generation — unlike script generation — has no operator-editable template
 // at all.
+/**
+ * What a title has to do, stated where the model will actually read it.
+ *
+ * Measured on the operator's own channel on 2026-09-28: the Shorts that found
+ * an audience named somebody the viewer had already heard of, and the ones
+ * that died described them instead — "The African Emperor Who Humiliated All
+ * of Europe" (Menelik II) and "The Wisest Roman Emperor" (Marcus Aurelius)
+ * both hid the one word a scrolling viewer recognises. A description is not a
+ * name, and the recognisable name is the whole reason the title works.
+ */
+const TITLE_RULES = [
+  "TITLE — the recognisable name comes first.",
+  "- If the narration names a person, place, empire, company or event the " +
+    'viewer has plausibly heard of, that name goes in the first three words. ' +
+    'Write "Marcus Aurelius", not "the wisest Roman emperor"; "Menelik II", ' +
+    'not "an African emperor".',
+  "- Only describe instead of naming when the narration genuinely names " +
+    "nobody recognisable.",
+  "- Then the turn: what is surprising about them, in plain words.",
+  "- Under 60 characters so it is not cut off. No ALL CAPS, no brackets, no " +
+    "emoji, no question the video does not answer.",
+].join("\n");
+
 const metadataSchema = z.object({
   title: z
     .string()
     .describe(
-      "A YouTube title under 100 characters. State the payoff; no clickbait " +
-        "the video does not deliver.",
+      "A YouTube title under 100 characters. The recognisable name from the " +
+        "narration — the person, place or event the viewer has heard of — in " +
+        "the first three words, then what is surprising about it. State the " +
+        "payoff; no clickbait the video does not deliver.",
     ),
   description: z
     .string()
@@ -367,6 +392,8 @@ export class GatewayProvider implements TextGenerationProvider {
       const prompt = [
         `Write YouTube metadata (title, description, tags) for a video whose ` +
           `narration follows. Tone: ${input.tone}. Niche: ${input.niche}.`,
+        "",
+        TITLE_RULES,
         "",
         "Narration:",
         input.script,

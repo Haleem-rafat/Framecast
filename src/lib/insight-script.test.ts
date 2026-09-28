@@ -35,9 +35,10 @@ function scene(overrides: Partial<InsightScene> & { id: number }): InsightScene 
 /** A script that passes everything, as the baseline each test breaks one rule
  *  of. Six beats, in order, and a word count that matches its durations. */
 function validScript(): InsightScript {
-  // 106 words across twelve scenes. At 2.6 words a second that is 40.8s, which
-  // is exactly 12 × 3.4 — so the baseline has no timing drift and every test
-  // below is failing the one rule it means to.
+  // Eighteen scenes. At 2.6 words a second the word count below matches
+  // 18 × 3.9s exactly — so the baseline has no timing drift and every test
+  // below is failing the one rule it means to. It clears MIN_TOTAL_WORDS,
+  // which is the sixty-second floor the retention report needs.
   const lines: [string, string][] = [
     ["HOOK", "You forgot the task you finished this morning."],
     ["HOOK", "You still remember the one you did not."],
@@ -51,12 +52,20 @@ function validScript(): InsightScript {
     ["TURN", "The file closes and the room finally goes quiet."],
     ["LOOP", "Your memory is not broken at all."],
     ["LOOP", "It is waiting to be told that you are done."],
+    ["LOOP", "The waiters in the original study proved the same thing."],
+    ["LOOP", "They recalled every unpaid order in the room at once."],
+    ["LOOP", "Every bill that was settled left their memory immediately."],
+    ["LOOP", "Nothing about those orders was written down anywhere."],
+    ["LOOP", "The open ones simply refused to be put down."],
+    ["LOOP", "Yours are the same, and they are waiting tonight."],
+    ["LOOP", "Give one of them an ending before you sleep."],
+    ["LOOP", "Then the morning starts quiet, for once."],
   ];
 
   return {
     conceptName: "Zeigarnik effect",
     scenes: lines.map(([beat, narration], index) =>
-      scene({ id: index + 1, beat, narration, duration: 3.4 }),
+      scene({ id: index + 1, beat, narration, duration: 3.3 }),
     ),
   };
 }
@@ -291,7 +300,7 @@ describe("insightTransitions", () => {
     const transitions = insightTransitions(beatsOf(validScript()));
 
     // One entry per join, which is one fewer than there are scenes.
-    expect(transitions).toHaveLength(11);
+    expect(transitions).toHaveLength(validScript().scenes.length - 1);
     expect(transitions.filter(Boolean)).toHaveLength(1);
   });
 

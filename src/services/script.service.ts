@@ -13,6 +13,7 @@ import { firstSentence } from "@/lib/short-hook";
 import {
   checkShortScript,
   isShortTarget,
+  shortTargetSeconds,
   nextEndingKind,
   shortInstruction,
   type EndingKind,
@@ -294,6 +295,11 @@ export class ScriptService {
       template.variables.find((variable) => variable.key === key)?.defaultValue ??
       undefined;
     const channelId = video.project.channelId;
+    const targetSeconds = shortTargetSeconds({
+      format: input.format,
+      seconds: declared("seconds"),
+      duration: declared("duration"),
+    });
     const short =
       channelId !== null &&
       isShortTarget({
@@ -319,6 +325,7 @@ export class ScriptService {
             narration: generated.content,
             hookCard: generated.hookCard,
             recentOpenings: short.recentOpenings,
+            targetSeconds,
           }).errors
       : undefined;
 

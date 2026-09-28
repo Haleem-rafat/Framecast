@@ -957,8 +957,17 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
     id: "vertical-short",
     name: "Vertical short",
     description:
-      "One idea, forty-five seconds, written to be watched on a phone with the sound on. The only style in the catalogue short enough to approve as a Short.",
+      "One idea, seventy-five seconds, written to be watched on a phone with the sound on. The only style in the catalogue short enough to approve as a Short.",
     category: "SCRIPT",
+    // Seventy-five seconds, and the floor of sixty is not a style preference:
+    // YouTube's retention report ("key moments for audience retention") only
+    // exists for videos of sixty seconds or more, so a thirty-six second short
+    // cannot be diagnosed at all — you can see that it did badly and never
+    // where viewers left. The measured channel this was raised for had been
+    // publishing thirty-to-forty-seven second shorts and had no retention data
+    // for any of them. Ninety is the other end: past it, the music licensing a
+    // short can carry changes.
+    //
     // Seconds, not minutes, and it is the only entry measured that way — which
     // is the point. Every other style here targets four minutes or more, so
     // before this one existed an operator choosing the vertical output at Gate
@@ -967,8 +976,8 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
     // words: comfortably inside YouTube's three-minute Shorts ceiling, long
     // enough for a hook, a middle and a payoff, and short enough that the
     // whole thing is one thought rather than a summary of several.
-    targetLength: "About 45 seconds",
-    targetSeconds: 45,
+    targetLength: "About 75 seconds",
+    targetSeconds: 75,
     content: [
       "Write a {{seconds}}-second narration script about one single idea: {{topic}}",
       "",
@@ -978,7 +987,7 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       "This is a vertical short, watched full-screen on a phone, usually while scrolling. It is not a summary of a longer video and it is not an introduction to one. It is the whole thing.",
       "",
       "LENGTH — this is the hardest constraint here and the easiest one to break.",
-      "The narration is read aloud at about 150 words a minute, so {{seconds}} seconds is about {{seconds}} times two and a half words. That is roughly six to nine sections of around 13 words each. Count the words before you finish. A script that runs to three hundred words is a two-minute video, and a two-minute video is not what was asked for.",
+      "The narration is read aloud at about 150 words a minute, so {{seconds}} seconds is about {{seconds}} times two and a half words. Count the words before you finish. Never come in under sixty seconds of narration: below that the platform reports no retention at all, so a shorter script cannot be judged or improved. A script that runs past ninety seconds is a different format and is not what was asked for.",
       "",
       "STRUCTURE — four moves, in this order, with nothing else in between.",
       "- The hook is the first sentence and it is the whole video's fate. State the strangest, most specific, most concrete fact you have, in under twelve words. No greeting, no 'in this video', no 'did you know', no setup before it.",
@@ -988,7 +997,7 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
       "- Then the payoff: the consequence, in one or two lines, and stop. No recap, no 'follow for more', no question to the comments, no teaser for another video.",
       "",
       "DISCIPLINE — what makes this format fail.",
-      "- No list. A countdown needs a minute an entry, and a list of five in forty-five seconds is five things nobody remembers.",
+      "- No list. A countdown needs a minute an entry, and a list of five in seventy-five seconds is five things nobody remembers.",
       "- No history lesson before the point. If the background takes longer than one sentence, pick a different fact.",
       "- No numbers a listener cannot hold. One figure, said once, in the form they would repeat it.",
       "- Never trail off into a wider theme. It ends on the specific thing it opened with.",
@@ -1005,7 +1014,7 @@ export const SCRIPT_STYLES: readonly ScriptStyle[] = [
     ].join("\n"),
     variables: [
       TOPIC,
-      { key: "seconds", label: "Length (seconds)", defaultValue: "45" },
+      { key: "seconds", label: "Length (seconds)", defaultValue: "75" },
       {
         key: "audience",
         label: "Audience",
@@ -1097,7 +1106,7 @@ export function findScriptStyle(id: string): ScriptStyle | null {
  * later moves between the two lists on its own — and so that the answer for the
  * vertical output stays honest: for most of this catalogue it is "none of
  * them", and saying so is more useful than offering a nine-minute explainer as
- * a way to make a forty-five-second Short.
+ * a way to make a seventy-five-second Short.
  */
 export function scriptStylesUnder(maxSeconds: number): readonly ScriptStyle[] {
   return SCRIPT_STYLES.filter((style) => style.targetSeconds <= maxSeconds);

@@ -42,6 +42,19 @@ export type EndingKind = "LOOP" | "DEBATE";
  *  a short's opening. */
 export const SHORT_MAX_SECONDS = 90;
 
+/** Words a narration needs to clear sixty seconds at 2.5 words a second.
+ *
+ *  Sixty is not a taste: YouTube's retention report only exists for videos of
+ *  sixty seconds or more, so a shorter short can be seen to fail and never be
+ *  seen to fail *where*. The measured channel had published fifty-five shorts
+ *  of thirty to forty-seven seconds and had retention data for none of them. */
+export const MIN_SHORT_WORDS = 150;
+
+/** Below this declared length the floor is not applied, because the operator
+ *  asked for something deliberately shorter and refusing every attempt would
+ *  leave them unable to generate at all. */
+const FLOOR_APPLIES_ABOVE_SECONDS = 55;
+
 const CARD_MIN_WORDS = 2;
 const CARD_MAX_WORDS = 6;
 
@@ -87,6 +100,31 @@ export function isShortTarget(input: {
   }
 
   return false;
+}
+
+/**
+ * The length a generation asked for, in seconds, or undefined when it declared
+ * none. Reads the same two variables `isShortTarget` does, in the same way, so
+ * the gate and the floor can never disagree about what was asked for.
+ */
+export function shortTargetSeconds(input: {
+  format?: "prose" | "insight" | "longform";
+  seconds?: string;
+  duration?: string;
+}): number | undefined {
+  if (input.seconds !== undefined) {
+    const seconds = Number(input.seconds);
+
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+
+  if (input.duration !== undefined) {
+    const minutes = Number(input.duration);
+
+    return Number.isFinite(minutes) ? minutes * 60 : undefined;
+  }
+
+  return input.format === "insight" ? 75 : undefined;
 }
 
 /** The other ending from last time, and LOOP for a channel's first short.
@@ -212,16 +250,39 @@ export function checkEnding(narration: string): string[] {
  * The whole gate for a short: every rule, every problem, in one list so one
  * retry can fix all of them.
  */
+export function checkShortLength(
+  narration: string,
+  targetSeconds: number | undefined,
+): string[] {
+  if (targetSeconds === undefined || targetSeconds < FLOOR_APPLIES_ABOVE_SECONDS) {
+    return [];
+  }
+
+  const words = narration.trim().split(/\s+/).filter(Boolean).length;
+
+  if (words >= MIN_SHORT_WORDS) {
+    return [];
+  }
+
+  return [
+    `The narration is ${words} words, which is under sixty seconds when read ` +
+      `aloud. Write at least ${MIN_SHORT_WORDS} words: below sixty seconds ` +
+      `the platform reports no retention at all, so the video cannot be judged.`,
+  ];
+}
+
 export function checkShortScript(input: {
   narration: string;
   hookCard?: string;
   recentOpenings: readonly string[];
+  targetSeconds?: number;
 }): HookCheck {
   const errors = [
     ...checkHook(input.narration).errors,
     ...checkFreshOpening(input.narration, input.recentOpenings).errors,
     ...checkHookCard(input.hookCard, input.narration),
     ...checkEnding(input.narration),
+    ...checkShortLength(input.narration, input.targetSeconds),
   ];
 
   return { ok: errors.length === 0, errors };

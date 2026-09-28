@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   checkEnding,
+  checkShortLength,
   checkHookCard,
   checkShortScript,
   isShortTarget,
@@ -115,5 +116,24 @@ describe("checkShortScript", () => {
         recentOpenings: ["China burned the largest fleet on earth."],
       }),
     ).toEqual({ ok: true, errors: [] });
+  });
+});
+
+describe("checkShortLength", () => {
+  const short = "Marcus Aurelius handed Rome to a lunatic. He knew better.";
+  const long = Array.from({ length: 160 }, () => "word").join(" ");
+
+  it("refuses a narration under sixty seconds when that length was asked for", () => {
+    expect(checkShortLength(short, 75)).toHaveLength(1);
+    expect(checkShortLength(short, 75)[0]).toContain("no retention");
+  });
+
+  it("accepts one that clears the floor", () => {
+    expect(checkShortLength(long, 75)).toEqual([]);
+  });
+
+  it("leaves a deliberately shorter target alone", () => {
+    expect(checkShortLength(short, 30)).toEqual([]);
+    expect(checkShortLength(short, undefined)).toEqual([]);
   });
 });

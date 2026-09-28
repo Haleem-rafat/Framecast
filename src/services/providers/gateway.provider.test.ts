@@ -214,3 +214,23 @@ describe("GatewayProvider.generateScript — citations stay out of the narration
     expect(JSON.stringify(z.toJSONSchema(call.schema))).toContain("never spoken");
   });
 });
+
+describe("GatewayProvider.generateMetadata — the title leads with the name", () => {
+  it("tells the model to put a recognisable name in the first three words", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: { title: "Menelik II beat Italy with borrowed guns", description: "d", tags: ["t"] },
+    });
+
+    await new GatewayProvider().generateMetadata({
+      script: "Menelik II armed Ethiopia and beat an invading European army.",
+      tone: "plain",
+      niche: "history",
+      apiKey: "key",
+    });
+
+    const prompt = generateObjectMock.mock.calls[0][0].prompt as string;
+
+    expect(prompt).toContain("the recognisable name comes first");
+    expect(prompt).toContain('"Marcus Aurelius", not "the wisest Roman emperor"');
+  });
+});

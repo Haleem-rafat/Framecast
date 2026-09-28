@@ -90,8 +90,16 @@ export const BANNED_PHRASES = [
  *  a short sentence is never the problem. */
 export const MAX_WORDS_PER_SCENE = 16;
 
-export const MIN_TOTAL_WORDS = 95;
-export const MAX_TOTAL_WORDS = 150;
+/** The narration's length, in words, at `WORDS_PER_SECOND`.
+ *
+ *  Raised from 95–150 (roughly 36–58 seconds) on 2026-09-28. The floor is what
+ *  matters: YouTube's retention report only exists for videos of sixty seconds
+ *  or more, so every short this format produced before was undiagnosable — it
+ *  could be seen to fail and never be seen to fail *where*. 160 words is about
+ *  62 seconds and 235 is about 90, the point past which a short's music
+ *  licensing changes. */
+export const MIN_TOTAL_WORDS = 160;
+export const MAX_TOTAL_WORDS = 235;
 export const MIN_SCENE_SECONDS = 2.5;
 export const MAX_SCENE_SECONDS = 5.0;
 
