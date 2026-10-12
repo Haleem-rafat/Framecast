@@ -31,14 +31,15 @@ import type {
  * the job done. A pipeline that trusted the status alone would produce videos
  * with holes in them and a job table that said everything was fine.
  *
- * ## Why only two models
+ * ## Why only these models
  *
  * `render-manifest.ts` requires an integer seed on every clip, and says why:
  * "without one a bad clip cannot be re-rolled without changing every other
  * clip." `fal-ai/kling-video/*` and `fal-ai/minimax/video-01` accept no seed at
  * all, so under this repo's own gate they cannot be used — a bad clip from
  * either would mean re-buying the whole manifest. They are deliberately absent
- * rather than listed-and-warned-about.
+ * rather than listed-and-warned-about. `fal-ai/ltx-2/text-to-video` is absent
+ * for the same reason: its schema has no `seed` field.
  *
  * ## What is NOT verified here
  *
@@ -87,7 +88,7 @@ const WAN_MAX_FRAMES = 100;
  * id" is "let the caller pass a body the model will refuse, after the job row
  * has been written and before anyone finds out".
  */
-type DurationEncoding = "num_frames" | "duration_string";
+type DurationEncoding = "num_frames" | "native_frames" | "duration_string";
 
 interface FalModel {
   /** What the operator is told this cost tier is, in a refusal sentence. */
@@ -103,6 +104,11 @@ export const FAL_MODELS: Record<string, FalModel> = {
     label: "Wan text-to-video",
     aspectRatios: ["9:16", "16:9"],
     durationEncoding: "num_frames",
+  },
+  "fal-ai/wan/v2.2-a14b/text-to-video": {
+    label: "Wan 2.2 text-to-video",
+    aspectRatios: ["9:16", "16:9", "1:1"],
+    durationEncoding: "native_frames",
   },
   "fal-ai/veo3": {
     label: "Veo 3 (premium)",
@@ -120,6 +126,18 @@ export const FAL_MODELS: Record<string, FalModel> = {
  * most expensive model in it.
  */
 export const DEFAULT_FAL_MODEL = "fal-ai/wan-t2v";
+
+/**
+ * The part of a model path the queue's status and result endpoints live under.
+ *
+ * Submit goes to the full path, but status and result only answer on the first
+ * two segments: measured on `fal-ai/wan/v2.2-a14b/text-to-video`, the full path
+ * answers 405 to a status poll while `fal-ai/wan` answers it. Two-segment
+ * models (`fal-ai/wan-t2v`, `fal-ai/veo3`) are unchanged by this.
+ */
+export function falQueueAppPath(model: string): string {
+  return model.split("/").slice(0, 2).join("/");
+}
 
 /** 429 and 5xx are the queue having a bad minute; everything else means the
  *  request itself is wrong and will be wrong again in five. */
@@ -145,6 +163,38 @@ export function wanFrameCount(durationSeconds: number): number {
   return Math.min(Math.max(frames, 4 * WAN_REQUEST_FPS), WAN_MAX_FRAMES);
 }
 
+/**
+ * Wan 2.2's native frame rate, and the rate fal bills it at.
+ *
+ * Unlike `wan-t2v`, this model is asked for its own 16fps and not 24. fal
+ * prices it per video second "calculated at 16 frames per second", so asking
+ * for 24fps would buy 1.5x the seconds for the same clip length. Smoothness
+ * comes from fal's interpolator instead (`num_interpolated_frames: 1`, the
+ * model's default, doubles the output to 32fps at no extra billed seconds),
+ * which is a better source for the pipeline's 30fps conform than duplicated
+ * frames.
+ *
+ * Neither number has been measured against a live generation yet. The ceiling
+ * is the schema's own `num_frames <= 161`, which — unlike `wan-t2v`'s — is
+ * advertised; the 4n+1 snap is derived from Wan's VAE packing four frames per
+ * latent and from 81 being the default. A wrong guess here is a 422 on submit.
+ */
+const WAN22_FPS = 16;
+const WAN22_MAX_FRAMES = 161;
+
+/**
+ * The frame count for Wan 2.2, at its native 16fps.
+ *
+ * Snapped to 4n+1 and floored at `MIN_CLIP_SECONDS` worth, so a 5s clip is the
+ * model's default 81 frames and a 4s clip is 65. Clamped to the schema's 161.
+ */
+export function wan22FrameCount(durationSeconds: number): number {
+  const seconds = Math.max(durationSeconds, 4);
+  const frames = 4 * Math.round((seconds * WAN22_FPS) / 4) + 1;
+
+  return Math.min(frames, WAN22_MAX_FRAMES);
+}
+
 /** The nearest length the model actually offers, never the requested one
  *  rounded silently to something it does not accept. */
 export function nearestDurationChoice(
@@ -159,7 +209,7 @@ export function nearestDurationChoice(
   });
 }
 
-/** Every request body this adapter can build, in one place, so the two models'
+/** Every request body this adapter can build, in one place, so the models'
  *  differences are visible side by side rather than spread through `submit`. */
 export function buildFalRequestBody(
   request: VideoGenerationRequest,
@@ -201,6 +251,14 @@ export function buildFalRequestBody(
     // Sent explicitly rather than left to the model's 16 default — see
     // `WAN_REQUEST_FPS` for the measurement that made this worth a field.
     body.frames_per_second = WAN_REQUEST_FPS;
+  } else if (model.durationEncoding === "native_frames") {
+    body.num_frames = wan22FrameCount(request.durationSeconds);
+    body.frames_per_second = WAN22_FPS;
+    // Both are the model's defaults today, and sent anyway: the output frame
+    // rate the conform step receives depends on them, and a default that moves
+    // on fal's side should not silently change every clip. See `WAN22_FPS`.
+    body.num_interpolated_frames = 1;
+    body.adjust_fps_for_interpolation = true;
   } else {
     body.duration = nearestDurationChoice(
       request.durationSeconds,
@@ -292,7 +350,7 @@ export class FalVideoProvider implements VideoGenerationProvider {
     apiKey: string,
   ): Promise<VideoGenerationStatus> {
     const response = await this.call(
-      `${FAL_QUEUE_BASE}/${model}/requests/${encodeURIComponent(requestId)}/status`,
+      `${FAL_QUEUE_BASE}/${falQueueAppPath(model)}/requests/${encodeURIComponent(requestId)}/status`,
       { headers: authHeaders(apiKey) },
       "the status poll",
     );
@@ -327,7 +385,7 @@ export class FalVideoProvider implements VideoGenerationProvider {
     apiKey: string,
   ): Promise<GeneratedClip> {
     const response = await this.call(
-      `${FAL_QUEUE_BASE}/${model}/requests/${encodeURIComponent(requestId)}`,
+      `${FAL_QUEUE_BASE}/${falQueueAppPath(model)}/requests/${encodeURIComponent(requestId)}`,
       { headers: authHeaders(apiKey) },
       "the result request",
     );
