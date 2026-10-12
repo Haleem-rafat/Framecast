@@ -97,6 +97,8 @@ interface FalModel {
   durationEncoding: DurationEncoding;
   /** Only for `duration_string` models: the exact strings they accept. */
   durationChoices?: readonly string[];
+  /** Image-to-video: animates `imageUrl` rather than drawing from nothing. */
+  requiresImage?: boolean;
 }
 
 export const FAL_MODELS: Record<string, FalModel> = {
@@ -109,6 +111,17 @@ export const FAL_MODELS: Record<string, FalModel> = {
     label: "Wan 2.2 text-to-video",
     aspectRatios: ["9:16", "16:9", "1:1"],
     durationEncoding: "native_frames",
+  },
+  /**
+   * The same model animating a picture the pipeline already drew, so a clip
+   * keeps the channel's own art style and character instead of the model's
+   * guess at them. The input is resized and centre-cropped to `aspect_ratio`.
+   */
+  "fal-ai/wan/v2.2-a14b/image-to-video": {
+    label: "Wan 2.2 image-to-video",
+    aspectRatios: ["9:16", "16:9", "1:1"],
+    durationEncoding: "native_frames",
+    requiresImage: true,
   },
   "fal-ai/veo3": {
     label: "Veo 3 (premium)",
@@ -234,6 +247,14 @@ export function buildFalRequestBody(
     );
   }
 
+  if (model.requiresImage && !request.imageUrl) {
+    throw new ProviderError(
+      "FAL",
+      `${model.label} animates a picture, and this request carries none.`,
+      false,
+    );
+  }
+
   const body: Record<string, unknown> = {
     prompt: request.prompt,
     aspect_ratio: request.aspectRatio,
@@ -244,6 +265,10 @@ export function buildFalRequestBody(
 
   if (request.negativePrompt) {
     body.negative_prompt = request.negativePrompt;
+  }
+
+  if (model.requiresImage) {
+    body.image_url = request.imageUrl;
   }
 
   if (model.durationEncoding === "num_frames") {

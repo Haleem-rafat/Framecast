@@ -105,6 +105,19 @@ describe("buildFalRequestBody", () => {
     expect(body).not.toHaveProperty("duration");
   });
 
+  it("sends the picture to Wan 2.2 image-to-video, and refuses a request without one", () => {
+    const model = "fal-ai/wan/v2.2-a14b/image-to-video";
+
+    expect(
+      buildFalRequestBody(request({ model, imageUrl: "data:image/png;base64,AAAA" })),
+    ).toMatchObject({ image_url: "data:image/png;base64,AAAA", num_frames: 81 });
+    expect(() => buildFalRequestBody(request({ model }))).toThrow(/animates a picture/);
+    // A text-to-video model is never sent one, even if a caller passes it.
+    expect(
+      buildFalRequestBody(request({ imageUrl: "data:image/png;base64,AAAA" })),
+    ).not.toHaveProperty("image_url");
+  });
+
   it("omits negative_prompt entirely when there is none, rather than sending an empty string", () => {
     expect(buildFalRequestBody(request({ negativePrompt: undefined }))).not.toHaveProperty(
       "negative_prompt",

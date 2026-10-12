@@ -358,6 +358,10 @@ export interface VideoGenerationRequest {
    *  clips carry no integer seed, because without one a bad clip cannot be
    *  re-rolled alone — so by the time a request is built there is always one. */
   seed: number;
+  /** The picture an image-to-video model animates — a URL or a `data:` URI.
+   *  Only image-to-video models read it, and they refuse a request without
+   *  one; see `FAL_MODELS`. */
+  imageUrl?: string;
 }
 
 /**
