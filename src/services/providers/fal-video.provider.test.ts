@@ -4,8 +4,10 @@ import { ProviderError } from "@/lib/errors";
 import {
   buildFalRequestBody,
   DEFAULT_FAL_MODEL,
+  falQueueAppPath,
   FalVideoProvider,
   nearestDurationChoice,
+  wan22FrameCount,
   wanFrameCount,
 } from "@/services/providers/fal-video.provider";
 import type { VideoGenerationRequest } from "@/services/providers/types";
@@ -86,6 +88,36 @@ describe("buildFalRequestBody", () => {
     ).not.toHaveProperty("num_frames");
   });
 
+  it("asks Wan 2.2 for its native 16fps with interpolation, not wan-t2v's 24fps", () => {
+    // fal bills Wan 2.2 per second counted at 16fps, so 24fps would be a 1.5x
+    // bill for the same clip.
+    const body = buildFalRequestBody(
+      request({ model: "fal-ai/wan/v2.2-a14b/text-to-video", durationSeconds: 5 }),
+    );
+
+    expect(body).toMatchObject({
+      num_frames: 81,
+      frames_per_second: 16,
+      num_interpolated_frames: 1,
+      adjust_fps_for_interpolation: true,
+      seed: 100001,
+    });
+    expect(body).not.toHaveProperty("duration");
+  });
+
+  it("sends the picture to Wan 2.2 image-to-video, and refuses a request without one", () => {
+    const model = "fal-ai/wan/v2.2-a14b/image-to-video";
+
+    expect(
+      buildFalRequestBody(request({ model, imageUrl: "data:image/png;base64,AAAA" })),
+    ).toMatchObject({ image_url: "data:image/png;base64,AAAA", num_frames: 81 });
+    expect(() => buildFalRequestBody(request({ model }))).toThrow(/animates a picture/);
+    // A text-to-video model is never sent one, even if a caller passes it.
+    expect(
+      buildFalRequestBody(request({ imageUrl: "data:image/png;base64,AAAA" })),
+    ).not.toHaveProperty("image_url");
+  });
+
   it("omits negative_prompt entirely when there is none, rather than sending an empty string", () => {
     expect(buildFalRequestBody(request({ negativePrompt: undefined }))).not.toHaveProperty(
       "negative_prompt",
@@ -129,6 +161,31 @@ describe("wanFrameCount", () => {
     // this model can make is 4.16s. Pinned so the day somebody raises
     // MAX_CLIP_SECONDS they find out here instead of in a 422.
     expect(wanFrameCount(5) / 24).toBeCloseTo(4.16, 1);
+  });
+});
+
+describe("wan22FrameCount", () => {
+  it("lands on 4n+1 frames, which is what Wan packs into latents", () => {
+    expect(wan22FrameCount(5)).toBe(81);
+    expect(wan22FrameCount(4)).toBe(65);
+    expect(wan22FrameCount(4.5)).toBe(73);
+    expect((wan22FrameCount(4.2) - 1) % 4).toBe(0);
+  });
+
+  it("asks for a whole MIN_CLIP_SECONDS even when handed less", () => {
+    expect(wan22FrameCount(0.5)).toBe(65);
+  });
+
+  it("stops at the schema's advertised 161", () => {
+    expect(wan22FrameCount(40)).toBe(161);
+  });
+});
+
+describe("falQueueAppPath", () => {
+  it("polls a nested model under its first two segments, where the queue answers", () => {
+    // Measured: the full path answers 405 to a status poll.
+    expect(falQueueAppPath("fal-ai/wan/v2.2-a14b/text-to-video")).toBe("fal-ai/wan");
+    expect(falQueueAppPath("fal-ai/wan-t2v")).toBe("fal-ai/wan-t2v");
   });
 });
 
