@@ -241,6 +241,8 @@ interface PixabayRendition {
 }
 
 interface PixabayHit {
+  /** Comma-separated, as Pixabay sends them: "cartoon, cat, animation". */
+  tags?: string;
   id: number;
   duration: number;
   videos: {
@@ -330,18 +332,34 @@ interface PixabayVariant {
    * there would silently change what every existing channel already collects.
    */
   safesearch: boolean;
+  /** Tags that put a clip first. The cartoon variant uses it to rank drawn
+   *  animation above the rendered 3D and motion graphics that share
+   *  Pixabay's "animation" bucket. */
+  preferTags: RegExp | null;
 }
+
+/**
+ * A green-screen clip is a keying plate, not footage: dropped into a video
+ * as-is it is a person on a flat green field. Never wanted by any style. The
+ * cartoon library is full of them (animated characters shipped for keying).
+ */
+const GREEN_SCREEN_TAGS = /\b(green ?screen|chroma ?key|chromakey|keying)\b/i;
+
+/** Tags that mark drawn animation rather than a render or a motion graphic. */
+const DRAWN_TAGS = /\b(cartoon|animated|2d|character|illustration|drawing|doodle|kids?)\b/i;
 
 const LIVE_ACTION_VARIANT: PixabayVariant = {
   videoType: "all",
   queryPrefix: "",
   safesearch: false,
+  preferTags: null,
 };
 
 const CARTOON_VARIANT: PixabayVariant = {
   videoType: "animation",
   queryPrefix: "cartoon",
   safesearch: true,
+  preferTags: DRAWN_TAGS,
 };
 
 export class PixabayProvider implements StockFootageProvider {
@@ -403,9 +421,10 @@ export class PixabayProvider implements StockFootageProvider {
     }
 
     const clips: StockClip[] = [];
+    const preferred = new Set<string>();
 
     for (const hit of body.hits) {
-      if (!inDurationBand(hit.duration)) {
+      if (!inDurationBand(hit.duration) || GREEN_SCREEN_TAGS.test(hit.tags ?? "")) {
         continue;
       }
 
@@ -427,9 +446,14 @@ export class PixabayProvider implements StockFootageProvider {
         height: rendition.height,
         durationSeconds: hit.duration,
       });
+      if (this.variant.preferTags?.test(hit.tags ?? "")) preferred.add(String(hit.id));
     }
 
-    return clips;
+    // Stable: within each group Pixabay's own relevance order is kept.
+    return [
+      ...clips.filter((clip) => preferred.has(clip.externalId)),
+      ...clips.filter((clip) => !preferred.has(clip.externalId)),
+    ];
   }
 }
 
