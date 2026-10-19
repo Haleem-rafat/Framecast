@@ -1,18 +1,23 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { Repeat2, Sparkles } from "lucide-react";
 
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Reveal } from "@/components/shared/reveal";
+import { AutomationCanvas } from "@/features/automation/canvas/automation-canvas";
 import { AutomationCards } from "@/features/automation/components/automation-cards";
 import { GenerateModes } from "@/features/automation/components/generate-modes";
 import { NewAutomationMenu } from "@/features/automation/components/new-automation-menu";
 import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
+import { ViewToggle } from "@/features/automation/components/view-toggle";
+import { AUTOMATION_LAYOUT_COOKIE, type AutomationLayout } from "@/features/automation/layout";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/session";
 import { automationListService } from "@/services/automation-list.service";
 import { automationService } from "@/services/automation.service";
+import { canvasService } from "@/services/canvas.service";
 import { easyModeService } from "@/services/easy-mode.service";
 
 export const metadata: Metadata = { title: "Automation" };
@@ -59,15 +64,19 @@ export const metadata: Metadata = { title: "Automation" };
 export default async function AutomationPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; view?: string }>;
 }) {
   const user = await requireUser();
-  const { tab: requested } = await searchParams;
+  const { tab: requested, view: requestedView } = await searchParams;
+  const saved = (await cookies()).get(AUTOMATION_LAYOUT_COOKIE)?.value;
+  const layout: AutomationLayout =
+    (requestedView ?? saved) === "canvas" ? "canvas" : "grid";
 
-  const [setup, automations, easySetup] = await Promise.all([
+  const [setup, automations, easySetup, canvas] = await Promise.all([
     automationService.getSetup(user.id),
     automationListService.list(user.id),
     easyModeService.getSetup(user.id),
+    layout === "canvas" ? canvasService.read(user.id) : null,
   ]);
 
   // Someone with nothing running yet came here to make a video; someone with
@@ -123,7 +132,15 @@ export default async function AutomationPage({
       ) : (
         <>
           {!ready && <ReadinessNotice blockers={setup.blockers} />}
+          {automations.length > 0 && (
+            <div className="flex justify-end">
+              <ViewToggle view={layout} />
+            </div>
+          )}
           <Reveal>
+            {canvas && automations.length > 0 ? (
+              <AutomationCanvas model={canvas} />
+            ) : (
             <AutomationCards
               automations={automations}
               empty={
@@ -135,6 +152,7 @@ export default async function AutomationPage({
                 />
               }
             />
+            )}
           </Reveal>
         </>
       )}
