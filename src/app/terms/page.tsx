@@ -33,12 +33,9 @@ export default function TermsPage() {
 
         <LegalSection id="who-may-use-framecast" heading="Who may use Framecast">
           <p className="text-muted-foreground text-sm text-pretty">
-            Anyone may register for a Framecast account. Registration alone does
-            not grant access: every new account is held until the operator
-            approves it, and an unapproved account can sign in and see that it is
-            waiting but can do nothing else. Approval is at the operator&apos;s
-            discretion and may be withdrawn. Attempting to reach the studio
-            without an approved account is not permitted.
+            Anyone may register for a Framecast Studio account, and a new account
+            can be used straight away on the free trial. We may suspend or close
+            an account that breaks these terms or misuses the service.
           </p>
         </LegalSection>
 

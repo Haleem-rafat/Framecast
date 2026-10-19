@@ -68,8 +68,7 @@ const QUESTIONS = [
     a: (
       <>
         Yes. Create an account and it starts on the free trial with 3 credits,
-        enough to make your first videos. New accounts are reviewed by a person
-        before their first video.
+        enough to make your first videos. No card is needed for the trial.
       </>
     ),
   },

@@ -11,39 +11,6 @@ import { billingService } from "@/services/billing.service";
 /** Reset links are relayed by hand, so a one-hour default would expire mid-relay. */
 const RESET_TOKEN_TTL_SECONDS = 60 * 60 * 2;
 
-/**
- * Addresses that skip the approvals queue.
- *
- * This used to be a hard allowlist: an address that was not on it could not
- * hold an account at all. Registration is open now and the approvals queue is
- * the gate, so the list has one job left — solving the bootstrap. Approving an
- * account requires an already-approved operator, so on a fresh database with
- * an empty queue there would be nobody who could ever approve anybody. The
- * seeded operator (and anyone in AUTH_ALLOWED_EMAILS) is therefore approved at
- * creation, and every other account waits.
- *
- * It grants *approval only*, and deliberately not the OPERATOR role that
- * deciding registrations now also requires. An env var that silently conferred
- * privilege on whoever happened to be listed in it is the same implicit grant
- * the role column exists to remove — see the UserRole comment in
- * schema.prisma. So the bootstrap on a fresh database is two steps rather than
- * one: register the address in this list, then run `pnpm promote:operator
- * <email>` at the server. Until that second step the account can use the
- * studio and cannot decide anybody else's.
- *
- * `role` is likewise absent from `additionalFields` below, and that absence is
- * load-bearing: Better Auth's adapter drops any field its schema does not
- * declare, so a sign-up body carrying `"role": "OPERATOR"` cannot reach
- * Postgres and the column's own `MEMBER` default supplies the value instead.
- * Declaring it here — even with `input: false` — would be more surface for no
- * gain, because nothing in the auth layer ever writes it.
- */
-const autoApprovedEmails = new Set(
-  [env.SEED_USER_EMAIL, ...(env.AUTH_ALLOWED_EMAILS?.split(",") ?? [])]
-    .map((email) => email?.trim().toLowerCase())
-    .filter((email): email is string => Boolean(email)),
-);
-
 export const auth = betterAuth({
   appName: "Framecast Studio",
   baseURL: env.BETTER_AUTH_URL,
@@ -148,24 +115,19 @@ export const auth = betterAuth({
          * takes the column's `PENDING` default: the gate fails closed if this
          * hook is ever changed or skipped.
          */
-        before: async (user) => {
-          if (!autoApprovedEmails.has(user.email.trim().toLowerCase())) {
-            return { data: user };
-          }
-
-          return {
-            data: { ...user, approval: "APPROVED", approvedAt: new Date() },
-          };
-        },
         /**
-         * An account approved at creation never passes through
-         * `accountService.approve`, which is where everyone else's trial
-         * credits come from.
+         * Every new account is approved at creation now. Paid plans and the
+         * 3-credit trial are the limit on what an account can spend, so an
+         * operator reading every sign-up first no longer protects anything.
+         * The approval column, the Approvals page and rejection still work for
+         * accounts registered before this, and an operator can still reject.
          */
+        before: async (user) => ({
+          data: { ...user, approval: "APPROVED", approvedAt: new Date() },
+        }),
+        /** Every new account starts on the trial's credits. */
         after: async (user) => {
-          if (autoApprovedEmails.has(user.email.trim().toLowerCase())) {
-            await billingService.grantTrial(user.id);
-          }
+          await billingService.grantTrial(user.id);
         },
       },
     },
