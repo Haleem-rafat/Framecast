@@ -9,7 +9,10 @@
  *   3. the resulting ids and the webhook secret, written into .env.local.
  *
  *   PADDLE_API_KEY=pdl_sdbx_… in .env.local, then:
- *   pnpm billing:sandbox-setup https://<your-ngrok-host>
+ *   pnpm billing:sandbox-setup https://<public-host-of-your-dev-server>
+ *
+ * Without the URL it creates only the catalog (step 1); run it again with the
+ * URL once the dev server has a public address.
  *
  * Sandbox only: it refuses a key that is not a sandbox key. Safe to re-run —
  * existing PADDLE_PRICE_* values in .env.local are reused, and the webhook
@@ -19,7 +22,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import { config } from "dotenv";
 
-import { PAID_TIERS, PLANS } from "../src/lib/plans";
+import { PAID_TIERS, PLANS } from "../src/lib/plans.ts";
 
 config({ path: ".env.local", quiet: true });
 
@@ -41,8 +44,8 @@ const publicUrl = process.argv[2]?.replace(/\/$/, "");
 
 if (!key) throw new Error("Put your sandbox PADDLE_API_KEY in .env.local first.");
 if (!key.startsWith("pdl_sdbx_")) throw new Error("That is not a sandbox key (pdl_sdbx_…). Refusing.");
-if (!publicUrl?.startsWith("https://")) {
-  throw new Error("Pass the public https URL of your dev server, e.g. the ngrok one.");
+if (publicUrl && !publicUrl.startsWith("https://")) {
+  throw new Error("The public URL of the dev server must be https.");
 }
 
 async function paddle<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -95,6 +98,10 @@ if (missing.length > 0) {
 }
 
 // 2. Webhook destination — the old Framecast one is removed first.
+if (!publicUrl) {
+  console.log("\nNo public URL given: catalog only. Re-run with the dev server's https URL for the webhook.");
+  process.exit(0);
+}
 const destination = `${publicUrl}/api/billing/paddle`;
 const existing = await paddle<{ id: string; description: string }[]>("GET", "/notification-settings");
 for (const setting of existing.filter((s) => s.description === "Framecast Studio (local)")) {
