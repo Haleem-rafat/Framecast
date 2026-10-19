@@ -26,8 +26,8 @@
     "migrate:renders": "tsx --conditions=react-server scripts/migrate-renders.ts",
     "migrate:relink": "tsx --conditions=react-server scripts/relink-renders.ts",
     "promote:operator": "tsx --conditions=react-server scripts/promote-operator.ts",
-    "billing:backfill-trial": "tsx --conditions=react-server scripts/grant-trial-backfill.ts",
-    "billing:sandbox-setup": "tsx scripts/paddle-sandbox-setup.ts",
+    "billing:backfill-trial": "tsx --conditions=react-server scripts/grant-trial-backfill.mts",
+    "billing:sandbox-setup": "tsx scripts/paddle-sandbox-setup.mts",
     "postinstall": "prisma generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },
