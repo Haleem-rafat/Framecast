@@ -12,11 +12,12 @@
  *   pnpm billing:sandbox-setup https://<public-host-of-your-dev-server>
  *
  * Without the URL it creates only the catalog (step 1); run it again with the
- * URL once the dev server has a public address.
+ * URL once the dev server has a public address. An existing destination of
+ * the same name is updated in place, never deleted, so its secret survives.
  *
  * Sandbox only: it refuses a key that is not a sandbox key. Safe to re-run —
  * existing PADDLE_PRICE_* values in .env.local are reused, and the webhook
- * destination is replaced rather than duplicated. Prints ids, never secrets.
+ * destination is updated rather than duplicated. Prints ids, never secrets.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -100,23 +101,29 @@ if (missing.length > 0) {
   console.log("Prices already in .env.local — reusing them.");
 }
 
-// 2. Webhook destination — the old Framecast one is removed first.
+// 2. Webhook destination — created once, then only ever updated.
 if (!publicUrl) {
   console.log("\nNo public URL given: catalog only. Re-run with the dev server's https URL for the webhook.");
   process.exit(0);
 }
 const destination = `${publicUrl}/api/billing/paddle`;
 const existing = await paddle<{ id: string; description: string }[]>("GET", "/notification-settings");
-for (const setting of existing.filter((s) => s.description === DESTINATION_NAME)) {
-  await paddle("DELETE", `/notification-settings/${setting.id}`);
-}
-const created = await paddle<{ id: string; endpoint_secret_key: string }>("POST", "/notification-settings", {
-  description: DESTINATION_NAME,
-  destination,
-  type: "url",
-  subscribed_events: WEBHOOK_EVENTS,
-  api_version: 1,
-});
+const current = existing.find((setting) => setting.description === DESTINATION_NAME);
+// Never deleted: the destination and its secret are what fulfilment runs on.
+// A re-run (a new tunnel URL) points the same destination somewhere else.
+const created = current
+  ? await paddle<{ id: string; endpoint_secret_key: string }>("PATCH", `/notification-settings/${current.id}`, {
+      destination,
+      subscribed_events: WEBHOOK_EVENTS,
+      active: true,
+    })
+  : await paddle<{ id: string; endpoint_secret_key: string }>("POST", "/notification-settings", {
+      description: DESTINATION_NAME,
+      destination,
+      type: "url",
+      subscribed_events: WEBHOOK_EVENTS,
+      api_version: 1,
+    });
 setEnv("PADDLE_WEBHOOK_SECRET", created.endpoint_secret_key);
 setEnv("PADDLE_ENV", "sandbox");
 console.log(`Webhook → ${destination} (${created.id}); secret written to ${ENV_FILE}`);
