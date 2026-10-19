@@ -19,6 +19,7 @@ interface PaddleGlobal {
       items: { priceId: string; quantity: number }[];
       customer?: { email: string };
       customData?: Record<string, string>;
+      settings?: { displayMode: "overlay"; variant: "one-page"; successUrl: string };
     }) => void;
   };
 }
@@ -111,6 +112,13 @@ export function PlanCards({
         customer: { email },
         // The webhook maps the subscription back to this account by this id.
         customData,
+        // One page instead of Paddle's multi-step form; back to this page,
+        // flagged, once the payment goes through.
+        settings: {
+          displayMode: "overlay",
+          variant: "one-page",
+          successUrl: `${window.location.origin}/billing?checkout=success`,
+        },
       });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not open checkout.");

@@ -18,7 +18,7 @@
  * existing PADDLE_PRICE_* values in .env.local are reused, and the webhook
  * destination is replaced rather than duplicated. Prints ids, never secrets.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { config } from "dotenv";
 
@@ -27,7 +27,10 @@ import { PAID_TIERS, PLANS } from "../src/lib/plans.ts";
 config({ path: ".env.local", quiet: true });
 
 const API = "https://sandbox-api.paddle.com";
-const ENV_FILE = ".env.local";
+/** Where the results are written, and what the webhook destination is called —
+ *  overridable so staging gets its own destination and secret. */
+const ENV_FILE = process.env.PADDLE_SETUP_ENV_FILE ?? ".env.local";
+const DESTINATION_NAME = process.env.PADDLE_SETUP_NAME ?? "Framecast Studio (local)";
 const WEBHOOK_EVENTS = [
   "subscription.created",
   "subscription.activated",
@@ -63,7 +66,7 @@ async function paddle<T>(method: string, path: string, body?: unknown): Promise<
 
 /** Sets KEY=value in .env.local, replacing an existing line or appending one. */
 function setEnv(name: string, value: string) {
-  const lines = readFileSync(ENV_FILE, "utf-8").split("\n");
+  const lines = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, "utf-8").split("\n") : [];
   const at = lines.findIndex((line) => line.startsWith(`${name}=`));
   if (at >= 0) lines[at] = `${name}=${value}`;
   else lines.push(`${name}=${value}`);
@@ -104,11 +107,11 @@ if (!publicUrl) {
 }
 const destination = `${publicUrl}/api/billing/paddle`;
 const existing = await paddle<{ id: string; description: string }[]>("GET", "/notification-settings");
-for (const setting of existing.filter((s) => s.description === "Framecast Studio (local)")) {
+for (const setting of existing.filter((s) => s.description === DESTINATION_NAME)) {
   await paddle("DELETE", `/notification-settings/${setting.id}`);
 }
 const created = await paddle<{ id: string; endpoint_secret_key: string }>("POST", "/notification-settings", {
-  description: "Framecast Studio (local)",
+  description: DESTINATION_NAME,
   destination,
   type: "url",
   subscribed_events: WEBHOOK_EVENTS,

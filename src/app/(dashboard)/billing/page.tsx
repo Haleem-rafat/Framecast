@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 
+import { CircleCheck } from "lucide-react";
+
 import { PageHeader } from "@/components/shared/page-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { env } from "@/config/env";
 import { paddlePrices } from "@/config/paddle";
 import { CreditHistory } from "@/features/billing/components/credit-history";
@@ -14,7 +17,12 @@ export const metadata: Metadata = { title: "Billing" };
 
 const dateFormat = new Intl.DateTimeFormat("en", { dateStyle: "medium" });
 
-export default async function BillingPage() {
+export default async function BillingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ checkout?: string }>;
+}) {
+  const { checkout } = await searchParams;
   const user = await requireUser();
   const [summary, history] = await Promise.all([
     billingService.summary(user.id),
@@ -29,6 +37,18 @@ export default async function BillingPage() {
         description="Your plan and credits. A Short uses 1 credit, a long video 5."
         actions={hasSubscription ? <ManageBillingButton /> : undefined}
       />
+
+      {checkout === "success" && (
+        <Alert>
+          <CircleCheck />
+          <AlertTitle>Payment received</AlertTitle>
+          <AlertDescription>
+            {summary.status
+              ? "Your plan is active and its credits are below."
+              : "Paddle is confirming it — your plan and credits appear here within a minute. Refresh if they don't."}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <section className="grid gap-4 sm:grid-cols-3">
         <div className="bg-card rounded-xl border p-5">
