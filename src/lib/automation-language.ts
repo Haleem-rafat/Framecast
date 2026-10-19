@@ -353,3 +353,29 @@ function ordinal(value: number): string {
       return `${value}th`;
   }
 }
+
+/** What a card offers to fix a problem: add topics, or choose a plan. */
+export type ProblemFix = "topics" | "billing" | null;
+
+/**
+ * A stop or failure reason in one short line, for the automation cards. The
+ * stored reasons are written to be complete, which makes them long; the card
+ * shows this and the detail page keeps the full text.
+ */
+export function describeProblem(reason: string | null): { text: string; fix: ProblemFix } | null {
+  if (!reason) return null;
+  if (/topic queue is empty/i.test(reason)) {
+    return { text: "No topics left. Add topics to restart it.", fix: "topics" };
+  }
+  if (/credits? and you have|out of credits|needs \d+ credits?/i.test(reason)) {
+    return { text: "Out of credits.", fix: "billing" };
+  }
+  if (/budget (exceeded|for this account is exhausted)|positive credit balance/i.test(reason)) {
+    return { text: "The AI budget ran out. It needs topping up.", fix: null };
+  }
+  if (/failed to generate a script/i.test(reason)) {
+    return { text: "The script could not be written.", fix: null };
+  }
+  const firstSentence = reason.match(/^.*?[.!?](\s|$)/)?.[0].trim() ?? reason;
+  return { text: firstSentence.length > 140 ? `${firstSentence.slice(0, 137)}…` : firstSentence, fix: null };
+}
