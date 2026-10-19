@@ -3,7 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
@@ -20,7 +20,6 @@ import {
 import { FormField, FormFieldset } from "@/components/shared/form-field";
 import { Reveal } from "@/components/shared/reveal";
 import { FieldGroup } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -32,12 +31,6 @@ import { AccentPicker } from "@/features/settings/components/accent-picker";
 import { AccentPreview } from "@/features/settings/components/accent-preview";
 import { previewAccent } from "@/features/settings/components/appearance-preview";
 import {
-  SETTING_WIRING,
-  type SettingKey,
-} from "@/features/settings/setting-wiring";
-import { PROVIDER_LABELS } from "@/features/providers/provider-labels";
-import {
-  MAX_DEFAULT_TAGS,
   NO_SCRIPT_PROMPT,
   publishVisibilities,
   scriptProviderOptions,
@@ -72,40 +65,8 @@ const VISIBILITY_LABELS: Record<(typeof publishVisibilities)[number], string> = 
   PRIVATE: "Private",
 };
 
-export interface ScriptPromptOption {
-  id: string;
-  name: string;
-}
-
 interface SettingsFormProps {
   settings: UserSettingsView;
-  /** The operator's own SCRIPT templates — the only valid pins for this field. */
-  scriptPrompts: ScriptPromptOption[];
-}
-
-/**
- * The disclosure that sits under an unwired control. Rendered as ordinary help
- * text rather than a warning: the operator did nothing wrong, and there is
- * nothing for them to fix — it just says where the value really comes from.
- *
- * A function returning content rather than a component rendering its own `<p>`,
- * because it is passed to `FormField`'s `note` slot — which owns the element,
- * the id and the `aria-describedby` link back to the control. It used to be a
- * private re-implementation of `FieldDescription` at a different size.
- */
-function wiringNote(setting: SettingKey): ReactNode {
-  const wiring = SETTING_WIRING[setting];
-
-  if (wiring.applied) {
-    return null;
-  }
-
-  return (
-    <>
-      <span className="text-foreground/70 font-medium">Not used yet.</span>{" "}
-      {wiring.actualSource}
-    </>
-  );
 }
 
 function toDefaultValues(settings: UserSettingsView): SettingsFormValues {
@@ -142,7 +103,14 @@ function isVoiceProvider(
   return (voiceProviderOptions as readonly string[]).includes(value);
 }
 
-export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
+/**
+ * Only the settings something actually reads: theme, accent and the default
+ * YouTube visibility. The other columns on `UserSetting` (script and voice
+ * provider, voice id, tags, bucket, pinned template) were saved and never
+ * used, so they are no longer offered. The form still submits their stored
+ * values untouched — `toDefaultValues` carries them — so nothing is erased.
+ */
+export function SettingsForm({ settings }: SettingsFormProps) {
   const router = useRouter();
 
   // `defaultTags` is a comma-separated string in the form and a `string[]`
@@ -150,11 +118,10 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
   // three-generic `useForm` bridges them — same arrangement as the prompt
   // template dialog.
   const {
-    register,
     control,
     handleSubmit,
     reset,
-    formState: { errors, isSubmitting, isDirty },
+    formState: { isSubmitting, isDirty },
   } = useForm<SettingsFormValues, unknown, UpdateSettingsInput>({
     resolver: zodResolver(settingsFormSchema),
     defaultValues: toDefaultValues(settings),
@@ -244,7 +211,6 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
                 <FormField
                   name="theme"
                   label="Theme"
-                  note={wiringNote("theme")}
                 >
                   {(controlProps) => (
                     <Select value={field.value} onValueChange={field.onChange}>
@@ -274,7 +240,6 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
             <FormFieldset
               label="Accent colour"
               description="Used for buttons, links, focus rings and the active sidebar item. Graphite is the studio's original monochrome."
-              note={wiringNote("accent")}
             >
               <Controller
                 control={control}
@@ -291,139 +256,8 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
       </Card>
 
       {/* Appearance stays put — it is the card the operator can see on arrival,
-       * and the one whose controls change the page around them. The three below
-       * it are off screen on every viewport this form has been checked at, so
-       * they fade up as they are reached. Tabbing into one counts as reaching
-       * it: the browser scrolls a focused field into view, which is the same
-       * crossing the observer is watching for. */}
-      <Reveal>
-        <Card>
-          <CardHeader>
-            <CardTitle>Generation defaults</CardTitle>
-            <CardDescription>
-              Which model writes the script and which voice reads it.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <FieldGroup>
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Controller
-                  control={control}
-                  name="defaultScriptProvider"
-                  render={({ field }) => (
-                    <FormField
-                      name="defaultScriptProvider"
-                      label="Script provider"
-                      note={wiringNote("defaultScriptProvider")}
-                    >
-                      {(controlProps) => (
-                        <Select
-                          value={field.value}
-                          onValueChange={field.onChange}
-                        >
-                          <SelectTrigger {...controlProps} className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {scriptProviderOptions.map((one) => (
-                              <SelectItem key={one} value={one}>
-                                {PROVIDER_LABELS[one]}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    </FormField>
-                  )}
-                />
-
-                <Controller
-                  control={control}
-                  name="defaultVoiceProvider"
-                  render={({ field }) => (
-                    <FormField
-                      name="defaultVoiceProvider"
-                      label="Voice provider"
-                      note={wiringNote("defaultVoiceProvider")}
-                    >
-                      {(controlProps) => (
-                        <Select
-                          value={field.value}
-                          onValueChange={field.onChange}
-                        >
-                          <SelectTrigger {...controlProps} className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {voiceProviderOptions.map((one) => (
-                              <SelectItem key={one} value={one}>
-                                {PROVIDER_LABELS[one]}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    </FormField>
-                  )}
-                />
-              </div>
-
-              <FormField
-                name="defaultVoiceId"
-                label="Voice ID"
-                error={errors.defaultVoiceId?.message}
-                note={wiringNote("defaultVoiceId")}
-              >
-                {(controlProps) => (
-                  <Input
-                    placeholder="CwhRBWXzGAHq8TQ4Fs17"
-                    className="font-mono sm:max-w-sm"
-                    {...register("defaultVoiceId")}
-                    {...controlProps}
-                  />
-                )}
-              </FormField>
-
-              <Controller
-                control={control}
-                name="defaultScriptPromptId"
-                render={({ field }) => (
-                  <FormField
-                    name="defaultScriptPromptId"
-                    label="Script template"
-                    note={wiringNote("defaultScriptPromptId")}
-                  >
-                    {(controlProps) => (
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                      >
-                        <SelectTrigger
-                          {...controlProps}
-                          className="w-full sm:max-w-sm"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={NO_SCRIPT_PROMPT}>
-                            No template pinned
-                          </SelectItem>
-                          {scriptPrompts.map((prompt) => (
-                            <SelectItem key={prompt.id} value={prompt.id}>
-                              {prompt.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </FormField>
-                )}
-              />
-            </FieldGroup>
-          </CardContent>
-        </Card>
-      </Reveal>
-
+       * and the one whose controls change the page around them. The card below
+       * it fades up as it is reached. */}
       <Reveal>
         <Card>
           <CardHeader>
@@ -441,8 +275,7 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
                   <FormField
                     name="defaultVisibility"
                     label="Visibility"
-                    note={wiringNote("defaultVisibility")}
-                  >
+                    >
                     {(controlProps) => (
                       <Select
                         value={field.value}
@@ -467,49 +300,7 @@ export function SettingsForm({ settings, scriptPrompts }: SettingsFormProps) {
                 )}
               />
 
-              {/* The hint and the error share one slot, so the card does not grow
-                  a line taller the moment a tag list is rejected. */}
-              <FormField
-                name="defaultTags"
-                label="Tags"
-                description={`Comma separated, up to ${MAX_DEFAULT_TAGS}.`}
-                error={errors.defaultTags?.message}
-                note={wiringNote("defaultTags")}
-              >
-                {(controlProps) => (
-                  <Input
-                    placeholder="finance, explainer, market news"
-                    {...register("defaultTags")}
-                    {...controlProps}
-                  />
-                )}
-              </FormField>
             </FieldGroup>
-          </CardContent>
-        </Card>
-      </Reveal>
-
-      <Reveal>
-        <Card>
-          <CardHeader>
-            <CardTitle>Storage</CardTitle>
-            <CardDescription>Where rendered files are kept.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <FormField
-              name="storageBucket"
-              label="Bucket"
-              error={errors.storageBucket?.message}
-              note={wiringNote("storageBucket")}
-            >
-              {(controlProps) => (
-                <Input
-                  className="font-mono sm:max-w-sm"
-                  {...register("storageBucket")}
-                  {...controlProps}
-                />
-              )}
-            </FormField>
           </CardContent>
         </Card>
       </Reveal>

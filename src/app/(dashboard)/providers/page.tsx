@@ -9,14 +9,16 @@ import { ProviderTable } from "@/features/providers/components/provider-table";
 import { getEnvironmentProviderStatuses } from "@/features/providers/environment-providers";
 import { prisma } from "@/lib/prisma";
 import { providerCredentialService } from "@/services/provider-credential.service";
-import { requireUser } from "@/server/session";
+import { requireOperator } from "@/server/session";
 
 export const metadata: Metadata = { title: "AI Providers" };
 
 const SPEND_WINDOW_DAYS = 30;
 
 export default async function ProvidersPage() {
-  const user = await requireUser();
+  // Operators only. Customers run on the platform's keys and never manage
+  // provider credentials; this page is the platform's own key room now.
+  const user = await requireOperator();
 
   const [credentials, spendByProvider] = await Promise.all([
     providerCredentialService.list(user.id),

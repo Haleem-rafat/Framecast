@@ -153,12 +153,12 @@ export function VoiceListNotice({
         <p className="text-muted-foreground flex items-start gap-2 text-xs">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            No ElevenLabs key is stored, so there is no account to list voices
-            from. Add one on the{" "}
-            <Link href="/providers" className="underline underline-offset-3">
-              Providers page
+            Voices can&apos;t be listed right now: narration isn&apos;t
+            available on this account yet. Choose a plan on the{" "}
+            <Link href="/billing" className="underline underline-offset-3">
+              Billing page
             </Link>{" "}
-            and this list fills in. Narration needs that key anyway.
+            and this list fills in.
           </span>
         </p>
       )}
