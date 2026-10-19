@@ -1038,3 +1038,32 @@ describe("buildConformArgs", () => {
     );
   });
 });
+
+describe("trial watermark", () => {
+  const base = {
+    concatListPath: "/tmp/segments.txt",
+    audioPath: "/tmp/narration.mp3",
+    srtPath: "/tmp/captions.srt",
+    outputPath: "/tmp/out.mp4",
+    durationSeconds: 45,
+  };
+
+  it("adds no watermark unless asked, so existing renders are unchanged", () => {
+    expect(buildAssembleArgs(base).join(" ")).not.toContain("drawtext");
+  });
+
+  it("draws the watermark after the captions, bottom right", () => {
+    const args = buildAssembleArgs({ ...base, watermark: "Made with Framecast Studio" });
+    const graph = args[args.indexOf("-filter_complex") + 1];
+
+    expect(graph).toMatch(/subtitles=[^;]*,drawtext=text='Made with Framecast Studio'/);
+    expect(graph).toContain("x=w-tw-32:y=h-th-32");
+  });
+
+  it("keeps only plain characters, so the text can never break the filter graph", () => {
+    const args = buildAssembleArgs({ ...base, watermark: "It's: a\\test;[x]" });
+    const graph = args[args.indexOf("-filter_complex") + 1];
+
+    expect(graph).toContain("drawtext=text='Its atestx'");
+  });
+});

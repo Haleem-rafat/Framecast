@@ -4,7 +4,7 @@
  * need an absolute URL and must agree on the same one.
  */
 export const SITE_URL = "https://framecasts.com";
-export const SITE_NAME = "Framecast";
+export const SITE_NAME = "Framecast Studio";
 
 /**
  * The one-sentence description reused by the page `<meta>` tags, the OpenGraph
@@ -14,7 +14,7 @@ export const SITE_NAME = "Framecast";
  * Every clause is something the codebase actually does. Nothing aspirational.
  */
 export const SITE_DESCRIPTION =
-  "Framecast turns a topic into a finished YouTube video — a sourced script, " +
+  "Framecast Studio turns a topic into a finished YouTube video — a sourced script, " +
   "narration, footage matched to every line, burned-in captions and a music " +
   "bed — and holds it for your approval before anything is published.";
 

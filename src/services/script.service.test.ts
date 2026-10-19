@@ -22,7 +22,7 @@ import type {
 } from "@/services/providers/types";
 import { ScriptService } from "@/services/script.service";
 import { videoService } from "@/services/video.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test in this file gets its
@@ -89,6 +89,7 @@ async function cleanupProviderUsage() {
 beforeEach(async () => {
   await cleanupProviderUsage();
   userId = await createTestUser("script");
+  await fundTestUser(userId);
   projectId = (await projectService.create(userId, { name: PROJECT_NAME })).id;
   videoId = (
     await videoService.create(userId, {

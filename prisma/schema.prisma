@@ -94,6 +94,8 @@ model User {
   autoPublishJobs     AutoPublishJob[]
   motionClipJobs      MotionClipJob[]
   canvasNodes         CanvasNode[]
+  subscription        Subscription?
+  creditLedger        CreditLedger[]
 
   /// The approvals queue reads "every account still PENDING, oldest first".
   @@index([approval, createdAt])
@@ -2560,4 +2562,78 @@ model UserSetting {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_setting")
+}
+
+// ---------------------------------------------------------------------------
+// Billing — plans and credits
+// ---------------------------------------------------------------------------
+
+enum PlanTier {
+  TRIAL
+  CREATOR
+  PRO
+  AGENCY
+}
+
+/// Mirrors Paddle's subscription status, lower-cased there.
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  PAUSED
+  CANCELED
+}
+
+/// The user's Paddle subscription. Written only by Paddle webhooks.
+model Subscription {
+  id                   String             @id @default(uuid()) @db.Uuid
+  tier                 PlanTier
+  status               SubscriptionStatus
+  paddleSubscriptionId String             @unique
+  paddleCustomerId     String
+  periodStart          DateTime?
+  periodEnd            DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  /// `occurred_at` of the newest event applied; older events are ignored.
+  lastEventAt          DateTime
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscription")
+}
+
+enum CreditReason {
+  GRANT
+  CHARGE
+  REFUND
+  EXPIRE
+
+  /// Not "CreditReason": an abandoned credits experiment (Aug 2026, never
+  /// committed) left a type and a `credit_ledger` table by those names in
+  /// framecast_test, and possibly elsewhere. Distinct names keep this
+  /// migration from colliding with them.
+  @@map("credit_entry_reason")
+}
+
+/// Append-only. The balance is SUM(delta). `ref` makes every write idempotent:
+/// `trial`, `period:<subId>:<startsAt>`, `expire:<subId>:<startsAt>`,
+/// `charge:<videoId>`, `refund:<videoId>`.
+model CreditLedger {
+  id        String       @id @default(uuid()) @db.Uuid
+  delta     Int
+  reason    CreditReason
+  ref       String
+  note      String?
+  createdAt DateTime     @default(now())
+
+  userId  String  @db.Uuid
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId String? @db.Uuid
+
+  @@unique([userId, ref])
+  @@index([userId, createdAt])
+  @@map("credit_entry")
 }

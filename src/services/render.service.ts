@@ -15,7 +15,9 @@ import { ConflictError, InternalError, NotFoundError } from "@/lib/errors";
 import { frameSize } from "@/lib/ffmpeg-command";
 import { insightTransitions } from "@/lib/insight-script";
 import { buildAss } from "@/lib/kinetic-captions";
+import { TRIAL_WATERMARK } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import {
   anchorCues,
   cueWindows,
@@ -780,6 +782,9 @@ export class RenderService {
               : style.captions,
           musicPath,
           outputPath,
+          watermark: (await billingService.summary(userId)).watermark
+            ? TRIAL_WATERMARK
+            : undefined,
         },
         {
           runFfmpeg: (args, runDurationSeconds, report) =>

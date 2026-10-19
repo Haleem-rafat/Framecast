@@ -314,6 +314,18 @@ export const HELP_TOPICS: HelpTopic[] = [
       "today, rather than letting you assume. The Guides card replays the " +
       "welcome tour and brings back these screen notes.",
   },
+  {
+    id: "billing",
+    pattern: "/billing",
+    title: "Plans and credits",
+    body:
+      "Approving a script spends credits: 1 for a Short, 5 for a long video. " +
+      "A render that fails or is cancelled gives them back, running it again " +
+      "spends them again, and the history below " +
+      "shows every credit that came in or went out. Plan credits reset each " +
+      "billing month and don't roll over. Switch plan from the cards here; " +
+      "card, invoices and cancelling are in Manage billing.",
+  },
 
   // -------------------------------------------------------------------- studio
   {

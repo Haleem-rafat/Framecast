@@ -356,7 +356,7 @@ export function LandingHero() {
       <div className="mx-auto flex w-full max-w-4xl flex-col items-center px-6 pt-24 pb-14 text-center sm:pt-32 sm:pb-24">
         <p className="text-muted-foreground bg-background/60 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs backdrop-blur-sm">
           <span className="from-brand-violet to-brand-cyan size-1.5 rounded-full bg-gradient-to-r" />
-          Self-hosted video production. Free while in beta.
+          AI video production. Free trial, plans from $29 a month.
         </p>
 
         {/* `relative isolate` so the trail is clipped to the title block and
@@ -417,7 +417,7 @@ export function LandingHero() {
         </p>
 
         <p className="text-muted-foreground mt-5 max-w-md text-xs text-pretty">
-          Free while in beta. Framecast is under active development, and every
+          Start with 3 free credits. Framecast Studio is under active development, and every
           account is reviewed by an operator before it can be used.
         </p>
       </div>

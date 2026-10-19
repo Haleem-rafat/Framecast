@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { accountService } from "@/services/account.service";
+import { billingService } from "@/services/billing.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Postgres database (see src/test/setup.ts)
@@ -307,5 +308,21 @@ describe("password reset without an email transport", () => {
       resetUrl: url,
       delivery: "activity-log",
     });
+  });
+});
+
+describe("accountService.approve trial credits", () => {
+  it("grants the 3 trial credits, and only an approval does", async () => {
+    expect(await billingService.balance(applicantId)).toBe(0);
+    await accountService.approve(approverId, applicantId);
+    expect(await billingService.balance(applicantId)).toBe(3);
+
+    const rejectedId = await createTestUser("rejected");
+    try {
+      await accountService.reject(approverId, rejectedId);
+      expect(await billingService.balance(rejectedId)).toBe(0);
+    } finally {
+      await deleteTestUser(rejectedId);
+    }
   });
 });

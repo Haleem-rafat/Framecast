@@ -7,6 +7,7 @@ import { PublishAttemptPanel } from "@/features/videos/components/publish-attemp
 import { PublishVideoButton } from "@/features/videos/components/publish-video-button";
 import { VideoStatusBadge } from "@/features/videos/components/video-status-badge";
 import type { FootageStyle, VideoFormat, VideoStatus } from "@/generated/prisma/enums";
+import type { Wallet } from "@/lib/plans";
 import type { PublishVisibilityOption } from "@/schemas/publish.schema";
 import { VIDEO_FORMATS, WORDS_PER_MINUTE } from "@/lib/video-format";
 import type { PublishProgress, PublishTargets } from "@/services/publish.service";
@@ -22,6 +23,7 @@ export function VideoHeader({
   channelName,
   channelMadeForKids,
   channelFootageStyle,
+  wallet,
   youtubeVideoId,
   defaultVisibility,
   readyShortCount,
@@ -54,6 +56,8 @@ export function VideoHeader({
    * other two are stock downloads. Already defaulted by the page for a channel
    * with no brand row. */
   channelFootageStyle: FootageStyle;
+  /** The account's credits, for the approve dialog. */
+  wallet: Wallet;
   /** Set once Gate 2 has actually published this video. */
   youtubeVideoId: string | null;
   /** `UserSetting.defaultVisibility`, which the publish dialog's picker starts
@@ -135,6 +139,7 @@ export function VideoHeader({
           wordCount={wordCount}
           characterCount={characterCount}
           footageStyle={channelFootageStyle}
+          wallet={wallet}
         />
         {attemptInFlight && publishProgress ? (
           <PublishAttemptPanel

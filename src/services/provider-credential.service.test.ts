@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { env } from "@/config/env";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import { createTestUser, deleteTestUser } from "@/test/fixtures";
 
@@ -286,5 +288,44 @@ describe("providerCredentialService", () => {
     });
     expect(row.lastTestOk).toBe(false);
     expect(row.lastTestedAt).not.toBeNull();
+  });
+});
+
+describe("providerCredentialService.resolveKey platform fallback", () => {
+  const saved = env.PLATFORM_ELEVENLABS_API_KEY;
+  beforeEach(() => {
+    env.PLATFORM_ELEVENLABS_API_KEY = "platform-key";
+  });
+  afterEach(() => {
+    env.PLATFORM_ELEVENLABS_API_KEY = saved;
+  });
+
+  it("uses the platform ElevenLabs key only for accounts with credits", async () => {
+    expect(await providerCredentialService.resolveKey(userId, "ELEVENLABS")).toBeNull();
+    await billingService.grantTrial(userId);
+    expect(await providerCredentialService.resolveKey(userId, "ELEVENLABS")).toBe("platform-key");
+  });
+
+  it("a user's own key still wins over the platform key", async () => {
+    await billingService.grantTrial(userId);
+    await providerCredentialService.upsert(userId, {
+      provider: "ELEVENLABS",
+      apiKey: "sk-own-1234",
+      label: RUN,
+    });
+    expect(await providerCredentialService.resolveKey(userId, "ELEVENLABS")).toBe("sk-own-1234");
+  });
+
+  it("never hands out a platform key for a provider without one", async () => {
+    await billingService.grantTrial(userId);
+    expect(await providerCredentialService.resolveKey(userId, "ANTHROPIC")).toBeNull();
+  });
+
+  it("testing a key tests the user's own key, never the platform's", async () => {
+    await billingService.grantTrial(userId);
+    const fetchClient = vi.fn<typeof fetch>();
+    const result = await providerCredentialService.test(userId, "ELEVENLABS", fetchClient);
+    expect(fetchClient).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
   });
 });

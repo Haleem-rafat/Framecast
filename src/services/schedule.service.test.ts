@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ConflictError, NotFoundError } from "@/lib/errors";
+import { ConflictError, NotFoundError, PaymentRequiredError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import {
   advancePast,
@@ -19,7 +19,7 @@ import type { TextGenerationProvider } from "@/services/providers/types";
 import { ScheduleService } from "@/services/schedule.service";
 import type { TopicRefillOutcome } from "@/services/topic-queue.service";
 import { ScriptService } from "@/services/script.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Same discipline as script.service.test.ts and automation.service.test.ts:
 // these run against a real, shared Postgres database that also holds the
@@ -445,6 +445,7 @@ async function makeDueSchedule(options?: {
 beforeEach(async () => {
   await cleanupProviderUsage();
   userId = await createTestUser("schedule");
+  await fundTestUser(userId);
   projectId = await makeReadyAccount();
 
   // ScriptService resolves an ANTHROPIC credential before reaching the
@@ -854,6 +855,19 @@ describe("scheduleService — a failed run does not kill the schedule", () => {
     expect(schedule.pausedReason).toMatch(/cannot fix itself/i);
     expect(schedule.pausedReason).toMatch(/budget/i);
     expect(schedule.pausedReason).toContain("$30.00");
+  });
+
+  it("pauses on the FIRST failure when the account is out of credits", async () => {
+    const scheduleId = await makeDueSchedule({ topics: ["one", "two", "three"] });
+
+    await makeService(
+      fakeAutomation({ fail: new PaymentRequiredError("This needs 5 credits and you have 0.") }),
+    ).tick();
+
+    const schedule = await prisma.schedule.findUniqueOrThrow({ where: { id: scheduleId } });
+    expect(schedule.status).toBe("PAUSED");
+    expect(schedule.pausedReason).toMatch(/cannot fix itself/i);
+    expect(schedule.pausedReason).toContain("5 credits");
   });
 
   it("still waits for three when the failure could be bad luck", async () => {

@@ -3,6 +3,7 @@ import "server-only";
 import type { AccountApproval, UserRole } from "@/generated/prisma/enums";
 import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 
 /**
  * Anyone may register, but a new account sits in `PENDING` until an operator
@@ -217,6 +218,11 @@ export class AccountService {
       throw new ConflictError(
         `${account.email} has already been decided by another operator.`,
       );
+    }
+
+    // Every approved account starts with the trial's credits.
+    if (decision === "APPROVED") {
+      await billingService.grantTrial(userId);
     }
 
     await prisma.activityLog.create({

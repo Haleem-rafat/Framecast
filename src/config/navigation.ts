@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   BarChart3,
+  CreditCard,
   FileText,
   Image,
   KeyRound,
@@ -247,6 +248,13 @@ export const navigation: NavGroup[] = [
         keywords: ["users", "accounts", "operator", "system", "totals", "storage"],
         built: true,
         operatorOnly: true,
+      },
+      {
+        title: "Billing",
+        href: "/billing",
+        icon: CreditCard,
+        keywords: ["plan", "credits", "subscription", "pricing", "payment", "invoice"],
+        built: true,
       },
       {
         title: "Settings",

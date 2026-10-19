@@ -13,7 +13,9 @@ import { beatAssetPath, beatPrefix } from "@/lib/beat-storage";
 import type { Alignment } from "@/lib/captions";
 import { buildSrt } from "@/lib/captions";
 import { ConflictError, NotFoundError, ProviderError } from "@/lib/errors";
+import { TRIAL_WATERMARK } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import {
   anchorCues,
   type AnchoredCue,
@@ -1237,6 +1239,9 @@ export class ShortsService {
           captions: verticalCaptionStyle(style.captions),
           musicPath,
           outputPath,
+          watermark: (await billingService.summary(short.video.userId)).watermark
+            ? TRIAL_WATERMARK
+            : undefined,
         },
         {
           runFfmpeg: (args, runDurationSeconds, report) =>

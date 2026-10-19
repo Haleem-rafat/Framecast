@@ -26,6 +26,7 @@
     "migrate:renders": "tsx --conditions=react-server scripts/migrate-renders.ts",
     "migrate:relink": "tsx --conditions=react-server scripts/relink-renders.ts",
     "promote:operator": "tsx --conditions=react-server scripts/promote-operator.ts",
+    "billing:backfill-trial": "tsx --conditions=react-server scripts/grant-trial-backfill.ts",
     "postinstall": "prisma generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test"
   },

@@ -11,7 +11,7 @@ import { providerCredentialService } from "@/services/provider-credential.servic
 import type { SpeechProvider } from "@/services/providers/types";
 import { videoService } from "@/services/video.service";
 import { VoiceOverService } from "@/services/voiceover.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Postgres database and the real storage root (see
 // src/test/setup.ts and src/lib/storage.ts) that also holds the operator's
@@ -76,6 +76,7 @@ async function approveScriptFixture(
 
 beforeEach(async () => {
   userId = await createTestUser("voiceover");
+  await fundTestUser(userId);
   projectId = (await projectService.create(userId, { name: PROJECT_NAME })).id;
   videoId = (
     await videoService.create(userId, {

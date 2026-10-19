@@ -11,7 +11,9 @@ import type {
   OnboardingReader,
   OnboardingStep,
 } from "@/features/onboarding/types";
+import { env } from "@/config/env";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 
 /**
  * Read model for the "getting started" checklist, plus the small amount of
@@ -132,7 +134,12 @@ export class OnboardingService implements OnboardingReader {
         title: "Add your ElevenLabs API key",
         description: "Narration needs it — a run without one fails partway.",
         href: "/providers",
-        complete: hasNarrationKey !== null,
+        // Done either way narration can run: the account's own key, or the
+        // platform's key, which paying accounts (and anyone with credits) use.
+        complete:
+          hasNarrationKey !== null ||
+          (Boolean(env.PLATFORM_ELEVENLABS_API_KEY) &&
+            (await billingService.usesPlatformKeys(userId))),
       },
       {
         id: "check-prompt-template",

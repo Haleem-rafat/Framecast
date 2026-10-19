@@ -516,6 +516,9 @@ export interface AssembleInput {
   /** Lay light film grain over the picture. Absent — which is every caller
    *  before the single-insight format — emits the argv it always did. */
   grain?: boolean;
+  /** Text drawn small in the bottom-right corner — trial renders only.
+   *  Absent for every other render, which keeps their argv unchanged. */
+  watermark?: string;
 }
 
 /** YouTube normalises playback to about this, so it is a platform fact rather
@@ -633,8 +636,16 @@ export function buildAssembleArgs(input: AssembleInput): string[] {
   // Absent unless asked for, so every render that has ever run emits the same
   // single-filter chain it always did.
   const grain = input.grain ? `noise=alls=${GRAIN_STRENGTH}:allf=t+u,` : "";
+  // After the captions, so nothing is ever drawn over it. Only letters,
+  // digits, spaces, dots and hyphens survive: anything else (a quote, a colon,
+  // a semicolon) has a meaning to the filter-graph parser.
+  const watermarkText = input.watermark?.replace(/[^A-Za-z0-9 .-]/g, "");
+  const watermark = watermarkText
+    ? `,drawtext=text='${watermarkText}':fontcolor=white@0.55:fontsize=h*0.028` +
+      `:x=w-tw-32:y=h-th-32:box=1:boxcolor=black@0.25:boxborderw=10`
+    : "";
   const videoFilter =
-    `[0:v]${grain}${buildSubtitleFilter(input.srtPath, input.captions)}[vout]`;
+    `[0:v]${grain}${buildSubtitleFilter(input.srtPath, input.captions)}${watermark}[vout]`;
 
   return [
     "-y",
