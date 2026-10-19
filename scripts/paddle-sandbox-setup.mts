@@ -25,9 +25,16 @@ import { config } from "dotenv";
 
 import { PAID_TIERS, PLANS } from "../src/lib/plans.ts";
 
-config({ path: ".env.local", quiet: true });
+/**
+ * LIVE mode (PADDLE_SETUP_LIVE=1) is the same setup against real payments:
+ * the key comes from `.env.paddle-live` (git-ignored, never .env.local), the
+ * API is api.paddle.com, and existing prices are read only from the target
+ * file, so sandbox price ids can never leak into production.
+ */
+const LIVE = process.env.PADDLE_SETUP_LIVE === "1";
+config({ path: LIVE ? ".env.paddle-live" : ".env.local", quiet: true });
 
-const API = "https://sandbox-api.paddle.com";
+const API = LIVE ? "https://api.paddle.com" : "https://sandbox-api.paddle.com";
 /** Where the results are written, and what the webhook destination is called —
  *  overridable so staging gets its own destination and secret. */
 const ENV_FILE = process.env.PADDLE_SETUP_ENV_FILE ?? ".env.local";
@@ -46,8 +53,13 @@ const WEBHOOK_EVENTS = [
 const key = process.env.PADDLE_API_KEY;
 const publicUrl = process.argv[2]?.replace(/\/$/, "");
 
-if (!key) throw new Error("Put your sandbox PADDLE_API_KEY in .env.local first.");
-if (!key.startsWith("pdl_sdbx_")) throw new Error("That is not a sandbox key (pdl_sdbx_…). Refusing.");
+if (!key) throw new Error(`Put PADDLE_API_KEY in ${LIVE ? ".env.paddle-live" : ".env.local"} first.`);
+if (LIVE ? !key.startsWith("pdl_live_") : !key.startsWith("pdl_sdbx_")) {
+  throw new Error(`That is not a ${LIVE ? "live (pdl_live_…)" : "sandbox (pdl_sdbx_…)"} key. Refusing.`);
+}
+if (LIVE && !process.env.PADDLE_SETUP_ENV_FILE) {
+  throw new Error("Live mode needs PADDLE_SETUP_ENV_FILE, so live values never land in .env.local.");
+}
 if (publicUrl && !publicUrl.startsWith("https://")) {
   throw new Error("The public URL of the dev server must be https.");
 }
@@ -76,7 +88,14 @@ function setEnv(name: string, value: string) {
 
 // 1. Product and prices — reused when they already exist.
 const prices: Record<string, string> = {};
-const missing = PAID_TIERS.filter((tier) => !process.env[`PADDLE_PRICE_${tier}`]);
+/** Existing values: the target file in live mode, the environment otherwise. */
+const existingValue = (name: string): string | undefined => {
+  if (!LIVE) return process.env[name];
+  if (!existsSync(ENV_FILE)) return undefined;
+  const line = readFileSync(ENV_FILE, "utf-8").split("\n").find((one) => one.startsWith(`${name}=`));
+  return line?.slice(name.length + 1) || undefined;
+};
+const missing = PAID_TIERS.filter((tier) => !existingValue(`PADDLE_PRICE_${tier}`));
 if (missing.length > 0) {
   const product = await paddle<{ id: string }>("POST", "/products", {
     name: "Framecast Studio",
@@ -125,12 +144,16 @@ const created = current
       api_version: 1,
     });
 setEnv("PADDLE_WEBHOOK_SECRET", created.endpoint_secret_key);
-setEnv("PADDLE_ENV", "sandbox");
+setEnv("PADDLE_ENV", LIVE ? "production" : "sandbox");
+setEnv("PADDLE_API_KEY", key);
 console.log(`Webhook → ${destination} (${created.id}); secret written to ${ENV_FILE}`);
 
-if (!process.env.PADDLE_CLIENT_TOKEN) {
-  console.log(
-    "\nOne thing left: Paddle → Developer tools → Authentication → Client-side tokens → New,\n" +
-      "then put it in .env.local as PADDLE_CLIENT_TOKEN=test_…",
-  );
-}
+// The browser token: the one given, or a new one made through the API.
+const clientToken =
+  process.env.PADDLE_CLIENT_TOKEN ??
+  (await paddle<{ token: string }>("POST", "/client-tokens", {
+    name: DESTINATION_NAME,
+    description: "Paddle.js checkout for Framecast Studio",
+  })).token;
+setEnv("PADDLE_CLIENT_TOKEN", clientToken);
+console.log(`Client token ${clientToken.slice(0, 5)}… written to ${ENV_FILE}`);
