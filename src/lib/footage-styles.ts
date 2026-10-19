@@ -26,9 +26,17 @@ export const DEFAULT_FOOTAGE_STYLE: FootageStyle = "LIVE_ACTION";
 export interface FootageStyleOption {
   value: FootageStyle;
   label: string;
-  /** What actually changes, in one line — which providers get searched, and
-   *  what the operator should expect when the library comes up short. */
+  /** What actually changes — which providers get searched, and what the
+   *  operator should expect when the library comes up short. Shown as the
+   *  "More detail" text under the picker. */
   description: string;
+  /** The look in one plain line, for the card itself. */
+  summary: string;
+  /** Who it suits, in a few words. */
+  bestFor: string;
+  /** A real 6-second clip under public/looks (`<preview>.mp4` and `.jpg`),
+   *  or null until a real video in this style exists to cut one from. */
+  preview: string | null;
 }
 
 /**
@@ -48,36 +56,54 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
     label: "Live action",
     description:
       "Filmed footage from Pexels and Pixabay. The default, and what every channel used before this setting existed.",
+    summary: "Real filmed stock footage, matched to every line.",
+    bestFor: "News-style explainers, finance, travel, facts",
+    preview: "footage-live-action",
   },
   {
     value: "CARTOON",
     label: "Cartoon",
     description:
       "Animation from Pixabay's cartoon library, with safe search on. A smaller pool than live action: a section with no cartoon match is left without footage rather than filled with live action. Not recommended for children's stories — Pixabay's animation filter means “rendered rather than filmed”, so it returns photoreal loops and motion graphics as often as anything drawn.",
+    summary: "Cartoon and animated stock clips instead of filmed ones.",
+    bestFor: "Light, playful topics for a general audience",
+    preview: null,
   },
   {
     value: "ILLUSTRATED",
     label: "Illustrated story",
     description:
       "Generated storybook illustrations, about one every twenty seconds, every one of them drawn from this channel's character sheet so the same character appears throughout. Costs roughly $0.05 a picture — about $0.60 for a four-minute video — and needs a character described and a sheet generated below before any video can collect footage.",
+    summary: "Storybook pictures with the same character in every scene.",
+    bestFor: "Children’s stories and channels with a mascot",
+    preview: "footage-illustrated",
   },
   {
     value: "CINEMATIC",
     label: "Cinematic",
     description:
       "Generated photographic stills in one fixed grade and lens, for short second-person videos that name a psychological effect. A different, unnamed person in every shot — nothing is held constant except the look — so unlike the illustrated style it needs no character described and no sheet generated. Costs roughly $0.05 a picture, about $0.60 for a forty-five-second video.",
+    summary: "Moody photographic stills with slow camera movement.",
+    bestFor: "Psychology, self-improvement, “why you…” Shorts",
+    preview: null,
   },
   {
     value: "MIXED",
     label: "Mixed",
     description:
       "Generated stills for most shots and real stock footage for the ones the script marks as movement, for long-form list videos. The script decides the split, not this setting — so a video whose writer asked for no movement costs the same as the cinematic style, and one that asked for a lot costs less. A movement shot with nothing in the stock libraries is drawn instead of left blank; a still shot is never filled with stock, because the drawn shots are what makes the channel look like itself.",
+    summary: "AI pictures for most scenes, real footage where things move.",
+    bestFor: "Long list videos: top tens, histories, rankings",
+    preview: null,
   },
   {
     value: "DOODLE",
     label: "Marker doodle",
     description:
       "Generated stick figures on paper, one per scripted section, cut every five to twenty seconds. Needs no character sheet — the line weight is the consistency — so a channel can make its first video without generating anything here first. Pick the seconds per picture below; it is the whole feel of the format.",
+    summary: "Hand-drawn stick figures on paper, one per idea.",
+    bestFor: "Finance and tech explainers, quick lessons",
+    preview: "footage-doodle",
   },
 ];
 

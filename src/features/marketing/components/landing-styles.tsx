@@ -1,8 +1,6 @@
-"use client";
-
-import { useEffect, useRef } from "react";
-
+import { StylePreview } from "@/components/shared/style-preview";
 import { ART_STYLES } from "@/lib/art-styles";
+import { FOOTAGE_STYLES } from "@/lib/footage-styles";
 import { cn } from "@/lib/utils";
 
 /**
@@ -24,36 +22,6 @@ const LOOKS = [
   { id: "deepdive", name: "Deep dive", line: "A researched explainer with real photos, chip maps and tables.", from: "Haleem Rafat" },
 ] as const;
 
-/** Plays while on screen, pauses off it, and never moves for reduced motion. */
-function Clip({ id, name }: { id: string; name: string }) {
-  const ref = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    const video = ref.current;
-    if (!video || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => (entry?.isIntersecting ? void video.play().catch(() => {}) : video.pause()),
-      { threshold: 0.4 },
-    );
-    observer.observe(video);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <video
-      ref={ref}
-      src={`/looks/${id}.mp4`}
-      poster={`/looks/${id}.jpg`}
-      muted
-      loop
-      playsInline
-      preload="none"
-      aria-label={`A real ${name} video, playing without sound`}
-      className="aspect-[9/16] w-full rounded-lg bg-black object-cover"
-    />
-  );
-}
-
 export function LandingStyles() {
   return (
     <section id="styles" className="mx-auto w-full max-w-6xl px-6 py-20 sm:py-28">
@@ -74,7 +42,7 @@ export function LandingStyles() {
       <ul className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {LOOKS.map((look) => (
           <li key={look.id} className="flex min-w-0 flex-col gap-2">
-            <Clip id={look.id} name={look.name} />
+            <StylePreview name={look.id} label={`A real ${look.name} video, playing without sound`} />
             <div className="flex items-center justify-between gap-2">
               <span className="font-medium">{look.name}</span>
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-[11px]">
@@ -99,6 +67,27 @@ export function LandingStyles() {
             Paste a brand&apos;s website, answer a few questions, get a branded ad for social.
           </p>
         </li>
+      </ul>
+
+      <h3 className="mt-16 text-lg font-semibold">Footage styles</h3>
+      <p className="text-muted-foreground mt-1 text-sm">
+        Available now. Every channel picks one; it decides what is on screen while the narrator speaks.
+      </p>
+      <ul className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        {FOOTAGE_STYLES.map((style) => (
+          <li key={style.value} className="flex min-w-0 flex-col gap-2">
+            {style.preview ? (
+              <StylePreview name={style.preview} label={`A real ${style.label} video, playing without sound`} />
+            ) : (
+              <div className="border-border text-muted-foreground flex aspect-[9/16] w-full items-center justify-center rounded-lg border border-dashed p-3 text-center text-xs">
+                Example coming soon
+              </div>
+            )}
+            <span className="font-medium">{style.label}</span>
+            <p className="text-muted-foreground text-sm text-pretty">{style.summary}</p>
+            <p className="text-muted-foreground/80 text-xs">Best for: {style.bestFor}</p>
+          </li>
+        ))}
       </ul>
 
       <h3 className="mt-16 text-lg font-semibold">Illustration styles</h3>
