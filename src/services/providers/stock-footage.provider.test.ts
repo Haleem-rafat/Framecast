@@ -123,9 +123,10 @@ describe("PexelsProvider.search", () => {
   });
 });
 
-function pixabayHit(id: number, durationSeconds: number, mediumSizeBytes: number) {
+function pixabayHit(id: number, durationSeconds: number, mediumSizeBytes: number, tags = "") {
   return {
     id,
+    tags,
     duration: durationSeconds,
     videos: {
       large: {
@@ -157,6 +158,20 @@ function pixabayHit(id: number, durationSeconds: number, mediumSizeBytes: number
 }
 
 describe("PixabayProvider.search", () => {
+  it("drops green-screen clips for live action too, and keeps the order otherwise", async () => {
+    global.fetch = vi.fn(async () =>
+      jsonResponse({
+        hits: [
+          pixabayHit(5, 15, 5 * 1024 * 1024, "city, night"),
+          pixabayHit(6, 15, 5 * 1024 * 1024, "chroma key, woman, talking"),
+          pixabayHit(7, 15, 5 * 1024 * 1024, "cartoon, skyline"),
+        ],
+      }),
+    ) as unknown as typeof fetch;
+    const clips = await new PixabayProvider().search("skyline", 5);
+    expect(clips.map((clip) => clip.externalId)).toEqual(["5", "7"]);
+  });
+
   it("filters by duration band and Pixabay's own `size` field — no HEAD request involved", async () => {
     let searchUrl = "";
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -221,6 +236,35 @@ describe("PixabayProvider.search", () => {
 // ---------------------------------------------------------------------------
 
 describe("pixabayCartoonProvider.search", () => {
+  it("never returns a green-screen clip", async () => {
+    global.fetch = vi.fn(async () =>
+      jsonResponse({
+        hits: [
+          pixabayHit(1, 12, 5 * 1024 * 1024, "green screen, chroma key, businessman, office"),
+          pixabayHit(2, 12, 5 * 1024 * 1024, "cartoon, cat, animation"),
+          pixabayHit(3, 12, 5 * 1024 * 1024, "greenscreen, character"),
+        ],
+      }),
+    ) as unknown as typeof fetch;
+    const clips = await pixabayCartoonProvider.search("a cat lands on its feet", 4);
+    expect(clips.map((clip) => clip.externalId)).toEqual(["2"]);
+  });
+
+  it("puts clips tagged as drawn animation ahead of rendered ones", async () => {
+    global.fetch = vi.fn(async () =>
+      jsonResponse({
+        hits: [
+          pixabayHit(10, 12, 5 * 1024 * 1024, "studio, microphone, 3d, render"),
+          pixabayHit(11, 12, 5 * 1024 * 1024, "clock, time"),
+          pixabayHit(12, 12, 5 * 1024 * 1024, "cartoon, dog, animated"),
+          pixabayHit(13, 12, 5 * 1024 * 1024, "2d, character, illustration"),
+        ],
+      }),
+    ) as unknown as typeof fetch;
+    const clips = await pixabayCartoonProvider.search("a dog plays", 4);
+    expect(clips.map((clip) => clip.externalId)).toEqual(["12", "13", "10", "11"]);
+  });
+
   it("filters to animation, forces safesearch, and prefixes the query with cartoon", async () => {
     let searchUrl = "";
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
