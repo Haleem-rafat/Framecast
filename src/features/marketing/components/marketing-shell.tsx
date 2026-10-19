@@ -73,6 +73,9 @@ export function MarketingShell({
             <Link href="/terms" className="hover:text-foreground transition-colors">
               Terms
             </Link>
+            <Link href="/refunds" className="hover:text-foreground transition-colors">
+              Refunds
+            </Link>
           </nav>
         </div>
         {/* The dock is fixed, so it sits on top of this footer — and the
