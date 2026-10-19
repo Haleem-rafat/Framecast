@@ -6,8 +6,16 @@
  *
  *   pnpm billing:backfill-trial
  */
-import { prisma } from "@/lib/prisma";
-import { billingService } from "@/services/billing.service";
+import { config } from "dotenv";
+
+// Same order as every other script here: .env.local wins over .env. The app
+// modules are imported below, after this, because `@/config/env` parses
+// `process.env` the moment it is imported.
+config({ path: ".env.local", quiet: true });
+config({ path: ".env", quiet: true });
+
+const { prisma } = await import("@/lib/prisma");
+const { billingService } = await import("@/services/billing.service");
 
 const users = await prisma.user.findMany({
   where: { approval: "APPROVED" },
