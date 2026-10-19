@@ -266,6 +266,50 @@ export class BillingService {
     return subscription?.status === "ACTIVE" || subscription?.status === "TRIALING";
   }
 
+  /**
+   * What the Billing page charts: credits spent per day over the last `days`
+   * (UTC days, net of refunds, empty days included so the chart has no
+   * gaps), and how many Shorts and long videos are currently paid for.
+   */
+  async usage(userId: string, days = 30, now = new Date()) {
+    const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const start = new Date(end - (days - 1) * 86_400_000);
+    const [inWindow, bySize] = await Promise.all([
+      prisma.creditLedger.findMany({
+        where: { userId, reason: { in: ["CHARGE", "REFUND"] }, createdAt: { gte: start } },
+        select: { delta: true, createdAt: true },
+      }),
+      prisma.creditLedger.groupBy({
+        by: ["reason", "delta"],
+        where: { userId, reason: { in: ["CHARGE", "REFUND"] } },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const spentByDay = new Map<string, number>();
+    for (const row of inWindow) {
+      const date = row.createdAt.toISOString().slice(0, 10);
+      spentByDay.set(date, (spentByDay.get(date) ?? 0) - row.delta);
+    }
+    const series = Array.from({ length: days }, (_, i) => {
+      const date = new Date(start.getTime() + i * 86_400_000).toISOString().slice(0, 10);
+      return { date, spent: Math.max(0, spentByDay.get(date) ?? 0) };
+    });
+
+    // A charge of 1 is a Short and of 5 a long video; each refund cancels one.
+    const count = (size: number) =>
+      bySize
+        .filter((group) => Math.abs(group.delta) === size)
+        .reduce((sum, group) => sum + (group.reason === "CHARGE" ? 1 : -1) * group._count._all, 0);
+
+    return {
+      days: series,
+      spentInWindow: series.reduce((sum, day) => sum + day.spent, 0),
+      shorts: Math.max(0, count(1)),
+      longVideos: Math.max(0, count(5)),
+    };
+  }
+
   history(userId: string, limit = 30) {
     return prisma.creditLedger.findMany({
       where: { userId },

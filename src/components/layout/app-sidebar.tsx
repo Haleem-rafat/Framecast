@@ -20,6 +20,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { isNavItemActive, visibleNavigation } from "@/config/navigation";
+import { SidebarCredits, type SidebarWallet } from "@/components/layout/sidebar-credits";
 import { UserMenu } from "@/components/layout/user-menu";
 import type { SessionUser } from "@/lib/auth";
 
@@ -27,9 +28,10 @@ interface AppSidebarProps {
   user: Pick<SessionUser, "name" | "email" | "image">;
   /** Decides whether the operator-only entries are listed. See `visibleNavigation`. */
   isOperator: boolean;
+  wallet: SidebarWallet;
 }
 
-export function AppSidebar({ user, isOperator }: AppSidebarProps) {
+export function AppSidebar({ user, isOperator, wallet }: AppSidebarProps) {
   const pathname = usePathname();
   const { isMobile } = useSidebar();
 
@@ -125,6 +127,7 @@ export function AppSidebar({ user, isOperator }: AppSidebarProps) {
       </SidebarContent>
 
       <SidebarFooter>
+        <SidebarCredits wallet={wallet} />
         <UserMenu user={user} />
       </SidebarFooter>
 
