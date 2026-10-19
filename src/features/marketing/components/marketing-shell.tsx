@@ -65,7 +65,7 @@ export function MarketingShell({
             "text-muted-foreground flex flex-wrap items-center justify-between gap-3 py-6 text-xs",
           )}
         >
-          <span>© {new Date().getFullYear()} Framecast</span>
+          <span>© {new Date().getFullYear()} Framecast Studio</span>
           <nav className="flex gap-4">
             <Link href="/privacy" className="hover:text-foreground transition-colors">
               Privacy

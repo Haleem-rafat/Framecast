@@ -45,10 +45,10 @@ const QUESTIONS = [
     q: "Who pays for the AI?",
     a: (
       <>
-        You do, directly to the providers, using the API keys you supply.
-        Framecast records what each script, voice and image cost and shows it
-        against the video it went into, but it does not cap spending and it
-        never bills you itself.
+        Your plan does. The AI that writes, narrates and illustrates your
+        videos is included: you spend credits, one for a Short and five for a
+        long video, and there are no provider accounts or API keys to set up.
+        A video that fails to render gives its credits back.
       </>
     ),
   },
@@ -56,10 +56,10 @@ const QUESTIONS = [
     q: "Where does my data live?",
     a: (
       <>
-        On one server. The application, the renderer and the PostgreSQL database
-        all run on a single machine, and the database accepts no connections
-        from the internet. Access tokens and API keys are encrypted at rest
-        before they are written.
+        On Framecast Studio&apos;s own server. The database accepts no
+        connections from the internet, and YouTube access tokens are encrypted
+        before they are stored. Payments are handled by Paddle; card details
+        never reach us.
       </>
     ),
   },
@@ -67,9 +67,9 @@ const QUESTIONS = [
     q: "Can I sign up right now?",
     a: (
       <>
-        You can create an account, and an operator reviews it before it can be
-        used — Framecast is a private studio tool rather than a public service,
-        so accounts are not activated automatically.
+        Yes. Create an account and it starts on the free trial with 3 credits,
+        enough to make your first videos. New accounts are reviewed by a person
+        before their first video.
       </>
     ),
   },

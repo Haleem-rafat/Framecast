@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { KeyRound, ServerCog, ShieldCheck } from "lucide-react";
+import { CircleCheck, ShieldCheck, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { CTA } from "@/features/marketing/landing-copy";
@@ -13,14 +13,14 @@ import { Spotlight } from "@/components/ui/spotlight-new";
  */
 const FACTS = [
   {
-    icon: ServerCog,
-    title: "One machine",
-    body: "Framecast is self-hosted. The app, the renderer and the database all run on a single server, and that database accepts no connections from the internet.",
+    icon: Sparkles,
+    title: "AI included",
+    body: "Scripts, narration and pictures are paid for by your plan. No provider accounts, no API keys, no surprise bills: one price a month.",
   },
   {
-    icon: KeyRound,
-    title: "Your keys",
-    body: "The AI providers are configured with keys you supply, and each generation's cost is recorded against the video it produced.",
+    icon: CircleCheck,
+    title: "You approve it first",
+    body: "Nothing is spent until you approve the script, and nothing is published until you have watched the finished video.",
   },
   {
     icon: ShieldCheck,
@@ -43,12 +43,11 @@ export function LandingCta() {
         <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-16">
           <div>
             <h2 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl lg:text-[2.75rem] lg:leading-[1.1]">
-              Your channel, your keys, your machine.
+              Your channel, on autopilot. You stay in charge.
             </h2>
             <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
-              Framecast is a private studio tool under active development, not a
-              public service. Create an account and an operator will review it
-              before it can be used.
+              Start free with 3 credits. Pick a style, type a topic, and approve
+              the script; Framecast Studio does the rest.
             </p>
 
             <div className="mt-8 flex flex-wrap items-center gap-3">

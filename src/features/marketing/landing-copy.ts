@@ -100,9 +100,9 @@ export const CREDIBILITY = {
         "Script, narration, footage, render, metadata, thumbnail, shorts, upload. Not a roadmap — the stages that run, in order, defined in one file.",
     },
     {
-      claim: "About $2 of generation for a five-minute video",
+      claim: "One credit for a Short, five for a long video",
       detail:
-        "Priced per call and recorded against the video that spent it. The number is on the video's own page, not in a pricing table.",
+        "The AI is included in your plan. What every video really cost is still recorded on its own page, so nothing is a guess.",
     },
     {
       claim: "It refuses more than it does",
