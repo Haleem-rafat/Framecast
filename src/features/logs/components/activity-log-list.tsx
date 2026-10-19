@@ -15,6 +15,7 @@ import {
 import type { ActivityLogEntry } from "@/features/logs/types";
 import type { LogLevel } from "@/generated/prisma/enums";
 import { cn } from "@/lib/utils";
+import { actionLabel } from "@/features/logs/action-labels";
 
 const LEVEL_CLASS: Record<LogLevel, string> = {
   DEBUG: "text-muted-foreground",
@@ -92,7 +93,9 @@ export function ActivityLogList({ entries, hasFilter }: ActivityLogListProps) {
                   {LEVEL_LABEL[entry.level]}
                 </Badge>
               </TableCell>
-              <TableCell className="font-mono text-xs">{entry.action}</TableCell>
+              <TableCell className="text-sm font-medium" title={entry.action}>
+                {actionLabel(entry.action)}
+              </TableCell>
               <TableCell className="text-muted-foreground text-sm">
                 {entry.message ?? "—"}
               </TableCell>

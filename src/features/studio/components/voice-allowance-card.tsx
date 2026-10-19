@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Gauge } from "lucide-react";
 
 import { StatCard } from "@/components/shared/stat-card";
@@ -74,11 +73,7 @@ export function VoiceNotes() {
       every video. There is no per-video voice choice to make here: nothing in
       the pipeline reads a stored preference, so a picker on this page would
       change a row and not the audio. Re-synthesising is a pipeline action and
-      lives on the video&apos;s own page, beside the script it would re-read.{" "}
-      <Link href="/providers" className="underline underline-offset-3">
-        Manage the ElevenLabs key
-      </Link>
-      .
+      lives on the video&apos;s own page, beside the script it would re-read.
     </p>
   );
 }

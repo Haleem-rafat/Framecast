@@ -367,10 +367,8 @@ describe("onboardingService narration key on the platform", () => {
   const narrationStep = async () =>
     (await onboardingService.getChecklist(userId)).steps.find((step) => step.id === "add-narration-key");
 
-  it("counts as done for an account that runs on the platform's key", async () => {
+  it("counts as done for everyone when the platform has its own key", async () => {
     env.PLATFORM_ELEVENLABS_API_KEY = "platform-key";
-    expect((await narrationStep())?.complete).toBe(false); // no credits yet
-    await billingService.grantTrial(userId);
     expect((await narrationStep())?.complete).toBe(true);
   });
 

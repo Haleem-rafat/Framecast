@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import type { ActivityActionOption } from "@/features/logs/types";
 import { LogLevel } from "@/generated/prisma/enums";
+import { actionLabel } from "@/features/logs/action-labels";
 
 export const ALL = "ALL";
 
@@ -82,7 +83,7 @@ export function ActivityLogFilters({
           <SelectItem value={ALL}>All actions</SelectItem>
           {actions.map((one) => (
             <SelectItem key={one.action} value={one.action}>
-              {one.action} ({one.count})
+              {actionLabel(one.action)} ({one.count})
             </SelectItem>
           ))}
         </SelectContent>

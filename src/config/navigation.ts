@@ -232,6 +232,8 @@ export const navigation: NavGroup[] = [
         icon: KeyRound,
         keywords: ["api keys", "openai", "anthropic", "gemini"],
         built: true,
+        // Customers use the platform's keys; only operators manage keys.
+        operatorOnly: true,
       },
       {
         title: "Approvals",
