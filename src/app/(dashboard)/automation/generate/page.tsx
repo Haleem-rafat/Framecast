@@ -1,15 +1,10 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { redirect } from "next/navigation";
 
 import { PageHeader } from "@/components/shared/page-header";
-import { Button } from "@/components/ui/button";
 import { AutomationRunView } from "@/features/automation/components/automation-run-view";
-import { GenerateModes } from "@/features/automation/components/generate-modes";
-import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
 import { requireUser } from "@/server/session";
 import { automationService } from "@/services/automation.service";
-import { easyModeService } from "@/services/easy-mode.service";
 import { pipelineService } from "@/services/pipeline.service";
 
 export const metadata: Metadata = { title: "One-click video" };
@@ -82,37 +77,7 @@ export default async function GeneratePage({ searchParams }: GeneratePageProps) 
   // the prompt behind both modes are read once and cannot disagree — the
   // failure a second independent call would eventually produce is a page whose
   // easy tab says the account is ready and whose written tab says it is not.
-  const setup = await easyModeService.getSetup(user.id);
-
-  return (
-    <>
-      <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href="/automation">
-            <ArrowLeft />
-            All automations
-          </Link>
-        </Button>
-
-        <PageHeader
-          title="One-click video"
-          description="Pick a channel, pick a subject, and Framecast writes the script, approves it for you, and runs the pipeline through to a finished video. Publishing stays yours."
-        />
-      </div>
-
-      {/* `prompt` is null exactly when the missing-default-prompt blocker is
-          present, so this branch covers both conditions the flow cannot run
-          without — and the type narrows for free rather than needing an
-          assertion. */}
-      {setup.blockers.length > 0 || !setup.prompt ? (
-        <ReadinessNotice blockers={setup.blockers} />
-      ) : (
-        <GenerateModes
-          channels={setup.channels}
-          projects={setup.projects}
-          prompt={setup.prompt}
-        />
-      )}
-    </>
-  );
+  // Making one video now is a tab of the Automation page; this address only
+  // still shows a run in progress (?video=) and forwards everything else.
+  redirect("/automation?tab=make");
 }

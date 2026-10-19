@@ -14,7 +14,6 @@ import {
   Settings,
   ShieldCheck,
   UserCheck,
-  Sparkles,
   Upload,
   Video,
 } from "lucide-react";
@@ -158,6 +157,9 @@ export const navigation: NavGroup[] = [
          * operator somewhere else would be teaching the split all over again.
          */
         keywords: [
+          "make a video",
+          "one click",
+          "generate",
           "series",
           "schedules",
           "show",
@@ -173,17 +175,6 @@ export const navigation: NavGroup[] = [
           "release",
           "daily",
         ],
-        built: true,
-      },
-      {
-        title: "One-click video",
-        href: "/automation/generate",
-        icon: Sparkles,
-        // The opposite of the entry above it: one video now, no cadence. It
-        // keeps a row of its own because it is the single most common reason an
-        // operator opens this product, and burying it inside a screen about
-        // recurrence is what made the old /automation read as three features.
-        keywords: ["one click", "generate", "make a video", "pipeline", "now"],
         built: true,
       },
       {
