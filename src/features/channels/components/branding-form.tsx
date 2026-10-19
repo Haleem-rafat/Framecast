@@ -580,7 +580,7 @@ export function BrandingForm({
                         options={FOOTAGE_STYLES.map((option) => ({
                           value: option.value,
                           label: option.label,
-                          description: option.description,
+                          description: `${option.summary} Best for: ${option.bestFor}.`,
                         }))}
                         value={field.value}
                         onChange={field.onChange}

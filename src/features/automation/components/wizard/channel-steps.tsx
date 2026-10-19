@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 
 import type { StepProps } from "./show-steps";
 import { displayedCaptionMode, type BrandDraft } from "./series-wizard-state";
+import { StylePreview } from "@/components/shared/style-preview";
 
 /** Writes one field of the brand draft. Every step below edits the channel's
  *  settings through this and nothing else. */
@@ -435,13 +436,34 @@ export function LookStep({
                 value={option.value}
                 layout="tall"
                 className={TALL_CARD}
-                media={<TallMedia icon={FOOTAGE_ICON[option.value]} />}
+                media={
+                  option.preview ? (
+                    <StylePreview
+                      name={option.preview}
+                      label={`A real ${option.label} video`}
+                      className="rounded-md"
+                    />
+                  ) : (
+                    <TallMedia icon={FOOTAGE_ICON[option.value]} />
+                  )
+                }
                 title={option.label}
+                description={option.summary}
               />
             ))}
           </ChoiceGroup>
         </CardRow>
-        {footage && <p className="text-muted-foreground text-xs">{footage.description}</p>}
+        {footage && (
+          <div className="text-muted-foreground space-y-1 text-xs">
+            <p>
+              <span className="text-foreground font-medium">Best for:</span> {footage.bestFor}
+            </p>
+            <details>
+              <summary className="hover:text-foreground w-fit cursor-pointer">More detail</summary>
+              <p className="mt-1">{footage.description}</p>
+            </details>
+          </div>
+        )}
       </div>
 
       {stylePicksArtStyle(brand.footageStyle) && (
