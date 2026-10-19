@@ -1,6 +1,10 @@
 import "server-only";
 
-import type { PublishVisibility, ScheduleStatus } from "@/generated/prisma/enums";
+import type {
+  PublishVisibility,
+  ScheduleRunOutcome,
+  ScheduleStatus,
+} from "@/generated/prisma/enums";
 import { describeCadence, describeHealth } from "@/lib/automation-language";
 import { prisma } from "@/lib/prisma";
 import { describeSlots } from "@/lib/release-time";
@@ -163,7 +167,15 @@ export interface AutomationEntry {
   channelWarning: string | null;
   /** Where the videos are filed. Null for a kind that is not project-scoped. */
   project: { id: string; name: string } | null;
+  /** The last few runs, oldest first, for the dots on the automation card. */
+  recentRuns: { outcome: ScheduleRunOutcome; at: Date }[];
 }
+
+/** How many past runs a card shows as dots. */
+const RECENT_RUNS = 7;
+
+const oldestFirst = (runs: { outcome: ScheduleRunOutcome; createdAt: Date }[]) =>
+  runs.map((run) => ({ outcome: run.outcome, at: run.createdAt })).reverse();
 
 /** One kind's loader. A source owns its own query and its own mapping, and
  *  knows nothing about the others. */
@@ -218,6 +230,11 @@ const loadSeries: AutomationSource = async (userId) => {
             select: { topic: true },
           },
           _count: { select: { topics: { where: { consumedAt: null } } } },
+          runs: {
+            orderBy: { createdAt: "desc" },
+            take: RECENT_RUNS,
+            select: { outcome: true, createdAt: true },
+          },
         },
       },
     },
@@ -285,6 +302,7 @@ const loadSeries: AutomationSource = async (userId) => {
             : `Episodes of this show are filed in "${row.project.name}", which publishes ` +
               `to ${row.project.channel?.title ?? "no channel"} — not ` +
               `${row.channel.title}. Publishing one is refused until the two agree.`,
+        recentRuns: oldestFirst(schedule.runs),
       },
     ];
   });
@@ -345,6 +363,11 @@ const loadTopicQueues: AutomationSource = async (userId) => {
           runs: { where: { videoId: { not: null } } },
         },
       },
+      runs: {
+        orderBy: { createdAt: "desc" },
+        take: RECENT_RUNS,
+        select: { outcome: true, createdAt: true },
+      },
     },
   });
 
@@ -390,6 +413,7 @@ const loadTopicQueues: AutomationSource = async (userId) => {
     // the renderer and the publisher do, so there is no second copy to disagree
     // with.
     channelWarning: null,
+    recentRuns: oldestFirst(row.runs),
   }));
 };
 
@@ -423,6 +447,11 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
       channelId: true,
       channel: { select: { title: true } },
       _count: { select: { runs: { where: { youtubeVideoId: { not: null } } } } },
+      runs: {
+        orderBy: { createdAt: "desc" },
+        take: RECENT_RUNS,
+        select: { outcome: true, createdAt: true },
+      },
     },
   });
 
@@ -512,6 +541,7 @@ const loadReleaseCadences: AutomationSource = async (userId) => {
     // A cadence *is* the channel's — `ReleaseCadence.channelId` is unique per
     // channel and there is no second copy of it anywhere.
     channelWarning: null,
+    recentRuns: oldestFirst(row.runs),
   }));
 };
 

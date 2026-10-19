@@ -4,6 +4,7 @@ import {
   countOf,
   describeCadence,
   describeHealth,
+  describeProblem,
   describeNextRun,
   describeTimeOfDay,
   describeTimeZone,
@@ -269,5 +270,34 @@ describe("describeHealth — who stopped it", () => {
         consecutiveFailures: 0,
       }),
     ).toMatchObject({ label: "Paused by you" });
+  });
+});
+
+describe("describeProblem", () => {
+  it("shortens the stop reasons people actually meet, with the fix", () => {
+    expect(
+      describeProblem(
+        "The topic queue is empty. Nothing here invents a subject, so the schedule paused itself rather than guessing what to make a video about.",
+      ),
+    ).toEqual({ text: "No topics left. Add topics to restart it.", fix: "topics" });
+    expect(describeProblem("This needs 5 credits and you have 0. Choose a plan on the Billing page.")).toEqual({
+      text: "Out of credits.",
+      fix: "billing",
+    });
+    expect(
+      describeProblem("Paused on the first failure because it cannot fix itself: Team budget exceeded. Current spend: $30.00"),
+    ).toEqual({ text: "The AI budget ran out. It needs topping up.", fix: null });
+    expect(describeProblem("The model provider failed to generate a script.")).toEqual({
+      text: "The script could not be written.",
+      fix: null,
+    });
+  });
+
+  it("keeps anything else, trimmed to its first sentence", () => {
+    expect(describeProblem("Something odd happened. More detail here.")).toEqual({
+      text: "Something odd happened.",
+      fix: null,
+    });
+    expect(describeProblem(null)).toBeNull();
   });
 });
