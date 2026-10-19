@@ -417,8 +417,7 @@ export function LandingHero() {
         </p>
 
         <p className="text-muted-foreground mt-5 max-w-md text-xs text-pretty">
-          Start with 3 free credits. Framecast Studio is under active development, and every
-          account is reviewed by an operator before it can be used.
+          Start with 3 free credits, no card needed.
         </p>
       </div>
     </section>

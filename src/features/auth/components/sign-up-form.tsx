@@ -52,13 +52,9 @@ export function SignUpForm({ googleEnabled }: { googleEnabled: boolean }) {
       return;
     }
 
-    /**
-     * Better Auth signs the new account in immediately, but the account is
-     * PENDING, so every studio route will bounce it. Going straight to
-     * /pending is the honest destination — /dashboard would redirect there
-     * anyway, one wasted round trip later.
-     */
-    router.push("/pending");
+    // Better Auth signs the new account in immediately, and new accounts are
+    // approved at creation, so it goes straight in.
+    router.push("/dashboard");
     router.refresh();
   }
 
