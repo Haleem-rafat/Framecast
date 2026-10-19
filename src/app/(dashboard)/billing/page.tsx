@@ -6,7 +6,9 @@ import { PageHeader } from "@/components/shared/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { env } from "@/config/env";
 import { paddlePrices } from "@/config/paddle";
+import { Progress } from "@/components/ui/progress";
 import { CreditHistory } from "@/features/billing/components/credit-history";
+import { CreditUsage } from "@/features/billing/components/credit-usage";
 import { ManageBillingButton } from "@/features/billing/components/manage-billing-button";
 import { PlanCards } from "@/features/billing/components/plan-cards";
 import { PLANS } from "@/lib/plans";
@@ -24,10 +26,14 @@ export default async function BillingPage({
 }) {
   const { checkout } = await searchParams;
   const user = await requireUser();
-  const [summary, history] = await Promise.all([
+  const [summary, history, usage] = await Promise.all([
     billingService.summary(user.id),
     billingService.history(user.id),
+    billingService.usage(user.id),
   ]);
+  // How full the tank is against the plan's monthly allowance.
+  const allowance = PLANS[summary.tier].credits;
+  const fill = Math.min(100, Math.round((summary.balance / allowance) * 100));
   const hasSubscription = summary.status !== null && summary.status !== "CANCELED";
 
   return (
@@ -65,7 +71,23 @@ export default async function BillingPage({
         </div>
         <div className="bg-card rounded-xl border p-5">
           <p className="text-muted-foreground text-sm">Credits left</p>
-          <p className="text-2xl font-semibold tabular-nums">{summary.balance}</p>
+          <p className="text-2xl font-semibold tabular-nums">
+            {summary.unlimited ? "∞" : summary.balance}
+          </p>
+          {!summary.unlimited && (
+            <>
+              <Progress
+                value={fill}
+                className="mt-3"
+                aria-label={`${summary.balance} of ${allowance} credits left`}
+              />
+              <p className="text-muted-foreground mt-1.5 text-xs">
+                {summary.balance === 0
+                  ? "All used. Choose a plan to keep making videos."
+                  : `${summary.balance} of ${allowance} this month`}
+              </p>
+            </>
+          )}
         </div>
         <div className="bg-card rounded-xl border p-5">
           <p className="text-muted-foreground text-sm">
@@ -94,6 +116,8 @@ export default async function BillingPage({
           adds any sales tax at checkout.
         </p>
       </section>
+
+      <CreditUsage {...usage} />
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Credit history</h2>

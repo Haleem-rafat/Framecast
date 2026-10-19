@@ -8,7 +8,9 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { HelpHint } from "@/features/onboarding/components/help-hint";
 import { OnboardingProvider } from "@/features/onboarding/components/onboarding-provider";
 import { Appearance } from "@/providers/appearance";
+import { PLANS } from "@/lib/plans";
 import { requireUser } from "@/server/session";
+import { billingService } from "@/services/billing.service";
 import { accountService } from "@/services/account.service";
 import { onboardingService } from "@/services/onboarding.service";
 import { settingsService } from "@/services/settings.service";
@@ -80,7 +82,7 @@ export default async function DashboardLayout({
   children: ReactNode;
 }) {
   const user = await requireUser();
-  const [appearance, role, onboarding] = await Promise.all([
+  const [appearance, role, onboarding, billing] = await Promise.all([
     settingsService.appearance(user.id),
     accountService.roleFor(user.id),
     // A third lookup on the critical path of every authenticated render, and it
@@ -90,7 +92,15 @@ export default async function DashboardLayout({
     // storage. One indexed read of one column, in parallel with two that were
     // already happening.
     onboardingService.getProgress(user.id),
+    // The credits counter in the sidebar footer.
+    billingService.summary(user.id),
   ]);
+  const wallet = {
+    credits: billing.balance,
+    unlimited: billing.unlimited,
+    planName: billing.unlimited ? "Operator" : PLANS[billing.tier].name,
+    allowance: PLANS[billing.tier].credits,
+  };
 
   /**
    * Decides only what the three navigation surfaces *list*. Every
@@ -140,6 +150,7 @@ export default async function DashboardLayout({
         <AppSidebar
           user={{ name: user.name, email: user.email, image: user.image ?? null }}
           isOperator={isOperator}
+          wallet={wallet}
         />
         <SidebarInset>
           <AppTopbar

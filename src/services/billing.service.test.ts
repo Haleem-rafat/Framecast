@@ -229,3 +229,31 @@ describe("billingService.applyPaddleEvent", () => {
     ).toBe("ignored");
   });
 });
+
+describe("billingService.usage", () => {
+  it("adds up credits spent per day, net of refunds, with empty days kept", async () => {
+    await prisma.creditLedger.create({ data: { userId, delta: 50, reason: "GRANT", ref: "g" } });
+    const day = (offset: number) => new Date(Date.UTC(2026, 9, 19 - offset, 12));
+    await prisma.creditLedger.createMany({
+      data: [
+        { userId, delta: -1, reason: "CHARGE", ref: "c1", createdAt: day(0) },
+        { userId, delta: -5, reason: "CHARGE", ref: "c2", createdAt: day(0) },
+        { userId, delta: -1, reason: "CHARGE", ref: "c3", createdAt: day(2) },
+        { userId, delta: 1, reason: "REFUND", ref: "r3", createdAt: day(2) },
+        { userId, delta: -1, reason: "CHARGE", ref: "c4", createdAt: day(40) },
+      ],
+    });
+
+    const usage = await billingService.usage(userId, 7, day(0));
+
+    expect(usage.days).toHaveLength(7);
+    expect(usage.days.at(-1)).toEqual({ date: "2026-10-19", spent: 6 });
+    expect(usage.days.at(-3)).toEqual({ date: "2026-10-17", spent: 0 }); // refunded
+    expect(usage.days[0]).toEqual({ date: "2026-10-13", spent: 0 });
+    expect(usage.spentInWindow).toBe(6);
+    // Every video still paid for, by size: refunded runs do not count.
+    expect(usage.shorts).toBe(2);
+    expect(usage.longVideos).toBe(1);
+  });
+});
+
