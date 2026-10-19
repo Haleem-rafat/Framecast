@@ -1,45 +1,24 @@
 "use client";
 
-import { LayoutGrid, Table2 } from "lucide-react";
-import { useTransition } from "react";
-import { toast } from "sonner";
+import { LayoutGrid, Workflow } from "lucide-react";
+import { useRouter } from "next/navigation";
 
-import { setAutomationViewAction } from "@/actions/canvas.action";
 import { Button } from "@/components/ui/button";
-import type { AutomationView } from "@/generated/prisma/enums";
+import { AUTOMATION_LAYOUT_COOKIE, type AutomationLayout } from "@/features/automation/layout";
+
 
 /**
- * Canvas or table.
- *
- * Both survive, and the reason is that they answer different questions. A
- * canvas shows shape — "what is my kids channel doing", which is the question
- * the flat table could not answer and the whole reason the canvas exists. A
- * table is still the better tool at forty automations when the question is
- * "where is the one called Bedtime Stories", because it sorts and filters and a
- * canvas does neither.
- *
- * The choice is a column on `UserSetting`, not component state and not
- * `localStorage`: the page is server-rendered from that row alongside theme and
- * accent, so the chosen view arrives with the HTML and there is no flash of the
- * other one on every navigation.
+ * Grid (cards) or canvas for the Automations tab. Grid is the default; the
+ * choice is kept in a cookie for a year and the address carries it too, so a
+ * shared link opens the same view.
  */
-export function ViewToggle({ view }: { view: AutomationView }) {
-  const [isPending, startTransition] = useTransition();
+export function ViewToggle({ view }: { view: AutomationLayout }) {
+  const router = useRouter();
 
-  const choose = (next: AutomationView) => {
-    if (next === view || isPending) return;
-
-    startTransition(async () => {
-      const response = await setAutomationViewAction({ view: next });
-
-      if (!response.ok) {
-        toast.error("Could not switch view", { description: response.error.message });
-      }
-      // No success toast and no `router.refresh()`. The action revalidates
-      // /automation, so the new view arrives on its own — announcing a
-      // successful view switch would be telling the operator what they can
-      // already see.
-    });
+  const choose = (next: AutomationLayout) => {
+    if (next === view) return;
+    document.cookie = `${AUTOMATION_LAYOUT_COOKIE}=${next}; path=/; max-age=31536000; samesite=lax`;
+    router.push(`/automation?tab=list&view=${next}`);
   };
 
   return (
@@ -51,24 +30,22 @@ export function ViewToggle({ view }: { view: AutomationView }) {
       <Button
         type="button"
         size="sm"
-        variant={view === "CANVAS" ? "default" : "ghost"}
-        aria-pressed={view === "CANVAS"}
-        disabled={isPending}
-        onClick={() => choose("CANVAS")}
+        variant={view === "grid" ? "default" : "ghost"}
+        aria-pressed={view === "grid"}
+        onClick={() => choose("grid")}
       >
         <LayoutGrid />
-        Canvas
+        Grid
       </Button>
       <Button
         type="button"
         size="sm"
-        variant={view === "TABLE" ? "default" : "ghost"}
-        aria-pressed={view === "TABLE"}
-        disabled={isPending}
-        onClick={() => choose("TABLE")}
+        variant={view === "canvas" ? "default" : "ghost"}
+        aria-pressed={view === "canvas"}
+        onClick={() => choose("canvas")}
       >
-        <Table2 />
-        Table
+        <Workflow />
+        Canvas
       </Button>
     </div>
   );
