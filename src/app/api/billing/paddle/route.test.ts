@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { env } from "@/config/env";
 import { prisma } from "@/lib/prisma";
@@ -92,4 +92,29 @@ describe("POST /api/billing/paddle", () => {
     const body = created(userId);
     expect((await post(body, sign(body))).status).toBe(503);
   });
+
+  it("in production, refuses a correctly signed delivery from an address that is not Paddle's", async () => {
+    const realFetch = global.fetch;
+    global.fetch = vi.fn(async () =>
+      Response.json({ data: { ipv4_cidrs: ["34.237.3.244/32"] } }),
+    ) as unknown as typeof fetch;
+    Object.assign(env, { PADDLE_ENV: "production" });
+    try {
+      const body = created(userId);
+      const from = (ip: string) =>
+        POST(
+          new Request("http://localhost/api/billing/paddle", {
+            method: "POST",
+            body,
+            headers: { "paddle-signature": sign(body), "x-forwarded-for": ip },
+          }),
+        );
+      expect((await from("1.2.3.4")).status).toBe(403);
+      expect((await from("34.237.3.244")).status).toBe(200);
+    } finally {
+      global.fetch = realFetch;
+      Object.assign(env, { PADDLE_ENV: saved.PADDLE_ENV });
+    }
+  });
 });
+
