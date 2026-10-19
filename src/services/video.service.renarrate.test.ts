@@ -6,6 +6,7 @@ import type { Alignment } from "@/lib/captions";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getObject } from "@/lib/storage";
+import { billingService } from "@/services/billing.service";
 import { channelService } from "@/services/channel.service";
 import { narrationNeedsSynthesis } from "@/services/pipeline-runner";
 import { projectService } from "@/services/project.service";
@@ -591,5 +592,18 @@ describe("narrationNeedsSynthesis", () => {
     expect(
       narrationNeedsSynthesis({ voiceOver: {}, renarrateVoiceId: "XyZ789chosen" }, false),
     ).toBe(true);
+  });
+});
+
+describe("videoService.requestRenarration credits", () => {
+  it("re-narrating a failed video charges it again; a finished one costs nothing", async () => {
+    await billingService.grantTrial(userId); // 3
+    await prisma.video.update({ where: { id: videoId }, data: { status: "READY", format: "VERTICAL" } });
+    await videoService.requestRenarration(userId, videoId, CHOSEN_VOICE);
+    expect(await billingService.balance(userId)).toBe(3);
+
+    await prisma.video.update({ where: { id: videoId }, data: { status: "FAILED" } });
+    await videoService.requestRenarration(userId, videoId, CHANNEL_VOICE);
+    expect(await billingService.balance(userId)).toBe(2);
   });
 });

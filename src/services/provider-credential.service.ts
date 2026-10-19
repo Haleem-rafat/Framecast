@@ -1,10 +1,12 @@
 import "server-only";
 
+import { env } from "@/config/env";
 import type { AiProviderType } from "@/generated/prisma/enums";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { ProviderError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { UpsertCredentialInput } from "@/schemas/provider.schema";
+import { billingService } from "@/services/billing.service";
 import { ELEVENLABS_API_BASE } from "@/services/providers/elevenlabs.provider";
 import { FalVideoProvider } from "@/services/providers/fal-video.provider";
 import { gatewayProvider } from "@/services/providers/gateway.provider";
@@ -185,8 +187,30 @@ export class ProviderCredentialService {
     });
   }
 
-  /** Returns the plaintext key, or null when the operator has not stored one. */
+  /**
+   * Returns the key to call `provider` with for this user: their own stored
+   * key, or — when they have none and are paying or still have credits — the
+   * platform's. Null when neither applies.
+   */
   async resolveKey(
+    userId: string,
+    provider: AiProviderType,
+  ): Promise<string | null> {
+    const own = await this.resolveOwnKey(userId, provider);
+    if (own) return own;
+
+    // Paying users run on the platform's keys, so a customer never has to
+    // open an ElevenLabs account. ANTHROPIC needs no entry: its callers
+    // already fall back to the AI Gateway, which is platform-level.
+    const platform: Partial<Record<AiProviderType, string | undefined>> = {
+      ELEVENLABS: env.PLATFORM_ELEVENLABS_API_KEY,
+    };
+    const key = platform[provider];
+    return key && (await billingService.usesPlatformKeys(userId)) ? key : null;
+  }
+
+  /** The user's own stored key, decrypted, or null when they have not stored one. */
+  private async resolveOwnKey(
     userId: string,
     provider: AiProviderType,
   ): Promise<string | null> {
@@ -222,7 +246,8 @@ export class ProviderCredentialService {
     // per-provider checks below: a thrown ProviderError becomes its own
     // (key-free) reason instead of an uncaught rejection.
     try {
-      const apiKey = await this.resolveKey(userId, provider);
+      // The user's own key only: "Test" answers whether their key works.
+      const apiKey = await this.resolveOwnKey(userId, provider);
       result = await this.runCheck(provider, apiKey, fetchClient);
     } catch (error) {
       result = {

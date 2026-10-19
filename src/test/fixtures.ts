@@ -52,3 +52,14 @@ export async function deleteTestUser(userId: string | undefined): Promise<void> 
   await prisma.providerUsage.deleteMany({ where: { credential: { userId } } });
   await prisma.user.deleteMany({ where: { id: userId } });
 }
+
+/**
+ * Gives a test user enough credits that approving videos never trips the
+ * credit check — for tests about something other than billing. Cascades away
+ * with the user.
+ */
+export async function fundTestUser(userId: string, credits = 1000): Promise<void> {
+  await prisma.creditLedger.create({
+    data: { userId, delta: credits, reason: "GRANT", ref: "test-funding" },
+  });
+}

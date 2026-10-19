@@ -8,7 +8,12 @@ import type {
   ScheduleStatus,
   VideoFormat,
 } from "@/generated/prisma/enums";
-import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
+import {
+  ConflictError,
+  NotFoundError,
+  PaymentRequiredError,
+  ValidationError,
+} from "@/lib/errors";
 import { describeGatewayFailure } from "@/lib/gateway-failure";
 import { prisma } from "@/lib/prisma";
 import {
@@ -1174,7 +1179,10 @@ export class ScheduleService {
        * fix is one an operator has to make. Any success still resets the
        * counter, so nothing here makes a recovered schedule harder to restart.
        */
-      const budget = describeGatewayFailure(error).budgetExhausted;
+      // Out of credits is the same kind of wall: the next run cannot pay
+      // either, until someone chooses a plan.
+      const budget =
+        describeGatewayFailure(error).budgetExhausted || error instanceof PaymentRequiredError;
 
       const pauseWith = budget
         ? `Paused on the first failure because it cannot fix itself: ${reason}`

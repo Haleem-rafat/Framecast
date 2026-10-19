@@ -91,6 +91,8 @@ export interface ComposeInput {
   captions?: SafeAreaCaptionStyle;
   musicPath?: string;
   outputPath: string;
+  /** Trial accounts only — see `AssembleInput.watermark`. */
+  watermark?: string;
 }
 
 /** One line of human-readable progress. Same shape as `RenderProgress`,
@@ -276,6 +278,7 @@ export async function compose(input: ComposeInput, deps: ComposeDeps): Promise<v
       // channel that wanted the grain without the captions — or the reverse —
       // would be asking for a third format nobody has specified.
       grain: style.captionMode === "kinetic",
+      watermark: input.watermark,
     }),
     input.durationSeconds,
     onProgress,

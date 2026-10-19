@@ -12,6 +12,7 @@ export type AppErrorCode =
   | "CONFLICT"
   | "RATE_LIMITED"
   | "PROVIDER_ERROR"
+  | "PAYMENT_REQUIRED"
   | "INTERNAL";
 
 export interface SerializedError {
@@ -90,6 +91,12 @@ export class RateLimitedError extends AppError {
   constructor(readonly retryAfterSeconds: number) {
     super(`Too many requests. Try again in ${retryAfterSeconds}s.`);
   }
+}
+
+/** The account has no credits left for this action. */
+export class PaymentRequiredError extends AppError {
+  readonly code = "PAYMENT_REQUIRED" as const;
+  readonly httpStatus = 402;
 }
 
 /** An upstream AI/YouTube provider failed. Retryable errors are worth re-queuing. */

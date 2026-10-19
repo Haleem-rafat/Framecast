@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ConflictError, NotFoundError } from "@/lib/errors";
+import { ConflictError, NotFoundError, PaymentRequiredError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import { videoService } from "@/services/video.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test in this file gets its
@@ -22,6 +23,7 @@ let projectId: string | undefined;
 
 beforeEach(async () => {
   userId = await createTestUser("video");
+  await fundTestUser(userId);
   projectId = (await projectService.create(userId, { name: PROJECT_NAME })).id;
 });
 
@@ -293,5 +295,24 @@ describe("videoService", () => {
     } finally {
       await deleteTestUser(strangerId);
     }
+  });
+});
+
+describe("videoService.approveScript credits", () => {
+  it("charges by format and refuses, leaving a draft, when credits run out", async () => {
+    await prisma.creditLedger.deleteMany({ where: { userId } });
+    await billingService.grantTrial(userId); // 3 credits
+
+    const short = await createApprovableVideo();
+    await videoService.approveScript(userId, short, "VERTICAL");
+    expect(await billingService.balance(userId)).toBe(2);
+
+    const long = await createApprovableVideo();
+    await expect(videoService.approveScript(userId, long, "LANDSCAPE")).rejects.toBeInstanceOf(
+      PaymentRequiredError,
+    );
+    const refused = await prisma.video.findUniqueOrThrow({ where: { id: long } });
+    expect(refused.status).toBe("DRAFT");
+    expect(await billingService.balance(userId)).toBe(2);
   });
 });

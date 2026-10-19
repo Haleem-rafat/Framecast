@@ -2,9 +2,11 @@ import "server-only";
 
 import type { VideoFormat, VideoStatus } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
+import { creditsFor } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
 import { deleteShortFile } from "@/lib/shorts-storage";
 import type { CreateVideoInput, RenarrateVideoInput } from "@/schemas/video.schema";
+import { billingService } from "@/services/billing.service";
 
 /** Shown whenever a delete is refused because the render worker holds the
  * video's lease right now — both the single- and bulk-delete paths report the
@@ -272,6 +274,10 @@ export class VideoService {
         throw new ConflictError("Only draft videos can be approved.");
       }
 
+      // Spent here, in the same transaction as DRAFT -> QUEUED, so a refused
+      // charge leaves the draft untouched and a failed approval spends nothing.
+      await billingService.charge(tx, userId, id, creditsFor(format));
+
       await tx.videoStatusEvent.create({
         data: {
           videoId: id,
@@ -372,6 +378,7 @@ export class VideoService {
         id: true,
         status: true,
         leaseExpiresAt: true,
+        format: true,
         voiceOver: { select: { voiceId: true } },
       },
     });
@@ -481,6 +488,12 @@ export class VideoService {
 
       if (count === 0) {
         throw new ConflictError("The video's status changed unexpectedly.");
+      }
+
+      // A failed video gave its credits back when it failed, so a new voice
+      // on it is a new paid run. A finished video's re-narration is free.
+      if (video.status === "FAILED") {
+        await billingService.charge(tx, userId, id, creditsFor(video.format));
       }
 
       // Hard delete, per the `Short` model's own comment: a soft-deleted row

@@ -54,7 +54,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: "/?app=framecast",
     name: SITE_NAME,
     // What fits under a home-screen icon before the launcher truncates it.
-    short_name: SITE_NAME,
+    short_name: "Framecast",
     description: SITE_DESCRIPTION,
     start_url: "/dashboard",
     // The whole app, so an internal link never bounces the operator out into a

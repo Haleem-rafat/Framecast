@@ -2,7 +2,9 @@ import "server-only";
 
 import type { VideoStatus } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError } from "@/lib/errors";
+import { creditsFor } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 
 /** How long a claim is held before another worker may take over. */
 const LEASE_SECONDS = 600;
@@ -153,7 +155,7 @@ export class JobService {
   ): Promise<void> {
     const video = await prisma.video.findFirst({
       where: { id: videoId, deletedAt: null },
-      select: { id: true, status: true },
+      select: { id: true, status: true, attempts: true, userId: true },
     });
 
     if (!video) {
@@ -260,6 +262,11 @@ export class JobService {
         data: { videoId, from, to: "FAILED", message: reason ?? "Render failed" },
       });
 
+      // Nothing re-runs a FAILED video on its own — only Run, Retry or a
+      // voice change does, and each of those charges again — so a failure
+      // gives the credits back now.
+      await billingService.refund(video.userId, videoId);
+
       return;
     }
 
@@ -297,6 +304,8 @@ export class JobService {
     await prisma.videoStatusEvent.create({
       data: { videoId, from, to: "FAILED", message },
     });
+
+    await billingService.refund(video.userId, videoId, "Render cancelled");
   }
 
   /**
@@ -363,7 +372,7 @@ export class JobService {
   ): Promise<void> {
     const video = await prisma.video.findFirst({
       where: { id: videoId, userId, deletedAt: null },
-      select: { id: true, status: true, attempts: true, leaseExpiresAt: true },
+      select: { id: true, status: true, attempts: true, leaseExpiresAt: true, format: true },
     });
 
     if (!video) {
@@ -413,36 +422,45 @@ export class JobService {
       ? { OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }] }
       : {};
 
-    const { count } = await prisma.video.updateMany({
-      where: {
-        id: videoId,
-        userId,
-        deletedAt: null,
-        status: video.status,
-        ...leaseGuard,
-      },
-      data: {
-        status: "QUEUED",
-        leaseExpiresAt: null,
-        // Nothing outside the worker's own `release` ever clears this, and
-        // `claimNext` treats a set flag as permanently disqualifying. So a
-        // cancel whose worker died before its next heartbeat — or a cancel
-        // pressed during a CLI run, which never reads the flag at all — left
-        // the video unclaimable forever, with a Cancel button that did
-        // nothing and a panel polling every 2s until the tab closed.
-        // Requeuing is the operator asking for this video to run, which is by
-        // definition a withdrawal of any earlier cancel.
-        cancelRequestedAt: null,
-        ...(resetAttempts ? { attempts: 0 } : {}),
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.video.updateMany({
+        where: {
+          id: videoId,
+          userId,
+          deletedAt: null,
+          status: video.status,
+          ...leaseGuard,
+        },
+        data: {
+          status: "QUEUED",
+          leaseExpiresAt: null,
+          // Nothing outside the worker's own `release` ever clears this, and
+          // `claimNext` treats a set flag as permanently disqualifying. So a
+          // cancel whose worker died before its next heartbeat — or a cancel
+          // pressed during a CLI run, which never reads the flag at all — left
+          // the video unclaimable forever, with a Cancel button that did
+          // nothing and a panel polling every 2s until the tab closed.
+          // Requeuing is the operator asking for this video to run, which is by
+          // definition a withdrawal of any earlier cancel.
+          cancelRequestedAt: null,
+          ...(resetAttempts ? { attempts: 0 } : {}),
+        },
+      });
 
-    if (count === 0) {
-      throw new ConflictError("The video's status changed unexpectedly.");
-    }
+      if (count === 0) {
+        throw new ConflictError("The video's status changed unexpectedly.");
+      }
 
-    await prisma.videoStatusEvent.create({
-      data: { videoId, from: video.status, to: "QUEUED", message: eventMessage },
+      // A failed video was refunded when it failed, so running it again is a
+      // new run and is paid for again. Same transaction as the requeue: no
+      // credits, no requeue. A queued or stranded video is still paid for.
+      if (video.status === "FAILED") {
+        await billingService.charge(tx, userId, videoId, creditsFor(video.format));
+      }
+
+      await tx.videoStatusEvent.create({
+        data: { videoId, from: video.status, to: "QUEUED", message: eventMessage },
+      });
     });
   }
 

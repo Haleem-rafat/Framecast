@@ -1,8 +1,10 @@
 import "server-only";
 
 import type { PublishVisibility, VideoFormat } from "@/generated/prisma/enums";
-import { ConflictError, ValidationError } from "@/lib/errors";
+import { ConflictError, PaymentRequiredError, ValidationError } from "@/lib/errors";
+import { creditsFor } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import { extractVariables } from "@/lib/prompt-template";
 import type { StartAutomationInput } from "@/schemas/automation.schema";
 import { autoPublishService } from "@/services/auto-publish.service";
@@ -61,6 +63,9 @@ const REQUIRED_STEP_IDS: ReadonlySet<string> = new Set([
  * things — and only the explanation is restated in terms of what this flow
  * cannot do without it.
  */
+/** Not an onboarding step: raised when the account has no credit left. */
+const CREDITS_BLOCKER_ID = "get-credits";
+
 const BLOCKER_REASONS: Record<string, string> = {
   "connect-channel":
     "Nothing here publishes automatically, but a finished video needs somewhere to go. Connect the channel first.",
@@ -446,13 +451,27 @@ export class AutomationService {
     // it. A server action is a public endpoint: a hand-crafted POST reaches
     // this method with no UI in the way, and the whole point of the check is
     // to refuse *before* the billed call rather than fail after it.
-    const blockers = await this.getBlockers(userId);
+    // Credits are checked on their own, for this video's format and with
+    // their own error, so a schedule can tell "out of credits" (pause now)
+    // from "not set up yet".
+    const blockers = (await this.getBlockers(userId)).filter(
+      (blocker) => blocker.id !== CREDITS_BLOCKER_ID,
+    );
 
     if (blockers.length > 0) {
       throw new ConflictError(
         `This account isn't ready to generate a video yet: ${blockers
           .map((blocker) => blocker.title.toLowerCase())
           .join(", ")}.`,
+      );
+    }
+
+    // Before the script is written: approving would refuse anyway, but only
+    // after a paid model call and with a draft left behind.
+    const cost = creditsFor(options.format ?? "LANDSCAPE");
+    if (!(await billingService.canAfford(userId, cost))) {
+      throw new PaymentRequiredError(
+        `This video needs ${cost} credit${cost === 1 ? "" : "s"} and the account doesn't have enough. Choose a plan on the Billing page.`,
       );
     }
 
@@ -676,9 +695,12 @@ export class AutomationService {
    * definition of "this account is set up", not a second one that could
    * drift from it. */
   private async getBlockers(userId: string): Promise<AutomationBlocker[]> {
-    const checklist = await onboardingService.getChecklist(userId);
+    const [checklist, hasCredit] = await Promise.all([
+      onboardingService.getChecklist(userId),
+      billingService.canAfford(userId, 1),
+    ]);
 
-    return checklist.steps
+    const blockers = checklist.steps
       .filter((step) => REQUIRED_STEP_IDS.has(step.id) && !step.complete)
       .map((step) => ({
         id: step.id,
@@ -686,6 +708,17 @@ export class AutomationService {
         description: BLOCKER_REASONS[step.id] ?? step.description,
         href: step.href,
       }));
+
+    if (!hasCredit) {
+      blockers.push({
+        id: CREDITS_BLOCKER_ID,
+        title: "Get credits",
+        description: "Every credit is used. Choose a plan to keep making videos.",
+        href: "/billing",
+      });
+    }
+
+    return blockers;
   }
 
   private async listProjects(userId: string): Promise<AutomationProject[]> {

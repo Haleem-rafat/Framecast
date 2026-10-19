@@ -13,7 +13,7 @@ import type { TextGenerationProvider } from "@/services/providers/types";
 import { ScheduleService } from "@/services/schedule.service";
 import { ScriptService } from "@/services/script.service";
 import { SeriesService } from "@/services/series.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Same discipline as schedule.service.test.ts and automation.service.test.ts:
 // these run against a real, shared Postgres database that also holds the
@@ -262,6 +262,7 @@ async function expectGate1Crossed(videoId: string): Promise<void> {
 beforeEach(async () => {
   await cleanupProviderUsage();
   userId = await createTestUser("series");
+  await fundTestUser(userId);
 
   const ready = await makeReadyAccount(userId);
   channelId = ready.channelId;

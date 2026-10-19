@@ -2,15 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ConflictError, ValidationError } from "@/lib/errors";
+import { ConflictError, PaymentRequiredError, ValidationError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import { AutomationService } from "@/services/automation.service";
 import { channelService } from "@/services/channel.service";
 import { projectService } from "@/services/project.service";
 import { providerCredentialService } from "@/services/provider-credential.service";
 import type { TextGenerationProvider } from "@/services/providers/types";
 import { ScriptService } from "@/services/script.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Same discipline as script.service.test.ts: these run against a real, shared
 // Postgres database that also holds the operator's real data, so every test
@@ -174,6 +175,7 @@ let projectId: string;
 beforeEach(async () => {
   await cleanupProviderUsage();
   userId = await createTestUser("automation");
+  await fundTestUser(userId);
   projectId = await makeReadyAccount(userId);
 
   // ScriptService resolves an ANTHROPIC credential before reaching the
@@ -203,6 +205,7 @@ describe("automationService.getSetup — readiness", () => {
         "check-prompt-template",
         "connect-channel",
         "create-project",
+        "get-credits",
       ]);
       // Null rather than a throw: the missing template is already one of the
       // blockers above, with a link to the page that fixes it.
@@ -704,5 +707,26 @@ describe("automationService.start — double submission", () => {
     const live = await prisma.video.findMany({ where: { userId, deletedAt: null } });
     expect(live).toHaveLength(2);
     await expectGate1Crossed(live.map((video) => video.id));
+  });
+});
+
+describe("automationService — credits", () => {
+  it("refuses before writing a script when the account cannot pay for the format", async () => {
+    await prisma.creditLedger.deleteMany({ where: { userId } });
+    await billingService.grantTrial(userId); // 3: a Short, not a long video
+    const before = await prisma.video.count({ where: { userId } });
+
+    await expect(
+      makeService().start(userId, { projectId, topic: "why credits matter", variables: {} }),
+    ).rejects.toBeInstanceOf(PaymentRequiredError);
+
+    // No draft, no script: the refusal comes before anything is paid for.
+    expect(await prisma.video.count({ where: { userId } })).toBe(before);
+  });
+
+  it("lists running out of credits as a blocker, linking to Billing", async () => {
+    await prisma.creditLedger.deleteMany({ where: { userId } });
+    const setup = await makeService().getSetup(userId);
+    expect(setup.blockers).toEqual([expect.objectContaining({ id: "get-credits", href: "/billing" })]);
   });
 });

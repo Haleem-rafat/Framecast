@@ -26,6 +26,7 @@ import { objectSizeBytes } from "@/lib/storage";
 import { VIDEO_FORMATS } from "@/lib/video-format";
 import { PUBLISHING_DEFAULTS } from "@/lib/youtube-categories";
 import { requireUser } from "@/server/session";
+import { billingService } from "@/services/billing.service";
 import { pipelineService } from "@/services/pipeline.service";
 import { promptTemplateService } from "@/services/prompt-template.service";
 import { publishService } from "@/services/publish.service";
@@ -423,6 +424,9 @@ export default async function VideoDetailPage({
   const defaultOpen = DEFAULT_OPEN_SECTIONS[arrangement];
   const isOpenByDefault = (key: VideoSectionKey) => defaultOpen.includes(key);
 
+  const billing = await billingService.summary(user.id);
+  const wallet = { credits: billing.balance, unlimited: billing.unlimited };
+
   return (
     <>
       <VideoHeader
@@ -442,6 +446,7 @@ export default async function VideoDetailPage({
           video.project.channel?.brand?.footageStyle ??
           PUBLISHING_DEFAULTS.footageStyle
         }
+        wallet={wallet}
         youtubeVideoId={youtubeVideoId}
         defaultVisibility={defaultVisibility}
         readyShortCount={readyShortCount}

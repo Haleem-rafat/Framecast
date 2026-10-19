@@ -131,7 +131,7 @@ export const CTA = {
   /** How long. The honest number, not the flattering one. */
   duration: "About 20 minutes from topic to finished file",
   /** What it costs. */
-  price: "Free while it is in beta",
+  price: "Free trial, then from $29 a month",
   /** What happens immediately — which is also the reassurance. */
   payoff: "You approve the script before anything is spent",
 } as const;

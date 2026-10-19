@@ -6,6 +6,7 @@ import { env } from "@/config/env";
 import { prisma } from "@/lib/prisma";
 import { MIN_PASSWORD_LENGTH } from "@/schemas/auth.schema";
 import { accountService } from "@/services/account.service";
+import { billingService } from "@/services/billing.service";
 
 /** Reset links are relayed by hand, so a one-hour default would expire mid-relay. */
 const RESET_TOKEN_TTL_SECONDS = 60 * 60 * 2;
@@ -44,7 +45,7 @@ const autoApprovedEmails = new Set(
 );
 
 export const auth = betterAuth({
-  appName: "Framecast",
+  appName: "Framecast Studio",
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
 
@@ -155,6 +156,16 @@ export const auth = betterAuth({
           return {
             data: { ...user, approval: "APPROVED", approvedAt: new Date() },
           };
+        },
+        /**
+         * An account approved at creation never passes through
+         * `accountService.approve`, which is where everyone else's trial
+         * credits come from.
+         */
+        after: async (user) => {
+          if (autoApprovedEmails.has(user.email.trim().toLowerCase())) {
+            await billingService.grantTrial(user.id);
+          }
         },
       },
     },

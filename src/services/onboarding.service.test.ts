@@ -7,7 +7,9 @@ import {
   TOUR_KEY,
   helpKey,
 } from "@/features/onboarding/dismissal";
+import { env } from "@/config/env";
 import { prisma } from "@/lib/prisma";
+import { billingService } from "@/services/billing.service";
 import { channelService } from "@/services/channel.service";
 import { onboardingService } from "@/services/onboarding.service";
 import { projectService } from "@/services/project.service";
@@ -353,5 +355,28 @@ describe("onboardingService progress", () => {
     } finally {
       await prisma.user.deleteMany({ where: { id: otherId } });
     }
+  });
+});
+
+describe("onboardingService narration key on the platform", () => {
+  const saved = env.PLATFORM_ELEVENLABS_API_KEY;
+  afterEach(() => {
+    env.PLATFORM_ELEVENLABS_API_KEY = saved;
+  });
+
+  const narrationStep = async () =>
+    (await onboardingService.getChecklist(userId)).steps.find((step) => step.id === "add-narration-key");
+
+  it("counts as done for an account that runs on the platform's key", async () => {
+    env.PLATFORM_ELEVENLABS_API_KEY = "platform-key";
+    expect((await narrationStep())?.complete).toBe(false); // no credits yet
+    await billingService.grantTrial(userId);
+    expect((await narrationStep())?.complete).toBe(true);
+  });
+
+  it("is still required when the platform has no key", async () => {
+    env.PLATFORM_ELEVENLABS_API_KEY = undefined;
+    await billingService.grantTrial(userId);
+    expect((await narrationStep())?.complete).toBe(false);
   });
 });

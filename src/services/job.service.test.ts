@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ConflictError, NotFoundError } from "@/lib/errors";
+import { ConflictError, NotFoundError, PaymentRequiredError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import type { VideoStatus } from "@/generated/prisma/enums";
+import { billingService } from "@/services/billing.service";
 import { jobService, MAX_ATTEMPTS } from "@/services/job.service";
-import { createTestUser, deleteTestUser } from "@/test/fixtures";
+import { createTestUser, deleteTestUser, fundTestUser } from "@/test/fixtures";
 
 // Tests run against a real, shared Postgres database (see src/test/setup.ts)
 // that also holds the operator's real data. Every test in this file gets its
@@ -18,6 +19,7 @@ let projectId: string;
 
 beforeEach(async () => {
   userId = await createTestUser("job");
+  await fundTestUser(userId);
   const project = await prisma.project.create({
     data: { userId, name: `job-${randomUUID()}` },
   });
@@ -666,5 +668,52 @@ describe("jobService.start — recovering wedged videos", () => {
 
     const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
     expect(video.status).toBe("RENDERING");
+  });
+});
+
+describe("jobService refunds and re-charges", () => {
+  beforeEach(async () => {
+    await prisma.creditLedger.deleteMany({ where: { userId } });
+    await billingService.grantTrial(userId); // 3
+  });
+
+  async function paidVideo(status: VideoStatus = "GENERATING") {
+    const videoId = await createVideo({ status, attempts: 1 });
+    // A Short, so a re-run costs the same 1 credit the first run did.
+    await prisma.video.update({ where: { id: videoId }, data: { format: "VERTICAL" } });
+    await prisma.$transaction((tx) => billingService.charge(tx, userId, videoId, 1));
+    return videoId;
+  }
+
+  it("a failed render gives its credits back, because nothing retries it on its own", async () => {
+    const videoId = await paidVideo();
+    expect(await billingService.balance(userId)).toBe(2);
+    await jobService.release(videoId, "failed", "boom");
+    expect(await billingService.balance(userId)).toBe(3);
+  });
+
+  it("a cancelled render gives its credits back too", async () => {
+    const videoId = await paidVideo();
+    await jobService.release(videoId, "cancelled");
+    expect(await billingService.balance(userId)).toBe(3);
+  });
+
+  it("retrying a failed video charges it again, and refuses with no credits", async () => {
+    const videoId = await paidVideo();
+    await jobService.release(videoId, "failed", "boom"); // refunded: 3
+    await jobService.retry(userId, videoId);
+    expect(await billingService.balance(userId)).toBe(2);
+
+    const broke = await paidVideo();
+    await jobService.release(broke, "failed", "boom");
+    await prisma.creditLedger.create({ data: { userId, delta: -2, reason: "CHARGE", ref: "drain" } });
+    await expect(jobService.retry(userId, broke)).rejects.toBeInstanceOf(PaymentRequiredError);
+    expect((await prisma.video.findUniqueOrThrow({ where: { id: broke } })).status).toBe("FAILED");
+  });
+
+  it("starting a queued video that is already paid for charges nothing", async () => {
+    const videoId = await paidVideo("QUEUED");
+    await jobService.start(userId, videoId);
+    expect(await billingService.balance(userId)).toBe(2);
   });
 });

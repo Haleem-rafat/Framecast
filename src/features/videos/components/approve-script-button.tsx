@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState, useTransition } from "react";
 import {
@@ -29,6 +30,8 @@ import { Switch } from "@/components/ui/switch";
 import { approveScriptAction } from "@/actions/video.action";
 import type { FootageStyle, VideoFormat } from "@/generated/prisma/enums";
 import { isGeneratedFootage, needsCharacterSheet } from "@/lib/footage-styles";
+import { creditsFor, outOfCredits, type Wallet } from "@/lib/plans";
+import { cn } from "@/lib/utils";
 import { scriptStylesUnder } from "@/lib/script-styles";
 import { beatCountFor } from "@/lib/story-beats";
 import {
@@ -140,6 +143,7 @@ export function ApproveScriptButton({
   wordCount,
   characterCount,
   footageStyle,
+  wallet,
 }: {
   videoId: string;
   /** True only when status is DRAFT and the active version has non-empty content. */
@@ -154,6 +158,8 @@ export function ApproveScriptButton({
   /** The channel this video will be collected for. Only the cost lines read
    *  it, and only to say whether the pictures are searched for or paid for. */
   footageStyle: FootageStyle;
+  /** The account's credits. Approving spends `creditsFor(format)`. */
+  wallet: Wallet;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -170,7 +176,9 @@ export function ApproveScriptButton({
   // Only a script far past the ceiling has to be acknowledged out loud — see
   // `formatFit` for why the two failures are not the same failure.
   const needsAcknowledgement = fit.verdict === "far-over";
-  const blocked = needsAcknowledgement && !acknowledged;
+  const cost = creditsFor(format);
+  const lacksCredits = outOfCredits(wallet, cost);
+  const blocked = (needsAcknowledgement && !acknowledged) || lacksCredits;
 
   function onOpenChange(next: boolean) {
     if (isPending) return;
@@ -190,6 +198,9 @@ export function ApproveScriptButton({
       if (!result.ok) {
         toast.error("Could not approve this script", {
           description: result.error.message,
+          ...(result.error.code === "PAYMENT_REQUIRED"
+            ? { action: { label: "Billing", onClick: () => router.push("/billing") } }
+            : {}),
         });
         return;
       }
@@ -300,6 +311,19 @@ export function ApproveScriptButton({
               ))}
             </ul>
           </div>
+
+          <p
+            className={cn("text-sm", lacksCredits ? "text-destructive" : "text-muted-foreground")}
+          >
+            {wallet.unlimited
+              ? "Operator account: no credits are used."
+              : `Uses ${cost} credit${cost === 1 ? "" : "s"} · you have ${wallet.credits}.`}{" "}
+            {lacksCredits && (
+              <Link href="/billing" className="font-medium underline underline-offset-4">
+                Get more credits
+              </Link>
+            )}
+          </p>
 
           {fit.verdict !== "fits" && (
             <Alert variant="destructive">

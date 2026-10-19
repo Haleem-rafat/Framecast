@@ -19,11 +19,12 @@ export default function TermsPage() {
     <MarketingShell width="wide">
       <LegalDocument
         title="Terms of service"
-        updated="Last updated 9 August 2026"
+        updated="Last updated 19 October 2026"
         contents={[
         { id: "who-may-use-framecast", label: "Who may use Framecast" },
         { id: "your-content-and-your-channel", label: "Your content and your channel" },
         { id: "ai-generated-material", label: "AI-generated material" },
+        { id: "plans-payments-and-refunds", label: "Plans, payments and refunds" },
         { id: "third-party-costs", label: "Third-party costs" },
         { id: "availability-and-warranty", label: "Availability and warranty" },
         { id: "changes", label: "Changes" },
@@ -69,12 +70,30 @@ export default function TermsPage() {
           </p>
         </LegalSection>
 
+        <LegalSection id="plans-payments-and-refunds" heading="Plans, payments and refunds">
+          <p className="text-muted-foreground text-sm text-pretty">
+            Paid plans are monthly subscriptions sold through Paddle.com, which
+            acts as our reseller and merchant of record: Paddle takes the payment,
+            adds any sales tax, and issues your invoices. Each plan gives a number
+            of credits every billing month. Approving a script spends credits — one
+            for a Short, five for a long video — and credits left at the end of a
+            billing month do not carry over. If a video fails to render or you
+            cancel its render, its credits are returned automatically; running it
+            again spends them again. You can change plan at any time from the
+            Billing page, and cancel from Manage billing; after cancelling, your
+            plan and its remaining credits last until the end of the month you
+            have paid for. Refund requests for a payment are handled under
+            Paddle&apos;s buyer terms.
+          </p>
+        </LegalSection>
+
         <LegalSection id="third-party-costs" heading="Third-party costs">
           <p className="text-muted-foreground text-sm text-pretty">
-            Generating scripts, narration and images consumes paid third-party API
-            credits billed to whoever supplied the API keys. Framecast records the
-            cost of each generation, but it does not cap spending and is not
-            responsible for charges incurred.
+            On a plan or the trial, the AI costs of making your videos are included.
+            If you add your own API key for a provider, generation with that
+            provider is billed by them to you instead. Framecast Studio records the
+            cost of each generation but is not responsible for charges a provider
+            makes on your own key.
           </p>
         </LegalSection>
 

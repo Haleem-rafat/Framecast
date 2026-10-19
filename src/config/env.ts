@@ -144,6 +144,27 @@ const serverEnvSchema = z.object({
   /** ElevenLabs voice. Default is Roger — American, conversational. */
   ELEVENLABS_VOICE_ID: z.string().min(1).default("CwhRBWXzGAHq8TQ4Fs17"),
   ELEVENLABS_MODEL_ID: z.string().min(1).default("eleven_turbo_v2_5"),
+
+  /**
+   * Paddle Billing. All optional so dev and tests boot without an account;
+   * with no webhook secret the webhook answers 503 and nothing can be bought.
+   * The three price ids are Paddle Price ids (`pri_…`) for the paid tiers in
+   * src/lib/plans.ts — the amounts live in Paddle, the allowances in plans.ts.
+   */
+  PADDLE_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
+  PADDLE_API_KEY: z.string().min(1).optional(),
+  PADDLE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  PADDLE_PRICE_CREATOR: z.string().min(1).optional(),
+  PADDLE_PRICE_PRO: z.string().min(1).optional(),
+  PADDLE_PRICE_AGENCY: z.string().min(1).optional(),
+  /** Paddle.js client-side token (`live_…` / `test_…`). Public by design. */
+  PADDLE_CLIENT_TOKEN: z.string().min(1).optional(),
+
+  /**
+   * The platform's own ElevenLabs key, used for accounts that have credits or
+   * an active plan and no key of their own. See ProviderCredentialService.resolveKey.
+   */
+  PLATFORM_ELEVENLABS_API_KEY: z.string().min(1).optional(),
 });
 
 /**
