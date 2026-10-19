@@ -67,7 +67,7 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
       "Animation from Pixabay's cartoon library, with safe search on. A smaller pool than live action: a section with no cartoon match is left without footage rather than filled with live action. Not recommended for children's stories — Pixabay's animation filter means “rendered rather than filmed”, so it returns photoreal loops and motion graphics as often as anything drawn.",
     summary: "Cartoon and animated stock clips instead of filmed ones.",
     bestFor: "Light, playful topics for a general audience",
-    preview: null,
+    preview: "footage-cartoon",
   },
   {
     value: "ILLUSTRATED",
@@ -85,7 +85,7 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
       "Generated photographic stills in one fixed grade and lens, for short second-person videos that name a psychological effect. A different, unnamed person in every shot — nothing is held constant except the look — so unlike the illustrated style it needs no character described and no sheet generated. Costs roughly $0.05 a picture, about $0.60 for a forty-five-second video.",
     summary: "Moody photographic stills with slow camera movement.",
     bestFor: "Psychology, self-improvement, “why you…” Shorts",
-    preview: null,
+    preview: "footage-cinematic",
   },
   {
     value: "MIXED",
@@ -94,7 +94,7 @@ export const FOOTAGE_STYLES: readonly FootageStyleOption[] = [
       "Generated stills for most shots and real stock footage for the ones the script marks as movement, for long-form list videos. The script decides the split, not this setting — so a video whose writer asked for no movement costs the same as the cinematic style, and one that asked for a lot costs less. A movement shot with nothing in the stock libraries is drawn instead of left blank; a still shot is never filled with stock, because the drawn shots are what makes the channel look like itself.",
     summary: "AI pictures for most scenes, real footage where things move.",
     bestFor: "Long list videos: top tens, histories, rankings",
-    preview: null,
+    preview: "footage-mixed",
   },
   {
     value: "DOODLE",

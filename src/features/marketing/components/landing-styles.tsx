@@ -1,28 +1,62 @@
+"use client";
+
+import { useState } from "react";
+
+import FlexCarousel from "@/components/react-bits/FlexCarousel";
 import { StylePreview } from "@/components/shared/style-preview";
 import { ART_STYLES } from "@/lib/art-styles";
 import { FOOTAGE_STYLES } from "@/lib/footage-styles";
 import { cn } from "@/lib/utils";
 
+interface LandingStyle {
+  key: string;
+  name: string;
+  line: string;
+  bestFor: string;
+  /** File under public/looks: a real 6-second clip and its still. */
+  preview: string;
+  available: boolean;
+}
+
 /**
  * Every look, shown with something it really made. The animated looks are
- * 6-second clips cut from real finished videos (public/looks); the
- * illustration styles are the app's own style samples (public/art-styles).
- * Nothing here is a mock-up.
+ * 6-second clips cut from real finished videos; the footage styles from real
+ * channel uploads and from sample renders made by the app itself. Nothing
+ * here is a mock-up.
  *
  * The animated looks are built in the studio and still being moved into
  * Framecast Studio, so they say "Coming soon" until they can be ordered.
  */
-const LOOKS = [
-  { id: "motion", name: "Motion graphics", line: "Full-frame pictures, animated numbers and captions.", from: "Money Mechanics" },
-  { id: "whiteboard", name: "Whiteboard", line: "A hand draws each picture and writes the key words.", from: "Money Mechanics" },
-  { id: "explainer", name: "Explainer", line: "Each scene as an app screen on a phone, with karaoke captions.", from: "Money Mechanics" },
-  { id: "mixed", name: "Mixed", line: "Each scene picks its look: drawing for ideas, screens for steps.", from: "Dev Pixel" },
-  { id: "versus", name: "Versus", line: "Two products face off: spec tables, winners and a live score.", from: "Haleem Rafat" },
-  { id: "arena", name: "Arena", line: "Versus as a fighting game: health bars, rounds and a winner.", from: "Haleem Rafat" },
-  { id: "deepdive", name: "Deep dive", line: "A researched explainer with real photos, chip maps and tables.", from: "Haleem Rafat" },
-] as const;
+const ANIMATED: LandingStyle[] = [
+  { key: "motion", name: "Motion graphics", line: "Full-frame pictures, animated numbers and captions.", bestFor: "Finance and history Shorts", preview: "motion", available: false },
+  { key: "whiteboard", name: "Whiteboard", line: "A hand draws each picture and writes the key words.", bestFor: "Lessons and book summaries", preview: "whiteboard", available: false },
+  { key: "explainer", name: "Explainer", line: "Each scene as an app screen on a phone, with karaoke captions.", bestFor: "How-tos and step-by-step tips", preview: "explainer", available: false },
+  { key: "mixed-look", name: "Studio mix", line: "Each scene picks its look: drawing for ideas, screens for steps.", bestFor: "Developer and tech explainers", preview: "mixed", available: false },
+  { key: "versus", name: "Versus", line: "Two products face off: spec tables, winners and a live score.", bestFor: "Tech comparisons", preview: "versus", available: false },
+  { key: "arena", name: "Arena", line: "Versus as a fighting game: health bars, rounds and a winner.", bestFor: "Exciting product battles", preview: "arena", available: false },
+  { key: "deepdive", name: "Deep dive", line: "A researched explainer with real photos, chip maps and tables.", bestFor: "Long reviews and explainers", preview: "deepdive", available: false },
+];
+
+const FOOTAGE: LandingStyle[] = FOOTAGE_STYLES.flatMap((style) =>
+  style.preview
+    ? [{ key: style.value, name: style.label, line: style.summary, bestFor: style.bestFor, preview: style.preview, available: true }]
+    : [],
+);
+
+/** Available styles first: they are what can be made today. */
+const STYLES = [...FOOTAGE, ...ANIMATED];
+
+const ITEMS = STYLES.map((style) => ({
+  src: `/looks/${style.preview}.jpg`,
+  alt: `${style.name}: a still from a real video`,
+  title: style.name,
+  subtitle: style.available ? "Available now" : "Coming soon",
+}));
 
 export function LandingStyles() {
+  const [active, setActive] = useState(0);
+  const style = STYLES[active] ?? STYLES[0]!;
+
   return (
     <section id="styles" className="mx-auto w-full max-w-6xl px-6 py-20 sm:py-28">
       <div className="max-w-2xl">
@@ -30,81 +64,80 @@ export function LandingStyles() {
           Pick a look. These are real videos.
         </h2>
         <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
-          Every clip below was cut from a finished video, not designed for this page. Choose the
-          look once for a channel or a series, and every video after that is made in it.
+          Every picture and clip below comes from a finished video, not from a design file. Drag
+          through them; the one in the middle plays beside them.
         </p>
       </div>
 
-      <h3 className="mt-12 text-lg font-semibold">Animated looks</h3>
-      <p className="text-muted-foreground mt-1 text-sm">
-        Moving into Framecast Studio now. Each works as a Short or a long video.
-      </p>
-      <ul className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-        {LOOKS.map((look) => (
-          <li key={look.id} className="flex min-w-0 flex-col gap-2">
-            <StylePreview name={look.id} label={`A real ${look.name} video, playing without sound`} />
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-medium">{look.name}</span>
-              <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-[11px]">
-                Coming soon
-              </span>
-            </div>
-            <p className="text-muted-foreground text-sm text-pretty">{look.line}</p>
-            <p className="text-muted-foreground/80 text-xs">From {look.from}</p>
-          </li>
-        ))}
-        <li className="flex min-w-0 flex-col gap-2">
-          <div className="border-border text-muted-foreground flex aspect-[9/16] w-full items-center justify-center rounded-lg border border-dashed p-4 text-center text-sm">
-            Marketing example coming soon
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium">Marketing</span>
-            <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-[11px]">
-              Coming soon
+      <div className="mt-10 grid items-center gap-8 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="h-[420px] sm:h-[520px]">
+          <FlexCarousel
+            items={ITEMS}
+            preset="liquid"
+            intro="rise"
+            cardHeight={0.62}
+            gap={14}
+            radius={14}
+            fit="portrait"
+            squeeze={0.2}
+            focusOnClick={false}
+            captions
+            onChange={(index: number) => setActive(index)}
+          />
+        </div>
+
+        <aside aria-live="polite" className="mx-auto w-full max-w-[280px]">
+          <StylePreview key={style.key} name={style.preview} label={`A real ${style.name} video, playing without sound`} />
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <h3 className="font-semibold">{style.name}</h3>
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2 py-0.5 text-[11px]",
+                style.available ? "bg-brand-cyan/20 text-brand-cyan-ink" : "bg-muted text-muted-foreground",
+              )}
+            >
+              {style.available ? "Available now" : "Coming soon"}
             </span>
           </div>
-          <p className="text-muted-foreground text-sm text-pretty">
-            Paste a brand&apos;s website, answer a few questions, get a branded ad for social.
-          </p>
-        </li>
-      </ul>
+          <p className="text-muted-foreground mt-1 text-sm text-pretty">{style.line}</p>
+          <p className="text-muted-foreground/80 mt-1 text-xs">Best for: {style.bestFor}</p>
+        </aside>
+      </div>
 
-      <h3 className="mt-16 text-lg font-semibold">Footage styles</h3>
-      <p className="text-muted-foreground mt-1 text-sm">
-        Available now. Every channel picks one; it decides what is on screen while the narrator speaks.
-      </p>
-      <ul className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        {FOOTAGE_STYLES.map((style) => (
-          <li key={style.value} className="flex min-w-0 flex-col gap-2">
-            {style.preview ? (
-              <StylePreview name={style.preview} label={`A real ${style.label} video, playing without sound`} />
-            ) : (
-              <div className="border-border text-muted-foreground flex aspect-[9/16] w-full items-center justify-center rounded-lg border border-dashed p-3 text-center text-xs">
-                Example coming soon
-              </div>
+      {/* The same list as buttons: for keyboards, for anyone without WebGL
+        * (where the carousel draws nothing), and to jump straight to one. */}
+      <div className="mt-6 flex flex-wrap gap-2" role="group" aria-label="Choose a style to preview">
+        {STYLES.map((one, index) => (
+          <button
+            key={one.key}
+            type="button"
+            onClick={() => setActive(index)}
+            aria-pressed={index === active}
+            className={cn(
+              "rounded-full border px-3 py-1 text-sm transition-colors",
+              index === active ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
             )}
-            <span className="font-medium">{style.label}</span>
-            <p className="text-muted-foreground text-sm text-pretty">{style.summary}</p>
-            <p className="text-muted-foreground/80 text-xs">Best for: {style.bestFor}</p>
-          </li>
+          >
+            {one.name}
+          </button>
         ))}
-      </ul>
+      </div>
 
       <h3 className="mt-16 text-lg font-semibold">Illustration styles</h3>
       <p className="text-muted-foreground mt-1 text-sm">
-        Available now for illustrated channels: the same scene drawn in each style.
+        For illustrated channels: the same scene drawn in each style.
       </p>
       <ul className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-7">
-        {ART_STYLES.map((style) => (
-          <li key={style.id} className="min-w-0">
+        {ART_STYLES.map((art) => (
+          <li key={art.id} className="min-w-0">
             {/* eslint-disable-next-line @next/next/no-img-element -- small static samples, already sized */}
             <img
-              src={`/art-styles/${style.id}.webp`}
-              alt={`${style.name}: the sample scene drawn in this style`}
+              src={`/art-styles/${art.id}.webp`}
+              alt={`${art.name}: the sample scene drawn in this style`}
               loading="lazy"
-              className={cn("aspect-square w-full rounded-lg object-cover")}
+              className="aspect-square w-full rounded-lg object-cover"
             />
-            <p className="mt-2 text-sm font-medium">{style.name}</p>
+            <p className="mt-2 text-sm font-medium">{art.name}</p>
           </li>
         ))}
       </ul>
