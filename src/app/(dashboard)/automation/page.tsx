@@ -5,13 +5,15 @@ import { Repeat2, Sparkles } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Reveal } from "@/components/shared/reveal";
-import { Button } from "@/components/ui/button";
 import { AutomationCards } from "@/features/automation/components/automation-cards";
+import { GenerateModes } from "@/features/automation/components/generate-modes";
 import { NewAutomationMenu } from "@/features/automation/components/new-automation-menu";
 import { ReadinessNotice } from "@/features/automation/components/readiness-notice";
+import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/session";
 import { automationListService } from "@/services/automation-list.service";
 import { automationService } from "@/services/automation.service";
+import { easyModeService } from "@/services/easy-mode.service";
 
 export const metadata: Metadata = { title: "Automation" };
 
@@ -54,75 +56,88 @@ export const metadata: Metadata = { title: "Automation" };
  * once old failures piled up; a card says in one line whether it is working
  * and what fixes it.
  */
-export default async function AutomationPage() {
+export default async function AutomationPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
   const user = await requireUser();
+  const { tab: requested } = await searchParams;
 
-  const [setup, automations] = await Promise.all([
+  const [setup, automations, easySetup] = await Promise.all([
     automationService.getSetup(user.id),
     automationListService.list(user.id),
+    easyModeService.getSetup(user.id),
   ]);
 
+  // Someone with nothing running yet came here to make a video; someone with
+  // automations came to see them. A tab in the address always wins.
+  const tab: "make" | "list" =
+    requested === "make" || requested === "list"
+      ? requested
+      : automations.length > 0
+        ? "list"
+        : "make";
   const ready = setup.blockers.length === 0 && setup.prompt !== null;
 
   return (
     <>
       <PageHeader
         title="Automation"
-        // Deliberately short, and shorter than it was. Two things sit above
-        // this list already — the screen's own help note, which explains what
-        // the three kinds are, and the readiness notice when something is
-        // wrong. A third paragraph restating them made the top of the page a
-        // wall of prose with three buttons buried beside it.
-        //
-        // It also no longer ends "Publishing stays yours", which stopped being
-        // true when auto-publish shipped. A sentence that reassures an operator
-        // about a guarantee the app no longer makes is worse than no sentence.
-        description="Everything that makes videos on a repeating cadence — what it is, when it next runs, and whether it is working."
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            {/* The one-shot flow, kept at the top of the screen it is most
-                often reached from. Deliberately not the primary button: this
-                page is about the things that run without anybody present, and
-                the primary action on it should be making another one. */}
-            <Button asChild variant="outline">
-              <Link href="/automation/generate">
-                <Sparkles />
-                Make one video now
-              </Link>
-            </Button>
-            {/* Offered whether or not the account is ready. The old lists hid
-                their create button behind the same readiness check that hid
-                the list, which left an operator with a blocked account looking
-                at a screen with nothing on it and nothing to press. The create
-                forms carry the gate that matters, and they explain it. Hidden
-                only when there are no rows, because the empty state below
-                already offers the same menu and two of them is noise. */}
-            {automations.length > 0 && <NewAutomationMenu />}
-          </div>
-        }
+        description="Make one video now, or set up videos that make themselves on a schedule."
+        actions={tab === "list" && automations.length > 0 ? <NewAutomationMenu /> : undefined}
       />
 
-      {!ready && <ReadinessNotice blockers={setup.blockers} />}
+      <nav aria-label="Automation" className="bg-muted inline-flex w-fit rounded-lg p-1">
+        {(
+          [
+            ["make", "Make a video", Sparkles],
+            ["list", `Automations${automations.length ? ` (${automations.length})` : ""}`, Repeat2],
+          ] as const
+        ).map(([value, label, Icon]) => (
+          <Link
+            key={value}
+            href={`/automation?tab=${value}`}
+            aria-current={tab === value ? "page" : undefined}
+            className={cn(
+              "text-muted-foreground hover:text-foreground flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              tab === value && "bg-background text-foreground shadow-sm",
+            )}
+          >
+            <Icon className="size-4" />
+            {label}
+          </Link>
+        ))}
+      </nav>
 
-      <Reveal>
-        <AutomationCards
-            automations={automations}
-            empty={
-            <EmptyState
-              icon={Repeat2}
-              title="Nothing runs on its own yet"
-              description="An automation is a cadence and a list of subjects: Framecast writes, narrates and renders one video each time it comes round, and stops when the list runs out rather than inventing a topic. Start with a series if the videos belong to one show."
-              action={
-                // Offered even when the account is not ready, because the
-                // create form's own gate explains what is missing better than a
-                // hidden button does — and a screen with no rows and no button
-                // is a dead end.
-                <NewAutomationMenu />
+      {tab === "make" ? (
+        easySetup.blockers.length > 0 || !easySetup.prompt ? (
+          <ReadinessNotice blockers={easySetup.blockers} />
+        ) : (
+          <GenerateModes
+            channels={easySetup.channels}
+            projects={easySetup.projects}
+            prompt={easySetup.prompt}
+          />
+        )
+      ) : (
+        <>
+          {!ready && <ReadinessNotice blockers={setup.blockers} />}
+          <Reveal>
+            <AutomationCards
+              automations={automations}
+              empty={
+                <EmptyState
+                  icon={Repeat2}
+                  title="Nothing runs on its own yet"
+                  description="An automation makes one video each time it comes round, from a list of topics, and stops when the list runs out. Start with a series if the videos belong to one show."
+                  action={<NewAutomationMenu />}
+                />
               }
             />
-            }
-          />
-      </Reveal>
+          </Reveal>
+        </>
+      )}
     </>
   );
 }

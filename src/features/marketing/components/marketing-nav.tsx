@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
  * into a new tab, and is already gated behind `prefers-reduced-motion` there.
  */
 export const NAV_LINKS = [
+  { href: "/#styles", label: "Styles" },
   { href: "/#how-it-works", label: "How it works" },
   { href: "/#features", label: "Features" },
   { href: "/#pricing", label: "Pricing" },

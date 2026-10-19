@@ -9,6 +9,7 @@ import { LandingOutput } from "@/features/marketing/components/landing-output";
 import { LandingPipeline } from "@/features/marketing/components/landing-pipeline";
 import { LandingPricing } from "@/features/marketing/components/landing-pricing";
 import { LandingStudio } from "@/features/marketing/components/landing-studio";
+import { LandingStyles } from "@/features/marketing/components/landing-styles";
 import { LandingValue } from "@/features/marketing/components/landing-value";
 import { MarketingShell } from "@/features/marketing/components/marketing-shell";
 
@@ -38,6 +39,7 @@ export default function HomePage() {
         * them is the detail a reader asks for only after those three have
         * landed. See docs/superpowers/specs/2026-08-23-landing-page-v2-design.md */}
       <LandingValue />
+      <LandingStyles />
       <LandingCredibility />
 
       <LandingPipeline />

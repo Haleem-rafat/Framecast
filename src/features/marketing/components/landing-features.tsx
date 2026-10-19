@@ -8,7 +8,7 @@ import {
   FileSearch,
   Hand,
   Music4,
-  ServerCog,
+  Sparkles,
   SlidersHorizontal,
   MonitorPlay,
 } from "lucide-react";
@@ -303,14 +303,14 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    icon: <ServerCog className="text-brand-violet-ink size-5" />,
-    title: "One machine, your keys",
+    icon: <Sparkles className="text-brand-violet-ink size-5" />,
+    title: "AI included in your plan",
     description:
-      "App, renderer and database run on a single server you control, driven by API keys you supply and that are encrypted before they are stored.",
+      "Writing, narration and pictures are paid for by your credits. There are no provider accounts to open and no API keys to manage.",
     header: (
       <Tile>
         <div className="border-brand-violet/40 flex size-14 items-center justify-center rounded-lg border-2 border-dashed">
-          <ServerCog className="text-brand-violet-ink/70 size-6" />
+          <Sparkles className="text-brand-violet-ink/70 size-6" />
         </div>
       </Tile>
     ),

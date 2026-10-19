@@ -13,9 +13,10 @@ import { findNavItemByPath, isNavItemActive, navItems } from "@/config/navigatio
  * `/automation/generate` are both entries, which is what made this visible.
  */
 describe("isNavItemActive", () => {
-  it("lights only the most specific entry when one nav href is under another", () => {
-    expect(isNavItemActive("/automation/generate", "/automation/generate")).toBe(true);
-    expect(isNavItemActive("/automation/generate", "/automation")).toBe(false);
+  it("lights Automation for the one-video run page, which is a tab of it now", () => {
+    // There was a separate "One-click video" entry here until the two pages
+    // were merged; its run page now belongs to Automation.
+    expect(isNavItemActive("/automation/generate", "/automation")).toBe(true);
   });
 
   it("lights the parent when the path is not a nav entry of its own", () => {
@@ -46,8 +47,8 @@ describe("findNavItemByPath", () => {
     expect(findNavItemByPath("/videos/abc-123")?.href).toBe("/videos");
   });
 
-  it("prefers the deeper entry over its ancestor", () => {
-    expect(findNavItemByPath("/automation/generate")?.href).toBe("/automation/generate");
+  it("finds the section for a page under it", () => {
+    expect(findNavItemByPath("/automation/generate")?.href).toBe("/automation");
   });
 
   it("returns nothing for a path outside the map", () => {
