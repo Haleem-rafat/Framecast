@@ -130,7 +130,7 @@ export function LandingPipeline() {
           <p className="text-muted-foreground mt-4 text-base text-pretty sm:text-lg">
             A run goes end to end on its own, but it is built to halt and wait
             for a person — once before it starts spending, once before it
-            publishes.
+            publishes. Automation can skip those stops, only when you set it to.
           </p>
         </div>
 

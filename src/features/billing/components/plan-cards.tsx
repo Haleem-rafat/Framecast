@@ -59,8 +59,8 @@ function loadPaddle(token: string, environment: "sandbox" | "production"): Promi
 const LINES: Record<PlanTier, string[]> = {
   TRIAL: ["3 credits to try it", "Small watermark on videos"],
   CREATOR: ["20 credits a month", "20 Shorts or 4 long videos", "No watermark", "AI costs included"],
-  PRO: ["60 credits a month", "Marketing videos for brands", "No watermark", "AI costs included"],
-  AGENCY: ["180 credits a month", "Client projects", "3 seats (coming soon)", "AI costs included"],
+  PRO: ["60 credits a month", "Marketing videos for brands (coming soon)", "No watermark", "AI costs included"],
+  AGENCY: ["180 credits a month", "Client projects (coming soon)", "3 seats (coming soon)", "AI costs included"],
 };
 
 /** Each paid plan's own pixel colour, so the three cards read apart at a glance. */

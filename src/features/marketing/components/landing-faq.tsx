@@ -19,10 +19,11 @@ const QUESTIONS = [
     q: "Does it publish without me?",
     a: (
       <>
-        No. A run stops twice and waits: once when the script is written, before
-        anything that costs money has run, and once when the video is rendered,
-        before anything is uploaded. If you do not approve the cut, nothing
-        leaves the machine.
+        Not unless you tell it to. A video you make stops twice and waits: once
+        when the script is written, before a credit is spent, and once when the
+        video is rendered, before anything is uploaded. Automation (series and
+        schedules) approves its own scripts so it can run while you are away,
+        and it uploads on its own only if you switch on auto-publish for it.
       </>
     ),
   },

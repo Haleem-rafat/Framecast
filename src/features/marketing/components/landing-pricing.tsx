@@ -19,7 +19,7 @@ const ORDER: PlanTier[] = ["TRIAL", "CREATOR", "PRO", "AGENCY"];
 const COPY: Record<PlanTier, { summary: string; lines: string[]; featured?: boolean }> = {
   TRIAL: {
     summary: "Make your first videos and see what Framecast Studio does before paying anything.",
-    lines: ["3 credits to try it", "Every format and look", "Small watermark on videos"],
+    lines: ["3 credits to try it", "Every format and footage style", "Small watermark on videos"],
   },
   CREATOR: {
     summary: "For one channel posting every week.",
@@ -27,12 +27,12 @@ const COPY: Record<PlanTier, { summary: string; lines: string[]; featured?: bool
   },
   PRO: {
     summary: "For creators posting daily, and for marketing videos made from a brand's website.",
-    lines: ["60 credits a month", "Marketing videos for brands", "No watermark", "AI costs included"],
+    lines: ["60 credits a month", "Marketing videos for brands (coming soon)", "No watermark", "AI costs included"],
     featured: true,
   },
   AGENCY: {
     summary: "For teams making videos for several clients.",
-    lines: ["180 credits a month", "Client projects", "3 seats (coming soon)", "AI costs included"],
+    lines: ["180 credits a month", "Client projects (coming soon)", "3 seats (coming soon)", "AI costs included"],
   },
 };
 

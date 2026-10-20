@@ -43,8 +43,8 @@ const SURFACES: {
     icon: Coins,
     accent: "text-brand-amber-ink",
     chip: "from-brand-amber/20 to-brand-amber/5",
-    title: "See what it cost, per video",
-    body: "Script, voice and image generations are priced as they run and totalled against the video they went into. Render times and failures are on the same page.",
+    title: "See where every credit went",
+    body: "Your balance sits in the sidebar, and Billing charts what you spent each day and lists every credit with the video it went to. A failed render hands its credits back.",
     detail: "Analytics",
   },
   {
