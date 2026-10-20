@@ -107,7 +107,7 @@ export const CREDIBILITY = {
     {
       claim: "It refuses more than it does",
       detail:
-        "No narration until you have approved the script. No upload until you have watched the cut. A render that loses a picture stops rather than publishing a hole.",
+        "A video you make by hand gets no narration until you approve the script and no upload until you have watched the cut. A render that loses a picture stops rather than publishing a hole.",
     },
   ],
   /** Left empty on purpose. See the note above. */
@@ -133,7 +133,7 @@ export const CTA = {
   /** What it costs. */
   price: "Free trial, then from $29 a month",
   /** What happens immediately — which is also the reassurance. */
-  payoff: "You approve the script before anything is spent",
+  payoff: "You approve the script before a credit is spent",
 } as const;
 
 /**
@@ -147,5 +147,5 @@ export const CTA = {
 export const APPROVAL_GATES = {
   lead: "And it stops twice, for you.",
   detail:
-    "Nothing runs until you have approved the script. Nothing publishes until you have watched the finished video.",
+    "Nothing runs until you have approved the script. Nothing publishes until you have watched the finished video. Automation is the one exception you switch on yourself: it approves its own scripts, and publishes only if you turn on auto-publish.",
 } as const;

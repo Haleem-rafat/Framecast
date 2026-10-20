@@ -20,12 +20,12 @@ const FACTS = [
   {
     icon: CircleCheck,
     title: "You approve it first",
-    body: "Nothing is spent until you approve the script, and nothing is published until you have watched the finished video.",
+    body: "No credit is spent until you approve the script, and nothing is published until you have watched the finished video, unless you set up automation to do it for you.",
   },
   {
     icon: ShieldCheck,
-    title: "Nothing posts itself",
-    body: "A connected channel is only ever written to for a cut you approved. Framecast asks for no Google permission beyond reading that channel and uploading to it.",
+    title: "Nothing posts behind your back",
+    body: "A connected channel is only written to for a cut you approved or a schedule you set to auto-publish. Framecast never edits, deletes or comments on your videos.",
   },
 ];
 

@@ -218,7 +218,7 @@ const FEATURES: Feature[] = [
     icon: <Hand className="text-brand-amber-ink size-5" />,
     title: "Two places it stops and waits for you",
     description:
-      "The script is yours to approve before a single paid stage runs, and the finished cut is yours to watch before anything reaches your channel. Neither gate can be skipped, and not approving is a complete answer.",
+      "The script is yours to approve before a single paid stage runs, and the finished cut is yours to watch before anything reaches your channel. Not approving is a complete answer. Automation skips the first gate for you, and the second only if you turn on auto-publish.",
     span: 2,
     header: (
       <Tile className="p-4">
@@ -293,9 +293,9 @@ const FEATURES: Feature[] = [
   },
   {
     icon: <Coins className="text-brand-blue-ink size-5" />,
-    title: "Every generation costed",
+    title: "Every credit accounted for",
     description:
-      "Each script, voice and image call is priced as it runs and totalled against the video it went into, so a video's cost is a number you can look up rather than a provider bill you reconcile later.",
+      "The approve button tells you what a video will cost before you click it, and Billing lists every credit in and out with the video it went to. A video that fails to render gives its credits back.",
     header: (
       <Tile>
         <span className="text-brand-blue-ink font-mono text-2xl font-semibold">$0.00</span>
