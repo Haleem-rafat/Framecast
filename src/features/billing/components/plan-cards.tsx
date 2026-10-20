@@ -1,15 +1,16 @@
 "use client";
 
 import { Check, Loader2 } from "lucide-react";
+import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { changePlanAction } from "@/actions/billing.action";
+import PixelCard, { type PixelCardProps } from "@/components/react-bits/PixelCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PAID_TIERS, PLANS, type PlanTier } from "@/lib/plans";
-import { cn } from "@/lib/utils";
 
 interface PaddleGlobal {
   Environment: { set: (environment: "sandbox") => void };
@@ -62,6 +63,14 @@ const LINES: Record<PlanTier, string[]> = {
   AGENCY: ["180 credits a month", "Client projects", "3 seats (coming soon)", "AI costs included"],
 };
 
+/** Each paid plan's own pixel colour, so the three cards read apart at a glance. */
+const PIXELS: Record<PlanTier, PixelCardProps["variant"]> = {
+  TRIAL: "default",
+  CREATOR: "blue",
+  PRO: "pink",
+  AGENCY: "yellow",
+};
+
 export function PlanCards({
   current,
   hasSubscription,
@@ -82,6 +91,12 @@ export function PlanCards({
 }) {
   const router = useRouter();
   const [pending, setPending] = useState<PlanTier | null>(null);
+  // The card draws its own surface, so it follows the app's theme; dark
+  // until the theme is known, to match the server render.
+  const { resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const theme = mounted && resolvedTheme === "light" ? "light" : "dark";
 
   async function switchTo(tier: PlanTier) {
     setPending(tier);
@@ -129,17 +144,31 @@ export function PlanCards({
 
   return (
     <div className="grid gap-4 md:grid-cols-3">
-      {PAID_TIERS.map((tier) => {
+      {PAID_TIERS.map((tier, index) => {
         const plan = PLANS[tier];
         const isCurrent = hasSubscription && current === tier;
         return (
-          <div
+          <PixelCard
             key={tier}
-            className={cn(
-              "bg-card flex flex-col gap-4 rounded-xl border p-5",
-              isCurrent && "border-primary ring-primary ring-1",
-            )}
+            variant={PIXELS[tier]}
+            theme={theme}
+            // The plan you are on stays lit; the others light up on hover.
+            trigger={isCurrent ? "always" : "hover"}
+            introDelay={index * 150}
+            opacity={0.45}
+            fade={0.7}
+            radius={12}
+            noFocus
+            // The card's own CSS sizes it 300×400 and centres one child;
+            // inline styles win over it so the card fills its grid cell.
+            style={{
+              width: "100%",
+              height: "100%",
+              display: "block",
+              ...(isCurrent && { outline: "2px solid var(--primary)", outlineOffset: 2 }),
+            }}
           >
+            <div className="flex h-full w-full flex-col gap-4 p-5">
             <div className="flex items-baseline justify-between gap-2">
               <h3 className="font-semibold">{plan.name}</h3>
               {isCurrent && <Badge>Your plan</Badge>}
@@ -173,7 +202,8 @@ export function PlanCards({
                 Choose {plan.name}
               </Button>
             )}
-          </div>
+            </div>
+          </PixelCard>
         );
       })}
     </div>
