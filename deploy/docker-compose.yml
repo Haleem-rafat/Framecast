@@ -54,6 +54,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+      - /srv/apps/sites:/etc/caddy/sites:ro
+    networks: [default, apps]
     depends_on: [app-prod, app-staging]
 
   postgres:
@@ -204,6 +206,10 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     cpu_shares: 256
+
+networks:
+  apps:
+    external: true
 
 volumes:
   caddy-data:

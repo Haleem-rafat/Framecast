@@ -21,3 +21,6 @@ staging.framecasts.com {
 		flush_interval -1
 	}
 }
+
+# Other projects: one file per subdomain, see /srv/apps/README.md
+import /etc/caddy/sites/*.caddy
